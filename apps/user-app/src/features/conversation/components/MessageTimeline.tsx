@@ -3199,19 +3199,40 @@ function looksLikeRulesMessage(provider: ProviderId | null, content: string) {
 
   const normalized = content.trim();
 
-  if (
-    /(?:^|\n)[ \t]*#?[ \t]*AGENTS\.md instructions(?:[ \t]+for\b[^\n]*)?[ \t]*(?:\n|$)/im.test(normalized)
-    && /<INSTRUCTIONS>/i.test(normalized)
-    && /<\/INSTRUCTIONS>/i.test(normalized)
-  ) {
-    return true;
+  if (provider === "codex") {
+    return looksLikeCodexRulesMessage(normalized);
   }
 
-  return provider === "deepseek-harness"
-    && /<system-reminder\b/i.test(normalized)
-    && /(?:AGENTS|CLAUDE)\.md/i.test(normalized)
-    && /<INSTRUCTIONS>/i.test(normalized)
-    && /<\/INSTRUCTIONS>/i.test(normalized);
+  if (provider === "deepseek-harness") {
+    return looksLikeDeepSeekHarnessRulesMessage(normalized);
+  }
+
+  return looksLikeGenericRulesMessage(normalized);
+}
+
+function looksLikeCodexRulesMessage(content: string): boolean {
+  return /(?:^|\n)[ \t]*#?[ \t]*AGENTS\.md instructions(?:[ \t]+for\b[^\n]*)?[ \t]*(?:\n|$)/im.test(content)
+    && /<INSTRUCTIONS>/i.test(content)
+    && /<\/INSTRUCTIONS>/i.test(content);
+}
+
+function looksLikeDeepSeekHarnessRulesMessage(content: string): boolean {
+  if (!/<system-reminder\b/i.test(content)) {
+    return false;
+  }
+
+  const hasInstructionSource = /(?:^|\n)[ \t]*Instructions from:[ \t]*(?:[^\n]*[\\/])?(?:AGENTS|CLAUDE)\.md\b/im.test(content);
+  const hasLegacyInstructionTags = /(?:AGENTS|CLAUDE)\.md/i.test(content)
+    && /<INSTRUCTIONS>/i.test(content)
+    && /<\/INSTRUCTIONS>/i.test(content);
+
+  return hasInstructionSource || hasLegacyInstructionTags;
+}
+
+function looksLikeGenericRulesMessage(content: string): boolean {
+  return /(?:^|\n)[ \t]*#?[ \t]*AGENTS\.md instructions(?:[ \t]+for\b[^\n]*)?[ \t]*(?:\n|$)/im.test(content)
+    && /<INSTRUCTIONS>/i.test(content)
+    && /<\/INSTRUCTIONS>/i.test(content);
 }
 
 function looksLikeHarnessRuntimeContextMessage(provider: ProviderId | null, content: string) {

@@ -2211,6 +2211,77 @@ Approval policy: ask.`, "dsh-runtime-context"),
     expect(screen.getByText("Current DSH file policy: workspace-write.")).toBeInTheDocument();
   });
 
+  it("会折叠没有 INSTRUCTIONS 标签的 DeepSeek Harness 工作区规则", () => {
+    render(
+      <MessageTimeline
+        messages={[
+          {
+            ...createSystemMessage(`<system-reminder>
+The following workspace instructions may be relevant to your work. Use them as guidance when applicable.
+
+Instructions from: AGENTS.md
+
+# 项目规则补充
+
+## 执行流程与阻塞处理规则
+
+- DSH 规则正文不应直接展示
+</system-reminder>`, "dsh-rules-without-tags"),
+            rawRef: "harness://session-1#seq=10"
+          }
+        ]}
+        historyState="ready"
+        provider="deepseek-harness"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).toBeInTheDocument();
+    expect(screen.queryByText("DSH 规则正文不应直接展示")).not.toBeInTheDocument();
+  });
+
+  it("不会把 DSH 的 system-reminder 规则形态误判为 Codex 规则", () => {
+    render(
+      <MessageTimeline
+        messages={[
+          createTextMessage(`<system-reminder>
+Instructions from: AGENTS.md
+
+# 项目规则补充
+
+- Codex 不应折叠这条 DSH 形态规则
+</system-reminder>`)
+        ]}
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText((content) => content.includes("Codex 不应折叠这条 DSH 形态规则"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).not.toBeInTheDocument();
+  });
+
+  it("不会把 Codex 的 AGENTS 标题形态误判为 DSH 规则", () => {
+    render(
+      <MessageTimeline
+        messages={[
+          createSystemMessage(`# AGENTS.md instructions for /Users/jackson/Code/CodingNS
+
+<INSTRUCTIONS>
+DSH 不应折叠这条 Codex 形态规则
+</INSTRUCTIONS>`, "dsh-codex-shaped-rules")
+        ]}
+        historyState="ready"
+        provider="deepseek-harness"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText((content) => content.includes("DSH 不应折叠这条 Codex 形态规则"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).not.toBeInTheDocument();
+  });
+
   it("会把 DeepSeek Harness 同一 callId 的写入调用和结果渲染成一个编辑项", () => {
     const writeInput = JSON.stringify({
       file_path: "/Users/jackson/Code/CodingNS/data/最后的邮差.md",
