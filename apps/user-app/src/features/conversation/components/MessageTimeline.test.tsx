@@ -2150,6 +2150,26 @@ describe("MessageTimeline", () => {
     expect(screen.getByText((content) => content.includes("不要主动启动开发服务器"))).toBeInTheDocument();
   });
 
+  it("会折叠不带项目路径的 Codex 规则标题", () => {
+    render(
+      <MessageTimeline
+        messages={[
+          createTextMessage(`# AGENTS.md instructions
+
+<INSTRUCTIONS>
+不要把项目规则正文直接展示出来
+</INSTRUCTIONS>`)
+        ]}
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).toBeInTheDocument();
+    expect(screen.queryByText("不要把项目规则正文直接展示出来")).not.toBeInTheDocument();
+  });
+
   it("会折叠 DeepSeek Harness 注入的规则和运行时上下文", async () => {
     render(
       <MessageTimeline

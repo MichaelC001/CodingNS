@@ -3924,7 +3924,7 @@ function resolveCodexFallbackTitle(messages: NormalizedMessage[]): string | null
 
 function looksLikeCodexRulesMessage(content: string): boolean {
   const normalized = content.trim();
-  const beginsWithRulesHeader = /^#?\s*AGENTS\.md instructions for\b/i.test(normalized);
+  const beginsWithRulesHeader = /^[ \t]*#?[ \t]*AGENTS\.md instructions(?:[ \t]+for\b[^\n]*)?[ \t]*(?:\n|$)/i.test(normalized);
 
   if (beginsWithRulesHeader) {
     return true;

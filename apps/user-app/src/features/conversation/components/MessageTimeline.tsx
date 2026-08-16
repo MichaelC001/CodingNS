@@ -3200,7 +3200,7 @@ function looksLikeRulesMessage(provider: ProviderId | null, content: string) {
   const normalized = content.trim();
 
   if (
-    /AGENTS\.md instructions for/i.test(normalized)
+    /(?:^|\n)[ \t]*#?[ \t]*AGENTS\.md instructions(?:[ \t]+for\b[^\n]*)?[ \t]*(?:\n|$)/im.test(normalized)
     && /<INSTRUCTIONS>/i.test(normalized)
     && /<\/INSTRUCTIONS>/i.test(normalized)
   ) {
