@@ -3301,7 +3301,7 @@ ARGUMENTS: capabilities list`)
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
   });
 
-  it("切换到目标会话后，即使存在历史缓存也会自动贴底并继续跟随新消息", () => {
+  it("切换到目标会话后，会恢复目标会话记录的历史位置", () => {
     const sourceMessages = [
       {
         ...createAssistantTextMessage("当前会话消息", "assistant-auto-source-1"),
@@ -3389,7 +3389,7 @@ ARGUMENTS: capabilities list`)
       />
     );
 
-    expect(messageList!.scrollTop).toBe(2_400);
+    expect(messageList!.scrollTop).toBe(420);
 
     scrollHeight = 2_800;
     rerender(
@@ -3410,10 +3410,10 @@ ARGUMENTS: capabilities list`)
       />
     );
 
-    expect(messageList!.scrollTop).toBe(2_800);
+    expect(messageList!.scrollTop).toBe(420);
   });
 
-  it("切到别的会话再回来时会跳到最新消息位置", () => {
+  it("切到别的会话再回来时会恢复之前的阅读位置", () => {
     const sessionOneMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-restore-1"),
@@ -3486,10 +3486,10 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(2000);
+    expect(restoredMessageList!.scrollTop).toBe(420);
   });
 
-  it("如果离开后会话尾部已经变化，切回来会直接显示最新消息", () => {
+  it("如果离开后会话尾部已经变化，切回来会恢复位置并提示 NEW", () => {
     const oldMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-stale-1"),
@@ -3568,13 +3568,13 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(2000);
+    expect(restoredMessageList!.scrollTop).toBe(420);
     expect(
-      screen.queryByRole("button", { name: t("conversation.scrollToBottomAction") })
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: t("conversation.scrollToBottomAction") })
+    ).toHaveTextContent("NEW");
   });
 
-  it("runtime_thinking 和 runtime_notice 变化时，切换会话仍显示最新消息", () => {
+  it("runtime_thinking 和 runtime_notice 变化时，切换会话仍恢复历史位置", () => {
     const baseMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-runtime-anchor-1"),
@@ -3654,12 +3654,13 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(2000);
+    expect(restoredMessageList!.scrollTop).toBe(420);
     const jumpButton = screen.queryByRole("button", {
       name: t("conversation.scrollToBottomAction")
     });
 
-    expect(jumpButton).toBeNull();
+    expect(jumpButton).not.toBeNull();
+    expect(jumpButton).not.toHaveTextContent("NEW");
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
   });
 
@@ -3738,7 +3739,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(2000);
+      expect(messageList!.scrollTop).toBe(420);
 
       fireEvent.wheel(messageList!, {
         deltaY: 120
@@ -3834,7 +3835,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(2000);
+      expect(messageList!.scrollTop).toBe(420);
 
       fireEvent.scroll(messageList!, {
         target: {
@@ -3934,7 +3935,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(2000);
+      expect(messageList!.scrollTop).toBe(420);
 
       messageList!.scrollTop = 560;
       vi.advanceTimersByTime(4000);
@@ -4001,6 +4002,110 @@ ARGUMENTS: capabilities list`)
     expect(
       screen.queryByRole("button", { name: t("conversation.scrollToBottomAction") })
     ).not.toBeInTheDocument();
+
+    const persisted = JSON.parse(
+      window.localStorage.getItem("codingns.user-app.conversation-scroll") ?? "{}"
+    ) as { bySessionId?: Record<string, unknown> };
+
+    expect(persisted.bySessionId?.["session-bottom-button"]).toBeUndefined();
+  });
+
+  it("手动滚动到底部后切换会话不会恢复旧的历史位置", () => {
+    const sessionMessages = [
+      {
+        ...createAssistantTextMessage("第一条", "assistant-clear-scroll-1"),
+        sessionId: "session-clear-scroll"
+      },
+      {
+        ...createAssistantTextMessage("第二条", "assistant-clear-scroll-2"),
+        sessionId: "session-clear-scroll",
+        sequence: 2,
+        rawRef: "codex://raw#line=clear-scroll-2"
+      }
+    ];
+    const updatedMessages = [
+      ...sessionMessages,
+      {
+        ...createAssistantTextMessage("第三条最新消息", "assistant-clear-scroll-3"),
+        sessionId: "session-clear-scroll",
+        sequence: 3,
+        rawRef: "codex://raw#line=clear-scroll-3"
+      }
+    ];
+    const { rerender } = render(
+      <MessageTimeline
+        sessionId="session-clear-scroll"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={sessionMessages}
+      />
+    );
+
+    const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+
+    expect(messageList).not.toBeNull();
+
+    let scrollHeight = 2_000;
+    Object.defineProperty(messageList, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "scrollTop", {
+      value: 420,
+      writable: true,
+      configurable: true
+    });
+
+    fireEvent.scroll(messageList!, {
+      target: {
+        scrollTop: 420
+      }
+    });
+
+    messageList!.scrollTop = 1_400;
+    fireEvent.scroll(messageList!, {
+      target: {
+        scrollTop: 1_400
+      }
+    });
+
+    rerender(
+      <MessageTimeline
+        sessionId="session-clear-scroll-other"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={[
+          {
+            ...createAssistantTextMessage("其他会话", "assistant-clear-scroll-other"),
+            sessionId: "session-clear-scroll-other"
+          }
+        ]}
+      />
+    );
+
+    scrollHeight = 2_400;
+    rerender(
+      <MessageTimeline
+        sessionId="session-clear-scroll"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={updatedMessages}
+      />
+    );
+
+    expect(messageList!.scrollTop).toBe(2_400);
+    const persisted = JSON.parse(
+      window.localStorage.getItem("codingns.user-app.conversation-scroll") ?? "{}"
+    ) as { bySessionId?: Record<string, unknown> };
+
+    expect(persisted.bySessionId?.["session-clear-scroll"]).toBeUndefined();
   });
 
   it("有新消息提示时，点击回底按钮会清除 NEW 标记", async () => {
@@ -4262,7 +4367,7 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(2400);
+    expect(restoredMessageList!.scrollTop).toBe(420);
   });
 
   it("renders image thumbnail preview for pending image attachments", async () => {

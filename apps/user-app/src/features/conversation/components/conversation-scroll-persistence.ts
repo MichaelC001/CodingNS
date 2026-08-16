@@ -159,12 +159,18 @@ export function persistConversationScrollState(
   }
 
   const nextEnvelope = readEnvelope();
-  nextEnvelope.bySessionId[normalizedSessionId] = {
-    scrollTop: clampScrollTop(state.scrollTop),
-    stickToBottom: state.stickToBottom,
-    lastMessageSignature: state.lastMessageSignature,
-    updatedAt: Date.now()
-  };
+
+  if (state.stickToBottom) {
+    // 到达底部后不再保留历史位置，下一次进入会话直接跟随最新消息。
+    delete nextEnvelope.bySessionId[normalizedSessionId];
+  } else {
+    nextEnvelope.bySessionId[normalizedSessionId] = {
+      scrollTop: clampScrollTop(state.scrollTop),
+      stickToBottom: false,
+      lastMessageSignature: state.lastMessageSignature,
+      updatedAt: Date.now()
+    };
+  }
 
   const prunedEntries = Object.entries(nextEnvelope.bySessionId)
     .sort((left, right) => right[1].updatedAt - left[1].updatedAt)

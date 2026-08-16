@@ -6842,19 +6842,23 @@ export function MessageTimeline({
   useLayoutEffect(() => {
     if (previousSessionIdRef.current !== sessionId) {
       const previousSessionId = previousSessionIdRef.current;
+      const nextScrollState = followTailUpdates
+        ? null
+        : readPersistedConversationScrollState(sessionId);
 
       persistCachedScrollState(previousSessionId);
       previousSessionIdRef.current = sessionId;
       previousMessageCountRef.current = 0;
       previousLastMessageSignatureRef.current = null;
       previousLastUserMessageIdRef.current = null;
-      // 会话切换后默认展示目标会话的最新消息，不把上次离开时的历史位置当成恢复指令。
-      // 当前会话内的手动上滑仍由滚动事件维护，不会因为新消息强行贴底。
-      pendingRestoreStateRef.current = null;
-      restoredTailSignatureRef.current = null;
-      currentScrollStateRef.current = pendingRestoreStateRef.current;
-      followInitialTailRef.current = true;
-      stickToBottomRef.current = true;
+      pendingRestoreStateRef.current = nextScrollState;
+      restoredTailSignatureRef.current = nextScrollState?.lastMessageSignature ?? null;
+      currentScrollStateRef.current = nextScrollState;
+      followInitialTailRef.current =
+        followTailUpdates
+        || nextScrollState === null
+        || nextScrollState.stickToBottom;
+      stickToBottomRef.current = nextScrollState?.stickToBottom ?? true;
       pendingOlderLoadOffsetRef.current = null;
       pendingOlderLoadHeadSignatureRef.current = null;
       finishManualRestore();
