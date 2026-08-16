@@ -9,6 +9,7 @@ import {
   ClaudeRuntimeAdapter,
   type ContextUsageSnapshot,
   CodexRuntimeAdapter,
+  DEFAULT_PROVIDER_PRICE_BOOK,
   GeminiRuntimeAdapter,
   inferProviderSessionBillingProfile,
   type InRunInputMode,
@@ -17,6 +18,7 @@ import {
   LegnaRuntimeAdapter,
   type NormalizedMessageAttachment,
   OpenCodeRuntimeAdapter,
+  type ProviderPriceBook,
   ProviderRuntimeService,
   type ProviderRuntimeAdapter,
   type ProviderRuntimeRunRequest,
@@ -2769,13 +2771,19 @@ export class SessionLiveRuntimeService {
     const timestamp = nowIso();
     const existingBinding = this.sessionBindingRepository.findBySessionId(sessionId);
     const currentPriceBook = this.providerPriceBookService?.getCurrentPriceBook();
+    const selectedModelPriceBook = resolveSelectedModelPriceBook(
+      provider,
+      selectedModel,
+      currentPriceBook
+    );
     const pricingProfileId = this.config.sessionBillingProfileId
-      ?? inferProviderSessionBillingProfile(provider, selectedModel, currentPriceBook);
+      ?? (selectedModelPriceBook ? "direct-api" : null);
+    const billingPriceBook = selectedModelPriceBook ?? currentPriceBook;
     const newBillingMetadata = !existingBinding && pricingProfileId
       ? {
           billingStartedAt: timestamp,
           pricingProfileId,
-          priceBookVersion: currentPriceBook?.version ?? this.config.sessionBillingPriceBookVersion
+          priceBookVersion: billingPriceBook?.version ?? this.config.sessionBillingPriceBookVersion
         }
       : {};
 
@@ -4659,6 +4667,24 @@ function isTerminalRuntimeEventStatus(
   status: RuntimeEvent["status"]
 ): status is "completed" | "interrupted" | "failed" {
   return status === "completed" || status === "interrupted" || status === "failed";
+}
+
+/**
+ * 同周快照在新增支持模型前可能已生成。不能改写已经绑定给旧会话的快照，
+ * 但新会话也不能因为它缺少一个已确认价格的模型而失去收费策略。
+ */
+function resolveSelectedModelPriceBook(
+  provider: string,
+  selectedModel: string | null,
+  currentPriceBook: ProviderPriceBook | undefined
+) {
+  if (currentPriceBook && inferProviderSessionBillingProfile(provider, selectedModel, currentPriceBook)) {
+    return currentPriceBook;
+  }
+
+  return inferProviderSessionBillingProfile(provider, selectedModel, DEFAULT_PROVIDER_PRICE_BOOK)
+    ? DEFAULT_PROVIDER_PRICE_BOOK
+    : null;
 }
 
 function isPendingSessionRunningState(

@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_PROVIDER_PRICE_BOOK_VERSION } from "@codingns/session-sync-core";
+
 import { AppError } from "../../src/shared/errors/app-error.js";
 import { SessionLiveRuntimeService } from "../../src/modules/sessions/session-live-runtime-service.js";
 
@@ -13,6 +15,10 @@ function createService(
   configOverrides: Partial<ConstructorParameters<typeof SessionLiveRuntimeService>[11]> = {},
   workspaceSessionRuntimeContextService: {
     prepareWorkspaceInstructionBundle: ReturnType<typeof vi.fn>;
+  } | null = null,
+  providerPriceBookService: {
+    getCurrentPriceBook: ReturnType<typeof vi.fn>;
+    requestRefreshIfStale: ReturnType<typeof vi.fn>;
   } | null = null
 ) {
   const sessionHistoryService = {
@@ -172,7 +178,9 @@ function createService(
       ...configOverrides
     },
     undefined,
-    workspaceSessionRuntimeContextService as never
+    workspaceSessionRuntimeContextService as never,
+    null,
+    providerPriceBookService as never
   );
 
   return {
@@ -509,6 +517,57 @@ describe("SessionLiveRuntimeService", () => {
       billingStartedAt: expect.any(String),
       pricingProfileId: expect.any(String),
       priceBookVersion: expect.any(String)
+    }));
+  });
+
+  it("当前周快照缺少新增 Codex 模型时，新会话回退到内置价格表", () => {
+    useFakeNow("2026-08-16T00:00:01.000Z");
+    const providerPriceBookService = {
+      requestRefreshIfStale: vi.fn(),
+      getCurrentPriceBook: vi.fn(() => ({
+        version: "models.dev-2026-W33",
+        source: "models.dev" as const,
+        fetchedAt: "2026-08-15T18:53:49.864Z",
+        entries: [{
+          provider: "codex" as const,
+          model: "gpt-5.3-codex",
+          inputUsdPerToken: 1.75e-6,
+          outputUsdPerToken: 14e-6,
+          cacheReadUsdPerToken: 0.175e-6
+        }]
+      }))
+    };
+    const { service, sessionBindingRepository } = createService(
+      {
+        sessionBillingProfileId: null,
+        sessionBillingPriceBookVersion: DEFAULT_PROVIDER_PRICE_BOOK_VERSION
+      },
+      null,
+      providerPriceBookService
+    );
+    sessionBindingRepository.findBySessionId.mockReturnValue(null);
+
+    (service as any).ensurePendingSessionBinding(
+      "session-codex-gpt-5-4",
+      "workspace-1",
+      "user-1",
+      "codex",
+      {
+        providerConfigMode: "global-default",
+        providerPresetId: null,
+        runtimeHomeDir: null
+      },
+      "gpt-5.4"
+    );
+
+    expect(providerPriceBookService.requestRefreshIfStale).toHaveBeenCalledWith(
+      "provider_price_book.new_session"
+    );
+    expect(sessionBindingRepository.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-codex-gpt-5-4",
+      billingStartedAt: "2026-08-16T00:00:01.000Z",
+      pricingProfileId: "direct-api",
+      priceBookVersion: DEFAULT_PROVIDER_PRICE_BOOK_VERSION
     }));
   });
 
