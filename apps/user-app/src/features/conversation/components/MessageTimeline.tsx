@@ -6991,11 +6991,13 @@ export function MessageTimeline({
       && renderItems.length >= previousCount;
     const currentDistanceToBottom = list.scrollHeight - list.clientHeight - list.scrollTop;
     const currentlyAtBottom = currentDistanceToBottom <= STICK_TO_BOTTOM_DISTANCE_PX;
+    const wasFollowingTail = stickToBottomRef.current;
+    const shouldTreatAsFollowingTail = wasFollowingTail || currentlyAtBottom;
     const hasUnreadTailUpdate =
       !followTailUpdates
       && hasTailUpdate
       && !hasNewUserMessage
-      && !currentlyAtBottom
+      && !shouldTreatAsFollowingTail
       && restoredTailSignatureRef.current !== null
       && currentPersistedTailSignature !== null
       && restoredTailSignatureRef.current !== currentPersistedTailSignature;
@@ -7009,7 +7011,7 @@ export function MessageTimeline({
       hasTailUpdate
       // 首次加载或切换到没有历史阅读位置的会话时，列表还会暂时沿用上一个会话的 scrollTop。
       // 这不是用户正在查看历史，必须先把当前会话贴到最新消息；后续更新再按真实滚动位置判断。
-      && (followTailUpdates || followInitialTailRef.current || currentlyAtBottom || hasNewUserMessage);
+      && (followTailUpdates || followInitialTailRef.current || shouldTreatAsFollowingTail || hasNewUserMessage);
 
     emitTimelineScrollDebug("messages.effect.decision", list, {
       currentHeadMessage: summarizeMessageSignature(currentHeadSignature),
@@ -7018,6 +7020,8 @@ export function MessageTimeline({
       shouldRestoreOlderLoadOffset,
       shouldFollowTailUpdate,
       hasNewUserMessage,
+      wasFollowingTail,
+      shouldTreatAsFollowingTail,
       currentlyAtBottom,
       currentDistanceToBottom,
       loadingOlderMessages

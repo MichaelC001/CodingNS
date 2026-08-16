@@ -3174,6 +3174,78 @@ ARGUMENTS: capabilities list`)
     expect(messageList!.scrollTop).toBe(1200);
   });
 
+  it("在底部无操作时，消息高度增加会继续自动滚动到底部", () => {
+    const initialMessages = [
+      {
+        ...createAssistantTextMessage("第一条消息", "assistant-bottom-follow-1"),
+        sessionId: "session-bottom-follow"
+      },
+      {
+        ...createAssistantTextMessage("第二条消息", "assistant-bottom-follow-2"),
+        sessionId: "session-bottom-follow",
+        sequence: 2,
+        rawRef: "codex://raw#line=bottom-follow-2"
+      }
+    ];
+    const updatedMessages = [
+      ...initialMessages,
+      {
+        ...createAssistantTextMessage("第三条最新消息", "assistant-bottom-follow-3"),
+        sessionId: "session-bottom-follow",
+        sequence: 3,
+        rawRef: "codex://raw#line=bottom-follow-3"
+      }
+    ];
+    const { rerender } = render(
+      <MessageTimeline
+        sessionId="session-bottom-follow"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={initialMessages}
+      />
+    );
+
+    const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+
+    expect(messageList).not.toBeNull();
+
+    let scrollHeight = 2_000;
+    Object.defineProperty(messageList, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "scrollTop", {
+      value: 1_400,
+      writable: true,
+      configurable: true
+    });
+
+    fireEvent.scroll(messageList!, {
+      target: {
+        scrollTop: 1_400
+      }
+    });
+
+    scrollHeight = 2_400;
+    rerender(
+      <MessageTimeline
+        sessionId="session-bottom-follow"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={updatedMessages}
+      />
+    );
+
+    expect(messageList!.scrollTop).toBe(2_400);
+    expect(screen.queryByText("NEW")).not.toBeInTheDocument();
+  });
+
   it("尾部更新前已经离底时，不依赖旧快照把用户拉回底部", () => {
     const { rerender } = render(
       <MessageTimeline
@@ -3206,6 +3278,12 @@ ARGUMENTS: capabilities list`)
       value: 420,
       writable: true,
       configurable: true
+    });
+
+    fireEvent.scroll(messageList!, {
+      target: {
+        scrollTop: 420
+      }
     });
 
     rerender(
