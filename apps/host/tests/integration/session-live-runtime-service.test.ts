@@ -4,12 +4,24 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_PROVIDER_PRICE_BOOK_VERSION } from "@codingns/session-sync-core";
-
 import { AppError } from "../../src/shared/errors/app-error.js";
 import { SessionLiveRuntimeService } from "../../src/modules/sessions/session-live-runtime-service.js";
 
 const tempDirs: string[] = [];
+
+function createModelsDevPriceBook(entries: Array<{
+  provider: string;
+  model: string;
+  inputUsdPerToken: number;
+  outputUsdPerToken: number;
+}>) {
+  return {
+    version: "models.dev-2026-08-16",
+    source: "models.dev" as const,
+    fetchedAt: "2026-08-16T00:00:00.000Z",
+    entries
+  };
+}
 
 function createService(
   configOverrides: Partial<ConstructorParameters<typeof SessionLiveRuntimeService>[11]> = {},
@@ -425,10 +437,20 @@ describe("SessionLiveRuntimeService", () => {
 
   it("新建 pending binding 时固定收费策略和启用时间", () => {
     useFakeNow("2026-08-16T00:00:01.000Z");
-    const { service, sessionBindingRepository } = createService({
-      sessionBillingProfileId: "direct-api",
-      sessionBillingPriceBookVersion: "2026-08-16"
-    });
+    const providerPriceBookService = {
+      requestRefreshIfStale: vi.fn(),
+      getCurrentPriceBook: vi.fn(() => createModelsDevPriceBook([{
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        inputUsdPerToken: 1e-6,
+        outputUsdPerToken: 2e-6
+      }]))
+    };
+    const { service, sessionBindingRepository } = createService(
+      { sessionBillingProfileId: "direct-api" },
+      null,
+      providerPriceBookService
+    );
     sessionBindingRepository.findBySessionId.mockReturnValue(null);
 
     (service as any).ensurePendingSessionBinding(
@@ -448,16 +470,26 @@ describe("SessionLiveRuntimeService", () => {
       sessionId: "session-new",
       billingStartedAt: "2026-08-16T00:00:01.000Z",
       pricingProfileId: "direct-api",
-      priceBookVersion: "2026-08-16"
+      priceBookVersion: "models.dev-2026-08-16"
     }));
   });
 
   it("选中模型命中价格表时会自动固定直连收费策略", () => {
     useFakeNow("2026-08-16T00:00:01.000Z");
-    const { service, sessionBindingRepository } = createService({
-      sessionBillingProfileId: null,
-      sessionBillingPriceBookVersion: "2026-08-16"
-    });
+    const providerPriceBookService = {
+      requestRefreshIfStale: vi.fn(),
+      getCurrentPriceBook: vi.fn(() => createModelsDevPriceBook([{
+        provider: "deepseek-harness",
+        model: "deepseek-v4-flash",
+        inputUsdPerToken: 1e-6,
+        outputUsdPerToken: 2e-6
+      }]))
+    };
+    const { service, sessionBindingRepository } = createService(
+      { sessionBillingProfileId: null },
+      null,
+      providerPriceBookService
+    );
     sessionBindingRepository.findBySessionId.mockReturnValue(null);
 
     (service as any).ensurePendingSessionBinding(
@@ -477,7 +509,7 @@ describe("SessionLiveRuntimeService", () => {
       sessionId: "session-deepseek-new",
       billingStartedAt: "2026-08-16T00:00:01.000Z",
       pricingProfileId: "direct-api",
-      priceBookVersion: "2026-08-16"
+      priceBookVersion: "models.dev-2026-08-16"
     }));
 
     (service as any).ensurePendingSessionBinding(
@@ -497,7 +529,7 @@ describe("SessionLiveRuntimeService", () => {
       sessionId: "session-deepseek-matched-route",
       billingStartedAt: "2026-08-16T00:00:01.000Z",
       pricingProfileId: "direct-api",
-      priceBookVersion: "2026-08-16"
+      priceBookVersion: "models.dev-2026-08-16"
     }));
 
     (service as any).ensurePendingSessionBinding(
@@ -520,12 +552,12 @@ describe("SessionLiveRuntimeService", () => {
     }));
   });
 
-  it("当前周快照缺少新增 Codex 模型时，新会话回退到内置价格表", () => {
+  it("models.dev 缺少模型或首次离线时，新会话不写收费绑定", () => {
     useFakeNow("2026-08-16T00:00:01.000Z");
     const providerPriceBookService = {
       requestRefreshIfStale: vi.fn(),
       getCurrentPriceBook: vi.fn(() => ({
-        version: "models.dev-2026-W33",
+        version: "models.dev-2026-08-16",
         source: "models.dev" as const,
         fetchedAt: "2026-08-15T18:53:49.864Z",
         entries: [{
@@ -538,10 +570,7 @@ describe("SessionLiveRuntimeService", () => {
       }))
     };
     const { service, sessionBindingRepository } = createService(
-      {
-        sessionBillingProfileId: null,
-        sessionBillingPriceBookVersion: DEFAULT_PROVIDER_PRICE_BOOK_VERSION
-      },
+      { sessionBillingProfileId: null },
       null,
       providerPriceBookService
     );
@@ -563,11 +592,36 @@ describe("SessionLiveRuntimeService", () => {
     expect(providerPriceBookService.requestRefreshIfStale).toHaveBeenCalledWith(
       "provider_price_book.new_session"
     );
-    expect(sessionBindingRepository.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "session-codex-gpt-5-4",
-      billingStartedAt: "2026-08-16T00:00:01.000Z",
-      pricingProfileId: "direct-api",
-      priceBookVersion: DEFAULT_PROVIDER_PRICE_BOOK_VERSION
+    expect(sessionBindingRepository.upsert).toHaveBeenCalledWith(expect.not.objectContaining({
+      billingStartedAt: expect.any(String),
+      pricingProfileId: expect.any(String),
+      priceBookVersion: expect.any(String)
+    }));
+
+    providerPriceBookService.getCurrentPriceBook.mockReturnValue({
+      version: "models.dev-unavailable",
+      source: "models.dev",
+      entries: []
+    });
+    sessionBindingRepository.findBySessionId.mockReturnValue(null);
+
+    (service as any).ensurePendingSessionBinding(
+      "session-codex-offline",
+      "workspace-1",
+      "user-1",
+      "codex",
+      {
+        providerConfigMode: "global-default",
+        providerPresetId: null,
+        runtimeHomeDir: null
+      },
+      "gpt-5.3-codex"
+    );
+
+    expect(sessionBindingRepository.upsert).toHaveBeenLastCalledWith(expect.not.objectContaining({
+      billingStartedAt: expect.any(String),
+      pricingProfileId: expect.any(String),
+      priceBookVersion: expect.any(String)
     }));
   });
 

@@ -300,6 +300,7 @@ import { SessionSendQueueRepository } from "../storage/repositories/session-send
 import { SessionSourceIndexRepository } from "../storage/repositories/session-source-index-repository.js";
 import { SessionStateRepository } from "../storage/repositories/session-state-repository.js";
 import { SessionStatusSnapshotRepository } from "../storage/repositories/session-status-snapshot-repository.js";
+import { SessionStatsSnapshotRepository } from "../storage/repositories/session-stats-snapshot-repository.js";
 import { SessionIsolatedWorkspaceRepository } from "../storage/repositories/session-isolated-workspace-repository.js";
 import { InstanceTailscaleRepository } from "../storage/repositories/instance-tailscale-repository.js";
 import { InstanceRelayTunnelIdentityRepository } from "../storage/repositories/instance-relay-tunnel-identity-repository.js";
@@ -344,6 +345,7 @@ import { PluginSchedulerService } from "../modules/plugins/plugin-scheduler-serv
 import { DeepSeekHarnessProviderAdapter } from "../modules/sessions/deepseek-harness/deepseek-harness-provider-adapter.js";
 import { DeepSeekHarnessSidecarManager } from "../modules/sessions/deepseek-harness/deepseek-harness-sidecar-manager.js";
 import { DeepSeekHarnessRuntimeAdapter } from "../modules/sessions/deepseek-harness/deepseek-harness-runtime-adapter.js";
+import { ProviderPriceBookScheduler } from "../modules/provider/provider-price-book-scheduler.js";
 
 export function createServer(config: HostConfig) {
   const affairsLibraryDebugLogPath = getAffairsLibraryDebugLogPath();
@@ -458,6 +460,7 @@ export function createServer(config: HostConfig) {
     sessionSendQueueRepository: new SessionSendQueueRepository(database.db),
     sessionStateRepository: new SessionStateRepository(database.db),
     sessionStatusSnapshotRepository: new SessionStatusSnapshotRepository(database.db),
+    sessionStatsSnapshotRepository: new SessionStatsSnapshotRepository(database.db),
     instanceTailscaleRepository: new InstanceTailscaleRepository(database.db),
     instanceRelayTunnelIdentityRepository: new InstanceRelayTunnelIdentityRepository(database.db),
     instanceRelayTunnelRepository: new InstanceRelayTunnelRepository(database.db),
@@ -520,6 +523,11 @@ export function createServer(config: HostConfig) {
     path.join(path.dirname(config.databasePath), "price-book-snapshots"),
     taskManager
   );
+  const providerPriceBookScheduler = new ProviderPriceBookScheduler(
+    providerPriceBookService,
+    schedulerMetrics
+  );
+  providerPriceBookScheduler.start();
   const deepSeekHarnessSidecarManager = new DeepSeekHarnessSidecarManager({
     taskManager,
     commandPath: config.deepseekHarnessCliPath,
@@ -862,7 +870,8 @@ export function createServer(config: HostConfig) {
     repositories.providerControlRepository,
     providerRuntimeStateService,
     claudeModelOptionsService,
-    providerPriceBookService
+    providerPriceBookService,
+    repositories.sessionStatsSnapshotRepository
   );
   sessionCleanupService.configureDeleteExecutor((sessionId, userId) =>
     sessionHistoryService.deleteSession(sessionId, userId)
@@ -1036,7 +1045,6 @@ export function createServer(config: HostConfig) {
     (workspaceId, userId, limit) =>
       sessionHistoryService.listWorkspaceDiscoveryDiagnostics(workspaceId, userId, limit)
   );
-  providerPriceBookService.requestRefreshIfStale();
   const sessionLiveRuntimeService = new SessionLiveRuntimeService(
     sessionHistoryService,
     sessionMessageAttachmentService,
@@ -1972,6 +1980,7 @@ export function createServer(config: HostConfig) {
     await butlerControlTimerScheduler.dispose();
     await channelPollingScheduler.dispose();
     await pluginSchedulerService.dispose();
+    await providerPriceBookScheduler.dispose();
     await terminalService.dispose();
     await butlerFollowUpSessionLiveRuntimeService.dispose();
     await butlerSessionLiveRuntimeService.dispose();
@@ -2014,6 +2023,7 @@ export function createServer(config: HostConfig) {
         channelGatewayService,
         channelPollingService,
         channelPollingScheduler,
+        providerPriceBookScheduler,
         authService,
         workspaceService,
         worktreeManager,

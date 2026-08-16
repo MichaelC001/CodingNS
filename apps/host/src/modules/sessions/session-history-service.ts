@@ -25,7 +25,9 @@ import {
   type ProviderAdapter,
   type ProviderSessionActivityObservation,
   type ProviderSessionDiscovery,
+  type ProviderPriceBook,
   type ProviderSessionStats,
+  type ProviderSessionStatsReadOptions,
   type ProviderSubscription,
   type SessionHistoryDeltaReadResult,
   type SendMessageResult
@@ -63,6 +65,7 @@ import type { SessionIndexRepository } from "../../storage/repositories/session-
 import { SessionSourceIndexRepository } from "../../storage/repositories/session-source-index-repository.js";
 import type { SessionStateRepository } from "../../storage/repositories/session-state-repository.js";
 import type { SessionStatusSnapshotRepository } from "../../storage/repositories/session-status-snapshot-repository.js";
+import { SessionStatsSnapshotRepository } from "../../storage/repositories/session-stats-snapshot-repository.js";
 import type { WorkspaceRepository } from "../../storage/repositories/workspace-repository.js";
 import type { ParallelSessionGroupRepository } from "../../storage/repositories/parallel-session-group-repository.js";
 import type { ParallelSessionMemberRepository } from "../../storage/repositories/parallel-session-member-repository.js";
@@ -106,6 +109,7 @@ import {
 import {
   discoverWorkspaceSessionsInRuntime,
   readSessionHistoryInRuntime,
+  readSessionStatsInRuntime,
   type SessionHistoryReadInRuntimeResult
 } from "../provider/provider-discovery-runtime.js";
 import {
@@ -263,6 +267,14 @@ interface SessionHistoryReadTaskInput {
   limit: number;
   direction: HistoryDirection;
   readMode: "page" | "delta";
+}
+
+interface SessionStatsSnapshotReadTaskInput {
+  config: ProviderSessionDiscoveryHelperConfig;
+  provider: string;
+  providerSessionId: string;
+  rawStoreRef: string;
+  options?: ProviderSessionStatsReadOptions;
 }
 
 export interface SessionSourceIndexRepairRequest {
@@ -425,6 +437,7 @@ export class SessionHistoryService {
   private readonly providerSessionDiscoveryConfig: ProviderSessionDiscoveryHelperConfig;
   private readonly providerRuntimeStateService: Pick<ProviderRuntimeStateService, "isProviderCliAvailable">;
   private readonly providerPriceBookService: Pick<ProviderPriceBookService, "getPriceBook"> | null;
+  private readonly sessionStatsSnapshotRepository: SessionStatsSnapshotRepository;
   private readonly codexSessionTitleGenerator: CodexSessionTitleGenerator;
   private readonly sessionProviderConfigService: Pick<
     SessionProviderConfigService,
@@ -480,7 +493,8 @@ export class SessionHistoryService {
     providerControlRepository: Pick<ProviderControlRepository, "get"> | null = null,
     providerRuntimeStateService: Pick<ProviderRuntimeStateService, "isProviderCliAvailable"> | null = null,
     claudeModelOptionsService: ClaudeModelOptionsService | null = null,
-    providerPriceBookService: Pick<ProviderPriceBookService, "getPriceBook"> | null = null
+    providerPriceBookService: Pick<ProviderPriceBookService, "getPriceBook"> | null = null,
+    sessionStatsSnapshotRepository: SessionStatsSnapshotRepository | null = null
   ) {
     this.sessionActivityAuthorityService = sessionActivityAuthorityService;
     this.sessionForkRepository = sessionForkRepository ?? new SessionForkRepository(db);
@@ -501,6 +515,7 @@ export class SessionHistoryService {
     this.providerRuntimeStateService = providerRuntimeStateService
       ?? new ProviderRuntimeStateService(config);
     this.providerPriceBookService = providerPriceBookService;
+    this.sessionStatsSnapshotRepository = sessionStatsSnapshotRepository ?? new SessionStatsSnapshotRepository(db);
     this.codexSessionTitleGenerator = new CodexSessionTitleGenerator({
       hostDataRootDir: dirname(config.databasePath),
       codexHomeDir: config.codexHomeDir
@@ -783,6 +798,37 @@ export class SessionHistoryService {
       });
     }
 
+    if (!this.taskManager.has(HOST_TASK_TYPES.sessionStatsSnapshotRead)) {
+      this.taskManager.register<SessionStatsSnapshotReadTaskInput, ProviderSessionStats | null>({
+        taskType: HOST_TASK_TYPES.sessionStatsSnapshotRead,
+        executionLane: "helper_process",
+        concurrency: 2,
+        timeoutMs: 30_000,
+        queueWaitTimeoutMs: 15_000,
+        helperProcessHandler: "session.stats_snapshot_read",
+        run: async ({ config, provider, providerSessionId, rawStoreRef, options }, context) =>
+          await readSessionStatsInRuntime({
+            config,
+            provider,
+            providerSessionId,
+            rawStoreRef,
+            options
+          }, context.signal)
+      });
+    }
+
+    if (!this.taskManager.has(HOST_TASK_TYPES.sessionStatsSnapshotRefresh)) {
+      this.taskManager.register<{ sessionId: string }, void>({
+        taskType: HOST_TASK_TYPES.sessionStatsSnapshotRefresh,
+        executionLane: "host_background",
+        concurrency: 2,
+        timeoutMs: 45_000,
+        run: async ({ sessionId }, context) => {
+          await this.refreshSessionStatsSnapshot(sessionId, context.signal);
+        }
+      });
+    }
+
     if (!this.taskManager.has(HOST_TASK_TYPES.providerCapabilityRefresh)) {
       this.taskManager.register<{
         capabilities: ProviderCapabilities;
@@ -816,6 +862,142 @@ export class SessionHistoryService {
           this.runCodexSessionTitleGeneration(sessionId, firstUserMessage, context.signal)
       });
     }
+  }
+
+  requestSessionStatsRefresh(
+    sessionId: string,
+    source = "session_history.stats_snapshot_refresh"
+  ): TaskHandle<void> | null {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      return null;
+    }
+
+    const handle = this.taskManager.enqueue<{ sessionId: string }, void>(
+      HOST_TASK_TYPES.sessionStatsSnapshotRefresh,
+      {
+        key: normalizedSessionId,
+        source,
+        input: { sessionId: normalizedSessionId }
+      }
+    );
+
+    if (!handle.deduped) {
+      void handle.promise.catch((error) => {
+        logPerformance(
+          "session.stats_snapshot_refresh_failed",
+          0,
+          {
+            sessionId: normalizedSessionId,
+            error: error instanceof Error ? error.message : "unknown"
+          },
+          {
+            thresholdMs: 0,
+            force: true
+          }
+        );
+      });
+    }
+
+    return handle;
+  }
+
+  private async refreshSessionStatsSnapshot(sessionId: string, signal: AbortSignal): Promise<void> {
+    const binding = this.sessionBindingRepository.findBySessionId(sessionId);
+    if (!binding || signal.aborted) {
+      return;
+    }
+
+    const priceBook = this.resolveSessionPriceBook(sessionId, binding);
+    const options: ProviderSessionStatsReadOptions | undefined =
+      binding.billingStartedAt && binding.pricingProfileId && binding.priceBookVersion && priceBook
+        ? {
+            billing: {
+              billingStartedAt: binding.billingStartedAt,
+              pricingProfileId: binding.pricingProfileId,
+              priceBookVersion: binding.priceBookVersion,
+              priceBook
+            }
+          }
+        : undefined;
+
+    let stats: ProviderSessionStats | null;
+    if (binding.provider === "deepseek-harness") {
+      // Harness 依赖 Host 持有的 sidecar transport，不能错误地塞进文件 helper。
+      stats = await this.sessionSyncService.readSessionStats(
+        binding.provider,
+        binding.providerSessionId,
+        binding.rawStoreRef,
+        options
+      );
+    } else {
+      const readTask = this.taskManager.enqueue<SessionStatsSnapshotReadTaskInput, ProviderSessionStats | null>(
+        HOST_TASK_TYPES.sessionStatsSnapshotRead,
+        {
+          key: sessionId,
+          source: "session_history.stats_snapshot_read",
+          input: {
+            config: this.providerSessionDiscoveryConfig,
+            provider: binding.provider,
+            providerSessionId: binding.providerSessionId,
+            rawStoreRef: binding.rawStoreRef,
+            options
+          }
+        }
+      );
+      stats = await readTask.promise;
+    }
+
+    if (signal.aborted) {
+      return;
+    }
+
+    // Provider 成功返回 null 代表当前会话已经没有可用统计，必须清掉旧账单；
+    // Provider 读取抛错时不会走到这里，后台任务失败会保留上一次成功快照。
+    if (!stats) {
+      this.sessionStatsSnapshotRepository.deleteBySessionId(sessionId);
+      return;
+    }
+
+    this.sessionStatsSnapshotRepository.replaceSnapshot(sessionId, stats, nowIso());
+  }
+
+  /**
+   * 周期清理后，仍在运行的会话不能因为原目录文件被删除而丢失已固定的价格。
+   * 已落库账单只含本会话已实际使用的模型价格，正好可以作为该会话的最小回退。
+   */
+  private resolveSessionPriceBook(
+    sessionId: string,
+    binding: Pick<SessionBinding, "priceBookVersion">
+  ): ProviderPriceBook | null {
+    if (!binding.priceBookVersion) {
+      return null;
+    }
+
+    const snapshot = this.providerPriceBookService?.getPriceBook(binding.priceBookVersion) ?? null;
+
+    if (snapshot?.source === "models.dev" && snapshot.entries.length > 0) {
+      return snapshot;
+    }
+
+    const pricing = this.sessionStatsSnapshotRepository.findBillBySessionId(sessionId)?.pricing;
+
+    if (
+      pricing?.kind !== "catalog-estimate"
+      || pricing.priceBookVersion !== binding.priceBookVersion
+      || pricing.priceBookSource !== "models.dev"
+      || !pricing.priceBook
+      || pricing.priceBook.length === 0
+    ) {
+      return null;
+    }
+
+    return {
+      version: binding.priceBookVersion,
+      source: "models.dev",
+      ...(pricing.priceBookFetchedAt ? { fetchedAt: pricing.priceBookFetchedAt } : {}),
+      entries: pricing.priceBook
+    };
   }
 
   async discoverWorkspaceSessions(
@@ -1050,6 +1232,7 @@ export class SessionHistoryService {
         resumedAt: current?.resumedAt ?? null
       });
       snapshotIdleMs = Date.now() - snapshotIdleStartedAt;
+      this.requestSessionStatsRefresh(resolvedSessionId, "session_history.read_complete");
 
       logPerformance(
         "session.read_history",
@@ -1560,30 +1743,8 @@ export class SessionHistoryService {
   }
 
   async getSessionStats(sessionId: string): Promise<ProviderSessionStats | null> {
-    const binding = this.getBindingOrThrow(sessionId);
-
-    try {
-      const priceBook = binding.priceBookVersion
-        ? this.providerPriceBookService?.getPriceBook(binding.priceBookVersion)
-        : null;
-      return await this.sessionSyncService.readSessionStats(
-        binding.provider,
-        binding.providerSessionId,
-        binding.rawStoreRef,
-        binding.billingStartedAt && binding.pricingProfileId && binding.priceBookVersion
-          ? {
-              billing: {
-                billingStartedAt: binding.billingStartedAt,
-                pricingProfileId: binding.pricingProfileId,
-                priceBookVersion: binding.priceBookVersion,
-                ...(priceBook ? { priceBook } : {})
-              }
-            }
-          : undefined
-      );
-    } catch (error) {
-      throw mapSessionProviderError(error);
-    }
+    this.getBindingOrThrow(sessionId);
+    return this.sessionStatsSnapshotRepository.findStatsBySessionId(sessionId);
   }
 
   async resumeSession(sessionId: string, userId: string): Promise<{
@@ -2044,18 +2205,11 @@ export class SessionHistoryService {
     pricingProfileId: string | null;
     priceBookVersion: string | null;
   } {
-    if (!this.sessionBillingProfileId) {
-      return {
-        billingStartedAt: null,
-        pricingProfileId: null,
-        priceBookVersion: null
-      };
-    }
-
+    // 发现/直接创建路径没有可核验的实际模型，不能用配置默认值猜测价格。
     return {
-      billingStartedAt: createdAt,
-      pricingProfileId: this.sessionBillingProfileId,
-      priceBookVersion: this.sessionBillingPriceBookVersion
+      billingStartedAt: null,
+      pricingProfileId: null,
+      priceBookVersion: null
     };
   }
 
@@ -5641,6 +5795,15 @@ export class SessionHistoryService {
       .prepare("DELETE FROM session_status_snapshots WHERE session_id = ?")
       .run(input.sourceSessionId);
     this.db
+      .prepare("DELETE FROM session_stats_snapshots WHERE session_id = ?")
+      .run(input.sourceSessionId);
+    this.db
+      .prepare("DELETE FROM session_cost_bills WHERE session_id = ?")
+      .run(input.sourceSessionId);
+    this.db
+      .prepare("DELETE FROM session_model_usages WHERE session_id = ?")
+      .run(input.sourceSessionId);
+    this.db
       .prepare("DELETE FROM session_forks WHERE session_id = ?")
       .run(input.sourceSessionId);
 
@@ -5825,6 +5988,15 @@ export class SessionHistoryService {
       .run(sessionId);
     this.db
       .prepare("DELETE FROM session_status_snapshots WHERE session_id = ?")
+      .run(sessionId);
+    this.db
+      .prepare("DELETE FROM session_stats_snapshots WHERE session_id = ?")
+      .run(sessionId);
+    this.db
+      .prepare("DELETE FROM session_cost_bills WHERE session_id = ?")
+      .run(sessionId);
+    this.db
+      .prepare("DELETE FROM session_model_usages WHERE session_id = ?")
       .run(sessionId);
     this.db
       .prepare("DELETE FROM session_forks WHERE session_id = ?")

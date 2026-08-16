@@ -9,7 +9,6 @@ import {
   ClaudeRuntimeAdapter,
   type ContextUsageSnapshot,
   CodexRuntimeAdapter,
-  DEFAULT_PROVIDER_PRICE_BOOK,
   GeminiRuntimeAdapter,
   inferProviderSessionBillingProfile,
   type InRunInputMode,
@@ -18,7 +17,6 @@ import {
   LegnaRuntimeAdapter,
   type NormalizedMessageAttachment,
   OpenCodeRuntimeAdapter,
-  type ProviderPriceBook,
   ProviderRuntimeService,
   type ProviderRuntimeAdapter,
   type ProviderRuntimeRunRequest,
@@ -1974,6 +1972,11 @@ export class SessionLiveRuntimeService {
       });
       void this.dispatchNextQueuedMessage(input.sessionId);
     }
+
+    this.sessionHistoryService.requestSessionStatsRefresh?.(
+      input.sessionId,
+      "session_live_runtime.external_runtime"
+    );
   }
 
   private async startRuntimeRun(
@@ -2771,19 +2774,20 @@ export class SessionLiveRuntimeService {
     const timestamp = nowIso();
     const existingBinding = this.sessionBindingRepository.findBySessionId(sessionId);
     const currentPriceBook = this.providerPriceBookService?.getCurrentPriceBook();
-    const selectedModelPriceBook = resolveSelectedModelPriceBook(
-      provider,
-      selectedModel,
+    const hasExactPrice = Boolean(
       currentPriceBook
+      && currentPriceBook.source === "models.dev"
+      && currentPriceBook.entries.length > 0
+      && inferProviderSessionBillingProfile(provider, selectedModel, currentPriceBook)
     );
-    const pricingProfileId = this.config.sessionBillingProfileId
-      ?? (selectedModelPriceBook ? "direct-api" : null);
-    const billingPriceBook = selectedModelPriceBook ?? currentPriceBook;
-    const newBillingMetadata = !existingBinding && pricingProfileId
+    const pricingProfileId = hasExactPrice
+      ? (this.config.sessionBillingProfileId ?? "direct-api")
+      : null;
+    const newBillingMetadata = !existingBinding && pricingProfileId && currentPriceBook
       ? {
           billingStartedAt: timestamp,
           pricingProfileId,
-          priceBookVersion: billingPriceBook?.version ?? this.config.sessionBillingPriceBookVersion
+          priceBookVersion: currentPriceBook.version
         }
       : {};
 
@@ -3063,6 +3067,23 @@ export class SessionLiveRuntimeService {
   }
 
   private async persistRuntimeEvent(
+    sessionId: string,
+    workspaceId: string,
+    userId: string,
+    event: RuntimeEvent
+  ): Promise<void> {
+    try {
+      await this.persistRuntimeEventData(sessionId, workspaceId, userId, event);
+    } finally {
+      // 统计刷新只入队，不把 Provider 读取绑定到 runtime 事件响应。
+      this.sessionHistoryService.requestSessionStatsRefresh?.(
+        sessionId,
+        `session_live_runtime.${event.type}`
+      );
+    }
+  }
+
+  private async persistRuntimeEventData(
     sessionId: string,
     workspaceId: string,
     userId: string,
@@ -4667,24 +4688,6 @@ function isTerminalRuntimeEventStatus(
   status: RuntimeEvent["status"]
 ): status is "completed" | "interrupted" | "failed" {
   return status === "completed" || status === "interrupted" || status === "failed";
-}
-
-/**
- * 同周快照在新增支持模型前可能已生成。不能改写已经绑定给旧会话的快照，
- * 但新会话也不能因为它缺少一个已确认价格的模型而失去收费策略。
- */
-function resolveSelectedModelPriceBook(
-  provider: string,
-  selectedModel: string | null,
-  currentPriceBook: ProviderPriceBook | undefined
-) {
-  if (currentPriceBook && inferProviderSessionBillingProfile(provider, selectedModel, currentPriceBook)) {
-    return currentPriceBook;
-  }
-
-  return inferProviderSessionBillingProfile(provider, selectedModel, DEFAULT_PROVIDER_PRICE_BOOK)
-    ? DEFAULT_PROVIDER_PRICE_BOOK
-    : null;
 }
 
 function isPendingSessionRunningState(

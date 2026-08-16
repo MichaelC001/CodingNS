@@ -40,6 +40,9 @@ export class DemoCleanupService {
       deleteAll("session_changed_file_states");
       deleteAll("session_changed_files");
       deleteAll("session_status_snapshots");
+      deleteAll("session_stats_snapshots");
+      deleteAll("session_cost_bills");
+      deleteAll("session_model_usages");
       deleteAll("session_states");
 
       // 会话核心表

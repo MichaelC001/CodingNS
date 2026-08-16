@@ -8,6 +8,7 @@ import type { ProviderSessionDiscoveryHelperConfig } from "../provider/provider-
 import {
   discoverWorkspaceSessionsInRuntime,
   readSessionHistoryInRuntime,
+  readSessionStatsInRuntime,
   type SessionHistoryReadInRuntimeResult
 } from "../provider/provider-discovery-runtime.js";
 import { runAffairsIndexerCommand, type AffairsIndexerCommandName, type AffairsIndexerCommandResult } from "../affairs-indexer/internal-command-runner.js";
@@ -58,6 +59,16 @@ interface TaskHelperProcessHandlerMap {
     },
     signal?: AbortSignal
   ) => SessionHistoryReadInRuntimeResult | Promise<SessionHistoryReadInRuntimeResult>;
+  "session.stats_snapshot_read": (
+    input: {
+      config: ProviderSessionDiscoveryHelperConfig;
+      provider: string;
+      providerSessionId: string;
+      rawStoreRef: string;
+      options?: import("@codingns/session-sync-core").ProviderSessionStatsReadOptions;
+    },
+    signal?: AbortSignal
+  ) => import("@codingns/session-sync-core").ProviderSessionStats | null | Promise<import("@codingns/session-sync-core").ProviderSessionStats | null>;
   "affairs.library_apply_config": (
     input: { rootDir: string; reason?: string; __taskMeta?: HelperTaskMetaPayload },
     signal?: AbortSignal
@@ -116,6 +127,19 @@ const TASK_HELPER_PROCESS_HANDLERS: TaskHelperProcessHandlerMap = {
       direction,
       readMode
     }, signal),
+  "session.stats_snapshot_read": ({
+    config,
+    provider,
+    providerSessionId,
+    rawStoreRef,
+    options
+  }, signal) => readSessionStatsInRuntime({
+    config,
+    provider,
+    providerSessionId,
+    rawStoreRef,
+    options
+  }, signal),
   "affairs.library_apply_config": ({ rootDir, reason, __taskMeta }, signal) =>
     runAffairsIndexerCommand(
       rootDir,

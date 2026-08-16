@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import type { ProviderCapabilities } from "@codingns/session-sync-core";
+import type { ProviderCapabilities, ProviderSessionStats } from "@codingns/session-sync-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveHostConfig } from "../../src/config/env.js";
@@ -79,6 +79,163 @@ describe("SessionHistoryService background tasks", () => {
     expect(metrics.taskTypes[HOST_TASK_TYPES.workspaceDiscovery]?.counters.finished).toBe(1);
     expect(metrics.taskTypes[HOST_TASK_TYPES.workspaceDiscovery]?.counters.cache_hit).toBe(1);
 
+    service.dispose();
+  });
+
+  it("会话统计由去重后台任务写入快照，读取接口不再扫描 Provider", async () => {
+    const stats: ProviderSessionStats = {
+      provider: "codex",
+      capturedAt: "2026-08-16T00:00:30.000Z",
+      metrics: {
+        inputTokens: {
+          value: 100,
+          source: "provider-history-log",
+          semantic: "sum-of-final-events",
+          watermark: {
+            kind: "source-timestamp",
+            value: "2026-08-16T00:00:30.000Z"
+          }
+        }
+      },
+      modelUsages: [{
+        provider: "codex",
+        model: "gpt-5.6",
+        inputTokens: 100,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0
+      }]
+    };
+    let shouldFail = false;
+    let statsResult: ProviderSessionStats | null = stats;
+    const statsRead = vi.fn(async () => {
+      if (shouldFail) {
+        throw new Error("temporary stats source failure");
+      }
+
+      return statsResult;
+    });
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.sessionStatsSnapshotRead) {
+            return await statsRead(input, context.signal);
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "session-stats-1",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "provider-stats-1",
+      rawStoreRef: "/tmp/codex/provider-stats-1.jsonl",
+      title: "统计会话",
+      messageCount: 1,
+      lastMessageAt: "2026-08-16T00:00:30.000Z",
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T00:00:00.000Z"
+    });
+
+    const first = service.instance.requestSessionStatsRefresh("session-stats-1", "test.stats");
+    const duplicate = service.instance.requestSessionStatsRefresh("session-stats-1", "test.stats");
+
+    expect(first?.deduped).toBe(false);
+    expect(duplicate?.deduped).toBe(true);
+    await first?.promise;
+
+    expect(statsRead).toHaveBeenCalledTimes(1);
+    expect(await service.instance.getSessionStats("session-stats-1")).toMatchObject({
+      provider: "codex",
+      metrics: {
+        inputTokens: {
+          value: 100
+        }
+      }
+    });
+    expect(
+      service.instance.observeBackgroundTaskMetrics()
+        .taskTypes[HOST_TASK_TYPES.sessionStatsSnapshotRefresh]?.counters
+    ).toMatchObject({
+      enqueue: 2,
+      dedupe: 1,
+      finished: 1
+    });
+
+    shouldFail = true;
+    const failed = service.instance.requestSessionStatsRefresh("session-stats-1", "test.stats.failure");
+    await expect(failed?.promise).rejects.toThrow("temporary stats source failure");
+
+    // 刷新失败后，前端读取的仍是上次成功写入的 SQLite 快照。
+    expect(await service.instance.getSessionStats("session-stats-1")).toMatchObject({
+      capturedAt: "2026-08-16T00:00:30.000Z"
+    });
+
+    shouldFail = false;
+    statsResult = null;
+    const cleared = service.instance.requestSessionStatsRefresh("session-stats-1", "test.stats.clear");
+    await cleared?.promise;
+
+    expect(await service.instance.getSessionStats("session-stats-1")).toBeNull();
+    expect(service.database.db.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM session_stats_snapshots WHERE session_id = ?) AS stats_count,
+         (SELECT COUNT(*) FROM session_cost_bills WHERE session_id = ?) AS bill_count,
+         (SELECT COUNT(*) FROM session_model_usages WHERE session_id = ?) AS usage_count`
+    ).get("session-stats-1", "session-stats-1", "session-stats-1")).toEqual({
+      stats_count: 0,
+      bill_count: 0,
+      usage_count: 0
+    });
+
+    service.dispose();
+  });
+
+  it("显式历史读取成功后会请求一次统计刷新", async () => {
+    const service = createSessionHistoryService();
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "session-history-read",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "provider-history-read",
+      rawStoreRef: "/tmp/codex/provider-history-read.jsonl",
+      title: "历史读取会话",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T00:00:00.000Z"
+    });
+
+    const privateService = service.instance as unknown as {
+      readPage: (...args: unknown[]) => Promise<unknown>;
+    };
+    vi.spyOn(privateService, "readPage").mockResolvedValue({
+      messages: [],
+      cursor: null,
+      nextCursor: null,
+      total: 0
+    });
+    const statsRefresh = vi
+      .spyOn(service.instance, "requestSessionStatsRefresh")
+      .mockReturnValue(null);
+
+    await expect(
+      service.instance.readSessionHistory("session-history-read", null, 20)
+    ).resolves.toMatchObject({
+      messages: [],
+      total: 0
+    });
+
+    expect(statsRefresh).toHaveBeenCalledWith(
+      "session-history-read",
+      "session_history.read_complete"
+    );
     service.dispose();
   });
 

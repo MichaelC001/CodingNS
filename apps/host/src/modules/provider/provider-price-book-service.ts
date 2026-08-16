@@ -3,6 +3,7 @@ import {
   type ProviderPriceBook,
   type ProviderPriceBookEntry
 } from "@codingns/session-sync-core";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
@@ -12,8 +13,9 @@ import { type TaskManager } from "../tasks/task-manager.js";
 import type { TaskHandle } from "../tasks/task-types.js";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
-const REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-const SNAPSHOT_RETENTION_COUNT = 104;
+const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const SNAPSHOT_RETENTION_DAYS = 7;
+const DAILY_SNAPSHOT_VERSION_PATTERN = /^models\.dev-(\d{4}-\d{2}-\d{2})(?:-r\d+)?$/;
 const SOURCE_PROVIDER_BY_INTERNAL_PROVIDER: Readonly<Record<string, string>> = {
   codex: "openai",
   "claude-code": "anthropic",
@@ -36,6 +38,7 @@ interface StoredPriceBookSnapshot {
   version: string;
   source: "models.dev";
   fetchedAt: string;
+  contentHash?: string;
   entries: ProviderPriceBookEntry[];
 }
 
@@ -45,8 +48,10 @@ export interface ProviderPriceBookServiceOptions {
 }
 
 /**
- * 管理价格表的本地快照。会话统计只读内存/本地快照，不在请求中访问网络。
- * models.dev 只作为受控同步输入，无法访问时继续使用最近快照或内置价格表。
+ * 管理 models.dev 的本地、不可变、按日价格目录。
+ *
+ * 这里可以暂存同步所需的 Provider/model 索引，但 runtime 和费用详情只会拿到
+ * 当前会话实际命中的条目。统计读取绝不调用 refresh，也不访问网络。
  */
 export class ProviderPriceBookService {
   private readonly fetchImpl: typeof fetch;
@@ -87,30 +92,22 @@ export class ProviderPriceBookService {
 
   getPriceBook(version: string): ProviderPriceBook | null {
     const normalizedVersion = version.trim();
-
     if (!normalizedVersion) {
       return null;
     }
 
     const current = this.getCurrentPriceBook();
-
     if (current.version === normalizedVersion) {
       return current;
     }
 
-    if (normalizedVersion === DEFAULT_PROVIDER_PRICE_BOOK.version) {
-      return DEFAULT_PROVIDER_PRICE_BOOK;
-    }
-
     const filePath = this.getSnapshotPath(normalizedVersion);
-
     if (!existsSync(filePath)) {
       return null;
     }
 
     try {
-      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
-      return parseStoredSnapshot(parsed);
+      return parseStoredSnapshot(JSON.parse(readFileSync(filePath, "utf8")) as unknown);
     } catch {
       return null;
     }
@@ -140,14 +137,6 @@ export class ProviderPriceBookService {
       return this.getCurrentPriceBook();
     }
 
-    const weeklyVersion = buildWeeklyVersion(this.now());
-    const current = this.getCurrentPriceBook();
-
-    // 同一周只保留第一份快照，避免已经绑定该版本的历史会话金额漂移。
-    if (current.source === "models.dev" && current.version === weeklyVersion) {
-      return current;
-    }
-
     const response = await this.fetchImpl(MODELS_DEV_API_URL, {
       method: "GET",
       headers: { accept: "application/json" },
@@ -159,69 +148,84 @@ export class ProviderPriceBookService {
     }
 
     const payload = await response.json() as unknown;
-    const fetchedAt = this.now().toISOString();
-    const entries = buildEntriesFromModelsDev(payload, DEFAULT_PROVIDER_PRICE_BOOK.entries);
-
+    const entries = buildEntriesFromModelsDev(payload);
     if (entries.length === 0) {
-      throw new Error("价格表同步失败: 没有匹配到受支持模型");
+      throw new Error("价格表同步失败: models.dev 没有可用模型价格");
     }
 
+    const fetchedAt = this.now().toISOString();
+    const contentHash = hashEntries(entries);
+    const snapshots = this.readSnapshots();
+    const today = buildUtcDate(this.now());
+    const latestToday = snapshots
+      .filter((snapshot) => extractSnapshotDate(snapshot.version) === today)
+      .sort(compareSnapshotsNewestFirst)[0] ?? null;
+
+    // 同日连续同步的内容未变才复用版本；内容恢复成更早值也要留下新的修订记录。
+    if (latestToday?.contentHash === contentHash) {
+      this.current = latestToday;
+      await this.cleanupSnapshots();
+      return latestToday;
+    }
+
+    const dailyPrefix = buildDailyVersion(this.now());
+    const version = nextDailyRevision(
+      dailyPrefix,
+      snapshots.map((snapshot) => snapshot.version)
+    );
     const snapshot: StoredPriceBookSnapshot = {
-      version: weeklyVersion,
+      version,
       source: "models.dev",
       fetchedAt,
+      contentHash,
       entries
     };
-    const priceBook: ProviderPriceBook = snapshot;
 
     await this.persistSnapshot(snapshot);
-    this.current = priceBook;
-    return priceBook;
+    this.current = snapshot;
+    return snapshot;
   }
 
   isStale(): boolean {
     const current = this.getCurrentPriceBook();
-
-    if (current.source !== "models.dev" || !current.fetchedAt) {
+    if (current.source !== "models.dev" || !current.fetchedAt || current.entries.length === 0) {
       return true;
     }
 
-    if (current.version === buildWeeklyVersion(this.now())) {
-      return false;
+    const fetchedAt = Date.parse(current.fetchedAt);
+    if (!Number.isFinite(fetchedAt)) {
+      return true;
     }
 
-    const fetchedAt = Date.parse(current.fetchedAt);
-    return !Number.isFinite(fetchedAt) || this.now().getTime() - fetchedAt >= REFRESH_INTERVAL_MS;
+    const nowMs = this.now().getTime();
+    return nowMs - fetchedAt >= REFRESH_INTERVAL_MS
+      || extractSnapshotDate(current.version) !== buildUtcDate(this.now());
   }
 
   private readLatestSnapshot(): ProviderPriceBook | null {
+    return this.readSnapshots()
+      .sort(compareSnapshotsNewestFirst)[0] ?? null;
+  }
+
+  private readSnapshots(): StoredPriceBookSnapshot[] {
     if (!existsSync(this.snapshotDir)) {
-      return null;
+      return [];
     }
 
-    try {
-      const names = readdirSyncSafe(this.snapshotDir)
-        .filter((name) => name.endsWith(".json"))
-        .sort()
-        .reverse();
-
-      for (const name of names) {
-        try {
-          const parsed = JSON.parse(readFileSync(path.join(this.snapshotDir, name), "utf8")) as unknown;
-          const snapshot = parseStoredSnapshot(parsed);
-
-          if (snapshot) {
-            return snapshot;
-          }
-        } catch {
-          // 单个损坏快照不应阻断其他版本的读取。
+    const snapshots: StoredPriceBookSnapshot[] = [];
+    for (const name of readdirSyncSafe(this.snapshotDir).filter((value) => value.endsWith(".json"))) {
+      try {
+        const parsed = parseStoredSnapshot(
+          JSON.parse(readFileSync(path.join(this.snapshotDir, name), "utf8")) as unknown
+        );
+        if (parsed) {
+          snapshots.push(parsed);
         }
+      } catch {
+        // 单个损坏快照不应阻断其他版本读取。
       }
-    } catch {
-      return null;
     }
-
-    return null;
+    return snapshots;
   }
 
   private async persistSnapshot(snapshot: StoredPriceBookSnapshot): Promise<void> {
@@ -231,12 +235,30 @@ export class ProviderPriceBookService {
     await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
     await rename(tempPath, targetPath);
 
-    const names = (await readdir(this.snapshotDir))
-      .filter((name) => name.endsWith(".json"))
-      .sort()
-      .reverse();
+    await this.cleanupSnapshots();
+  }
 
-    for (const name of names.slice(SNAPSHOT_RETENTION_COUNT)) {
+  private async cleanupSnapshots(): Promise<void> {
+    const cutoff = new Date(this.now());
+    cutoff.setUTCHours(0, 0, 0, 0);
+    cutoff.setUTCDate(cutoff.getUTCDate() - (SNAPSHOT_RETENTION_DAYS - 1));
+
+    for (const name of await readdir(this.snapshotDir)) {
+      if (!name.endsWith(".json")) {
+        continue;
+      }
+
+      const version = name.slice(0, -5);
+      if (!version.startsWith("models.dev-")) {
+        continue;
+      }
+
+      const snapshotDate = extractSnapshotDate(version);
+      if (snapshotDate && snapshotDate >= cutoff.toISOString().slice(0, 10)) {
+        continue;
+      }
+
+      // 迁移前的周快照和损坏的 models.dev 文件都不能继续参与新会话计费。
       await unlink(path.join(this.snapshotDir, name)).catch(() => undefined);
     }
   }
@@ -246,68 +268,65 @@ export class ProviderPriceBookService {
   }
 }
 
-function buildEntriesFromModelsDev(
-  payload: unknown,
-  baselineEntries: readonly ProviderPriceBookEntry[]
-): ProviderPriceBookEntry[] {
+function buildEntriesFromModelsDev(payload: unknown): ProviderPriceBookEntry[] {
   const payloadRecord = asRecord(payload);
-
   if (!payloadRecord) {
     return [];
   }
 
   const entries: ProviderPriceBookEntry[] = [];
+  const seen = new Set<string>();
 
-  for (const baseline of baselineEntries) {
-    const sourceProvider = SOURCE_PROVIDER_BY_INTERNAL_PROVIDER[baseline.provider];
-    const provider = sourceProvider ? asRecord(payloadRecord[sourceProvider]) : null;
+  for (const [internalProvider, sourceProvider] of Object.entries(SOURCE_PROVIDER_BY_INTERNAL_PROVIDER)) {
+    const provider = asRecord(payloadRecord[sourceProvider]);
     const models = provider ? asRecord(provider.models) : null;
-    const model = models ? findModel(models, baseline.model) : null;
-    const cost = model ? asRecord(model.cost) : null;
-    const input = readFiniteNumber(cost?.input);
-    const output = readFiniteNumber(cost?.output);
-
-    if (input === null || output === null) {
+    if (!models) {
       continue;
     }
 
-    const cacheRead = readFiniteNumber(cost?.cache_read);
-    const cacheWrite = readFiniteNumber(cost?.cache_write);
-    entries.push({
-      provider: baseline.provider,
-      model: baseline.model,
-      inputUsdPerToken: input / 1_000_000,
-      outputUsdPerToken: output / 1_000_000,
-      ...(cacheRead === null ? {} : { cacheReadUsdPerToken: cacheRead / 1_000_000 }),
-      ...(cacheWrite === null ? {} : { cacheWriteUsdPerToken: cacheWrite / 1_000_000 })
-    });
+    for (const [key, value] of Object.entries(models)) {
+      const model = asRecord(value) as ModelsDevModel | null;
+      const cost = model ? asRecord(model.cost) : null;
+      const modelId = typeof model?.id === "string" && model.id.trim() ? model.id.trim() : key.trim();
+      const input = readFiniteNumber(cost?.input);
+      const output = readFiniteNumber(cost?.output);
+
+      if (!modelId || input === null || output === null) {
+        continue;
+      }
+
+      const dedupeKey = `${internalProvider}\u0000${modelId}`;
+      if (seen.has(dedupeKey)) {
+        continue;
+      }
+      seen.add(dedupeKey);
+
+      const cacheRead = readFiniteNumber(cost?.cache_read);
+      const cacheWrite = readFiniteNumber(cost?.cache_write);
+      entries.push({
+        provider: internalProvider,
+        model: modelId,
+        inputUsdPerToken: input / 1_000_000,
+        outputUsdPerToken: output / 1_000_000,
+        ...(cacheRead === null ? {} : { cacheReadUsdPerToken: cacheRead / 1_000_000 }),
+        ...(cacheWrite === null ? {} : { cacheWriteUsdPerToken: cacheWrite / 1_000_000 })
+      });
+    }
   }
 
-  return entries;
+  return entries.sort((left, right) => `${left.provider}:${left.model}`.localeCompare(`${right.provider}:${right.model}`));
 }
 
-function findModel(models: Record<string, unknown>, modelId: string): ModelsDevModel | null {
-  const exact = asRecord(models[modelId]);
-
-  if (exact) {
-    return exact as ModelsDevModel;
-  }
-
-  const match = Object.entries(models).find(([key, value]) => {
-    const record = asRecord(value);
-    return key === modelId || record?.id === modelId;
-  });
-  return match ? (asRecord(match[1]) as ModelsDevModel | null) : null;
-}
-
-function parseStoredSnapshot(value: unknown): ProviderPriceBook | null {
+function parseStoredSnapshot(value: unknown): StoredPriceBookSnapshot | null {
   const record = asRecord(value);
-
-  if (!record || record.source !== "models.dev" || typeof record.version !== "string" || typeof record.fetchedAt !== "string") {
-    return null;
-  }
-
-  if (!Array.isArray(record.entries)) {
+  if (
+    !record
+    || record.source !== "models.dev"
+    || typeof record.version !== "string"
+    || typeof record.fetchedAt !== "string"
+    || !Array.isArray(record.entries)
+    || !DAILY_SNAPSHOT_VERSION_PATTERN.test(record.version)
+  ) {
     return null;
   }
 
@@ -317,6 +336,7 @@ function parseStoredSnapshot(value: unknown): ProviderPriceBook | null {
         version: record.version,
         source: "models.dev",
         fetchedAt: record.fetchedAt,
+        ...(typeof record.contentHash === "string" ? { contentHash: record.contentHash } : {}),
         entries
       }
     : null;
@@ -333,13 +353,76 @@ function isPriceBookEntry(value: unknown): value is ProviderPriceBookEntry {
   );
 }
 
-function buildWeeklyVersion(date: Date): string {
-  const utc = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-  const day = utc.getUTCDay() || 7;
-  utc.setUTCDate(utc.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((utc.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
-  return `models.dev-${utc.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+function buildDailyVersion(date: Date): string {
+  return `models.dev-${buildUtcDate(date)}`;
+}
+
+function nextDailyRevision(prefix: string, versions: readonly string[]): string {
+  const matching = versions.filter((version) => version === prefix || version.startsWith(`${prefix}-r`));
+  if (matching.length === 0) {
+    return prefix;
+  }
+
+  const maxRevision = matching.reduce((max, version) => {
+    const suffix = version.slice(prefix.length + 2);
+    const parsed = Number.parseInt(suffix, 10);
+    return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
+  }, 1);
+  return `${prefix}-r${maxRevision + 1}`;
+}
+
+function buildUtcDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function extractSnapshotDate(value: string): string | null {
+  const match = value.match(DAILY_SNAPSHOT_VERSION_PATTERN);
+  return match?.[1] ?? null;
+}
+
+function hashEntries(entries: readonly ProviderPriceBookEntry[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify(entries))
+    .digest("hex");
+}
+
+function compareSnapshotsNewestFirst(
+  left: StoredPriceBookSnapshot,
+  right: StoredPriceBookSnapshot
+): number {
+  const rightFetchedAt = Date.parse(right.fetchedAt);
+  const leftFetchedAt = Date.parse(left.fetchedAt);
+
+  if (Number.isFinite(rightFetchedAt) && Number.isFinite(leftFetchedAt) && rightFetchedAt !== leftFetchedAt) {
+    return rightFetchedAt - leftFetchedAt;
+  }
+
+  const rightDate = extractSnapshotDate(right.version) ?? "";
+  const leftDate = extractSnapshotDate(left.version) ?? "";
+
+  if (rightDate !== leftDate) {
+    return rightDate.localeCompare(leftDate);
+  }
+
+  const revisionDifference = extractSnapshotRevision(right.version) - extractSnapshotRevision(left.version);
+  return revisionDifference !== 0 ? revisionDifference : right.version.localeCompare(left.version);
+}
+
+function extractSnapshotRevision(version: string): number {
+  const date = extractSnapshotDate(version);
+  const prefix = date ? `models.dev-${date}` : "";
+
+  if (!prefix || version === prefix) {
+    return 1;
+  }
+
+  const match = version.match(new RegExp(`^${escapeRegExp(prefix)}-r(\\d+)$`));
+  const revision = match ? Number.parseInt(match[1], 10) : Number.NaN;
+  return Number.isFinite(revision) ? revision : 0;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

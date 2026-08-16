@@ -845,6 +845,42 @@ CREATE TABLE IF NOT EXISTS session_status_snapshots (
   FOREIGN KEY (session_id) REFERENCES session_bindings(session_id)
 );
 
+CREATE TABLE IF NOT EXISTS session_stats_snapshots (
+  session_id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  stats_json TEXT NOT NULL,
+  source_signature TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES session_bindings(session_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS session_cost_bills (
+  session_id TEXT PRIMARY KEY,
+  cost_usd REAL NOT NULL CHECK (cost_usd >= 0),
+  pricing_json TEXT,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES session_bindings(session_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS session_model_usages (
+  session_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+  output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+  cost_usd REAL CHECK (cost_usd IS NULL OR cost_usd >= 0),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, provider, model),
+  FOREIGN KEY (session_id) REFERENCES session_bindings(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_model_usages_session_id
+  ON session_model_usages(session_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS session_source_index (
   source_key TEXT PRIMARY KEY,
   provider TEXT NOT NULL,

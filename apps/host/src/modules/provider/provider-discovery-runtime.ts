@@ -11,6 +11,8 @@ import {
   type HistoryPage,
   type SessionHistoryDeltaReadResult,
   type ProviderSessionDiscovery,
+  type ProviderSessionStats,
+  type ProviderSessionStatsReadOptions,
   type ProviderSessionSummary
 } from "@codingns/session-sync-core";
 
@@ -194,6 +196,27 @@ export async function readSessionHistoryInRuntime(input: {
     readMode: "page",
     page
   };
+}
+
+/** 统计快照的文件型 Provider 读取必须在 helper 中执行，Host 只接收折叠后的紧凑结果。 */
+export async function readSessionStatsInRuntime(input: {
+  config: ProviderSessionDiscoveryHelperConfig;
+  provider: string;
+  providerSessionId: string;
+  rawStoreRef: string;
+  options?: ProviderSessionStatsReadOptions;
+}, signal?: AbortSignal): Promise<ProviderSessionStats | null> {
+  if (signal?.aborted) {
+    throw signal.reason ?? new Error("session stats helper aborted");
+  }
+
+  const service = getWorkspaceDiscoveryService(input.config, [input.provider]);
+  return await service.readSessionStats(
+    input.provider,
+    input.providerSessionId,
+    input.rawStoreRef,
+    input.options
+  );
 }
 
 function getWorkspaceDiscoveryService(
