@@ -1,6 +1,6 @@
 const STORAGE_KEY = "codingns.user-app.conversation-scroll";
-// 虚拟列表改用动态高度坐标，旧版保存的 scrollTop 不再可靠。
-const STORAGE_SCHEMA_VERSION = 2;
+// 首次加载的顶部位置曾被旧版本误记为历史进度，升级版本后丢弃这批错误缓存。
+const STORAGE_SCHEMA_VERSION = 3;
 const MAX_TRACKED_SESSIONS = 200;
 const MAX_SCROLL_TOP = 10_000_000;
 

@@ -3226,7 +3226,119 @@ ARGUMENTS: capabilities list`)
     expect(messageList!.scrollTop).toBe(420);
   });
 
-  it("切到别的会话再回来时会恢复之前的阅读进度", () => {
+  it("切换到目标会话后，即使存在历史缓存也会自动贴底并继续跟随新消息", () => {
+    const sourceMessages = [
+      {
+        ...createAssistantTextMessage("当前会话消息", "assistant-auto-source-1"),
+        sessionId: "session-auto-source"
+      }
+    ];
+    const targetMessages = [
+      {
+        ...createAssistantTextMessage("目标会话最新消息", "assistant-auto-target-1"),
+        sessionId: "session-auto-target"
+      }
+    ];
+
+    window.localStorage.setItem(
+      "codingns.user-app.conversation-scroll",
+      JSON.stringify({
+        schemaVersion: 3,
+        bySessionId: {
+          "session-auto-target": {
+            scrollTop: 420,
+            stickToBottom: false,
+            lastMessageSignature: null,
+            updatedAt: Date.now()
+          }
+        }
+      })
+    );
+
+    const { rerender } = render(
+      <MessageTimeline
+        sessionId="session-auto-source"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={sourceMessages}
+      />
+    );
+
+    const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+
+    expect(messageList).not.toBeNull();
+
+    let scrollHeight = 2_000;
+    Object.defineProperty(messageList, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "scrollTop", {
+      value: 1_400,
+      writable: true,
+      configurable: true
+    });
+
+    fireEvent.scroll(messageList!, {
+      target: {
+        scrollTop: 1_400
+      }
+    });
+
+    scrollHeight = 1_800;
+    rerender(
+      <MessageTimeline
+        sessionId="session-auto-target"
+        historyState="loading"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={[]}
+      />
+    );
+
+    expect(messageList!.scrollTop).toBe(1_800);
+
+    scrollHeight = 2_400;
+    rerender(
+      <MessageTimeline
+        sessionId="session-auto-target"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={targetMessages}
+      />
+    );
+
+    expect(messageList!.scrollTop).toBe(2_400);
+
+    scrollHeight = 2_800;
+    rerender(
+      <MessageTimeline
+        sessionId="session-auto-target"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={[
+          ...targetMessages,
+          {
+            ...createAssistantTextMessage("目标会话新增消息", "assistant-auto-target-2"),
+            sessionId: "session-auto-target",
+            sequence: 2,
+            rawRef: "codex://raw#line=assistant-auto-target-2"
+          }
+        ]}
+      />
+    );
+
+    expect(messageList!.scrollTop).toBe(2_800);
+  });
+
+  it("切到别的会话再回来时会跳到最新消息位置", () => {
     const sessionOneMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-restore-1"),
@@ -3299,10 +3411,10 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(420);
+    expect(restoredMessageList!.scrollTop).toBe(2000);
   });
 
-  it("如果离开后会话尾部已经变化，仍恢复原阅读位置，并在回底按钮上提示 NEW", () => {
+  it("如果离开后会话尾部已经变化，切回来会直接显示最新消息", () => {
     const oldMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-stale-1"),
@@ -3381,13 +3493,13 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(420);
+    expect(restoredMessageList!.scrollTop).toBe(2000);
     expect(
-      screen.getByRole("button", { name: t("conversation.scrollToBottomAction") })
-    ).toHaveTextContent("NEW");
+      screen.queryByRole("button", { name: t("conversation.scrollToBottomAction") })
+    ).not.toBeInTheDocument();
   });
 
-  it("runtime_thinking 和 runtime_notice 变化时，仍按最后一条真实消息恢复阅读位置", () => {
+  it("runtime_thinking 和 runtime_notice 变化时，切换会话仍显示最新消息", () => {
     const baseMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-runtime-anchor-1"),
@@ -3467,16 +3579,16 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(420);
+    expect(restoredMessageList!.scrollTop).toBe(2000);
     const jumpButton = screen.queryByRole("button", {
       name: t("conversation.scrollToBottomAction")
     });
 
-    expect(jumpButton?.getAttribute("data-has-new")).toBe("false");
+    expect(jumpButton).toBeNull();
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
   });
 
-  it("恢复阅读位置后用户一旦滚动，就不会再被手动恢复逻辑拉回旧位置", () => {
+  it("切换会话后用户继续滚动，不会被旧会话位置拉回去", () => {
     vi.useFakeTimers();
 
     try {
@@ -3551,7 +3663,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(420);
+      expect(messageList!.scrollTop).toBe(2000);
 
       fireEvent.wheel(messageList!, {
         deltaY: 120
@@ -3572,7 +3684,7 @@ ARGUMENTS: capabilities list`)
     }
   });
 
-  it("恢复阅读位置后用户直接拖动滚动位置，也不会再被手动恢复逻辑拉回旧位置", () => {
+  it("切换会话后用户直接拖动滚动位置，不会被旧会话位置拉回去", () => {
     vi.useFakeTimers();
 
     try {
@@ -3647,7 +3759,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(420);
+      expect(messageList!.scrollTop).toBe(2000);
 
       fireEvent.scroll(messageList!, {
         target: {
@@ -3665,7 +3777,7 @@ ARGUMENTS: capabilities list`)
     }
   });
 
-  it("移动端恢复阅读位置时不会持续 3.5 秒强制锁定滚动", () => {
+  it("移动端切换会话时不会持续 3.5 秒强制锁定滚动", () => {
     vi.useFakeTimers();
     const originalInnerWidth = window.innerWidth;
 
@@ -3747,7 +3859,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(420);
+      expect(messageList!.scrollTop).toBe(2000);
 
       messageList!.scrollTop = 560;
       vi.advanceTimersByTime(4000);
@@ -3860,27 +3972,13 @@ ARGUMENTS: capabilities list`)
       value: 600,
       configurable: true
     });
+    messageList!.scrollTop = 420;
 
     fireEvent.scroll(messageList!, {
       target: {
         scrollTop: 420
       }
     });
-
-    rerender(
-      <MessageTimeline
-        sessionId="session-other-new"
-        historyState="ready"
-        provider="codex"
-        onRetryMessage={vi.fn()}
-        messages={[
-          {
-            ...createAssistantTextMessage("其他会话", "assistant-other-new"),
-            sessionId: "session-other-new"
-          }
-        ]}
-      />
-    );
 
     rerender(
       <MessageTimeline
@@ -3979,7 +4077,7 @@ ARGUMENTS: capabilities list`)
     ).not.toBeInTheDocument();
   });
 
-  it("尾部跟随模式不会覆盖普通会话为同一 sessionId 记录的阅读位置", () => {
+  it("切换会话时，尾部跟随模式和普通会话都会显示最新消息", () => {
     const sessionMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-shared-scroll-1"),
@@ -4089,7 +4187,7 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(420);
+    expect(restoredMessageList!.scrollTop).toBe(2400);
   });
 
   it("renders image thumbnail preview for pending image attachments", async () => {

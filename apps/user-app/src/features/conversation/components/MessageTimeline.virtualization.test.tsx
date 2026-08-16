@@ -203,7 +203,7 @@ describe("MessageTimeline 虚拟列表", () => {
       window.localStorage.setItem(
         "codingns.user-app.conversation-scroll",
         JSON.stringify({
-          schemaVersion: 2,
+          schemaVersion: 3,
           bySessionId: {
             "session-virtual": {
               scrollTop: 420,

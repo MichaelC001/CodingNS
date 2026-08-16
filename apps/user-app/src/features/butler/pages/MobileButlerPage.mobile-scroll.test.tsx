@@ -238,7 +238,7 @@ function seedConversationScrollState(sessionId: string, scrollTop: number) {
   window.localStorage.setItem(
     "codingns.user-app.conversation-scroll",
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       bySessionId: {
         [sessionId]: {
           scrollTop,
