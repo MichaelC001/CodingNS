@@ -6234,6 +6234,7 @@ export function MessageTimeline({
   const previousSessionIdRef = useRef(sessionId);
   const previousMessageCountRef = useRef(0);
   const previousLastMessageSignatureRef = useRef<string | null>(null);
+  const previousLastUserMessageIdRef = useRef<string | null>(null);
   const stickToBottomRef = useRef(true);
   const followInitialTailRef = useRef(
     followTailUpdates
@@ -6846,6 +6847,7 @@ export function MessageTimeline({
       previousSessionIdRef.current = sessionId;
       previousMessageCountRef.current = 0;
       previousLastMessageSignatureRef.current = null;
+      previousLastUserMessageIdRef.current = null;
       // 会话切换后默认展示目标会话的最新消息，不把上次离开时的历史位置当成恢复指令。
       // 当前会话内的手动上滑仍由滚动事件维护，不会因为新消息强行贴底。
       pendingRestoreStateRef.current = null;
@@ -6878,27 +6880,36 @@ export function MessageTimeline({
     const list = listRef.current;
     const currentTailRenderSignature = buildMessageSignature(renderItems.at(-1) ?? null);
     const currentPersistedTailSignature = buildPersistedTailMessageSignature();
+    const currentLastUserMessageId = findLastUserMessageId(visibleMessages);
 
     if (!list) {
       previousMessageCountRef.current = renderItems.length;
       previousLastMessageSignatureRef.current = currentTailRenderSignature;
+      previousLastUserMessageIdRef.current = currentLastUserMessageId;
       return;
     }
 
     const previousCount = previousMessageCountRef.current;
     const previousLastSignature = previousLastMessageSignatureRef.current;
+    const previousLastUserMessageId = previousLastUserMessageIdRef.current;
     const pendingRestoreState = pendingRestoreStateRef.current;
     const hasTailUpdate =
       previousCount === 0 ||
       renderItems.length !== previousCount ||
       currentTailRenderSignature !== previousLastSignature;
+    const hasNewUserMessage =
+      currentLastUserMessageId !== null
+      && currentLastUserMessageId !== previousLastUserMessageId;
 
     emitTimelineScrollDebug("messages.effect.start", list, {
       previousCount,
       previousLastMessage: summarizeMessageSignature(previousLastSignature),
       currentLastMessage: summarizeMessageSignature(currentTailRenderSignature),
       currentPersistedTailMessage: summarizeMessageSignature(currentPersistedTailSignature),
-      hasTailUpdate
+      hasTailUpdate,
+      previousLastUserMessageId,
+      currentLastUserMessageId,
+      hasNewUserMessage
     });
 
     // 会话切回来时先恢复阅读位置；是否有新消息是另一件事，用 NEW 提示，不要强行把用户踢到底部。
@@ -6930,6 +6941,7 @@ export function MessageTimeline({
       syncScrollAffordance(list);
       previousMessageCountRef.current = renderItems.length;
       previousLastMessageSignatureRef.current = currentTailRenderSignature;
+      previousLastUserMessageIdRef.current = currentLastUserMessageId;
       rememberCurrentScrollState(list);
       return;
     }
@@ -6950,6 +6962,7 @@ export function MessageTimeline({
       syncScrollAffordance(list);
       previousMessageCountRef.current = renderItems.length;
       previousLastMessageSignatureRef.current = currentTailRenderSignature;
+      previousLastUserMessageIdRef.current = currentLastUserMessageId;
       rememberCurrentScrollState(list);
       return;
     }
@@ -6958,6 +6971,7 @@ export function MessageTimeline({
       applyManualRestorePosition(list, manualRestoreTargetRef.current ?? list.scrollTop);
       previousMessageCountRef.current = renderItems.length;
       previousLastMessageSignatureRef.current = currentTailRenderSignature;
+      previousLastUserMessageIdRef.current = currentLastUserMessageId;
       rememberCurrentScrollState(list);
       return;
     }
@@ -6976,6 +6990,7 @@ export function MessageTimeline({
     const hasUnreadTailUpdate =
       !followTailUpdates
       && hasTailUpdate
+      && !hasNewUserMessage
       && !currentlyAtBottom
       && restoredTailSignatureRef.current !== null
       && currentPersistedTailSignature !== null
@@ -6990,7 +7005,7 @@ export function MessageTimeline({
       hasTailUpdate
       // 首次加载或切换到没有历史阅读位置的会话时，列表还会暂时沿用上一个会话的 scrollTop。
       // 这不是用户正在查看历史，必须先把当前会话贴到最新消息；后续更新再按真实滚动位置判断。
-      && (followTailUpdates || followInitialTailRef.current || currentlyAtBottom);
+      && (followTailUpdates || followInitialTailRef.current || currentlyAtBottom || hasNewUserMessage);
 
     emitTimelineScrollDebug("messages.effect.decision", list, {
       currentHeadMessage: summarizeMessageSignature(currentHeadSignature),
@@ -6998,12 +7013,18 @@ export function MessageTimeline({
       pendingOlderLoadHeadMessage: summarizeMessageSignature(pendingOlderLoadHeadSignature),
       shouldRestoreOlderLoadOffset,
       shouldFollowTailUpdate,
+      hasNewUserMessage,
       currentlyAtBottom,
       currentDistanceToBottom,
       loadingOlderMessages
     });
 
-    if (shouldRestoreOlderLoadOffset) {
+    if (hasNewUserMessage) {
+      // 用户主动发送消息时，无论此前是否在历史位置，都必须立即回到底部。
+      pendingOlderLoadOffsetRef.current = null;
+      pendingOlderLoadHeadSignatureRef.current = null;
+      jumpToBottom(list, "user_message_follow");
+    } else if (shouldRestoreOlderLoadOffset) {
       list.scrollTop = Math.max(0, list.scrollHeight - pendingOlderLoadOffset);
       pendingOlderLoadOffsetRef.current = null;
       pendingOlderLoadHeadSignatureRef.current = null;
@@ -7026,6 +7047,7 @@ export function MessageTimeline({
     }
     previousMessageCountRef.current = renderItems.length;
     previousLastMessageSignatureRef.current = currentTailRenderSignature;
+    previousLastUserMessageIdRef.current = currentLastUserMessageId;
   }, [historyState, loadingOlderMessages, renderItems, sessionId]);
 
   useEffect(() => {
@@ -7443,6 +7465,18 @@ function buildMessageSignature(
         }
       : null
   });
+}
+
+function findLastUserMessageId(messages: SessionMessageViewModel[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+
+    if (message?.role === "user") {
+      return message.id;
+    }
+  }
+
+  return null;
 }
 
 function buildMessageActionStateById(

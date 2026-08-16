@@ -3226,6 +3226,81 @@ ARGUMENTS: capabilities list`)
     expect(messageList!.scrollTop).toBe(420);
   });
 
+  it("用户在历史位置发送消息时会自动贴底且不显示 NEW", () => {
+    const initialMessages = [
+      {
+        ...createTextMessage("之前的问题"),
+        id: "user-scroll-old",
+        sessionId: "session-user-scroll",
+        sequence: 1,
+        rawRef: "codex://raw#line=user-scroll-old"
+      },
+      {
+        ...createAssistantTextMessage("之前的回复", "assistant-user-scroll-old"),
+        sessionId: "session-user-scroll",
+        sequence: 2,
+        rawRef: "codex://raw#line=assistant-user-scroll-old"
+      }
+    ];
+    const newUserMessage = {
+      ...createTextMessage("新的问题"),
+      id: "pending-user-scroll-new",
+      sessionId: "session-user-scroll",
+      sequence: 3,
+      rawRef: "pending://client-user-scroll-new",
+      deliveryState: "sending" as const,
+      clientRequestId: "client-user-scroll-new"
+    };
+    const { rerender } = render(
+      <MessageTimeline
+        sessionId="session-user-scroll"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={initialMessages}
+      />
+    );
+
+    const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+
+    expect(messageList).not.toBeNull();
+
+    let scrollHeight = 2_000;
+    Object.defineProperty(messageList, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "scrollTop", {
+      value: 420,
+      writable: true,
+      configurable: true
+    });
+
+    fireEvent.scroll(messageList!, {
+      target: {
+        scrollTop: 420
+      }
+    });
+
+    scrollHeight = 2_400;
+    rerender(
+      <MessageTimeline
+        sessionId="session-user-scroll"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={[...initialMessages, newUserMessage]}
+      />
+    );
+
+    expect(messageList!.scrollTop).toBe(2_400);
+    expect(screen.queryByText("NEW")).not.toBeInTheDocument();
+  });
+
   it("切换到目标会话后，即使存在历史缓存也会自动贴底并继续跟随新消息", () => {
     const sourceMessages = [
       {
