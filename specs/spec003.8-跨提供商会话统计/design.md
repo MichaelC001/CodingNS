@@ -159,7 +159,7 @@ Harness 的上下文占用不从累计 `tokenUsage` 反推。它读取同一份 
 
 `ProviderPriceBookService` 只把 models.dev 当作价格源，不再从代码中的模型价格表回退。Host 启动时和每日调度器只负责把同步任务放入 `TaskManager`；任务成功后将受支持 Provider 的目录写入本地快照目录。版本按 UTC 日期命名，同日内容变化追加修订号，文件永不覆盖。清理按日期保留最近 7 天，不能因为本次同步失败而删除旧版本。
 
-本地目录可以保存同步所需的 Provider/model 价格索引，但它不是 runtime 数据。新会话只保存快照版本；统计折叠完成后，费用 provenance 中只投影本次会话实际命中的模型价格条目。这样既能用固定版本绑定历史金额，又不会把完整 models.dev 目录塞进每次 runtime 响应。
+本地快照同时保存两类数据：一类是费用折叠需要的内部 Provider/model 价格条目，另一类是供用户查看的六类主流目录（GPT、Claude、GLM、Kimi、DeepSeek、Gemini）。用户点击费用详情中的价格表时，前端通过 `/api/providers/price-book` 读取当前 Host 的最新本地快照；这个接口只返回六类目录，不触发同步、不访问 models.dev 网络，也不会把目录塞进会话 runtime。新会话仍只保存快照版本；统计折叠完成后，费用 provenance 中只投影本次会话实际命中的模型价格条目。这样既能用固定版本绑定历史金额，又能让用户看到当天同步到本地的主流模型价格。
 
 ### 8.2 统计刷新链路
 

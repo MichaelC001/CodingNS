@@ -265,3 +265,12 @@
   - 主要修改：`session-pricing.ts`、各 Provider adapter、统计 repository 与测试。
   - 明确不做什么：不复制日志扫描，不为未知代理估价，不做生产浏览器验收。
   - 最小验证：core 构建、Host 定向测试、Host 类型检查、SQLite runtime 检查和 `git diff --check`。
+
+- [x] 14.5 从每日本地快照展示六类主流模型价格
+  - 状态：COMPLETED
+  - 这一步做什么：在每日 models.dev 快照中增加 GPT、Claude、GLM、Kimi、DeepSeek、Gemini 六类主流目录条目，并增加只读价格表接口；费用详情点击“查看价格表”时读取当前 Host 的本地快照。
+  - 做完以后能看到什么：用户可以在表格中按系列、提供商、模型比较输入、输出和缓存价格；表格显示快照版本、来源和抓取时间。优先显示当前 Host 的本地快照；没有本地目录时只允许降级显示会话已绑定价格，不新增猜价。
+  - 依赖什么：14.1 的每日快照和 12.5 的费用详情弹窗。
+  - 主要修改：`provider-price-book-service.ts`、`provider-controller.ts`、`providers.ts`、`create-server.ts`、`conversation-api.ts`、`ComposerPanel.tsx`、中英文 i18n、价格表样式和定向测试。
+  - 明确不做什么：不让前端直连 models.dev，不在 `readSessionStats()` 联网，不改变会话绑定版本和现有费用计算，不把完整 models.dev 目录放进 runtime。
+  - 最小验证：models.dev 六类目录回放、Host 价格表路由、价格快照服务、ComposerPanel、user-app/Host 类型检查、`pnpm check:sqlite-runtime` 和 `git diff --check` 通过。
