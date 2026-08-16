@@ -142,7 +142,7 @@
   - 做完以后能看到什么：新会话可以区分原生成本和目录估算；旧会话没有收费策略，因此费用字段自然缺失。
   - 依赖什么：阶段 1 的统计契约和现有 `session_bindings` 创建流程。
   - 主要修改：`packages/session-sync-core/src/types.ts`、`session-pricing.ts`、Host `session_bindings` schema/migration/repository、runtime DTO 与 user-app API 类型。
-  - 这一步明确不做什么：不新建费用账本表，不回填旧会话，不在运行时下载价格表。
+  - 这一步明确不做什么：本步骤不负责新建费用账本表（由 14.2 统一落库），不回填旧会话，不在运行时下载价格表。
   - 最小验证：`session-billing.test.ts` 通过 2 项；新数据库能保存收费起点/profile/价格表版本，旧数据库迁移后的收费字段保持为空。
 
 - [x] 12.2 在同一次统计折叠中计算目录费用
@@ -219,11 +219,49 @@
   - 这一步明确不做什么：不在前端重新计算费用，不复制一份价格常量，不改变费用总额。
   - 最小验证：ComposerPanel 定向测试、user-app TypeScript 检查和 `git diff --check` 通过。
 
-- [x] 13.2 增加按周固定的价格快照同步
-  - 状态：COMPLETED
-  - 这一步做什么：新增 `ProviderPriceBookService`，通过现有 `TaskManager` 低频读取 `models.dev/api.json`，只更新当前支持模型，并把快照保存到 `data/host/price-book-snapshots/`。同一周版本不覆盖，保留最近 104 份快照。
-  - 做完以后能看到什么：Host 启动或创建新会话时会检查快照是否过期；同步成功的新会话绑定新的周版本，旧会话继续读取原版本；网络失败时仍可使用最近快照或内置表。
+- [x] 13.2 增加价格快照同步（原按周方案，已由 14.1 替换）
+  - 状态：SUPERSEDED
+  - 这一步做什么：先接入 `ProviderPriceBookService` 和 `TaskManager` 同步入口。原实现按周保存，后续 14.1 改为按 UTC 日期保存，因此这里保留历史追踪，不再作为当前规则。
+  - 做完以后能看到什么：当前行为以 14.1 为准；旧会话不会因为价格同步被重算。
   - 依赖什么：12.1 的 `priceBookVersion`、12.2 的同一次费用折叠和后台任务接入规范。
   - 主要修改：`apps/host/src/modules/provider/provider-price-book-service.ts`、`apps/host/src/modules/tasks/task-types.ts`、`apps/host/src/modules/sessions/session-history-service.ts`、`apps/host/src/modules/sessions/session-live-runtime-service.ts`、`apps/host/src/server/create-server.ts`、`packages/session-sync-core/src/types.ts`、`packages/session-sync-core/src/session-pricing.ts`。
-  - 这一步明确不做什么：不在每次会话统计时联网，不覆盖同周快照，不重算已绑定历史会话，不建立费用账本表。
+  - 这一步明确不做什么：不在每次会话统计时联网，不覆盖同周快照，不重算已绑定历史会话；费用账单由后续 14.2 统一落库。
   - 最小验证：价格同步服务成功/失败回退测试、core 动态价格版本测试、Host 类型检查、`pnpm check:sqlite-runtime` 和 `git diff --check` 通过。
+
+## 阶段 14：每日价格快照与会话统计持久化
+
+- [x] 14.1 改为 models.dev 每日不可变快照
+  - 状态：COMPLETED
+  - 这一步做什么：取消内置模型价格和每周版本，按 UTC 日期同步 models.dev；同日内容变化生成修订版本，最多保留最近 7 天。
+  - 做完以后能看到什么：新会话只绑定实际命中的 models.dev 版本；离线、未知模型和无法精确匹配时不显示费用。
+  - 依赖什么：13.2 的价格服务和现有 `TaskManager`。
+  - 主要修改：`provider-price-book-service.ts`、价格版本类型、价格同步调度器、绑定匹配逻辑和定向测试。
+  - 明确不做什么：不覆盖已存在版本，不在 `readSessionStats()` 联网，不把完整目录放进 runtime。
+  - 最小验证：价格服务每日版本、同日修订、跨日同内容新版本、7 天清理、旧周快照清理、离线无价格测试。
+
+- [x] 14.2 增加三类会话统计 SQLite 表和覆盖写入
+  - 状态：COMPLETED
+  - 这一步做什么：新增统计快照、费用账单、模型用量三张表和 repository；一次成功刷新在同一事务中覆盖三类数据。
+  - 做完以后能看到什么：重启或页面刷新时可以直接读取上次成功的统计、账单和模型明细；费用不可核验时旧账单会被清除。
+  - 依赖什么：14.1 的固定价格版本和现有 session_bindings 外键。
+  - 主要修改：`schema.sql`、`client.ts`、新的 session stats repository、删除/演示清理路径。
+  - 明确不做什么：不回填旧会话，不另建第二套费用计算器。
+  - 最小验证：SQLite migration、事务覆盖、成功返回 `null` 清理和级联删除定向测试，`pnpm check:sqlite-runtime`。
+
+- [x] 14.3 通过 TaskManager 刷新并让 runtime 纯读快照
+  - 状态：COMPLETED
+  - 这一步做什么：运行事件、终态事件和显式历史读取成功只触发去重后台刷新；文件型 Provider 在 helper 读取，Harness 使用现有 sidecar；`getSessionStats()` 改为纯读 SQLite。
+  - 做完以后能看到什么：同一 session 的连续 runtime 或页面读取不再读取 Provider 日志或联网，后台完成后页面刷新可看到最新统计；Provider 读取失败保留旧快照，成功返回 `null` 清理旧账单。
+  - 依赖什么：14.2 的 repository、现有 ProviderSessionStats 单次折叠和 helper 任务体系。
+  - 主要修改：`session-history-service.ts`、`session-live-runtime-service.ts`、helper handler/runtime、任务定义和 create-server 注入。
+  - 明确不做什么：不增加 `readCost`、独立费用 API 或启动时全库扫描。
+  - 最小验证：第二次 runtime 不调用 Provider、历史读取成功会触发刷新、任务按 session 去重、后台失败保留旧快照的定向测试。
+
+- [x] 14.4 保存模型级用量并完成回归
+  - 状态：COMPLETED
+  - 这一步做什么：让现有一次统计折叠产出模型用量，写入独立表；更新真实 Provider fixture 和必要的 core/Host 测试。
+  - 做完以后能看到什么：费用详情仍只展示会话实际模型，数据库可以用于后续受控成本回填。
+  - 依赖什么：14.1 至 14.3。
+  - 主要修改：`session-pricing.ts`、各 Provider adapter、统计 repository 与测试。
+  - 明确不做什么：不复制日志扫描，不为未知代理估价，不做生产浏览器验收。
+  - 最小验证：core 构建、Host 定向测试、Host 类型检查、SQLite runtime 检查和 `git diff --check`。

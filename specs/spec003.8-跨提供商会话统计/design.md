@@ -84,7 +84,7 @@ ProviderAdapter.readSessionStats
   -> ConversationPage / ComposerPanel
 ```
 
-所有统计读取均在既有 runtime 请求中执行，没有轮询器、独立成本服务或第二次 Provider 读取。统计读取异常在 runtime service 处降级为 `null`，与现有 context usage 一致。
+统计结果由后台刷新任务写入 SQLite，runtime 请求只读快照；价格同步调度器只负责把每日同步任务放入 `TaskManager`，不执行网络读取。系统没有独立成本服务或第二次 Provider 读取。统计读取异常在 runtime service 处降级为 `null`，与现有 context usage 一致。
 
 ### 3.1 同一次折叠
 
@@ -99,7 +99,7 @@ ProviderAdapter.readSessionStats
 3. 以 `(收费路由, model, token 桶)` 查询本地版本化价格表并计算。
 4. 任何调用无法定价时，整个会话不输出目录 `costUsd`，避免把部分金额伪装成总费用。
 
-价格表由 `ProviderPriceBookService` 负责维护：它用现有 `TaskManager` 低频读取 `models.dev/api.json`，只提取当前支持模型，按周写入 `data/host/price-book-snapshots/<version>.json`。同一周的快照不可覆盖；网络失败时保留最近成功快照，首次无法同步时回退到随代码发布的内置表。会话统计读取只根据 `session_bindings.price_book_version` 读取本地快照，不访问网络。既有 `session_bindings` 为新会话保存 `billingStartedAt`、`pricingProfileId` 和 `priceBookVersion`，不新建费用账本表。新会话的选中模型命中当前快照时可自动固定 `direct-api`；模型未命中时不猜测价格。旧会话继续使用其已绑定版本，不会被新周价格重算。
+价格表由 `ProviderPriceBookService` 负责维护：它用现有 `TaskManager` 每日读取 `models.dev/api.json`，只把支持 Provider 的模型价格写入 `data/host/price-book-snapshots/<version>.json`。版本按 UTC 日期命名，同日修订追加 `-r2` 等后缀，文件不可覆盖；本地最多保留最近七个 UTC 日期。网络失败时保留最近成功快照，首次无法同步时保持空价格表。会话统计读取只根据 `session_bindings.price_book_version` 读取本地快照，快照过期清理后可从该会话已落库的账单价格条目恢复，不访问网络。既有 `session_bindings` 为新会话保存 `billingStartedAt`、`pricingProfileId` 和 `priceBookVersion`；统计快照、费用账单和模型用量分别写入 SQLite，但不增加第二套计算逻辑。新会话的选中模型命中当前快照时可自动固定 `direct-api`；模型未命中时不猜测价格。旧会话继续使用其已绑定版本，不会被新日期价格重算。
 
 ## 4. Provider 读取规则
 
@@ -141,14 +141,46 @@ Harness 的上下文占用不从累计 `tokenUsage` 反推。它读取同一份 
 
 - core：保留 Harness projection、OpenCode 原生累计、Codex 递增快照、Claude/Legna progress/最终重复、Gemini 重写消息、Kimi 空值和每种缓存率分母；新增模型切换、重复 usage、缺模型、缺价格、订阅/代理路由、首轮基线、并发 Codex turn、Harness 多 step、价格表版本固定的 fixture。
 - Host：runtime 成功透传，统计读取异常不影响 runtime 响应；断言费用不会触发第二次 `readSessionStats`、新轮询或额外 sidecar 订阅。
-- Host：价格同步服务覆盖成功写入、按周版本固定、历史版本读取、网络失败保留回退值和 `TaskManager` 任务注册；新会话绑定当前快照版本，旧会话读取原绑定版本。
+- Host：价格同步服务覆盖成功写入、按日版本固定、同日修订、七日清理、历史版本读取、网络失败保留旧值和 `TaskManager` 任务注册；新会话绑定当前快照版本，旧会话读取原绑定版本。
 - user-app：只有存在完整 `costUsd` 才显示费用行；目录估算与原生成本使用现有详情入口；缺 token、成本或耗时不渲染该行，`0` 只有 Provider 明确返回 `0` 时才能显示。
 - 运行 `pnpm test:related -- <改动文件>` 和 `pnpm check:sqlite-runtime`。
 
 ## 8. 破坏性分析
 
 - 不改变已有 Provider 的 `contextUsage` 数值语义；仅允许其输入桶字段在 Provider 无法验证时缺失，前端按可用性隐藏明细。
-- 不改变 Provider 发送、订阅、历史同步；只允许在既有 `session_bindings` 增加可空的收费策略元数据，不创建费用账本表。
+- 不改变 Provider 发送、订阅、历史同步；只允许在既有 `session_bindings` 增加可空的收费策略元数据，以及由 14.2 统一维护的统计快照、费用账单和模型用量表。
 - 新字段允许为 `null`，旧 Host、旧会话或旧 Provider 不提供数据时前端自然隐藏，保证向后兼容。
 - 缓存率从前端通用推算改为 Provider 端显式生成；未确认的字段组合只会少显示一项，不会把错误比例暴露给用户。
 - 目录价格只能表示估算，不得当作订阅、代理或供应商账单。模型、usage、收费路由、价格版本任一不完整时，宁可隐藏费用。
+
+## 8. 每日价格快照与会话统计落库（2026-08-16）
+
+### 8.1 价格源
+
+`ProviderPriceBookService` 只把 models.dev 当作价格源，不再从代码中的模型价格表回退。Host 启动时和每日调度器只负责把同步任务放入 `TaskManager`；任务成功后将受支持 Provider 的目录写入本地快照目录。版本按 UTC 日期命名，同日内容变化追加修订号，文件永不覆盖。清理按日期保留最近 7 天，不能因为本次同步失败而删除旧版本。
+
+本地目录可以保存同步所需的 Provider/model 价格索引，但它不是 runtime 数据。新会话只保存快照版本；统计折叠完成后，费用 provenance 中只投影本次会话实际命中的模型价格条目。这样既能用固定版本绑定历史金额，又不会把完整 models.dev 目录塞进每次 runtime 响应。
+
+### 8.2 统计刷新链路
+
+```text
+Runtime 事件或显式历史同步完成
+  -> TaskManager.enqueue(session.stats_snapshot_refresh, key=sessionId)
+  -> 文件型 Provider: helper_process 读取一次 Provider 统计
+  -> Harness: host_background 通过现有 sidecar 读取一次 Provider 统计
+  -> 统一 ProviderSessionStats 折叠（token、模型、费用）
+  -> SQLite 事务覆盖 stats / bill / model_usage 三张表
+  -> getSessionStats() 只 SELECT SQLite 快照
+```
+
+`session_stats_snapshots` 保存可直接返回的稀疏统计 JSON；`session_cost_bills` 保存总美元金额和费用 provenance；`session_model_usages` 按 `(session_id, provider, model)` 保存模型级 token 桶和可核验费用。一次刷新先删除该 session 的旧模型行，再写入本次完整结果；若本次结果没有完整费用，则删除账单行，避免旧金额残留。Provider 读取失败不进入覆盖事务，保留上一版成功快照。
+
+`ProviderSessionStats` 在内部可以携带同一次折叠得到的模型用量，但写入 stats JSON 前会剥离该内部字段，模型用量单独落表。前端仍沿用现有 `sessionStats` DTO，不增加第二个费用接口。
+
+### 8.3 绑定和精确匹配
+
+新会话创建时只在当前本地快照存在、选中模型非空且精确命中时写收费绑定。允许剥离明确的 provider 路由前缀后再做一次完整字符串匹配，但禁止模糊相似、版本猜测或默认模型回退。没有匹配时保持三个收费字段为空；已经写入的绑定字段使用 `COALESCE` 语义，后续同步永不改写。
+
+### 8.4 回填边界
+
+本轮不启动全库回填。后续如需为已有数据建立统计，只能增加独立的显式 backfill 任务，按 session 去重、限速并复用同一个统计刷新事务，不能在 Host 的 `getSessionStats()`、Host 启动或页面刷新时隐式执行。
