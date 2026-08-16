@@ -7,10 +7,12 @@ import type {
   ProviderSessionBillingContext,
   ProviderSessionStatValue,
   ProviderSessionStats,
-  ProviderSessionStatsReadOptions
+  ProviderSessionStatsReadOptions,
+  ProviderSessionModelUsage
 } from "./types.js";
 
-export const DEFAULT_PROVIDER_PRICE_BOOK_VERSION = "2026-08-16";
+/** 没有成功同步 models.dev 时使用的占位版本，不包含任何模型价格。 */
+export const DEFAULT_PROVIDER_PRICE_BOOK_VERSION = "models.dev-unavailable";
 /** 仅用于费用详情的本地展示换算，不参与 USD 费用计算。 */
 export const DEFAULT_USD_TO_CNY_RATE = 7.2;
 export const DEFAULT_USD_TO_CNY_RATE_VERSION = DEFAULT_PROVIDER_PRICE_BOOK_VERSION;
@@ -40,39 +42,12 @@ export const DEFAULT_PROVIDER_COST_EXCHANGE_RATE: ProviderSessionCostExchangeRat
 };
 
 /**
- * 运行时只读的价格表。它是估算候选，不代表订阅、代理或折扣账单。
- * 未命中模型时必须隐藏总费用，不能用相近模型替代。
+ * 兼容旧调用方的空价格表。模型价格不再随代码发布，真实价格只能来自 models.dev 快照。
  */
 export const DEFAULT_PROVIDER_PRICE_BOOK: ProviderPriceBook = {
   version: DEFAULT_PROVIDER_PRICE_BOOK_VERSION,
-  source: "builtin",
-  entries: [
-    { provider: "claude-code", model: "claude-opus-4-1", inputUsdPerToken: 15e-6, outputUsdPerToken: 75e-6, cacheReadUsdPerToken: 1.5e-6, cacheWriteUsdPerToken: 18.75e-6 },
-    { provider: "claude-code", model: "claude-opus-4-5", inputUsdPerToken: 5e-6, outputUsdPerToken: 25e-6, cacheReadUsdPerToken: 0.5e-6, cacheWriteUsdPerToken: 6.25e-6 },
-    { provider: "claude-code", model: "claude-sonnet-4-5", inputUsdPerToken: 3e-6, outputUsdPerToken: 15e-6, cacheReadUsdPerToken: 0.3e-6, cacheWriteUsdPerToken: 3.75e-6 },
-    { provider: "claude-code", model: "claude-3-7-sonnet", inputUsdPerToken: 3e-6, outputUsdPerToken: 15e-6, cacheReadUsdPerToken: 0.3e-6, cacheWriteUsdPerToken: 3.75e-6 },
-    { provider: "claude-code", model: "claude-3-5-sonnet", inputUsdPerToken: 3e-6, outputUsdPerToken: 15e-6, cacheReadUsdPerToken: 0.3e-6, cacheWriteUsdPerToken: 3.75e-6 },
-    { provider: "legna-code", model: "claude-opus-4-1", inputUsdPerToken: 15e-6, outputUsdPerToken: 75e-6, cacheReadUsdPerToken: 1.5e-6, cacheWriteUsdPerToken: 18.75e-6 },
-    { provider: "legna-code", model: "claude-opus-4-5", inputUsdPerToken: 5e-6, outputUsdPerToken: 25e-6, cacheReadUsdPerToken: 0.5e-6, cacheWriteUsdPerToken: 6.25e-6 },
-    { provider: "legna-code", model: "claude-sonnet-4-5", inputUsdPerToken: 3e-6, outputUsdPerToken: 15e-6, cacheReadUsdPerToken: 0.3e-6, cacheWriteUsdPerToken: 3.75e-6 },
-    { provider: "codex", model: "gpt-5.6", inputUsdPerToken: 5e-6, outputUsdPerToken: 30e-6, cacheReadUsdPerToken: 0.5e-6, cacheWriteUsdPerToken: 6.25e-6 },
-    { provider: "codex", model: "gpt-5.6-sol", inputUsdPerToken: 5e-6, outputUsdPerToken: 30e-6, cacheReadUsdPerToken: 0.5e-6, cacheWriteUsdPerToken: 6.25e-6 },
-    { provider: "codex", model: "gpt-5.6-terra", inputUsdPerToken: 2e-6, outputUsdPerToken: 12e-6, cacheReadUsdPerToken: 0.2e-6, cacheWriteUsdPerToken: 2.5e-6 },
-    { provider: "codex", model: "gpt-5.6-luna", inputUsdPerToken: 0.2e-6, outputUsdPerToken: 1.2e-6, cacheReadUsdPerToken: 0.02e-6, cacheWriteUsdPerToken: 0.25e-6 },
-    { provider: "codex", model: "gpt-5.5", inputUsdPerToken: 5e-6, outputUsdPerToken: 30e-6, cacheReadUsdPerToken: 0.5e-6 },
-    { provider: "codex", model: "gpt-5.4", inputUsdPerToken: 2.5e-6, outputUsdPerToken: 15e-6, cacheReadUsdPerToken: 0.25e-6 },
-    { provider: "codex", model: "gpt-5.3-codex-spark", inputUsdPerToken: 1.75e-6, outputUsdPerToken: 14e-6, cacheReadUsdPerToken: 0.175e-6 },
-    { provider: "codex", model: "gpt-5.3-codex", inputUsdPerToken: 1.75e-6, outputUsdPerToken: 14e-6, cacheReadUsdPerToken: 0.175e-6 },
-    { provider: "codex", model: "gpt-5-codex", inputUsdPerToken: 1.25e-6, outputUsdPerToken: 10e-6, cacheReadUsdPerToken: 0.125e-6 },
-    { provider: "codex", model: "o4-mini", inputUsdPerToken: 1.1e-6, outputUsdPerToken: 4.4e-6, cacheReadUsdPerToken: 0.275e-6 },
-    { provider: "gemini", model: "gemini-2.5-pro", inputUsdPerToken: 1.25e-6, outputUsdPerToken: 10e-6, cacheReadUsdPerToken: 0.3125e-6 },
-    { provider: "gemini", model: "gemini-2.5-flash", inputUsdPerToken: 0.3e-6, outputUsdPerToken: 2.5e-6, cacheReadUsdPerToken: 0.075e-6 },
-    { provider: "gemini", model: "gemini-2.0-flash", inputUsdPerToken: 0.1e-6, outputUsdPerToken: 0.4e-6, cacheReadUsdPerToken: 0.025e-6 },
-    { provider: "deepseek-harness", model: "deepseek-chat", inputUsdPerToken: 0.27e-6, outputUsdPerToken: 1.1e-6, cacheReadUsdPerToken: 0.07e-6, cacheWriteUsdPerToken: 0.27e-6 },
-    { provider: "deepseek-harness", model: "deepseek-reasoner", inputUsdPerToken: 0.55e-6, outputUsdPerToken: 2.19e-6, cacheReadUsdPerToken: 0.14e-6, cacheWriteUsdPerToken: 0.55e-6 },
-    { provider: "deepseek-harness", model: "deepseek-v4-flash", inputUsdPerToken: 0.27e-6, outputUsdPerToken: 1.1e-6, cacheReadUsdPerToken: 0.07e-6, cacheWriteUsdPerToken: 0.27e-6 },
-    { provider: "deepseek-harness", model: "deepseek-v4-pro", inputUsdPerToken: 0.55e-6, outputUsdPerToken: 2.19e-6, cacheReadUsdPerToken: 0.14e-6, cacheWriteUsdPerToken: 0.55e-6 }
-  ]
+  source: "models.dev",
+  entries: []
 };
 
 /**
@@ -109,6 +84,67 @@ export interface VerifiedUsageLine {
   timestamp: string;
 }
 
+/** 将已核验调用按 provider/model 聚合，未知价格仍保留 token 用量但不填费用。 */
+export function buildProviderSessionModelUsages(
+  lines: readonly VerifiedUsageLine[],
+  priceBook?: ProviderPriceBook
+): ProviderSessionModelUsage[] {
+  const usages = new Map<string, ProviderSessionModelUsage>();
+
+  for (const line of lines) {
+    const model = line.model.trim();
+    if (!line.completed || !model || !line.timestamp) {
+      continue;
+    }
+
+    const inputTokens = nonNegativeInteger(line.inputTokens);
+    const outputTokens = nonNegativeInteger(line.outputTokens);
+    const reasoningTokens = nonNegativeInteger(line.reasoningTokens ?? 0);
+    const cacheReadTokens = nonNegativeInteger(line.cacheReadTokens ?? 0);
+    const cacheWriteTokens = nonNegativeInteger(line.cacheWriteTokens ?? 0);
+
+    if (
+      inputTokens === null
+      || outputTokens === null
+      || reasoningTokens === null
+      || cacheReadTokens === null
+      || cacheWriteTokens === null
+    ) {
+      continue;
+    }
+
+    const key = `${line.provider}\u0000${model}`;
+    const current = usages.get(key);
+    const entry = priceBook ? findPriceBookEntry(priceBook, line.provider, model) : null;
+    const lineCost = entry ? calculateUsageLineCost(line, entry) : null;
+
+    if (current) {
+      current.inputTokens += inputTokens;
+      current.outputTokens += outputTokens;
+      current.reasoningTokens += reasoningTokens;
+      current.cacheReadTokens += cacheReadTokens;
+      current.cacheWriteTokens += cacheWriteTokens;
+      if (lineCost !== null) {
+        current.costUsd = (current.costUsd ?? 0) + lineCost;
+      }
+      continue;
+    }
+
+    usages.set(key, {
+      provider: line.provider,
+      model,
+      inputTokens,
+      outputTokens,
+      reasoningTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      ...(lineCost === null ? {} : { costUsd: lineCost })
+    });
+  }
+
+  return [...usages.values()];
+}
+
 export function addProviderNativeCostMetric(
   metrics: ProviderSessionStats["metrics"],
   value: number,
@@ -126,12 +162,6 @@ export function addProviderNativeCostMetric(
     pricing: {
       kind: "provider-native",
       coverage: "complete",
-      priceBookVersion: DEFAULT_PROVIDER_PRICE_BOOK_VERSION,
-      priceBook: buildPriceBookSnapshot(DEFAULT_PROVIDER_PRICE_BOOK),
-      priceBookSource: DEFAULT_PROVIDER_PRICE_BOOK.source ?? "builtin",
-      ...(DEFAULT_PROVIDER_PRICE_BOOK.fetchedAt
-        ? { priceBookFetchedAt: DEFAULT_PROVIDER_PRICE_BOOK.fetchedAt }
-        : {}),
       exchangeRate: DEFAULT_PROVIDER_COST_EXCHANGE_RATE
     }
   };
@@ -194,7 +224,7 @@ export function addCatalogCostMetric(
       pricingProfileId: billing.pricingProfileId,
       priceBookVersion: billing.priceBookVersion,
       breakdown: buildCostBreakdown(lines, effectivePriceBook),
-      priceBook: buildPriceBookSnapshot(effectivePriceBook),
+      priceBook: buildPriceBookSnapshot(effectivePriceBook, lines),
       priceBookSource: effectivePriceBook.source ?? "builtin",
       ...(effectivePriceBook.fetchedAt
         ? { priceBookFetchedAt: effectivePriceBook.fetchedAt }
@@ -278,8 +308,24 @@ function toCostPrice(entry: ProviderPriceBookEntry): ProviderSessionCostPrice {
   };
 }
 
-function buildPriceBookSnapshot(priceBook: ProviderPriceBook): ProviderSessionCostPrice[] {
-  return priceBook.entries.map(toCostPrice);
+function buildPriceBookSnapshot(
+  priceBook: ProviderPriceBook,
+  lines: readonly VerifiedUsageLine[] = []
+): ProviderSessionCostPrice[] {
+  if (lines.length === 0) {
+    return [];
+  }
+
+  const usedKeys = new Set(
+    lines
+      .map((line) => findPriceBookEntry(priceBook, line.provider, line.model))
+      .filter((entry): entry is ProviderPriceBookEntry => entry !== null)
+      .map((entry) => `${entry.provider}\u0000${entry.model}`)
+  );
+
+  return priceBook.entries
+    .filter((entry) => usedKeys.has(`${entry.provider}\u0000${entry.model}`))
+    .map(toCostPrice);
 }
 
 function toProviderPriceBook(priceBook: ProviderSessionPriceBook): ProviderPriceBook {
@@ -341,10 +387,27 @@ function findPriceBookEntry(
   provider: ProviderId,
   model: string
 ): ProviderPriceBookEntry | null {
-  const modelCandidates = getPriceBookModelCandidates(model);
-  return priceBook.entries.find(
-    (entry) => entry.provider === provider && modelCandidates.has(entry.model)
+  const normalizedModel = model.trim();
+  if (!normalizedModel) {
+    return null;
+  }
+
+  return priceBook.entries.find((entry) =>
+    entry.provider === provider && isExactModelMatch(normalizedModel, entry.model)
   ) ?? null;
+}
+
+/**
+ * 代理路由前缀不是模型本身时，只允许剥离一次显式分隔符后做完整字符串匹配。
+ * 不做大小写、版本号、相似度或“最近模型”推断。
+ */
+function isExactModelMatch(actualModel: string, priceBookModel: string): boolean {
+  if (actualModel === priceBookModel) {
+    return true;
+  }
+
+  const candidates = getPriceBookModelCandidates(actualModel);
+  return candidates.size > 1 && candidates.has(priceBookModel);
 }
 
 function getPriceBookModelCandidates(model: string): Set<string> {
@@ -352,8 +415,12 @@ function getPriceBookModelCandidates(model: string): Set<string> {
 
   return new Set([
     normalizedModel,
-    normalizedModel.split(":").at(-1) ?? normalizedModel,
-    normalizedModel.split("/").at(-1) ?? normalizedModel
+    ...(normalizedModel.includes(":")
+      ? [normalizedModel.slice(normalizedModel.indexOf(":") + 1)]
+      : []),
+    ...(normalizedModel.includes("/")
+      ? [normalizedModel.slice(normalizedModel.indexOf("/") + 1)]
+      : [])
   ]);
 }
 

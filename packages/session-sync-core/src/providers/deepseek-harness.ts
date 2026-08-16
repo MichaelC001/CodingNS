@@ -26,6 +26,7 @@ import type {
 import { addDerivedCacheHitRate } from "../session-stats.js";
 import {
   addCatalogCostMetric,
+  buildProviderSessionModelUsages,
   filterUsageLinesByBillingStart,
   type VerifiedUsageLine
 } from "../session-pricing.js";
@@ -254,9 +255,10 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
       ? { kind: "source-sequence" as const, value: String(latestEvent.sequence) }
       : watermark;
     addCatalogCostMetric(metrics, billingLines, options, costWatermark);
+    const modelUsages = buildProviderSessionModelUsages(usageLines);
 
     return Object.keys(metrics).length > 0
-      ? { provider: this.providerId, capturedAt, metrics }
+      ? { provider: this.providerId, capturedAt, metrics, ...(modelUsages.length > 0 ? { modelUsages } : {}) }
       : null;
   }
 

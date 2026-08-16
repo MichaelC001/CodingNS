@@ -27,6 +27,7 @@ import type {
 import { addDerivedCacheHitRate } from "../session-stats.js";
 import {
   addCatalogCostMetric,
+  buildProviderSessionModelUsages,
   filterUsageLinesByBillingStart,
   type VerifiedUsageLine
 } from "../session-pricing.js";
@@ -522,8 +523,15 @@ export class GeminiAdapter implements ProviderAdapter {
       );
     }
 
+    const modelUsages = buildProviderSessionModelUsages(usageLines);
+
     return Object.keys(metrics).length > 0
-      ? { provider: this.providerId, capturedAt: nextTimestamp(), metrics }
+      ? {
+          provider: this.providerId,
+          capturedAt: nextTimestamp(),
+          metrics,
+          ...(modelUsages.length > 0 ? { modelUsages } : {})
+        }
       : null;
   }
 

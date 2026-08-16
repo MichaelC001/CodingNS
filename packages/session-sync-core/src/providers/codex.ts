@@ -40,6 +40,7 @@ import type {
 import { addDerivedCacheHitRate } from "../session-stats.js";
 import {
   addCatalogCostMetric,
+  buildProviderSessionModelUsages,
   filterUsageLinesByBillingStart,
   type VerifiedUsageLine
 } from "../session-pricing.js";
@@ -1633,9 +1634,11 @@ export class CodexAdapter implements ProviderAdapter {
     );
     const billingLines = filterUsageLinesByBillingStart(usageLines, options?.billing);
     addCatalogCostMetric(metrics, billingLines, options, watermark);
+    // 即使会话未启用计费，也要保留已核验的模型和 token 用量。
+    const modelUsages = buildProviderSessionModelUsages(usageLines);
 
     return Object.keys(metrics).length > 0
-      ? { provider: this.providerId, capturedAt, metrics }
+      ? { provider: this.providerId, capturedAt, metrics, ...(modelUsages.length > 0 ? { modelUsages } : {}) }
       : null;
   }
 

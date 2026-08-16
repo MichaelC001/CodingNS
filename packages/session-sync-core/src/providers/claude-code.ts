@@ -41,6 +41,7 @@ import type {
 import { addDerivedCacheHitRate } from "../session-stats.js";
 import {
   addCatalogCostMetric,
+  buildProviderSessionModelUsages,
   filterUsageLinesByBillingStart,
   type VerifiedUsageLine
 } from "../session-pricing.js";
@@ -818,8 +819,11 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       );
     }
 
+    // 模型用量始终记录真实 token；模型费用只由完整账单中的 breakdown 写入数据库。
+    const modelUsages = buildProviderSessionModelUsages(usageLines);
+
     return Object.keys(metrics).length > 0
-      ? { provider: this.providerId, capturedAt, metrics }
+      ? { provider: this.providerId, capturedAt, metrics, ...(modelUsages.length > 0 ? { modelUsages } : {}) }
       : null;
   }
 

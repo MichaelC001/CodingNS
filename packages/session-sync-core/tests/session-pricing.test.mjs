@@ -6,20 +6,33 @@ import {
   inferProviderSessionBillingProfile
 } from "../dist/index.js";
 
+const modelPriceBook = {
+  version: "models.dev-2026-08-16",
+  source: "models.dev",
+  entries: [
+    { provider: "deepseek-harness", model: "deepseek-v4-flash", inputUsdPerToken: 1e-6, outputUsdPerToken: 2e-6 },
+    { provider: "codex", model: "gpt-5.3-codex", inputUsdPerToken: 1e-6, outputUsdPerToken: 2e-6 },
+    { provider: "codex", model: "gpt-5.4", inputUsdPerToken: 1e-6, outputUsdPerToken: 2e-6 },
+    { provider: "codex", model: "gpt-5.6", inputUsdPerToken: 1e-6, outputUsdPerToken: 2e-6 },
+    { provider: "codex", model: "gpt-5.6-terra", inputUsdPerToken: 1e-6, outputUsdPerToken: 2e-6 }
+  ]
+};
+
 describe("会话费用折叠", () => {
-  it("选中模型命中价格表时按模型后缀推断收费策略", () => {
-    expect(inferProviderSessionBillingProfile("deepseek-harness", "proxy-route:deepseek-v4-flash"))
+  it("选中模型精确命中 models.dev 价格表时才推断收费策略", () => {
+    expect(inferProviderSessionBillingProfile("deepseek-harness", "proxy-route:deepseek-v4-flash", modelPriceBook))
       .toBe("direct-api");
-    expect(inferProviderSessionBillingProfile("codex", "gateway/gpt-5.3-codex"))
+    expect(inferProviderSessionBillingProfile("codex", "gateway/gpt-5.3-codex", modelPriceBook))
       .toBe("direct-api");
-    expect(inferProviderSessionBillingProfile("codex", "gpt-5.4"))
+    expect(inferProviderSessionBillingProfile("codex", "gpt-5.4", modelPriceBook))
       .toBe("direct-api");
-    expect(inferProviderSessionBillingProfile("codex", "gpt-5.6"))
+    expect(inferProviderSessionBillingProfile("codex", "gpt-5.6", modelPriceBook))
       .toBe("direct-api");
-    expect(inferProviderSessionBillingProfile("codex", "openai/gpt-5.6-terra"))
+    expect(inferProviderSessionBillingProfile("codex", "openai/gpt-5.6-terra", modelPriceBook))
       .toBe("direct-api");
-    expect(inferProviderSessionBillingProfile("deepseek-harness", "proxy-route:unknown-model"))
+    expect(inferProviderSessionBillingProfile("deepseek-harness", "proxy-route:unknown-model", modelPriceBook))
       .toBeNull();
+    expect(inferProviderSessionBillingProfile("codex", "gpt-5.6")).toBeNull();
   });
 
   it("按互不重叠输入桶和输出桶计算目录估算", () => {
@@ -134,9 +147,9 @@ describe("会话费用折叠", () => {
         billing: {
           billingStartedAt: "2026-08-16T00:00:00.000Z",
           pricingProfileId: "direct-api",
-          priceBookVersion: "models.dev-2026-W33",
+          priceBookVersion: "models.dev-2026-08-16",
           priceBook: {
-            version: "models.dev-2026-W33",
+            version: "models.dev-2026-08-16",
             source: "models.dev",
             fetchedAt: "2026-08-15T00:00:00.000Z",
             entries: [{
@@ -153,7 +166,7 @@ describe("会话费用折叠", () => {
 
     expect(metrics.costUsd?.value).toBeCloseTo(0.00052, 12);
     expect(metrics.costUsd?.pricing).toMatchObject({
-      priceBookVersion: "models.dev-2026-W33",
+      priceBookVersion: "models.dev-2026-08-16",
       priceBookSource: "models.dev",
       priceBookFetchedAt: "2026-08-15T00:00:00.000Z"
     });

@@ -8,15 +8,68 @@ import {
   CodexAdapter,
   DeepSeekHarnessAdapter,
   GeminiAdapter,
-  LegnaCodeAdapter,
-  DEFAULT_PROVIDER_PRICE_BOOK_VERSION
+  LegnaCodeAdapter
 } from "../dist/index.js";
+
+const priceBook = {
+  version: "models.dev-2026-08-16",
+  source: "models.dev",
+  fetchedAt: "2026-08-16T00:00:00.000Z",
+  entries: [
+    {
+      provider: "claude-code",
+      model: "claude-sonnet-4-5",
+      inputUsdPerToken: 3e-6,
+      outputUsdPerToken: 15e-6,
+      cacheReadUsdPerToken: 0.3e-6,
+      cacheWriteUsdPerToken: 3.75e-6
+    },
+    {
+      provider: "legna-code",
+      model: "claude-sonnet-4-5",
+      inputUsdPerToken: 3e-6,
+      outputUsdPerToken: 15e-6,
+      cacheReadUsdPerToken: 0.3e-6,
+      cacheWriteUsdPerToken: 3.75e-6
+    },
+    {
+      provider: "codex",
+      model: "gpt-5.3-codex",
+      inputUsdPerToken: 1.75e-6,
+      outputUsdPerToken: 14e-6,
+      cacheReadUsdPerToken: 0.175e-6
+    },
+    {
+      provider: "codex",
+      model: "gpt-5.4",
+      inputUsdPerToken: 2.5e-6,
+      outputUsdPerToken: 15e-6,
+      cacheReadUsdPerToken: 0.25e-6
+    },
+    {
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+      inputUsdPerToken: 0.3e-6,
+      outputUsdPerToken: 2.5e-6,
+      cacheReadUsdPerToken: 0.075e-6
+    },
+    {
+      provider: "deepseek-harness",
+      model: "deepseek-v4-flash",
+      inputUsdPerToken: 0.27e-6,
+      outputUsdPerToken: 1.1e-6,
+      cacheReadUsdPerToken: 0.07e-6,
+      cacheWriteUsdPerToken: 0.27e-6
+    }
+  ]
+};
 
 const billing = {
   billing: {
     billingStartedAt: "2026-08-16T00:00:00.000Z",
     pricingProfileId: "direct-api",
-    priceBookVersion: DEFAULT_PROVIDER_PRICE_BOOK_VERSION
+    priceBookVersion: priceBook.version,
+    priceBook
   }
 };
 

@@ -226,6 +226,19 @@ export interface ProviderSessionStats {
   provider: ProviderId;
   capturedAt: string;
   metrics: Partial<Record<ProviderSessionStatMetric, ProviderSessionStatValue>>;
+  /** 仅供 Host 统计落库使用；runtime DTO 会剥离这个内部字段。 */
+  modelUsages?: readonly ProviderSessionModelUsage[];
+}
+
+export interface ProviderSessionModelUsage {
+  provider: ProviderId;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd?: number;
 }
 
 export interface ProviderSessionSummary {
