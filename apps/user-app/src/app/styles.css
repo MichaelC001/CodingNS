@@ -8639,7 +8639,7 @@ textarea:focus-visible {
 
 .composer-session-cost-price-table {
   width: 100%;
-  min-width: 680px;
+  min-width: 820px;
   border-collapse: collapse;
   color: var(--text-primary);
   font-size: 12px;
@@ -8660,9 +8660,23 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
-.composer-session-cost-price-table td:nth-child(n + 3),
-.composer-session-cost-price-table th:nth-child(n + 3) {
+.composer-session-cost-price-table td:nth-child(n + 4),
+.composer-session-cost-price-table th:nth-child(n + 4) {
   text-align: right;
+}
+
+.composer-session-cost-price-table td:nth-child(1),
+.composer-session-cost-price-table th:nth-child(1),
+.composer-session-cost-price-table td:nth-child(2),
+.composer-session-cost-price-table th:nth-child(2) {
+  text-align: left;
+}
+
+.composer-session-cost-price-model-id {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
 }
 
 .composer-session-cost-price-table tbody tr:last-child td {

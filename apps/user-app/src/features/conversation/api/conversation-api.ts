@@ -1234,6 +1234,33 @@ export interface ProviderCatalogEntryDto {
   };
 }
 
+export type ProviderPriceBookFamilyDto =
+  | "gpt"
+  | "claude"
+  | "glm"
+  | "kimi"
+  | "deepseek"
+  | "gemini";
+
+export interface ProviderPriceBookEntryDto {
+  provider: ProviderId;
+  family: ProviderPriceBookFamilyDto;
+  sourceProvider: string;
+  model: string;
+  name?: string;
+  inputUsdPerToken: number;
+  outputUsdPerToken: number;
+  cacheReadUsdPerToken?: number;
+  cacheWriteUsdPerToken?: number;
+}
+
+export interface ProviderPriceBookDto {
+  version: string;
+  source: "models.dev";
+  fetchedAt?: string;
+  entries: ProviderPriceBookEntryDto[];
+}
+
 export interface HistoryMessageDto {
   messageId: string;
   provider: ProviderId;
@@ -2747,6 +2774,16 @@ export async function listProviderCatalog(options?: ScopedRequestOptions): Promi
     { targetHostId: options?.targetHostId ?? undefined, signal: options?.signal }
   );
   return response.items;
+}
+
+export function getProviderPriceBook(options?: ScopedRequestOptions): Promise<ProviderPriceBookDto> {
+  return httpClient.request<ProviderPriceBookDto>(
+    "/api/providers/price-book",
+    {
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal
+    }
+  );
 }
 
 export async function refreshProviderCatalog(options?: ScopedRequestOptions): Promise<ProviderCatalogEntryDto[]> {

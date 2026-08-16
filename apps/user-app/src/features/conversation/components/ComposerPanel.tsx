@@ -41,6 +41,7 @@ import type {
   ProviderSessionStatValueDto,
   ProviderSessionStatMetricDto,
   ProviderSessionStatsDto,
+  ProviderPriceBookDto,
   SessionRuntimePermissionStatusDto,
   SessionProviderConfigMode
 } from "../api/conversation-api";
@@ -48,6 +49,7 @@ import type { SessionMessageViewModel } from "../runtime/session-runtime-machine
 import type { PreferenceReasoningLevel as ReasoningLevel } from "../../../preferences/types";
 import {
   getProviderCapabilities,
+  getProviderPriceBook,
   listProviderCapabilities,
   listQuickPhrases,
   replaceQuickPhrases
@@ -2840,7 +2842,11 @@ export function ComposerPanel({
               <div
                 className={`composer-session-stats-control${platform.isMobile || platform.isNativeMobile ? " is-mobile" : ""}`}
               >
-                <SessionStatsIndicators contextUsage={contextUsage} sessionStats={sessionStats} />
+                <SessionStatsIndicators
+                  contextUsage={contextUsage}
+                  sessionStats={sessionStats}
+                  targetHostId={currentTargetHostId}
+                />
                 <SessionStatsSummary sessionStats={sessionStats} />
               </div>
               <SessionTaskProgressButton
@@ -3443,10 +3449,12 @@ type SessionStatsIndicator = "context" | "cache";
 
 function SessionStatsIndicators({
   contextUsage,
-  sessionStats
+  sessionStats,
+  targetHostId
 }: {
   contextUsage: ContextUsageDto | null;
   sessionStats: ProviderSessionStatsDto | null;
+  targetHostId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [costDetailsOpen, setCostDetailsOpen] = useState(false);
@@ -3742,6 +3750,7 @@ function SessionStatsIndicators({
           open={costDetailsOpen}
           isMobile={isMobile}
           metric={costMetric}
+          targetHostId={targetHostId}
           onClose={() => setCostDetailsOpen(false)}
         />
       ) : null}
@@ -3753,17 +3762,51 @@ function SessionCostDetailsModal({
   open,
   isMobile,
   metric,
+  targetHostId,
   onClose
 }: {
   open: boolean;
   isMobile: boolean;
   metric: SessionStatsMetricValue;
+  targetHostId?: string | null;
   onClose: () => void;
 }) {
   const [priceBookOpen, setPriceBookOpen] = useState(false);
+  const [catalogPriceBook, setCatalogPriceBook] = useState<ProviderPriceBookDto | null>(null);
+  const [catalogPriceBookLoading, setCatalogPriceBookLoading] = useState(false);
+  const [catalogPriceBookError, setCatalogPriceBookError] = useState(false);
   const pricing = metric.pricing;
   const breakdown = pricing?.breakdown ?? [];
-  const priceBook = pricing?.priceBook ?? [];
+  const sessionPriceBook = pricing?.priceBook ?? [];
+  const priceBook = catalogPriceBook && catalogPriceBook.entries.length > 0
+    ? catalogPriceBook.entries
+    : sessionPriceBook;
+
+  const togglePriceBook = async () => {
+    if (priceBookOpen) {
+      setPriceBookOpen(false);
+      return;
+    }
+
+    setPriceBookOpen(true);
+
+    if (catalogPriceBook || catalogPriceBookLoading) {
+      return;
+    }
+
+    setCatalogPriceBookLoading(true);
+    setCatalogPriceBookError(false);
+
+    try {
+      const nextPriceBook = await getProviderPriceBook({ targetHostId });
+      setCatalogPriceBook(nextPriceBook);
+    } catch {
+      // 保留会话绑定价格作为降级展示，但不伪造最新目录。
+      setCatalogPriceBookError(true);
+    } finally {
+      setCatalogPriceBookLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) {
@@ -3776,8 +3819,7 @@ function SessionCostDetailsModal({
       <button
         type="button"
         className="secondary-button"
-        disabled={priceBook.length === 0}
-        onClick={() => setPriceBookOpen((current) => !current)}
+        onClick={() => void togglePriceBook()}
       >
         {priceBookOpen
           ? t("conversation.sessionStatsCostHidePriceBook")
@@ -3795,6 +3837,9 @@ function SessionCostDetailsModal({
       pricing={pricing}
       breakdown={breakdown}
       priceBook={priceBook}
+      catalogPriceBook={catalogPriceBook}
+      catalogPriceBookLoading={catalogPriceBookLoading}
+      catalogPriceBookError={catalogPriceBookError}
       showPriceBook={priceBookOpen}
     />
   );
@@ -3839,12 +3884,18 @@ function SessionCostDetailsBody({
   pricing,
   breakdown,
   priceBook,
+  catalogPriceBook,
+  catalogPriceBookLoading,
+  catalogPriceBookError,
   showPriceBook
 }: {
   metric: SessionStatsMetricValue;
   pricing: SessionCostPricing | undefined;
   breakdown: readonly SessionCostBreakdown[];
-  priceBook: readonly SessionCostPrice[];
+  priceBook: readonly SessionCostPrice[] | readonly ProviderPriceBookDto["entries"][number][];
+  catalogPriceBook: ProviderPriceBookDto | null;
+  catalogPriceBookLoading: boolean;
+  catalogPriceBookError: boolean;
   showPriceBook: boolean;
 }) {
   const exchangeRate = pricing?.exchangeRate;
@@ -3905,13 +3956,18 @@ function SessionCostDetailsBody({
       {showPriceBook ? (
         <ModalSection
           heading={t("conversation.sessionStatsCostPriceBookTitle")}
-          description={formatSessionPriceBookDescription(pricing)}
+          description={formatSessionPriceBookDescription(pricing, catalogPriceBook)}
         >
-          {priceBook.length > 0 ? (
+          {catalogPriceBookLoading && priceBook.length === 0 ? (
+            <p className="composer-session-cost-empty">
+              {t("conversation.sessionStatsCostPriceBookLoading")}
+            </p>
+          ) : priceBook.length > 0 ? (
             <div className="composer-session-cost-price-table-wrap" role="region" aria-label={t("conversation.sessionStatsCostPriceBookTitle")}>
               <table className="composer-session-cost-price-table">
                 <thead>
                   <tr>
+                    <th scope="col">{t("conversation.sessionStatsCostSeriesColumn")}</th>
                     <th scope="col">{t("conversation.sessionStatsCostProviderColumn")}</th>
                     <th scope="col">{t("conversation.sessionStatsCostModelColumn")}</th>
                     <th scope="col">{t("conversation.sessionStatsCostInputColumn")}</th>
@@ -3922,9 +3978,15 @@ function SessionCostDetailsBody({
                 </thead>
                 <tbody>
                   {priceBook.map((entry) => (
-                    <tr key={`${entry.provider}:${entry.model}`}>
-                      <td>{getProviderDisplayName(entry.provider)}</td>
-                      <td>{entry.model}</td>
+                    <tr key={`${entry.provider}:${"sourceProvider" in entry ? entry.sourceProvider : ""}:${entry.model}`}>
+                      <td>{"family" in entry ? formatPriceBookFamily(entry.family) : getProviderDisplayName(entry.provider)}</td>
+                      <td>{"sourceProvider" in entry ? formatPriceBookSourceProvider(entry.sourceProvider) : getProviderDisplayName(entry.provider)}</td>
+                      <td>
+                        <span>{"name" in entry && entry.name ? entry.name : entry.model}</span>
+                        {"name" in entry && entry.name && entry.name !== entry.model ? (
+                          <small className="composer-session-cost-price-model-id">{entry.model}</small>
+                        ) : null}
+                      </td>
                       <td>{formatUsdPerMillionTokens(entry.inputUsdPerToken)}</td>
                       <td>{formatUsdPerMillionTokens(entry.outputUsdPerToken)}</td>
                       <td>{formatOptionalUsdPerMillionTokens(entry.cacheReadUsdPerToken)}</td>
@@ -3939,6 +4001,11 @@ function SessionCostDetailsBody({
               {t("conversation.sessionStatsCostPriceBookUnavailable")}
             </p>
           )}
+          {catalogPriceBookError ? (
+            <p className="composer-session-cost-empty">
+              {t("conversation.sessionStatsCostPriceBookLoadError")}
+            </p>
+          ) : null}
         </ModalSection>
       ) : null}
     </>
@@ -3969,7 +4036,27 @@ function formatOptionalUsdPerMillionTokens(value: number | undefined): string {
   return value === undefined ? "--" : formatUsdPerMillionTokens(value);
 }
 
-function formatSessionPriceBookDescription(pricing: SessionCostPricing | undefined): string {
+function formatSessionPriceBookDescription(
+  pricing: SessionCostPricing | undefined,
+  catalogPriceBook: ProviderPriceBookDto | null
+): string {
+  if (catalogPriceBook && catalogPriceBook.entries.length > 0) {
+    const timestamp = catalogPriceBook.fetchedAt ? new Date(catalogPriceBook.fetchedAt) : null;
+    const fetchedAt = timestamp && Number.isFinite(timestamp.getTime())
+      ? new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short"
+      }).format(timestamp)
+      : catalogPriceBook.fetchedAt;
+    return [
+      t("conversation.sessionStatsCostCurrentPriceBookDescription", { version: catalogPriceBook.version }),
+      t("conversation.sessionStatsCostPriceBookSourceModelsDev"),
+      fetchedAt
+        ? t("conversation.sessionStatsCostPriceBookFetchedAt", { value: fetchedAt })
+        : null
+    ].filter(Boolean).join(" ");
+  }
+
   const description = t("conversation.sessionStatsCostPriceBookDescription", {
     version: pricing?.priceBookVersion ?? "--"
   });
@@ -3989,6 +4076,21 @@ function formatSessionPriceBookDescription(pricing: SessionCostPricing | undefin
     }).format(timestamp)
     : pricing.priceBookFetchedAt;
   return `${description} ${source} ${t("conversation.sessionStatsCostPriceBookFetchedAt", { value: fetchedAt })}`;
+}
+
+function formatPriceBookFamily(family: ProviderPriceBookDto["entries"][number]["family"]): string {
+  const translationKey = `conversation.sessionStatsCostFamily${family.charAt(0).toUpperCase()}${family.slice(1)}`;
+  return t(translationKey);
+}
+
+function formatPriceBookSourceProvider(sourceProvider: string): string {
+  const key = sourceProvider.trim().toLowerCase().replace(
+    /[^a-z0-9]+(.)/g,
+    (_match, character: string) => character.toUpperCase()
+  );
+  const translationKey = `conversation.sessionStatsCostSource${key.charAt(0).toUpperCase()}${key.slice(1)}`;
+  const translated = t(translationKey);
+  return translated === translationKey ? sourceProvider : translated;
 }
 
 function formatUsdAmount(value: number): string {

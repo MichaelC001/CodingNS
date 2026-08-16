@@ -136,6 +136,7 @@ const mockListQuickPhrases = vi.fn();
 const mockReplaceQuickPhrases = vi.fn();
 const mockGetProviderCapabilities = vi.fn();
 const mockListProviderCatalog = vi.fn();
+const mockGetProviderPriceBook = vi.fn();
 
 vi.mock("../api/conversation-api", async () => {
   const actual = await vi.importActual<typeof import("../api/conversation-api")>(
@@ -146,6 +147,7 @@ vi.mock("../api/conversation-api", async () => {
     ...actual,
     getProviderCapabilities: (...args: unknown[]) => mockGetProviderCapabilities(...args),
     listProviderCatalog: (...args: unknown[]) => mockListProviderCatalog(...args),
+    getProviderPriceBook: (...args: unknown[]) => mockGetProviderPriceBook(...args),
     listQuickPhrases: (...args: unknown[]) => mockListQuickPhrases(...args),
     replaceQuickPhrases: (...args: unknown[]) => mockReplaceQuickPhrases(...args)
   };
@@ -334,6 +336,7 @@ describe("ComposerPanel", () => {
     mockReplaceQuickPhrases.mockReset();
     mockGetProviderCapabilities.mockReset();
     mockListProviderCatalog.mockReset();
+    mockGetProviderPriceBook.mockReset();
     mockSearchComposerMentionItems.mockReset();
     mockRevealWorkspaceFile.mockReset();
     mockFetchModelManagementSnapshot.mockReset();
@@ -1326,6 +1329,122 @@ describe("ComposerPanel", () => {
 
     expect(screen.getByRole("dialog")).toHaveTextContent(t("conversation.sessionStatsCostPriceBookTitle"));
     expect(screen.getByRole("dialog")).toHaveTextContent("$1.75");
+  });
+
+  it("价格表按钮读取当前 Host 的本地主流模型快照", async () => {
+    workbenchShellMock.currentTargetHostId = "peer-host-1";
+    mockGetProviderPriceBook.mockResolvedValue({
+      version: "models.dev-2026-08-16",
+      source: "models.dev",
+      fetchedAt: "2026-08-16T00:00:00.000Z",
+      entries: [
+        {
+          provider: "gpt",
+          family: "gpt",
+          sourceProvider: "openai",
+          model: "gpt-5.6",
+          name: "GPT-5.6",
+          inputUsdPerToken: 5e-6,
+          outputUsdPerToken: 30e-6
+        },
+        {
+          provider: "claude",
+          family: "claude",
+          sourceProvider: "anthropic",
+          model: "claude-sonnet-5",
+          inputUsdPerToken: 2e-6,
+          outputUsdPerToken: 10e-6
+        }
+      ]
+    });
+
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        sessionStats={{
+          provider: "codex",
+          capturedAt: "2026-08-16T00:00:02.000Z",
+          metrics: {
+            costUsd: {
+              value: 0.125,
+              source: "derived-provider-metrics",
+              semantic: "priced-final-events",
+              pricing: {
+                kind: "catalog-estimate",
+                coverage: "complete",
+                pricingProfileId: "direct-api",
+                priceBookVersion: "models.dev-2026-08-16",
+                breakdown: [],
+                priceBook: []
+              },
+              watermark: { kind: "source-timestamp", value: "2026-08-16T00:00:02.000Z" }
+            }
+          }
+        }}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(container.querySelector(".composer-context-ring")!);
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.sessionStatsCostDetailsAction") }));
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.sessionStatsCostViewPriceBook") }));
+
+    await waitFor(() => {
+      expect(mockGetProviderPriceBook).toHaveBeenCalledWith({ targetHostId: "peer-host-1" });
+      expect(screen.getByRole("dialog")).toHaveTextContent("GPT-5.6");
+      expect(screen.getByRole("dialog")).toHaveTextContent("Claude");
+    });
+  });
+
+  it("本地快照为空时回退显示会话已绑定价格", async () => {
+    mockGetProviderPriceBook.mockResolvedValue({
+      version: "models.dev-unavailable",
+      source: "models.dev",
+      entries: []
+    });
+
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        sessionStats={{
+          provider: "codex",
+          capturedAt: "2026-08-16T00:00:02.000Z",
+          metrics: {
+            costUsd: {
+              value: 0.125,
+              source: "derived-provider-metrics",
+              semantic: "priced-final-events",
+              pricing: {
+                kind: "catalog-estimate",
+                coverage: "complete",
+                pricingProfileId: "direct-api",
+                priceBookVersion: "models.dev-2026-08-16",
+                priceBook: [{
+                  provider: "codex",
+                  model: "gpt-5.6",
+                  inputUsdPerToken: 5e-6,
+                  outputUsdPerToken: 30e-6
+                }]
+              },
+              watermark: { kind: "source-timestamp", value: "2026-08-16T00:00:02.000Z" }
+            }
+          }
+        }}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(container.querySelector(".composer-context-ring")!);
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.sessionStatsCostDetailsAction") }));
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.sessionStatsCostViewPriceBook") }));
+
+    await waitFor(() => {
+      expect(mockGetProviderPriceBook).toHaveBeenCalledWith({ targetHostId: null });
+      expect(screen.getByRole("dialog")).toHaveTextContent("gpt-5.6");
+      expect(screen.getByRole("dialog")).toHaveTextContent("$5");
+    });
   });
 
   it("桌面摘要只显示核心指标，缓存命中率由独立圆环和详情显示", () => {
