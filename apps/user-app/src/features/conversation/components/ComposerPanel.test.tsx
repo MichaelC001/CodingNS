@@ -892,10 +892,10 @@ describe("ComposerPanel", () => {
     expect(tooltip?.textContent).toContain(t("conversation.contextUsageTitle"));
     expect(tooltip?.textContent).toContain("32%");
     expect(tooltip?.textContent).toContain(
-      t("conversation.contextUsageUsedTokens", { count: "64,000" })
+      t("conversation.contextUsageUsedTokens", { count: "6.4万" })
     );
     expect(tooltip?.textContent).toContain(
-      t("conversation.contextUsageLimitTokens", { count: "200,000" })
+      t("conversation.contextUsageLimitTokens", { count: "20万" })
     );
   });
 
@@ -929,7 +929,7 @@ describe("ComposerPanel", () => {
       t("conversation.contextUsageUsedTokens", { count: "9,818" })
     );
     expect(tooltip).toHaveTextContent(
-      t("conversation.contextUsageLimitTokens", { count: "1,000,000" })
+      t("conversation.contextUsageLimitTokens", { count: "100万" })
     );
     expect(tooltip.querySelector(".composer-context-usage-details")).toBeNull();
   });
@@ -1071,7 +1071,11 @@ describe("ComposerPanel", () => {
 
     const tooltip = await screen.findByRole("tooltip");
     await waitFor(() => {
-      expect(tooltip).toHaveStyle({ bottom: "210px", maxHeight: "678px" });
+      expect(tooltip).toHaveStyle({
+        bottom: "210px",
+        maxHeight: "678px",
+        width: "420px"
+      });
     });
   });
 
@@ -1142,11 +1146,14 @@ describe("ComposerPanel", () => {
 
     const tooltip = screen.getByRole("tooltip");
     expect(tooltip.querySelector('[data-metric="inputTokens"] strong')).toHaveTextContent(
-      "5,887,173"
+      "588.7万"
     );
-    expect(tooltip).toHaveTextContent("5.9M");
+    expect(tooltip).not.toHaveTextContent("5.9M");
+    expect(tooltip.querySelector('[data-metric="outputTokens"] strong')).toHaveTextContent(
+      "7.7万"
+    );
     expect(tooltip.querySelector('[data-metric="uncachedInputTokens"] strong')).toHaveTextContent(
-      "63,429"
+      "6.3万"
     );
     expect(tooltip).toHaveTextContent("10 分 21 秒");
     expect(tooltip).toHaveTextContent("1 分 57 秒");
@@ -1229,6 +1236,34 @@ describe("ComposerPanel", () => {
     const tooltip = screen.getByRole("tooltip");
     expect(tooltip).toHaveTextContent(t("conversation.sessionStatsCost"));
     expect(tooltip.querySelector('[data-metric="costUsd"] strong')).toHaveTextContent("$0.125");
+  });
+
+  it("费用显示美元符号并最多保留三位小数", () => {
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        sessionStats={{
+          provider: "opencode",
+          capturedAt: "2026-08-16T00:00:02.000Z",
+          metrics: {
+            costUsd: {
+              value: 0.1259,
+              source: "provider-session-store",
+              semantic: "cumulative",
+              watermark: { kind: "source-timestamp", value: "2026-08-16T00:00:02.000Z" }
+            }
+          }
+        }}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(container.querySelector(".composer-context-ring")!);
+
+    const costValue = screen.getByRole("tooltip").querySelector('[data-metric="costUsd"] strong');
+    expect(costValue).toHaveTextContent("$0.126");
+    expect(costValue).not.toHaveTextContent("US$");
   });
 
   it("费用信息按钮会打开模型明细、人民币换算和价格表", () => {
@@ -1347,8 +1382,14 @@ describe("ComposerPanel", () => {
     const summary = container.querySelector(".composer-session-stats-summary");
     expect(summary).not.toBeNull();
     expect(summary).toHaveTextContent(t("conversation.sessionStatsSummaryTurns", { value: "4" }));
-    expect(summary).toHaveTextContent(t("conversation.sessionStatsInputTokens"));
-    expect(summary).toHaveTextContent(t("conversation.sessionStatsOutputTokens"));
+    expect(summary).toHaveTextContent(
+      t("conversation.sessionStatsSummaryInputTokens", { value: "800" })
+    );
+    expect(summary).toHaveTextContent(
+      t("conversation.sessionStatsSummaryOutputTokens", { value: "300" })
+    );
+    expect(summary).not.toHaveTextContent("800K");
+    expect(summary).not.toHaveTextContent("300K");
     expect(summary).not.toHaveTextContent(t("conversation.sessionStatsSummaryCacheHitRate", { value: "20%" }));
     expect(summary).not.toHaveTextContent("tok");
 
@@ -1377,6 +1418,48 @@ describe("ComposerPanel", () => {
     fireEvent.click(cacheTrigger!);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
+
+  it.each([
+    [8_507_957, "850.8万", 23_750, "2.4万"] as const,
+    [100_000_000, "1亿", 250_000_000, "2.5亿"] as const
+  ])(
+    "桌面摘要会自动使用易读的 Token 单位",
+    (inputTokens, inputLabel, outputTokens, outputLabel) => {
+      const { container } = render(
+        <ComposerPanel
+          capabilities={createCapabilities()}
+          sessionStats={{
+            provider: "deepseek-harness",
+            capturedAt: "2026-08-15T10:00:00.000Z",
+            metrics: {
+              inputTokens: {
+                value: inputTokens,
+                source: "provider-projection",
+                semantic: "cumulative",
+                watermark: { kind: "source-sequence", value: "12" }
+              },
+              outputTokens: {
+                value: outputTokens,
+                source: "provider-projection",
+                semantic: "cumulative",
+                watermark: { kind: "source-sequence", value: "12" }
+              }
+            }
+          }}
+          isSubmitting={false}
+          onSend={vi.fn().mockResolvedValue(undefined)}
+        />
+      );
+
+      const summary = container.querySelector(".composer-session-stats-summary");
+      expect(summary).toHaveTextContent(
+        t("conversation.sessionStatsSummaryInputTokens", { value: inputLabel })
+      );
+      expect(summary).toHaveTextContent(
+        t("conversation.sessionStatsSummaryOutputTokens", { value: outputLabel })
+      );
+    }
+  );
 
   it("移动端同时显示上下文占用和缓存命中率两个圆环", () => {
     platformMock.platform = "ios";

@@ -3281,7 +3281,7 @@ function buildSessionStatsSummary(sessionStats: ProviderSessionStatsDto | null):
     summary.push({
       key: "inputTokens",
       text: t("conversation.sessionStatsSummaryInputTokens", {
-        value: formatCompactTokenCount(inputTokens.value)
+        value: formatSessionStatsTokenCount(inputTokens.value)
       })
     });
   }
@@ -3290,12 +3290,34 @@ function buildSessionStatsSummary(sessionStats: ProviderSessionStatsDto | null):
     summary.push({
       key: "outputTokens",
       text: t("conversation.sessionStatsSummaryOutputTokens", {
-        value: formatCompactTokenCount(outputTokens.value)
+        value: formatSessionStatsTokenCount(outputTokens.value)
       })
     });
   }
 
   return summary;
+}
+
+function formatSessionStatsTokenCount(value: number): string {
+  if (value >= 100_000_000) {
+    return formatSessionStatsUnit(
+      value / 100_000_000,
+      t("conversation.sessionStatsHundredMillionUnit")
+    );
+  }
+
+  if (value >= 10_000) {
+    return formatSessionStatsUnit(
+      value / 10_000,
+      t("conversation.sessionStatsTenThousandUnit")
+    );
+  }
+
+  return formatTokenCount(value);
+}
+
+function formatSessionStatsUnit(value: number, unit: string): string {
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}${unit}`;
 }
 
 function isSessionStatValueAvailable(
@@ -3314,17 +3336,12 @@ function formatSessionStatValue(metric: SessionStatsDisplayMetric, value: number
   }
 
   if (metric === "costUsd") {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 4
-    }).format(value);
+    return formatUsdAmount(value);
   }
 
   if (metric === "inputTokens") {
     return t("conversation.sessionStatsInputTokensValue", {
-      exact: formatTokenCount(value),
-      compact: formatCompactTokenCount(value)
+      exact: formatSessionStatsTokenCount(value)
     });
   }
 
@@ -3332,14 +3349,11 @@ function formatSessionStatValue(metric: SessionStatsDisplayMetric, value: number
     return formatSessionDuration(value);
   }
 
-  return formatTokenCount(value);
-}
+  if (metric.endsWith("Tokens")) {
+    return formatSessionStatsTokenCount(value);
+  }
 
-function formatCompactTokenCount(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    notation: "compact",
-    maximumFractionDigits: 1
-  }).format(value);
+  return formatTokenCount(value);
 }
 
 function formatSessionDuration(valueMs: number): string {
@@ -3487,7 +3501,7 @@ function SessionStatsIndicators({
     const edgePadding = 12;
     const gap = 10;
     const width = Math.min(
-      hasSessionStats ? 372 : 272,
+      hasSessionStats ? 420 : 272,
       Math.max(hasSessionStats ? 284 : 204, viewportWidth - edgePadding * 2)
     );
     const left = Math.min(
@@ -3636,8 +3650,8 @@ function SessionStatsIndicators({
                     <span style={{ width: `${progress * 100}%` }} />
                   </div>
                   <div className="composer-context-usage-amounts">
-                    <span>{t("conversation.contextUsageUsedTokens", { count: formatTokenCount(contextUsage.promptTokens) })}</span>
-                    <span>{t("conversation.contextUsageLimitTokens", { count: formatTokenCount(contextUsage.contextWindow) })}</span>
+                    <span>{t("conversation.contextUsageUsedTokens", { count: formatSessionStatsTokenCount(contextUsage.promptTokens) })}</span>
+                    <span>{t("conversation.contextUsageLimitTokens", { count: formatSessionStatsTokenCount(contextUsage.contextWindow) })}</span>
                   </div>
                 </section>
               ) : !hasSessionStats ? (
@@ -3981,7 +3995,8 @@ function formatUsdAmount(value: number): string {
   return new Intl.NumberFormat(undefined, {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: 6
+    currencyDisplay: "narrowSymbol",
+    maximumFractionDigits: 3
   }).format(value);
 }
 
