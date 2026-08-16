@@ -4248,9 +4248,13 @@ function buildCodexUsageLines(
     (snapshot) => snapshot.timestamp && snapshot.timestamp >= billing.billingStartedAt
   );
 
-  if (!baseline || active.length === 0) {
+  if (active.length === 0) {
     return [];
   }
+
+  // 新会话的第一条 token_count 通常已经晚于 billingStartedAt，历史中没有
+  // 更早的快照。此时把累计计数视为本会话从零开始，仍然可以可靠计算首轮差值。
+  const baselineTotal = baseline?.total ?? {};
 
   // 累计快照在并发 turn 之间无法可靠拆分。任何一条这样的会话都必须隐藏
   // 目录费用，不能把差值硬塞给最后看到的 turn。
@@ -4267,7 +4271,7 @@ function buildCodexUsageLines(
   }
 
   const lines: VerifiedUsageLine[] = [];
-  let previous = baseline.total;
+  let previous = baselineTotal;
   let currentTurnId = "";
   let currentModel = "";
   let currentDelta: Record<string, number> = {};

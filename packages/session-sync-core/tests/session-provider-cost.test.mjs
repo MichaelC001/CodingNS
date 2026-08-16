@@ -139,6 +139,53 @@ describe("各 Provider 的模型归因和费用", () => {
     }
   });
 
+  it("Codex 新会话没有收费起点前快照时按零基线计算首轮费用", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codingns-codex-new-session-cost-"));
+    const file = join(root, "session.jsonl");
+    const record = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
+
+    try {
+      writeFileSync(file, [
+        JSON.stringify({
+          timestamp: "2026-08-16T00:00:00.500Z",
+          type: "turn_context",
+          payload: { turn_id: "turn-1", model: "gpt-5.4" }
+        }),
+        record("2026-08-16T00:00:01.000Z", "event_msg", {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 200,
+              cached_input_tokens: 70,
+              output_tokens: 40
+            }
+          }
+        }),
+        record("2026-08-16T00:00:02.000Z", "event_msg", {
+          type: "task_complete",
+          turn_id: "turn-1"
+        })
+      ].join("\n"));
+
+      const stats = await new CodexAdapter({ homeDir: root }).readSessionStats(
+        "session-1",
+        file,
+        billing
+      );
+
+      expect(stats?.metrics.costUsd).toMatchObject({
+        semantic: "priced-final-events",
+        pricing: {
+          kind: "catalog-estimate",
+          breakdown: [{ provider: "codex", model: "gpt-5.4" }]
+        }
+      });
+      expect(stats?.metrics.costUsd?.value).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("Codex 的并发 turn 无法可靠拆分累计快照时隐藏费用", async () => {
     const root = mkdtempSync(join(tmpdir(), "codingns-codex-concurrent-cost-"));
     const file = join(root, "session.jsonl");

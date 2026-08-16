@@ -19,6 +19,14 @@ describe("ProviderPriceBookService", () => {
           "gpt-5.3-codex": {
             id: "gpt-5.3-codex",
             cost: { input: 2, output: 16, cache_read: 0.2 }
+          },
+          "gpt-5.4": {
+            id: "gpt-5.4",
+            cost: { input: 2.5, output: 15, cache_read: 0.25 }
+          },
+          "gpt-5.6": {
+            id: "gpt-5.6",
+            cost: { input: 5, output: 30, cache_read: 0.5, cache_write: 6.25 }
           }
         }
       }
@@ -38,14 +46,30 @@ describe("ProviderPriceBookService", () => {
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(snapshot.source).toBe("models.dev");
       expect(snapshot.version).toMatch(/^models\.dev-2026-W\d{2}$/);
-      expect(snapshot.entries).toHaveLength(1);
-      expect(snapshot.entries[0]).toMatchObject({
+      expect(snapshot.entries).toHaveLength(3);
+      expect(snapshot.entries.find((entry) => entry.model === "gpt-5.3-codex")).toMatchObject({
         provider: "codex",
         model: "gpt-5.3-codex",
         inputUsdPerToken: 2e-6,
         outputUsdPerToken: 16e-6,
       });
-      expect(snapshot.entries[0]?.cacheReadUsdPerToken).toBeCloseTo(0.2e-6, 15);
+      expect(snapshot.entries.find((entry) => entry.model === "gpt-5.3-codex")?.cacheReadUsdPerToken)
+        .toBeCloseTo(0.2e-6, 15);
+      expect(snapshot.entries.find((entry) => entry.model === "gpt-5.4")).toMatchObject({
+        provider: "codex",
+        model: "gpt-5.4",
+        inputUsdPerToken: 2.5e-6,
+        outputUsdPerToken: 15e-6,
+        cacheReadUsdPerToken: 0.25e-6
+      });
+      expect(snapshot.entries.find((entry) => entry.model === "gpt-5.6")).toMatchObject({
+        provider: "codex",
+        model: "gpt-5.6",
+        inputUsdPerToken: 5e-6,
+        outputUsdPerToken: 30e-6,
+        cacheReadUsdPerToken: 0.5e-6,
+        cacheWriteUsdPerToken: 6.25e-6
+      });
       expect(service.getPriceBook(snapshot.version)).toMatchObject({
         version: snapshot.version,
         source: "models.dev",

@@ -12,6 +12,12 @@ describe("会话费用折叠", () => {
       .toBe("direct-api");
     expect(inferProviderSessionBillingProfile("codex", "gateway/gpt-5.3-codex"))
       .toBe("direct-api");
+    expect(inferProviderSessionBillingProfile("codex", "gpt-5.4"))
+      .toBe("direct-api");
+    expect(inferProviderSessionBillingProfile("codex", "gpt-5.6"))
+      .toBe("direct-api");
+    expect(inferProviderSessionBillingProfile("codex", "openai/gpt-5.6-terra"))
+      .toBe("direct-api");
     expect(inferProviderSessionBillingProfile("deepseek-harness", "proxy-route:unknown-model"))
       .toBeNull();
   });
