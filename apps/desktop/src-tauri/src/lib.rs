@@ -12,6 +12,8 @@ use host_discovery::DesktopLocalHostProcessHit;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+#[cfg(target_os = "macos")]
+use tauri_plugin_notification::NotificationExt;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WebviewWindow,
     WindowEvent,
@@ -255,43 +257,24 @@ fn get_platform_info() -> PlatformInfo {
     file_system::get_platform_info()
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
-fn show_notification(title: String, body: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        // Tauri WebView 的 Notification API 在 macOS 上不一定接入系统通知中心，
-        // 这里直接调用系统自带 osascript，确保后台问题能出现在 macOS 通知中心。
-        let script = format!(
-            "display notification \"{}\" with title \"{}\"",
-            escape_applescript_string(&body),
-            escape_applescript_string(&title)
-        );
-        let output = std::process::Command::new("/usr/bin/osascript")
-            .args(["-e", script.as_str()])
-            .output()
-            .map_err(|error| format!("启动 macOS 通知失败: {error}"))?;
-
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
-        }
-
-        return Ok(());
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        println!("[desktop-notification] {title}: {body}");
-        Ok(())
-    }
+fn show_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    // 通知必须由 CodingNS 自身创建。osascript 会让 macOS 将通知归属为脚本编辑器，
+    // 因而点击后会打开脚本编辑器，而不是 CodingNS。
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|error| format!("发送 macOS 通知失败: {error}"))
 }
 
-#[cfg(target_os = "macos")]
-fn escape_applescript_string(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\r', "\\r")
-        .replace('\n', "\\n")
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn show_notification(title: String, body: String) -> Result<(), String> {
+    println!("[desktop-notification] {title}: {body}");
+    Ok(())
 }
 
 #[tauri::command]
@@ -1234,6 +1217,9 @@ pub fn run() {
         .manage(WindowManagerState::default())
         .manage(MacosNativeSidebarState::default())
         .manage(DownloadedDesktopUpdateState::default());
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_notification::init());
 
     builder
         .setup(|app| {
