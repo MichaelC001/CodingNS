@@ -1691,6 +1691,7 @@ export function createServer(config: HostConfig) {
     sessionProviderConfigService,
     providerCatalogService,
     routedSessionLiveRuntimeService,
+    providerPriceBookService,
     config
   );
   const skillController = new SkillController(skillManagerService);

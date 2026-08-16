@@ -26,9 +26,27 @@ export interface ProviderPriceBookEntry {
   cacheWriteUsdPerToken?: number;
 }
 
+/** models.dev 目录中面向用户展示的主流模型系列。 */
+export type ProviderPriceBookFamily =
+  | "gpt"
+  | "claude"
+  | "glm"
+  | "kimi"
+  | "deepseek"
+  | "gemini";
+
+/** 不参与计费匹配，只用于价格表展示的目录条目。 */
+export interface ProviderPriceBookCatalogEntry extends ProviderPriceBookEntry {
+  family: ProviderPriceBookFamily;
+  sourceProvider: string;
+  name?: string;
+}
+
 export interface ProviderPriceBook {
   version: string;
   entries: readonly ProviderPriceBookEntry[];
+  /** 最新本地快照中的主流模型目录；会话绑定快照可以不带此字段。 */
+  catalogEntries?: readonly ProviderPriceBookCatalogEntry[];
   source?: "builtin" | "models.dev";
   fetchedAt?: string;
 }
@@ -47,7 +65,8 @@ export const DEFAULT_PROVIDER_COST_EXCHANGE_RATE: ProviderSessionCostExchangeRat
 export const DEFAULT_PROVIDER_PRICE_BOOK: ProviderPriceBook = {
   version: DEFAULT_PROVIDER_PRICE_BOOK_VERSION,
   source: "models.dev",
-  entries: []
+  entries: [],
+  catalogEntries: []
 };
 
 /**

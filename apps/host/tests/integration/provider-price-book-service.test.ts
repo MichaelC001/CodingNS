@@ -9,6 +9,53 @@ import { createTaskManager } from "../../src/modules/tasks/task-manager.js";
 import { HOST_TASK_TYPES } from "../../src/modules/tasks/task-types.js";
 
 describe("ProviderPriceBookService", () => {
+  it("把六类主流模型写入同一份本地快照的展示目录", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codingns-price-book-catalog-"));
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      openai: { models: { "gpt-5.6": { id: "gpt-5.6", name: "GPT-5.6", cost: { input: 5, output: 30 } } } },
+      anthropic: { models: { "claude-sonnet-5": { id: "claude-sonnet-5", cost: { input: 2, output: 10 } } } },
+      zai: { models: { "glm-5": { id: "glm-5", cost: { input: 1, output: 3.2 } } } },
+      moonshotai: { models: { "kimi-k2.7-code": { id: "kimi-k2.7-code", cost: { input: 0.95, output: 4 } } } },
+      deepseek: { models: { "deepseek-chat": { id: "deepseek-chat", cost: { input: 0.14, output: 0.28 } } } },
+      google: { models: { "gemini-3.6-flash": { id: "gemini-3.6-flash", cost: { input: 1.5, output: 7.5 } } } }
+    }), { status: 200 }));
+
+    try {
+      const service = new ProviderPriceBookService(join(root, "snapshots"), null, {
+        fetchImpl,
+        now: () => new Date("2026-08-16T00:00:00.000Z")
+      });
+
+      const snapshot = await service.refresh({ force: true });
+      const catalog = service.getCurrentCatalogPriceBook();
+
+      expect(snapshot.version).toBe("models.dev-2026-08-16");
+      expect(catalog.entries.map((entry) => entry.family)).toEqual([
+        "claude",
+        "deepseek",
+        "gemini",
+        "glm",
+        "gpt",
+        "kimi"
+      ]);
+      expect(catalog.entries).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          family: "gpt",
+          sourceProvider: "openai",
+          model: "gpt-5.6",
+          name: "GPT-5.6",
+          inputUsdPerToken: 5e-6,
+          outputUsdPerToken: 30e-6
+        }),
+        expect.objectContaining({ family: "glm", sourceProvider: "zai", model: "glm-5" }),
+        expect.objectContaining({ family: "kimi", sourceProvider: "moonshotai", model: "kimi-k2.7-code" })
+      ]));
+      expect(catalog.entries).toHaveLength(6);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("从 models.dev 读取全部支持模型，并按日固定不可变快照", async () => {
     const root = await mkdtemp(join(tmpdir(), "codingns-price-book-"));
     let now = new Date("2026-08-16T00:00:00.000Z");

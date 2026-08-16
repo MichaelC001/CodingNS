@@ -106,6 +106,21 @@ describe("provider catalog routes", () => {
       "deepseek-harness"
     ]);
 
+    const priceBookResponse = await hosted.app.inject({
+      method: "GET",
+      url: "/api/providers/price-book",
+      headers: {
+        authorization: `Bearer ${accessToken}`
+      }
+    });
+
+    expect(priceBookResponse.statusCode).toBe(200);
+    expect(priceBookResponse.json()).toMatchObject({
+      source: "models.dev",
+      version: "models.dev-unavailable",
+      entries: []
+    });
+
     const codexEntry = initialCatalog.items.find((item) => item.provider === "codex");
     expect(codexEntry).toMatchObject({
       provider: "codex",

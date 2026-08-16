@@ -8,6 +8,7 @@ import type { SessionLiveRuntimeService } from "../sessions/session-live-runtime
 import type { SessionProviderConfigMode } from "../../types/domain.js";
 import type { SessionProviderConfigService } from "../sessions/session-provider-config-service.js";
 import type { ProviderCatalogService } from "./provider-catalog-service.js";
+import type { ProviderPriceBookService } from "./provider-price-book-service.js";
 import {
   isClaudeCompatibleProvider,
   type ClaudeCompatibleProviderId
@@ -47,6 +48,7 @@ export class ProviderController {
       SessionLiveRuntimeService,
       "getClaudeHookBridgeConfig" | "ingestClaudeHookEvent"
     >,
+    private readonly providerPriceBookService: Pick<ProviderPriceBookService, "getCurrentCatalogPriceBook">,
     private readonly config: HostConfig
   ) {}
 
@@ -84,6 +86,10 @@ export class ProviderController {
     reply.send({
       items: this.providerCatalogService.listCatalog()
     });
+  };
+
+  readonly getPriceBook = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.send(this.providerPriceBookService.getCurrentCatalogPriceBook());
   };
 
   readonly refreshCatalog = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {

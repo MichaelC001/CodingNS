@@ -1,7 +1,9 @@
 import {
   DEFAULT_PROVIDER_PRICE_BOOK,
   type ProviderPriceBook,
-  type ProviderPriceBookEntry
+  type ProviderPriceBookCatalogEntry,
+  type ProviderPriceBookEntry,
+  type ProviderPriceBookFamily
 } from "@codingns/session-sync-core";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
@@ -23,9 +25,26 @@ const SOURCE_PROVIDER_BY_INTERNAL_PROVIDER: Readonly<Record<string, string>> = {
   gemini: "google",
   "deepseek-harness": "deepseek"
 };
+const MAINSTREAM_CATALOG_SOURCES: ReadonlyArray<{
+  family: ProviderPriceBookFamily;
+  sourceProviders: readonly string[];
+  modelPattern: RegExp;
+}> = [
+  { family: "gpt", sourceProviders: ["openai"], modelPattern: /^(?:gpt|chatgpt|o\d)(?:-|$)/i },
+  { family: "claude", sourceProviders: ["anthropic"], modelPattern: /^claude(?:-|$)/i },
+  { family: "glm", sourceProviders: ["zai", "zhipuai"], modelPattern: /^glm(?:-|$)/i },
+  {
+    family: "kimi",
+    sourceProviders: ["moonshotai", "moonshotai-cn", "kimi-for-coding"],
+    modelPattern: /^(?:kimi|k\d)(?:-|$)/i
+  },
+  { family: "deepseek", sourceProviders: ["deepseek"], modelPattern: /^deepseek(?:-|$)/i },
+  { family: "gemini", sourceProviders: ["google"], modelPattern: /^gemini(?:-|$)/i }
+];
 
 interface ModelsDevModel {
   id?: unknown;
+  name?: unknown;
   cost?: {
     input?: unknown;
     output?: unknown;
@@ -40,6 +59,7 @@ interface StoredPriceBookSnapshot {
   fetchedAt: string;
   contentHash?: string;
   entries: ProviderPriceBookEntry[];
+  catalogEntries?: ProviderPriceBookCatalogEntry[];
 }
 
 export interface ProviderPriceBookServiceOptions {
@@ -50,8 +70,9 @@ export interface ProviderPriceBookServiceOptions {
 /**
  * 管理 models.dev 的本地、不可变、按日价格目录。
  *
- * 这里可以暂存同步所需的 Provider/model 索引，但 runtime 和费用详情只会拿到
- * 当前会话实际命中的条目。统计读取绝不调用 refresh，也不访问网络。
+ * 这里保存同步所需的 Provider/model 索引。会话 runtime 和账单只会拿到当前会话
+ * 实际命中的条目；用户主动打开价格表时，Host 才按需返回筛选后的主流目录。
+ * 统计读取绝不调用 refresh，也不访问网络。
  */
 export class ProviderPriceBookService {
   private readonly fetchImpl: typeof fetch;
@@ -88,6 +109,22 @@ export class ProviderPriceBookService {
 
     this.current = this.readLatestSnapshot() ?? DEFAULT_PROVIDER_PRICE_BOOK;
     return this.current;
+  }
+
+  /** 返回最新本地快照中的主流模型目录，不触发同步或网络请求。 */
+  getCurrentCatalogPriceBook(): {
+    version: string;
+    source: "models.dev";
+    fetchedAt?: string;
+    entries: readonly ProviderPriceBookCatalogEntry[];
+  } {
+    const current = this.getCurrentPriceBook();
+    return {
+      version: current.version,
+      source: "models.dev",
+      ...(current.fetchedAt ? { fetchedAt: current.fetchedAt } : {}),
+      entries: current.catalogEntries ?? []
+    };
   }
 
   getPriceBook(version: string): ProviderPriceBook | null {
@@ -149,12 +186,13 @@ export class ProviderPriceBookService {
 
     const payload = await response.json() as unknown;
     const entries = buildEntriesFromModelsDev(payload);
-    if (entries.length === 0) {
+    const catalogEntries = buildCatalogEntriesFromModelsDev(payload);
+    if (entries.length === 0 && catalogEntries.length === 0) {
       throw new Error("价格表同步失败: models.dev 没有可用模型价格");
     }
 
     const fetchedAt = this.now().toISOString();
-    const contentHash = hashEntries(entries);
+    const contentHash = hashEntries(entries, catalogEntries);
     const snapshots = this.readSnapshots();
     const today = buildUtcDate(this.now());
     const latestToday = snapshots
@@ -178,7 +216,8 @@ export class ProviderPriceBookService {
       source: "models.dev",
       fetchedAt,
       contentHash,
-      entries
+      entries,
+      catalogEntries
     };
 
     await this.persistSnapshot(snapshot);
@@ -188,7 +227,12 @@ export class ProviderPriceBookService {
 
   isStale(): boolean {
     const current = this.getCurrentPriceBook();
-    if (current.source !== "models.dev" || !current.fetchedAt || current.entries.length === 0) {
+    if (
+      current.source !== "models.dev"
+      || !current.fetchedAt
+      || (current.entries.length === 0 && (current.catalogEntries?.length ?? 0) === 0)
+      || !Array.isArray(current.catalogEntries)
+    ) {
       return true;
     }
 
@@ -317,6 +361,65 @@ function buildEntriesFromModelsDev(payload: unknown): ProviderPriceBookEntry[] {
   return entries.sort((left, right) => `${left.provider}:${left.model}`.localeCompare(`${right.provider}:${right.model}`));
 }
 
+function buildCatalogEntriesFromModelsDev(payload: unknown): ProviderPriceBookCatalogEntry[] {
+  const payloadRecord = asRecord(payload);
+  if (!payloadRecord) {
+    return [];
+  }
+
+  const entries: ProviderPriceBookCatalogEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const source of MAINSTREAM_CATALOG_SOURCES) {
+    for (const sourceProvider of source.sourceProviders) {
+      const provider = asRecord(payloadRecord[sourceProvider]);
+      const models = provider ? asRecord(provider.models) : null;
+      if (!models) {
+        continue;
+      }
+
+      for (const [key, value] of Object.entries(models)) {
+        const model = asRecord(value) as ModelsDevModel | null;
+        const cost = model ? asRecord(model.cost) : null;
+        const modelId = typeof model?.id === "string" && model.id.trim() ? model.id.trim() : key.trim();
+        const input = readFiniteNumber(cost?.input);
+        const output = readFiniteNumber(cost?.output);
+
+        if (!modelId || !source.modelPattern.test(modelId) || input === null || output === null) {
+          continue;
+        }
+
+        const dedupeKey = `${source.family}\u0000${sourceProvider}\u0000${modelId}`;
+        if (seen.has(dedupeKey)) {
+          continue;
+        }
+        seen.add(dedupeKey);
+
+        const cacheRead = readFiniteNumber(cost?.cache_read);
+        const cacheWrite = readFiniteNumber(cost?.cache_write);
+        const name = typeof model?.name === "string" && model.name.trim() ? model.name.trim() : undefined;
+        entries.push({
+          provider: source.family,
+          family: source.family,
+          sourceProvider,
+          model: modelId,
+          ...(name ? { name } : {}),
+          inputUsdPerToken: input / 1_000_000,
+          outputUsdPerToken: output / 1_000_000,
+          ...(cacheRead === null ? {} : { cacheReadUsdPerToken: cacheRead / 1_000_000 }),
+          ...(cacheWrite === null ? {} : { cacheWriteUsdPerToken: cacheWrite / 1_000_000 })
+        });
+      }
+    }
+  }
+
+  return entries.sort((left, right) =>
+    `${left.family}:${left.sourceProvider}:${left.model}`.localeCompare(
+      `${right.family}:${right.sourceProvider}:${right.model}`
+    )
+  );
+}
+
 function parseStoredSnapshot(value: unknown): StoredPriceBookSnapshot | null {
   const record = asRecord(value);
   if (
@@ -331,15 +434,31 @@ function parseStoredSnapshot(value: unknown): StoredPriceBookSnapshot | null {
   }
 
   const entries = record.entries.filter(isPriceBookEntry);
-  return entries.length > 0
+  const catalogEntries = Array.isArray(record.catalogEntries)
+    ? record.catalogEntries.filter(isCatalogPriceBookEntry)
+    : undefined;
+  return entries.length > 0 || (catalogEntries?.length ?? 0) > 0
     ? {
         version: record.version,
         source: "models.dev",
         fetchedAt: record.fetchedAt,
         ...(typeof record.contentHash === "string" ? { contentHash: record.contentHash } : {}),
-        entries
+        entries,
+        ...(catalogEntries ? { catalogEntries } : {})
       }
     : null;
+}
+
+function isCatalogPriceBookEntry(value: unknown): value is ProviderPriceBookCatalogEntry {
+  const record = asRecord(value);
+  return Boolean(
+    isPriceBookEntry(value)
+    && record
+    && typeof record.family === "string"
+    && MAINSTREAM_CATALOG_SOURCES.some((source) => source.family === record.family)
+    && typeof record.sourceProvider === "string"
+    && record.sourceProvider.trim().length > 0
+  );
 }
 
 function isPriceBookEntry(value: unknown): value is ProviderPriceBookEntry {
@@ -380,9 +499,12 @@ function extractSnapshotDate(value: string): string | null {
   return match?.[1] ?? null;
 }
 
-function hashEntries(entries: readonly ProviderPriceBookEntry[]): string {
+function hashEntries(
+  entries: readonly ProviderPriceBookEntry[],
+  catalogEntries: readonly ProviderPriceBookCatalogEntry[] = []
+): string {
   return createHash("sha256")
-    .update(JSON.stringify(entries))
+    .update(JSON.stringify({ entries, catalogEntries }))
     .digest("hex");
 }
 
