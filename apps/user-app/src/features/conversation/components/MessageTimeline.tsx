@@ -2,7 +2,6 @@ import {
   createContext,
   isValidElement,
   memo,
-  useDeferredValue,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -6203,6 +6202,8 @@ export function MessageTimeline({
 }: MessageTimelineProps) {
   const { showToast } = useToast();
   const platform = usePlatform();
+  const shouldVirtualizeTimeline =
+    typeof window !== "undefined" && typeof ResizeObserver !== "undefined";
   const persistScrollState = !followTailUpdates;
   const listRef = useRef<HTMLDivElement | null>(null);
   useTransientScrollbarVisibility(listRef);
@@ -6238,24 +6239,25 @@ export function MessageTimeline({
   const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
   const hasNewMessagesBelowRef = useRef(false);
   const previousRenderMessageIdsRef = useRef<string[] | null>(null);
-  const manualRestoreDurationMs = platform.isMobile ? 0 : MANUAL_RESTORE_DURATION_MS;
-  const deferredItems = useDeferredValue(items);
-  const deferredSessionSummary = useDeferredValue(sessionSummary);
+  // 虚拟列表会在测量行高时主动更新 DOM；此时持续写回旧 scrollTop 会和用户滚动互相争抢。
+  const manualRestoreDurationMs = platform.isMobile || shouldVirtualizeTimeline
+    ? 0
+    : MANUAL_RESTORE_DURATION_MS;
   const messages = useMemo(
-    () => extractConversationTimelineMessages(deferredItems),
-    [deferredItems]
+    () => extractConversationTimelineMessages(items),
+    [items]
   );
   const runtimeThinkingPlaceholder = useMemo(
-    () => findConversationTimelineRuntimeThinkingLabel(deferredItems),
-    [deferredItems]
+    () => findConversationTimelineRuntimeThinkingLabel(items),
+    [items]
   );
   const timelineViewModel = useMemo(
     () => buildTimelineViewModel({
-      sessionSummary: deferredSessionSummary,
-      items: deferredItems,
+      sessionSummary,
+      items,
       provider
     }),
-    [deferredItems, deferredSessionSummary, provider]
+    [items, provider, sessionSummary]
   );
   const visibleMessages = timelineViewModel.visibleMessages;
   const renderItems = timelineViewModel.renderItems;
@@ -6274,8 +6276,6 @@ export function MessageTimeline({
   const actionStateByMessageId = useStableMessageActionStates(
     timelineViewModel.actionStateByMessageId
   );
-  const shouldVirtualizeTimeline =
-    typeof window !== "undefined" && typeof ResizeObserver !== "undefined";
   const timelineVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: renderItems.length,
     getScrollElement: () => listRef.current,
@@ -6286,7 +6286,8 @@ export function MessageTimeline({
     enabled: shouldVirtualizeTimeline,
     directDomUpdates: shouldVirtualizeTimeline,
     directDomUpdatesMode: "transform",
-    useFlushSync: false
+    // 行高补偿会同时写 scrollTop 和行 transform，必须在同一帧提交，避免出现跳位闪烁。
+    useFlushSync: true
   });
   const showTimelineSkeleton = historyState === "loading" && messages.length === 0;
 
@@ -6939,9 +6940,11 @@ export function MessageTimeline({
       && pendingOlderLoadHeadSignature !== null
       && pendingOlderLoadHeadSignature !== currentHeadSignature
       && renderItems.length >= previousCount;
+    const currentDistanceToBottom = list.scrollHeight - list.clientHeight - list.scrollTop;
+    const currentlyAtBottom = currentDistanceToBottom <= STICK_TO_BOTTOM_DISTANCE_PX;
     const shouldFollowTailUpdate =
       hasTailUpdate
-      && (followTailUpdates || stickToBottomRef.current);
+      && (followTailUpdates || currentlyAtBottom);
 
     emitTimelineScrollDebug("messages.effect.decision", list, {
       currentHeadMessage: summarizeMessageSignature(currentHeadSignature),
@@ -6949,6 +6952,8 @@ export function MessageTimeline({
       pendingOlderLoadHeadMessage: summarizeMessageSignature(pendingOlderLoadHeadSignature),
       shouldRestoreOlderLoadOffset,
       shouldFollowTailUpdate,
+      currentlyAtBottom,
+      currentDistanceToBottom,
       loadingOlderMessages
     });
 
@@ -7251,7 +7256,11 @@ export function MessageTimeline({
                   key={virtualItem.key}
                   ref={timelineVirtualizer.measureElement}
                   data-index={virtualItem.index}
-                  className="message-list-virtual-row"
+                  className={
+                    item.type === "tool_group"
+                      ? "message-list-virtual-row tool-message-virtual-row"
+                      : "message-list-virtual-row"
+                  }
                   style={{
                     position: "absolute",
                     top: 0,

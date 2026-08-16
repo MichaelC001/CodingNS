@@ -70,6 +70,7 @@ function renderTimeline(items: ConversationTimelineSourceItem[]) {
 describe("MessageTimeline 虚拟列表", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     vi.stubGlobal("ResizeObserver", TimelineResizeObserver);
     Object.defineProperty(window, "ResizeObserver", {
       configurable: true,
@@ -102,10 +103,12 @@ describe("MessageTimeline 虚拟列表", () => {
       count: number;
       directDomUpdates: boolean;
       overscan: number;
+      useFlushSync: boolean;
     };
     expect(options.count).toBe(120);
     expect(options.directDomUpdates).toBe(true);
     expect(options.overscan).toBe(8);
+    expect(options.useFlushSync).toBe(true);
   });
 
   it("缺少 ResizeObserver 时回退完整列表", () => {
@@ -147,5 +150,101 @@ describe("MessageTimeline 虚拟列表", () => {
     await waitFor(() => {
       expect(markdownRenderMock).toHaveBeenCalledTimes(initialMarkdownRenderCount);
     });
+  });
+
+  it("虚拟列表恢复进度后不会继续覆盖用户的新滚动位置", () => {
+    vi.useFakeTimers();
+
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    const scrollTopByElement = new WeakMap<HTMLElement, number>();
+
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        if (this.classList?.contains("message-list")) {
+          return 2_000;
+        }
+
+        return scrollHeightDescriptor?.get?.call(this) ?? 0;
+      }
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        if (this.classList?.contains("message-list")) {
+          return 600;
+        }
+
+        return clientHeightDescriptor?.get?.call(this) ?? 0;
+      }
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() {
+        if (this.classList?.contains("message-list")) {
+          return scrollTopByElement.get(this) ?? 0;
+        }
+
+        return scrollTopDescriptor?.get?.call(this) ?? 0;
+      },
+      set(value: number) {
+        if (this.classList?.contains("message-list")) {
+          scrollTopByElement.set(this, Number.isFinite(value) ? value : 0);
+          return;
+        }
+
+        scrollTopDescriptor?.set?.call(this, value);
+      }
+    });
+
+    try {
+      window.localStorage.setItem(
+        "codingns.user-app.conversation-scroll",
+        JSON.stringify({
+          schemaVersion: 2,
+          bySessionId: {
+            "session-virtual": {
+              scrollTop: 420,
+              stickToBottom: false,
+              lastMessageSignature: null,
+              updatedAt: Date.now()
+            }
+          }
+        })
+      );
+
+      renderTimeline(createItems([createMessage(0), createMessage(1)]));
+      const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+
+      expect(messageList?.scrollTop).toBe(420);
+
+      if (!messageList) {
+        return;
+      }
+
+      messageList.scrollTop = 560;
+      vi.advanceTimersByTime(4_000);
+
+      expect(messageList.scrollTop).toBe(560);
+    } finally {
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDescriptor);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollHeight;
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).clientHeight;
+      }
+      if (scrollTopDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDescriptor);
+      } else {
+        delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTop;
+      }
+      vi.useRealTimers();
+    }
   });
 });

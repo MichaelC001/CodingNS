@@ -3083,6 +3083,58 @@ ARGUMENTS: capabilities list`)
     expect(messageList!.scrollTop).toBe(1200);
   });
 
+  it("尾部更新前已经离底时，不依赖旧快照把用户拉回底部", () => {
+    const { rerender } = render(
+      <MessageTimeline
+        sessionId="session-live-scroll"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={[
+          {
+            ...createAssistantTextMessage("第一段", "assistant-live-scroll"),
+            sessionId: "session-live-scroll"
+          }
+        ]}
+      />
+    );
+
+    const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+
+    expect(messageList).not.toBeNull();
+
+    Object.defineProperty(messageList, "scrollHeight", {
+      value: 2_000,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "scrollTop", {
+      value: 420,
+      writable: true,
+      configurable: true
+    });
+
+    rerender(
+      <MessageTimeline
+        sessionId="session-live-scroll"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={[
+          {
+            ...createAssistantTextMessage("第一段\n第二段", "assistant-live-scroll"),
+            sessionId: "session-live-scroll"
+          }
+        ]}
+      />
+    );
+
+    expect(messageList!.scrollTop).toBe(420);
+  });
+
   it("切到别的会话再回来时会恢复之前的阅读进度", () => {
     const sessionOneMessages = [
       {

@@ -3904,6 +3904,7 @@ body[data-code-terminal-dock-resizing="true"] .code-workbench-terminal-resizer::
 
 .message-list-virtual-content {
   position: relative;
+  flex: 0 0 auto;
   width: 100%;
   min-width: 0;
 }

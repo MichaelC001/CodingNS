@@ -1888,7 +1888,7 @@ html[data-workbench-window-resizing] .workbench-shell[data-runtime-platform="des
   letter-spacing: -0.01em;
 }
 
-.message-list {
+.workbench-shell .message-list {
   --message-timeline-virtual-row-gap: 0px;
   gap: 0;
 }
@@ -1904,6 +1904,11 @@ html[data-workbench-window-resizing] .workbench-shell[data-runtime-platform="des
 }
 
 .tool-message-row + .tool-message-row {
+  padding-top: 0;
+}
+
+.workbench-shell .message-list-virtual-row.tool-message-virtual-row
+  + .message-list-virtual-row.tool-message-virtual-row > .tool-message-row {
   padding-top: 0;
 }
 
