@@ -1,5 +1,6 @@
 import {
   DeepSeekHarnessAdapter,
+  DEEPSEEK_HARNESS_CURRENT_VERSION,
   type DeepSeekHarnessEnvelope,
   type DeepSeekHarnessTransport,
   type ProviderAdapter,
@@ -17,7 +18,7 @@ export class DeepSeekHarnessProviderAdapter extends DeepSeekHarnessAdapter imple
   ) {
     super({
       transport: new LazyHarnessTransport(sidecarManager),
-      harnessVersion: "0.1.0-rc.5",
+      harnessVersion: DEEPSEEK_HARNESS_CURRENT_VERSION,
       dshHomeDir
     });
   }

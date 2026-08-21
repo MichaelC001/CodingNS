@@ -33,6 +33,15 @@ import {
 import { deleteDeepSeekHarnessSessionFiles } from "./deepseek-harness-session-store.js";
 import { ensureText, extractTextBlocks, messageIdFromStableKey, nextTimestamp } from "./utils.js";
 
+/** 当前本机 DeepSeek Harness 运行时版本。 */
+export const DEEPSEEK_HARNESS_CURRENT_VERSION = "0.1.1-rc.2";
+
+/** 仍允许用于回滚的旧版运行时版本。 */
+export const DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS = [
+  DEEPSEEK_HARNESS_CURRENT_VERSION,
+  "0.1.0-rc.5"
+] as const;
+
 export interface DeepSeekHarnessEnvelope {
   rpcId: string;
   method: string;
@@ -1030,7 +1039,7 @@ function buildHarnessAssistantPartRawRef(
   return `${rawStoreRef}/message/${messageKey}/part/${kind}-${partIndex}?part=${partIndex}`;
 }
 
-function normalizeSummary(input: unknown, workspacePath: string, version = "0.1.0-rc.5"): ProviderSessionSummary | null {
+function normalizeSummary(input: unknown, workspacePath: string, version = DEEPSEEK_HARNESS_CURRENT_VERSION): ProviderSessionSummary | null {
   const record = asRecord(input);
   const providerSessionId = ensureText(record.sessionId ?? record.id).trim();
   if (!providerSessionId) return null;
@@ -1042,7 +1051,7 @@ function isHarnessMissingSessionError(error: unknown): boolean {
   return /session[- ]?not[- ]?found|unknown session|no such session/i.test(message);
 }
 
-function buildRawStoreRef(version: string | undefined, sessionId: string): string { return `harness://${version ?? "0.1.0-rc.5"}/${sessionId}`; }
+function buildRawStoreRef(version: string | undefined, sessionId: string): string { return `harness://${version ?? DEEPSEEK_HARNESS_CURRENT_VERSION}/${sessionId}`; }
 function harnessCapabilities(modelOptions?: ProviderModelOption[]): ProviderCapabilities {
   return {
     provider: "deepseek-harness",

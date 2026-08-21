@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import net from "node:net";
 
+import {
+  DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS,
+  DEEPSEEK_HARNESS_CURRENT_VERSION
+} from "@codingns/session-sync-core";
 import { TaskManager } from "../../tasks/task-manager.js";
 import { HOST_TASK_TYPES } from "../../tasks/task-types.js";
 import { resolveCommandLaunch } from "../../../shared/utils/command-launch.js";
@@ -29,6 +33,7 @@ export interface DeepSeekHarnessSidecarManagerOptions {
   requestTimeoutMs?: number;
   startupTimeoutMs?: number;
   expectedVersion?: string;
+  supportedVersions?: readonly string[];
   env?: NodeJS.ProcessEnv;
   spawnImpl?: typeof spawn;
   portAllocator?: () => Promise<number>;
@@ -37,7 +42,7 @@ export interface DeepSeekHarnessSidecarManagerOptions {
 
 /** 只管理 CodingNS 自己启动的 sidecar，外部进程不会被接管。 */
 export class DeepSeekHarnessSidecarManager {
-  private readonly options: Required<Pick<DeepSeekHarnessSidecarManagerOptions, "requestTimeoutMs" | "startupTimeoutMs" | "expectedVersion">> & DeepSeekHarnessSidecarManagerOptions;
+  private readonly options: Required<Pick<DeepSeekHarnessSidecarManagerOptions, "requestTimeoutMs" | "startupTimeoutMs" | "expectedVersion" | "supportedVersions">> & DeepSeekHarnessSidecarManagerOptions;
   private child: ChildProcess | null = null;
   private state: DeepSeekHarnessSidecarState = {
     instanceId: "sidecar-" + randomUUID(),
@@ -50,11 +55,13 @@ export class DeepSeekHarnessSidecarManager {
   };
 
   constructor(options: DeepSeekHarnessSidecarManagerOptions) {
+    const expectedVersion = options.expectedVersion ?? DEEPSEEK_HARNESS_CURRENT_VERSION;
     this.options = {
+      ...options,
       requestTimeoutMs: 5_000,
       startupTimeoutMs: 45_000,
-      expectedVersion: "0.1.0-rc.5",
-      ...options
+      expectedVersion,
+      supportedVersions: options.supportedVersions ?? (options.expectedVersion ? [expectedVersion] : DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS)
     };
     this.options.taskManager.register({
       taskType: HOST_TASK_TYPES.harnessSidecarHealth,
@@ -123,9 +130,9 @@ export class DeepSeekHarnessSidecarManager {
       throw new Error("HARNESS_BIND_HOST_UNSUPPORTED");
     }
 
-    // rc.5 的 host.describe.version 固定是上游占位值 0.0.1，必须读取 CLI 本身的版本。
+    // 当前兼容版本的 host.describe.version 是上游占位值 0.0.1，必须读取 CLI 本身的版本。
     const commandVersion = usesDefaultCommandArgs ? resolveCommandVersion(commandPath) : null;
-    if (usesDefaultCommandArgs && commandVersion !== this.options.expectedVersion) {
+    if (usesDefaultCommandArgs && !this.isSupportedVersion(commandVersion)) {
       this.state = { ...this.state, status: "failed", baseUrl: null, lastError: "HARNESS_VERSION_UNSUPPORTED" };
       throw new Error("HARNESS_VERSION_UNSUPPORTED");
     }
@@ -157,7 +164,7 @@ export class DeepSeekHarnessSidecarManager {
       const client = new DeepSeekHarnessApiClient({ baseUrl, requestTimeoutMs: this.options.requestTimeoutMs, fetchImpl: this.options.fetchImpl });
       const description = await waitForReady(client, this.options.startupTimeoutMs, exitPromise, signal);
       const harnessVersion = commandVersion ?? readVersion(description);
-      if (harnessVersion !== this.options.expectedVersion) throw new Error("HARNESS_VERSION_UNSUPPORTED");
+      if (!this.isSupportedVersion(harnessVersion)) throw new Error("HARNESS_VERSION_UNSUPPORTED");
       this.state = { ...this.state, status: "ready", harnessVersion };
       return { baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion };
     } catch (error) {
@@ -165,6 +172,10 @@ export class DeepSeekHarnessSidecarManager {
       child.kill();
       throw error;
     }
+  }
+
+  private isSupportedVersion(version: string | null): boolean {
+    return version !== null && this.options.supportedVersions.includes(version);
   }
 }
 

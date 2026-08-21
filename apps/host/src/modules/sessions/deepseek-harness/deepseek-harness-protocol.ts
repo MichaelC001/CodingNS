@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-/** Harness 0.1.0-rc.5 使用的 JSON-RPC 信封。这里不复用 Harness 源码类型，避免外部包污染 Host。 */
+/** Harness 0.1.1-rc.2 使用的 JSON-RPC 信封。这里不复用 Harness 源码类型，避免外部包污染 Host。 */
 export interface HarnessClientRequest {
   type: "client-request";
   rpcId: string;

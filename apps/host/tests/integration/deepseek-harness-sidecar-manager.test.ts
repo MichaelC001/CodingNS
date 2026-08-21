@@ -9,13 +9,13 @@ import { DeepSeekHarnessSidecarManager } from "../../src/modules/sessions/deepse
 
 const FAKE_HARNESS_SCRIPT = [
   "const http=require('node:http');",
-  "http.createServer((req,res)=>{let body='';req.on('data',x=>body+=x);req.on('end',()=>{const m=JSON.parse(body||'{}');res.setHeader('content-type','application/json');res.end(JSON.stringify({type:'server-response',rpcId:m.rpcId,result:{ok:true,value:{version:'0.1.0-rc.5',dshHome:process.env.DSH_HOME||null}}}))})}).listen(process.env.PORT,'127.0.0.1');"
+  "http.createServer((req,res)=>{let body='';req.on('data',x=>body+=x);req.on('end',()=>{const m=JSON.parse(body||'{}');res.setHeader('content-type','application/json');res.end(JSON.stringify({type:'server-response',rpcId:m.rpcId,result:{ok:true,value:{version:'0.1.1-rc.2',dshHome:process.env.DSH_HOME||null}}}))})}).listen(process.env.PORT,'127.0.0.1');"
 ].join("");
 
 const FAKE_DSH_SCRIPT = [
   "import http from 'node:http';",
   "const args=process.argv.slice(2);",
-  "if(args.includes('--version')){console.log('0.1.0-rc.5');process.exit(0)}",
+  "if(args.includes('--version')){console.log('0.1.1-rc.2');process.exit(0)}",
   "if(args[0] !== 'web'){process.exit(1)}",
   "const host=args[args.indexOf('--host')+1];",
   "if(host!=='127.0.0.1'&&host!=='0.0.0.0'){process.exit(1)}",
@@ -33,7 +33,7 @@ describe("DeepSeekHarnessSidecarManager", () => {
     });
     const ready = await manager.ensureReady();
     expect(ready.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
-    expect(manager.getState()).toMatchObject({ status: "ready", harnessVersion: "0.1.0-rc.5" });
+    expect(manager.getState()).toMatchObject({ status: "ready", harnessVersion: "0.1.1-rc.2" });
     await manager.shutdown();
     expect(manager.getState().status).toBe("stopped");
   });
@@ -72,6 +72,24 @@ describe("DeepSeekHarnessSidecarManager", () => {
       taskManager: createTaskManager(),
       commandPath,
       bindHost: "0.0.0.0",
+      startupTimeoutMs: 5_000
+    });
+
+    try {
+      await expect(manager.ensureReady()).resolves.toMatchObject({ harnessVersion: "0.1.1-rc.2" });
+    } finally {
+      await manager.shutdown();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("当前版本基线变更后仍允许旧版运行时回滚", async () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "codingns-dsh-legacy-"));
+    const commandPath = path.join(tempDir, "dsh.mjs");
+    writeFileSync(commandPath, FAKE_DSH_SCRIPT.replaceAll("0.1.1-rc.2", "0.1.0-rc.5"), "utf8");
+    const manager = new DeepSeekHarnessSidecarManager({
+      taskManager: createTaskManager(),
+      commandPath,
       startupTimeoutMs: 5_000
     });
 
