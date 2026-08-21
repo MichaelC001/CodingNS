@@ -100,6 +100,7 @@ function createService(
     insert: vi.fn(),
     findBySessionUserAndId: vi.fn(),
     delete: vi.fn(),
+    updateContent: vi.fn(() => true),
     findNextQueued: vi.fn(() => null),
     markDispatching: vi.fn(() => true),
     markQueued: vi.fn(),
@@ -3992,6 +3993,64 @@ describe("SessionLiveRuntimeService", () => {
       service.deleteQueuedMessage("session-1", "user-1", "queue-1")
     ).rejects.toMatchObject({
       errorCode: "QUEUE_ITEM_NOT_DELETABLE"
+    });
+  });
+
+  it("updateQueuedMessage 会更新正文并把失败项恢复为等待中", async () => {
+    const { service, sessionHistoryService, sessionSendQueueRepository } = createService();
+    const queueItem = {
+      id: "queue-1",
+      sessionId: "session-1",
+      userId: "user-1",
+      content: "旧消息",
+      clientRequestId: null,
+      model: null,
+      reasoningLevel: null,
+      permissionMode: null,
+      status: "failed" as const,
+      orderIndex: 1,
+      errorDetail: "上次失败",
+      createdAt: "2026-03-26T10:00:00.000Z",
+      updatedAt: "2026-03-26T10:00:00.000Z",
+      dispatchedAt: null
+    };
+
+    sessionHistoryService.getSession.mockReturnValue({
+      sessionId: "session-1",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "thread-1",
+      rawStoreRef: "/tmp/.codex/thread-1.jsonl",
+      messageCount: 3,
+      runningState: "running"
+    });
+    sessionSendQueueRepository.findBySessionUserAndId
+      .mockReturnValueOnce(queueItem)
+      .mockReturnValueOnce({
+        ...queueItem,
+        content: "修改后的消息",
+        status: "queued",
+        errorDetail: null,
+        updatedAt: "2026-03-26T10:00:01.000Z"
+      });
+
+    const result = await service.updateQueuedMessage(
+      "session-1",
+      "user-1",
+      "queue-1",
+      "修改后的消息"
+    );
+
+    expect(sessionSendQueueRepository.updateContent).toHaveBeenCalledWith(
+      "queue-1",
+      "修改后的消息",
+      expect.any(String)
+    );
+    expect(result).toMatchObject({
+      id: "queue-1",
+      content: "修改后的消息",
+      status: "queued",
+      errorDetail: null
     });
   });
 

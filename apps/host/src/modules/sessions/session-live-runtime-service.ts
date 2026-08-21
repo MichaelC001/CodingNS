@@ -920,6 +920,72 @@ export class SessionLiveRuntimeService {
     };
   }
 
+  async updateQueuedMessage(
+    sessionId: string,
+    userId: string,
+    queueItemId: string,
+    content: string
+  ): Promise<SessionQueueItemView> {
+    const session = this.sessionHistoryService.getSession(sessionId, userId);
+    const queueItem = this.sessionSendQueueRepository.findBySessionUserAndId(
+      sessionId,
+      userId,
+      queueItemId
+    );
+
+    if (!queueItem) {
+      throw new AppError({
+        statusCode: 404,
+        errorCode: "QUEUE_ITEM_NOT_FOUND",
+        detail: "未找到对应的发送队列项",
+        field: "queueItemId"
+      });
+    }
+
+    if (queueItem.status !== "queued" && queueItem.status !== "failed") {
+      throw new AppError({
+        statusCode: 409,
+        errorCode: "QUEUE_ITEM_NOT_EDITABLE",
+        detail: "该队列项已经开始发送，当前不能再编辑",
+        field: "queueItemId"
+      });
+    }
+
+    const updatedAt = nowIso();
+    const updated = this.sessionSendQueueRepository.updateContent(
+      queueItemId,
+      content,
+      updatedAt
+    );
+
+    if (!updated) {
+      throw new AppError({
+        statusCode: 409,
+        errorCode: "QUEUE_ITEM_NOT_EDITABLE",
+        detail: "该队列项状态已经变化，请刷新后重试",
+        field: "queueItemId"
+      });
+    }
+
+    const updatedQueueItem = this.sessionSendQueueRepository.findBySessionUserAndId(
+      sessionId,
+      userId,
+      queueItemId
+    );
+
+    if (!updatedQueueItem) {
+      throw new AppError({
+        statusCode: 404,
+        errorCode: "QUEUE_ITEM_NOT_FOUND",
+        detail: "保存后找不到对应的发送队列项",
+        field: "queueItemId"
+      });
+    }
+
+    this.maybeDispatchQueuedMessages(session);
+    return mapQueueItemRecordToView(updatedQueueItem);
+  }
+
   getClaudeHookBridgeConfig(provider: ClaudeCompatibleProviderId = "claude-code"): ClaudeHookBridgeConfig {
     return buildClaudeHookBridgeConfig(this.config, provider);
   }

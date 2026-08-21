@@ -217,6 +217,23 @@ export class SessionSendQueueRepository {
       .run(errorDetail, updatedAt, queueItemId);
   }
 
+  updateContent(queueItemId: string, content: string, updatedAt: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE session_send_queue
+         SET content = ?,
+             status = 'queued',
+             dispatched_at = NULL,
+             error_detail = NULL,
+             updated_at = ?
+         WHERE id = ?
+           AND status IN ('queued', 'failed')`
+      )
+      .run(content, updatedAt, queueItemId);
+
+    return result.changes > 0;
+  }
+
   delete(queueItemId: string): boolean {
     const result = this.db
       .prepare("DELETE FROM session_send_queue WHERE id = ?")

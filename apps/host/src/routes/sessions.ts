@@ -40,6 +40,13 @@ export async function registerSessionRoutes(
     },
     sessionController.enqueueLiveMessage
   );
+  app.patch(
+    "/api/sessions/:sessionId/queue/:queueItemId",
+    {
+      bodyLimit: SESSION_MESSAGE_BODY_LIMIT_BYTES
+    },
+    sessionController.updateQueuedMessage
+  );
   app.post("/api/sessions/:sessionId/queue/:queueItemId/steer", sessionController.steerQueuedMessage);
   app.post("/api/sessions/:sessionId/interrupt", sessionController.interrupt);
   app.post("/api/sessions/:sessionId/seen", sessionController.markSeen);

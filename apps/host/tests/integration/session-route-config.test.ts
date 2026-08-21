@@ -31,6 +31,7 @@ function createSessionControllerMock() {
     sendLiveMessage: vi.fn(),
     replyPermissionRequest: vi.fn(),
     enqueueLiveMessage: vi.fn(),
+    updateQueuedMessage: vi.fn(),
     steerQueuedMessage: vi.fn(),
     interrupt: vi.fn(),
     markSeen: vi.fn(),
@@ -61,6 +62,13 @@ describe("session routes", () => {
         bodyLimit: SESSION_MESSAGE_BODY_LIMIT_BYTES
       },
       controller.enqueueLiveMessage
+    );
+    expect(app.patch).toHaveBeenCalledWith(
+      "/api/sessions/:sessionId/queue/:queueItemId",
+      {
+        bodyLimit: SESSION_MESSAGE_BODY_LIMIT_BYTES
+      },
+      controller.updateQueuedMessage
     );
     expect(app.post).toHaveBeenCalledWith(
       "/api/sessions/start-live",

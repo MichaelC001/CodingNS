@@ -58,6 +58,10 @@ interface AttachmentsBody {
 interface SendLiveMessageBody extends SendMessageBody, RuntimeOptionsBody, AttachmentsBody {}
 interface EnqueueLiveMessageBody extends SendLiveMessageBody {}
 
+interface UpdateQueuedMessageBody {
+  content?: string;
+}
+
 interface StartSessionBody {
   workspaceId?: string;
   provider?: string;
@@ -276,6 +280,7 @@ export class SessionController {
       | "listPermissionRequests"
       | "listQueuedMessages"
       | "deleteQueuedMessage"
+      | "updateQueuedMessage"
       | "steerQueuedMessage"
     >,
     private readonly butlerControlSessionRepository: Pick<ButlerControlSessionRepository, "listSessionIds">
@@ -809,6 +814,29 @@ export class SessionController {
       request.params.queueItemId
     );
     reply.status(204).send();
+  };
+
+  readonly updateQueuedMessage = async (
+    request: FastifyRequest<{
+      Params: SessionQueueItemParams;
+      Body: UpdateQueuedMessageBody;
+    }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    const content = requireNonEmptyText(
+      request.body.content,
+      "content",
+      "编辑队列消息必须提供 content"
+    );
+
+    reply.send(
+      await this.sessionLiveRuntimeService.updateQueuedMessage(
+        request.params.sessionId,
+        requireUserId(request),
+        request.params.queueItemId,
+        content
+      )
+    );
   };
 
   readonly steerQueuedMessage = async (

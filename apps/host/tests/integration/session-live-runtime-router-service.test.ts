@@ -63,6 +63,20 @@ function createRuntimeServiceStub(
     }),
     listQueuedMessages: vi.fn(async () => []),
     deleteQueuedMessage: vi.fn(async () => undefined),
+    updateQueuedMessage: vi.fn(async () => ({
+      id: "queue-1",
+      sessionId: "session-1",
+      content: "updated",
+      clientRequestId: null,
+      model: null,
+      reasoningLevel: null,
+      permissionMode: null,
+      status: "queued",
+      orderIndex: 1,
+      errorDetail: null,
+      createdAt: "2026-04-18T00:00:00.000Z",
+      updatedAt: "2026-04-18T00:00:00.000Z"
+    })),
     steerQueuedMessage: vi.fn(async () => ({
       sessionId: "session-1",
       queueItemId: "queue-1",

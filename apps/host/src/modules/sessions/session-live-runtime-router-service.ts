@@ -21,6 +21,7 @@ export type SessionRuntimeRouterServiceContract = Pick<
   | "replyPermissionRequest"
   | "listQueuedMessages"
   | "deleteQueuedMessage"
+  | "updateQueuedMessage"
   | "steerQueuedMessage"
   | "getClaudeHookBridgeConfig"
   | "ingestClaudeHookEvent"
@@ -76,6 +77,13 @@ export class SessionLiveRuntimeRouterService implements SessionRuntimeRouterServ
     userId,
     queueItemId
   ) => this.resolveServiceForSession(sessionId).deleteQueuedMessage(sessionId, userId, queueItemId);
+
+  readonly updateQueuedMessage: SessionLiveRuntimeService["updateQueuedMessage"] = async (
+    sessionId,
+    userId,
+    queueItemId,
+    content
+  ) => this.resolveServiceForSession(sessionId).updateQueuedMessage(sessionId, userId, queueItemId, content);
 
   readonly steerQueuedMessage: SessionLiveRuntimeService["steerQueuedMessage"] = async (
     sessionId,
