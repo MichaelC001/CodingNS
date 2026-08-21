@@ -6313,6 +6313,13 @@ export function MessageTimeline({
     // 行高补偿会同时写 scrollTop 和行 transform，必须在同一帧提交，避免出现跳位闪烁。
     useFlushSync: true
   });
+  // 用户滚动或已经跟随尾部时，不要因为异步行高测量再次写回 scrollTop。
+  // 这类补偿会和原生滚动手势、底部自动跟随互相争抢，表现为到达底部时抖动。
+  timelineVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+    _item,
+    _delta,
+    instance
+  ) => !instance.isScrolling && !stickToBottomRef.current;
   const showTimelineSkeleton = historyState === "loading" && messages.length === 0;
 
   useEffect(() => {

@@ -105,9 +105,23 @@ describe("MessageTimeline 虚拟列表", () => {
       overscan: number;
       useFlushSync: boolean;
     };
+    const virtualizer = useVirtualizerMock.mock.results.at(-1)?.value as {
+      shouldAdjustScrollPositionOnItemSizeChange?: (
+        item: unknown,
+        delta: number,
+        instance: { isScrolling: boolean }
+      ) => boolean;
+    };
     expect(options.count).toBe(120);
     expect(options.directDomUpdates).toBe(true);
     expect(options.overscan).toBe(8);
+    expect(
+      virtualizer.shouldAdjustScrollPositionOnItemSizeChange?.(
+        {},
+        20,
+        { isScrolling: true }
+      )
+    ).toBe(false);
     expect(options.useFlushSync).toBe(true);
   });
 
@@ -246,5 +260,46 @@ describe("MessageTimeline 虚拟列表", () => {
       }
       vi.useRealTimers();
     }
+  });
+
+  it("历史位置滚动停止后仍允许行高补偿", () => {
+    const items = createItems([createMessage(0), createMessage(1), createMessage(2)]);
+    renderTimeline(items);
+
+    const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+    const virtualizer = useVirtualizerMock.mock.results.at(-1)?.value as {
+      shouldAdjustScrollPositionOnItemSizeChange?: (
+        item: unknown,
+        delta: number,
+        instance: { isScrolling: boolean }
+      ) => boolean;
+    };
+
+    expect(messageList).not.toBeNull();
+    expect(virtualizer.shouldAdjustScrollPositionOnItemSizeChange).toBeTypeOf("function");
+
+    Object.defineProperty(messageList, "scrollHeight", {
+      value: 2_000,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "scrollTop", {
+      value: 420,
+      writable: true,
+      configurable: true
+    });
+
+    messageList!.dispatchEvent(new Event("scroll"));
+
+    expect(
+      virtualizer.shouldAdjustScrollPositionOnItemSizeChange?.(
+        {},
+        20,
+        { isScrolling: false }
+      )
+    ).toBe(true);
   });
 });
