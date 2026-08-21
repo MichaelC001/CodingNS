@@ -3239,11 +3239,10 @@ function buildSessionStatsItems(sessionStats: ProviderSessionStatsDto | null): S
     { metric: "ttftMs", label: t("conversation.sessionStatsTtft") },
     { metric: "ttftSteps", label: t("conversation.sessionStatsTtftSteps") },
     { metric: "decodeMs", label: t("conversation.sessionStatsDecodeDuration") },
-    { metric: "decodeTokens", label: t("conversation.sessionStatsDecodeTokens") },
-    { metric: "costUsd", label: t("conversation.sessionStatsCost") }
+    { metric: "decodeTokens", label: t("conversation.sessionStatsDecodeTokens") }
   ];
 
-  return definitions.flatMap((item) => {
+  const items = definitions.flatMap((item) => {
     const value = sessionStats?.metrics[item.metric];
 
     if (!value || !Number.isFinite(value.value) || value.value < 0) {
@@ -3268,6 +3267,56 @@ function buildSessionStatsItems(sessionStats: ProviderSessionStatsDto | null): S
 
     return [{ ...item, value }];
   });
+
+  return [
+    ...items,
+    {
+      metric: "costUsd",
+      label: t("conversation.sessionStatsCost"),
+      value: resolveSessionCostMetric(sessionStats)
+    }
+  ];
+}
+
+function resolveSessionCostMetric(sessionStats: ProviderSessionStatsDto | null): SessionStatsMetricValue {
+  const costMetric = sessionStats?.metrics.costUsd;
+
+  if (
+    costMetric
+    && Number.isFinite(costMetric.value)
+    && costMetric.value >= 0
+    && costMetric.semantic !== "unavailable"
+    && costMetric.pricing?.coverage !== "unavailable"
+  ) {
+    return costMetric;
+  }
+
+  if (costMetric?.pricing?.coverage === "unavailable") {
+    return costMetric;
+  }
+
+  return {
+    value: 0,
+    source: "derived-provider-metrics",
+    semantic: "unavailable",
+    watermark: {
+      kind: "captured-at",
+      value: sessionStats?.capturedAt ?? "unavailable"
+    },
+    pricing: {
+      kind: "catalog-estimate",
+      coverage: "unavailable",
+      unavailableReason: costMetric?.pricing?.unavailableReason
+        ?? (sessionStats ? "cost-not-returned" : "statistics-unavailable")
+    }
+  };
+}
+
+function isSessionCostAvailable(value: SessionStatsMetricValue): boolean {
+  return Number.isFinite(value.value)
+    && value.value >= 0
+    && value.semantic !== "unavailable"
+    && value.pricing?.coverage !== "unavailable";
 }
 
 function buildSessionStatsSummary(sessionStats: ProviderSessionStatsDto | null): SessionStatsSummaryItem[] {
@@ -3467,7 +3516,7 @@ function SessionStatsIndicators({
   const platform = usePlatform();
   const isMobile = platform.isMobile || platform.isNativeMobile;
   const sessionStatsItems = useMemo(() => buildSessionStatsItems(sessionStats), [sessionStats]);
-  const costMetric = sessionStats?.metrics.costUsd ?? null;
+  const costMetric = useMemo(() => resolveSessionCostMetric(sessionStats), [sessionStats]);
   const cacheHitRate = sessionStats?.metrics.cacheHitRate;
   const cacheHitRateValue = isSessionStatValueAvailable(cacheHitRate) ? cacheHitRate : null;
   const hasCacheHitRate = cacheHitRateValue !== null;
@@ -3712,12 +3761,20 @@ function SessionStatsIndicators({
                   </div>
                   <div className="composer-session-stats-grid">
                     {sessionStatsItems.map((item) => (
-                      <div className="composer-session-stats-row" data-metric={item.metric} key={item.metric}>
+                      <div
+                        className={`composer-session-stats-row${item.metric === "costUsd" && !isSessionCostAvailable(item.value) ? " is-unavailable" : ""}`}
+                        data-metric={item.metric}
+                        key={item.metric}
+                      >
                         <div className="composer-session-stats-row-value">
                           <span>{item.label}</span>
                           {item.metric === "costUsd" ? (
                             <span className="composer-session-cost-value">
-                              <strong>{formatSessionStatValue(item.metric, item.value.value)}</strong>
+                              <strong>
+                                {isSessionCostAvailable(item.value)
+                                  ? formatSessionStatValue(item.metric, item.value.value)
+                                  : t("conversation.sessionStatsCostUnavailableValue")}
+                              </strong>
                               <button
                                 type="button"
                                 className="composer-session-cost-info-button"
@@ -3776,6 +3833,7 @@ function SessionCostDetailsModal({
   const [catalogPriceBookLoading, setCatalogPriceBookLoading] = useState(false);
   const [catalogPriceBookError, setCatalogPriceBookError] = useState(false);
   const pricing = metric.pricing;
+  const costUnavailable = pricing?.coverage === "unavailable";
   const breakdown = pricing?.breakdown ?? [];
   const sessionPriceBook = pricing?.priceBook ?? [];
   const priceBook = catalogPriceBook && catalogPriceBook.entries.length > 0
@@ -3849,7 +3907,11 @@ function SessionCostDetailsModal({
       <MobileSheet
         open={open}
         title={t("conversation.sessionStatsCostDetailsTitle")}
-        description={t("conversation.sessionStatsCostDetailsDescription")}
+        description={t(
+          costUnavailable
+            ? "conversation.sessionStatsCostUnavailableDescription"
+            : "conversation.sessionStatsCostDetailsDescription"
+        )}
         height="three-quarter"
         kind="form"
         showHandle
@@ -3867,7 +3929,11 @@ function SessionCostDetailsModal({
     <DesktopModal
       open={open}
       title={t("conversation.sessionStatsCostDetailsTitle")}
-      description={t("conversation.sessionStatsCostDetailsDescription")}
+      description={t(
+        costUnavailable
+          ? "conversation.sessionStatsCostUnavailableDescription"
+          : "conversation.sessionStatsCostDetailsDescription"
+      )}
       size="regular"
       layout="form"
       bodyClassName="composer-session-cost-modal-body"
@@ -3902,56 +3968,70 @@ function SessionCostDetailsBody({
   const cnyValue = exchangeRate && Number.isFinite(exchangeRate.rate)
     ? metric.value * exchangeRate.rate
     : null;
+  const costUnavailable = pricing?.coverage === "unavailable";
 
   return (
     <>
-      <ModalSection
-        heading={t("conversation.sessionStatsCostModelsTitle")}
-        description={t("conversation.sessionStatsCostModelsDescription")}
-      >
-        {breakdown.length > 0 ? (
-          <ModalList className="composer-session-cost-model-list">
-            {breakdown.map((item) => (
-              <ModalListItem
-                key={`${item.provider}:${item.model}`}
-                label={`${getProviderDisplayName(item.provider)} · ${item.model}`}
-                description={formatSessionCostTokenBreakdown(item)}
-                trailing={<strong>{formatUsdAmount(item.costUsd)}</strong>}
-              />
-            ))}
-          </ModalList>
-        ) : (
-          <p className="composer-session-cost-empty">
-            {pricing?.kind === "provider-native"
-              ? t("conversation.sessionStatsCostNativeBreakdownUnavailable")
-              : t("conversation.sessionStatsCostBreakdownUnavailable")}
+      {costUnavailable ? (
+        <ModalSection
+          heading={t("conversation.sessionStatsCostUnavailableTitle")}
+          description={t("conversation.sessionStatsCostUnavailableDescription")}
+        >
+          <p className="composer-session-cost-empty composer-session-cost-unavailable-reason">
+            {formatSessionCostUnavailableReason(pricing?.unavailableReason)}
           </p>
-        )}
-      </ModalSection>
+        </ModalSection>
+      ) : (
+        <>
+          <ModalSection
+            heading={t("conversation.sessionStatsCostModelsTitle")}
+            description={t("conversation.sessionStatsCostModelsDescription")}
+          >
+            {breakdown.length > 0 ? (
+              <ModalList className="composer-session-cost-model-list">
+                {breakdown.map((item) => (
+                  <ModalListItem
+                    key={`${item.provider}:${item.model}`}
+                    label={`${getProviderDisplayName(item.provider)} · ${item.model}`}
+                    description={formatSessionCostTokenBreakdown(item)}
+                    trailing={<strong>{formatUsdAmount(item.costUsd)}</strong>}
+                  />
+                ))}
+              </ModalList>
+            ) : (
+              <p className="composer-session-cost-empty">
+                {pricing?.kind === "provider-native"
+                  ? t("conversation.sessionStatsCostNativeBreakdownUnavailable")
+                  : t("conversation.sessionStatsCostBreakdownUnavailable")}
+              </p>
+            )}
+          </ModalSection>
 
-      <ModalSection
-        heading={t("conversation.sessionStatsCostConversionTitle")}
-        description={t("conversation.sessionStatsCostConversionDescription")}
-      >
-        <div className="composer-session-cost-conversion">
-          <div>
-            <span>{t("conversation.sessionStatsCostUsdLabel")}</span>
-            <strong>{formatUsdAmount(metric.value)}</strong>
-          </div>
-          <div>
-            <span>{t("conversation.sessionStatsCostCnyLabel")}</span>
-            <strong>{cnyValue === null ? "--" : formatCnyAmount(cnyValue)}</strong>
-          </div>
-        </div>
-        {exchangeRate ? (
-          <p className="composer-session-cost-rate">
-            {t("conversation.sessionStatsCostExchangeRate", {
-              rate: exchangeRate.rate.toFixed(2),
-              version: exchangeRate.version
-            })}
-          </p>
-        ) : null}
-      </ModalSection>
+          <ModalSection
+            heading={t("conversation.sessionStatsCostConversionTitle")}
+            description={t("conversation.sessionStatsCostConversionDescription")}
+          >
+            <div className="composer-session-cost-conversion">
+              <div>
+                <span>{t("conversation.sessionStatsCostUsdLabel")}</span>
+                <strong>{formatUsdAmount(metric.value)}</strong>
+              </div>
+              <div>
+                <span>{t("conversation.sessionStatsCostCnyLabel")}</span>
+                <strong>{cnyValue === null ? "--" : formatCnyAmount(cnyValue)}</strong>
+              </div>
+            </div>
+            {exchangeRate ? (
+              <p className="composer-session-cost-rate">
+                {t("conversation.sessionStatsCostExchangeRate", {
+                  rate: exchangeRate.rate.toFixed(2),
+                  version: exchangeRate.version
+                })}
+              </p>
+            ) : null}
+          </ModalSection>
+        </>
+      )}
 
       {showPriceBook ? (
         <ModalSection
@@ -4026,6 +4106,40 @@ function formatSessionCostTokenBreakdown(item: SessionCostBreakdown): string {
       ? t("conversation.sessionStatsCostCacheWriteTokens", { value: formatTokenCount(item.cacheWriteTokens) })
       : null
   ].filter(Boolean).join(" · ");
+}
+
+function formatSessionCostUnavailableReason(
+  reason: SessionCostPricing["unavailableReason"]
+): string {
+  switch (reason) {
+    case "billing-context-missing":
+      return t("conversation.sessionStatsCostReasonBillingContextMissing");
+    case "pricing-profile-unsupported":
+      return t("conversation.sessionStatsCostReasonPricingProfileUnsupported");
+    case "price-book-unavailable":
+      return t("conversation.sessionStatsCostReasonPriceBookUnavailable");
+    case "price-book-version-mismatch":
+      return t("conversation.sessionStatsCostReasonPriceBookVersionMismatch");
+    case "usage-unavailable":
+      return t("conversation.sessionStatsCostReasonUsageUnavailable");
+    case "usage-incomplete":
+      return t("conversation.sessionStatsCostReasonUsageIncomplete");
+    case "concurrent-turns":
+      return t("conversation.sessionStatsCostReasonConcurrentTurns");
+    case "model-price-unavailable":
+      return t("conversation.sessionStatsCostReasonModelPriceUnavailable");
+    case "cache-price-unavailable":
+      return t("conversation.sessionStatsCostReasonCachePriceUnavailable");
+    case "cost-calculation-invalid":
+      return t("conversation.sessionStatsCostReasonCalculationInvalid");
+    case "provider-cost-unavailable":
+      return t("conversation.sessionStatsCostReasonProviderUnavailable");
+    case "statistics-unavailable":
+      return t("conversation.sessionStatsCostReasonStatisticsUnavailable");
+    case "cost-not-returned":
+    default:
+      return t("conversation.sessionStatsCostReasonNotReturned");
+  }
 }
 
 function formatUsdPerMillionTokens(value: number): string {

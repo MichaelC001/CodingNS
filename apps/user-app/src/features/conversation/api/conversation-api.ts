@@ -1633,10 +1633,25 @@ export interface ProviderSessionStatValueDto {
     | "sum-of-final-events"
     | "latest-snapshot"
     | "derived-ratio"
-    | "priced-final-events";
+    | "priced-final-events"
+    | "unavailable";
   pricing?: {
     kind: "provider-native" | "catalog-estimate";
-    coverage: "complete";
+    coverage: "complete" | "unavailable";
+    unavailableReason?:
+      | "billing-context-missing"
+      | "pricing-profile-unsupported"
+      | "price-book-unavailable"
+      | "price-book-version-mismatch"
+      | "usage-unavailable"
+      | "usage-incomplete"
+      | "concurrent-turns"
+      | "model-price-unavailable"
+      | "cache-price-unavailable"
+      | "cost-calculation-invalid"
+      | "provider-cost-unavailable"
+      | "statistics-unavailable"
+      | "cost-not-returned";
     pricingProfileId?: string;
     priceBookVersion?: string;
     breakdown?: Array<{

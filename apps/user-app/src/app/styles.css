@@ -8563,6 +8563,10 @@ textarea:focus-visible {
   color: #b45309;
 }
 
+.composer-session-stats-row[data-metric="costUsd"].is-unavailable strong {
+  color: var(--text-secondary);
+}
+
 .composer-session-stats-row[data-metric="costUsd"] .composer-session-stats-row-value {
   align-items: center;
   gap: 8px;
@@ -8693,6 +8697,10 @@ textarea:focus-visible {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.composer-session-cost-unavailable-reason {
+  color: var(--text-primary);
 }
 
 .composer-session-cost-conversion {

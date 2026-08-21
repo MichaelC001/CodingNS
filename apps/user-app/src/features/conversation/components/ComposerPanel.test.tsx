@@ -1025,7 +1025,7 @@ describe("ComposerPanel", () => {
     expect(tooltip).toHaveTextContent("90");
     expect(tooltip.querySelector(".composer-session-stats-provenance")).toBeNull();
     expect(tooltip.querySelector(".composer-session-stats-group-title")).toBeNull();
-    expect(tooltip.querySelectorAll(".composer-session-stats-row")).toHaveLength(4);
+    expect(tooltip.querySelectorAll(".composer-session-stats-row")).toHaveLength(5);
     expect(container.querySelector(".composer-session-stats-summary")).not.toHaveTextContent("tok");
   });
 
@@ -1200,7 +1200,10 @@ describe("ComposerPanel", () => {
     expect(tooltip).toHaveTextContent(t("conversation.sessionStatsSteps"));
     expect(tooltip).toHaveTextContent("3");
     expect(tooltip).not.toHaveTextContent(t("conversation.sessionStatsOutputTokens"));
-    expect(tooltip).not.toHaveTextContent(t("conversation.sessionStatsCost"));
+    expect(tooltip).toHaveTextContent(t("conversation.sessionStatsCost"));
+    expect(tooltip.querySelector('[data-metric="costUsd"] strong')).toHaveTextContent(
+      t("conversation.sessionStatsCostUnavailableValue")
+    );
   });
 
   it.each([
@@ -1239,6 +1242,74 @@ describe("ComposerPanel", () => {
     const tooltip = screen.getByRole("tooltip");
     expect(tooltip).toHaveTextContent(t("conversation.sessionStatsCost"));
     expect(tooltip.querySelector('[data-metric="costUsd"] strong')).toHaveTextContent("$0.125");
+  });
+
+  it("费用不可用时仍保留费用行，并在详情中显示具体原因", () => {
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        sessionStats={{
+          provider: "codex",
+          capturedAt: "2026-08-16T00:00:02.000Z",
+          metrics: {
+            inputTokens: {
+              value: 100,
+              source: "provider-history-log",
+              semantic: "latest-snapshot",
+              watermark: { kind: "source-timestamp", value: "2026-08-16T00:00:02.000Z" }
+            },
+            costUsd: {
+              value: 0,
+              source: "derived-provider-metrics",
+              semantic: "unavailable",
+              pricing: {
+                kind: "catalog-estimate",
+                coverage: "unavailable",
+                unavailableReason: "model-price-unavailable"
+              },
+              watermark: { kind: "source-timestamp", value: "2026-08-16T00:00:02.000Z" }
+            }
+          }
+        }}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(container.querySelector(".composer-context-ring")!);
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip.querySelector('[data-metric="costUsd"] strong')).toHaveTextContent(
+      t("conversation.sessionStatsCostUnavailableValue")
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.sessionStatsCostDetailsAction") }));
+
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      t("conversation.sessionStatsCostReasonModelPriceUnavailable")
+    );
+  });
+
+  it("还没有统计快照时也保留费用入口，并说明统计尚未可用", () => {
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        sessionStats={null}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(container.querySelector(".composer-context-ring")!);
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip.querySelector('[data-metric="costUsd"] strong')).toHaveTextContent(
+      t("conversation.sessionStatsCostUnavailableValue")
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.sessionStatsCostDetailsAction") }));
+
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      t("conversation.sessionStatsCostReasonStatisticsUnavailable")
+    );
   });
 
   it("费用显示美元符号并最多保留三位小数", () => {
