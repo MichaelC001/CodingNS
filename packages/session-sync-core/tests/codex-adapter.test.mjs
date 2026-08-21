@@ -3649,6 +3649,144 @@ test("CodexAdapter 会优先使用 session_meta 里的 parent_thread_id 识别�
   }
 });
 
+test("CodexAdapter 会隐藏 Codex Guardian 审批会话", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-guardian-jsonl-"));
+  const workspacePath = "/Users/jackson/Code/CodingNS";
+  const sessionDir = join(tempDir, "sessions", "2026", "08", "18");
+  const parentThreadId = "01a01259-608b-7710-a1a9-de2f4a65c7c5";
+  const guardianThreadId = "01a01264-7747-7160-aeed-c0d5020e8980";
+  const parentSessionFile = join(sessionDir, `rollout-${parentThreadId}.jsonl`);
+  const guardianSessionFile = join(sessionDir, `rollout-${guardianThreadId}.jsonl`);
+
+  try {
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      parentSessionFile,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: parentThreadId,
+            cwd: workspacePath
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-08-18T01:01:00.000Z",
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "检查当前工作区"
+          }
+        })
+      ].join("\n"),
+      "utf8"
+    );
+    writeFileSync(
+      guardianSessionFile,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: guardianThreadId,
+            parent_thread_id: parentThreadId,
+            cwd: workspacePath,
+            source: {
+              subagent: {
+                other: "guardian"
+              }
+            },
+            thread_source: "subagent"
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-08-18T01:02:49.410Z",
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "判断一次计划动作是否需要审批"
+          }
+        })
+      ].join("\n"),
+      "utf8"
+    );
+
+    const sessions = await new CodexAdapter({ homeDir: tempDir }).detectSessions(workspacePath);
+
+    assert.equal(sessions.some((session) => session.providerSessionId === parentThreadId), true);
+    assert.equal(sessions.some((session) => session.providerSessionId === guardianThreadId), false);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("CodexAdapter 会通过 app-server metadata 隐藏 Guardian 审批会话", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-guardian-appserver-"));
+  const workspacePath = "/Users/jackson/Code/CodingNS";
+  const sessionDir = join(tempDir, "sessions", "2026", "08", "18");
+  const guardianThreadId = "01a01269-7918-7313-9279-6a23b18e6caa";
+  const guardianSessionFile = join(sessionDir, `rollout-${guardianThreadId}.jsonl`);
+
+  try {
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      guardianSessionFile,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: guardianThreadId,
+            cwd: workspacePath
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-08-18T01:08:17.000Z",
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "判断一次计划动作是否需要审批"
+          }
+        })
+      ].join("\n"),
+      "utf8"
+    );
+
+    const adapter = new CodexAdapter({
+      homeDir: tempDir,
+      threadControlTransportFactory: () => ({
+        async initialize() {},
+        async archiveThread() {},
+        async unarchiveThread() {},
+        async readThread() {
+          throw new Error("SHOULD_NOT_READ");
+        },
+        async listThreads() {
+          return [
+            {
+              id: guardianThreadId,
+              cwd: workspacePath,
+              name: "Approval Request",
+              preview: "判断一次计划动作是否需要审批",
+              path: guardianSessionFile,
+              source: {
+                subAgent: {
+                  other: "guardian"
+                }
+              }
+            }
+          ];
+        },
+        close() {}
+      })
+    });
+
+    const sessions = await adapter.detectSessions(workspacePath);
+
+    assert.equal(sessions.some((session) => session.providerSessionId === guardianThreadId), false);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("CodexAdapter 读取 Codex 子 Agent 时不会把昵称当标题，也不会保留继承的父会话消息", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-subagent-inherited-history-"));
   const workspacePath = "/Users/jackson/Documents/Code/CodingNS";

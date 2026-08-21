@@ -195,6 +195,7 @@ interface CodexThreadMetadata {
   firstUserMessage: string | null;
   agentNickname: string | null;
   agentRole: string | null;
+  isGuardian: boolean;
   parentProviderSessionId: string | null;
   parentRelationKind: "fork" | "spawn" | null;
   isArchived: boolean | null;
@@ -234,6 +235,7 @@ interface CodexSessionIdentity {
   cwd: string;
   parentThreadId: string | null;
   parentThreadKind: "fork" | "spawn" | null;
+  isGuardian: boolean;
 }
 
 const HISTORY_CACHE_LIMIT = 6;
@@ -307,6 +309,22 @@ export class CodexAdapter implements ProviderAdapter {
       const cachedSummary = this.sessionSummaryCache.get(filePath);
       const fileSessionId = basename(filePath, ".jsonl");
       const sessionIdentity = this.readSessionIdentity(filePath, fileSessionId);
+      const indexedMetadata = sessionIdentity
+        ? threadMetadataIndex.get(sessionIdentity.threadId)
+        : threadMetadataIndex.get(fileSessionId);
+
+      if (sessionIdentity?.isGuardian || indexedMetadata?.isGuardian) {
+        this.touchSessionSummaryCache(filePath, {
+          filePath,
+          mtimeMs: stats.mtimeMs,
+          size: stats.size,
+          workspacePath: sessionIdentity?.cwd || indexedMetadata?.cwd || null,
+          providerSessionId: sessionIdentity?.threadId || fileSessionId,
+          title: null,
+          summary: null
+        });
+        continue;
+      }
 
       if (
         cachedSummary
@@ -448,6 +466,11 @@ export class CodexAdapter implements ProviderAdapter {
     for (const entry of retainedSummaries) {
       const currentThreadId = entry.sessionIdentity?.threadId ?? entry.summary.providerSessionId;
       const currentThreadMetadata = threadMetadataIndex.get(currentThreadId) ?? null;
+
+      if (currentThreadMetadata?.isGuardian) {
+        continue;
+      }
+
       const currentSpawnRelation = spawnedAgentRelationIndex.get(currentThreadId) ?? null;
       const summary = this.hydrateSessionSummary(
         {
@@ -480,6 +503,19 @@ export class CodexAdapter implements ProviderAdapter {
       const meta = records.find((record) => record.data.type === "session_meta")?.data;
       const metaPayload = (meta?.payload ?? {}) as Record<string, unknown>;
       const codexSessionId = this.resolveCodexSessionId(metaPayload, fileSessionId);
+
+      if (isCodexGuardianSessionPayload(metaPayload)) {
+        this.touchSessionSummaryCache(filePath, {
+          filePath,
+          mtimeMs: stats.mtimeMs,
+          size: stats.size,
+          workspacePath: ensureText(metaPayload.cwd).trim() || null,
+          providerSessionId: codexSessionId,
+          title: null,
+          summary: null
+        });
+        continue;
+      }
 
       if (shouldIgnoreCodingNsDraftSession(metaPayload)) {
         this.touchSessionSummaryCache(filePath, {
@@ -1687,6 +1723,7 @@ export class CodexAdapter implements ProviderAdapter {
             firstUserMessage: null,
             agentNickname: null,
             agentRole: null,
+            isGuardian: false,
             parentProviderSessionId: null,
             parentRelationKind: null,
             isArchived: null,
@@ -1762,6 +1799,7 @@ export class CodexAdapter implements ProviderAdapter {
           agentNickname:
             ensureText(row.agent_nickname).trim() || (current?.agentNickname ?? null),
           agentRole: ensureText(row.agent_role).trim() || (current?.agentRole ?? null),
+          isGuardian: current?.isGuardian ?? false,
           parentProviderSessionId: current?.parentProviderSessionId ?? null,
           parentRelationKind: current?.parentRelationKind ?? null,
           rolloutPath:
@@ -1841,6 +1879,7 @@ export class CodexAdapter implements ProviderAdapter {
             metadata.firstUserMessage ?? current?.firstUserMessage ?? null,
           agentNickname: metadata.agentNickname ?? current?.agentNickname ?? null,
           agentRole: metadata.agentRole ?? current?.agentRole ?? null,
+          isGuardian: metadata.isGuardian || current?.isGuardian === true,
           parentProviderSessionId:
             metadata.parentProviderSessionId ?? current?.parentProviderSessionId ?? null,
           parentRelationKind: metadata.parentRelationKind ?? current?.parentRelationKind ?? null,
@@ -2778,7 +2817,8 @@ export class CodexAdapter implements ProviderAdapter {
         threadId: this.resolveCodexSessionId(payload, fallbackSessionId),
         cwd: ensureText(payload.cwd).trim(),
         parentThreadId: parentThreadRelation.parentThreadId,
-        parentThreadKind: parentThreadRelation.kind
+        parentThreadKind: parentThreadRelation.kind,
+        isGuardian: isCodexGuardianSessionPayload(payload)
       };
     } catch {
       return null;
@@ -4482,6 +4522,28 @@ function parseCodexAgentIdFromToolOutput(output: string): string | null {
   return matched?.[1] ?? null;
 }
 
+function readCodexSubagentSource(source: unknown): Record<string, unknown> | null {
+  if (typeof source !== "object" || source === null) {
+    return null;
+  }
+
+  const sourceRecord = source as Record<string, unknown>;
+  const subagent = sourceRecord.subagent ?? sourceRecord.subAgent;
+
+  return typeof subagent === "object" && subagent !== null
+    ? (subagent as Record<string, unknown>)
+    : null;
+}
+
+function isCodexGuardianSource(source: unknown): boolean {
+  const subagent = readCodexSubagentSource(source);
+  return ensureText(subagent?.other).trim().toLowerCase() === "guardian";
+}
+
+function isCodexGuardianSessionPayload(payload: Record<string, unknown>): boolean {
+  return isCodexGuardianSource(payload.source);
+}
+
 function resolveCodexParentThreadRelation(payload: Record<string, unknown>): {
   parentThreadId: string | null;
   kind: "fork" | "spawn" | null;
@@ -4490,15 +4552,14 @@ function resolveCodexParentThreadRelation(payload: Record<string, unknown>): {
     typeof payload.source === "object" && payload.source !== null
       ? (payload.source as Record<string, unknown>)
       : null;
-  const subagent =
-    typeof source?.subagent === "object" && source.subagent !== null
-      ? (source.subagent as Record<string, unknown>)
-      : null;
+  const subagent = readCodexSubagentSource(source);
   const threadSpawn =
     typeof subagent?.thread_spawn === "object" && subagent.thread_spawn !== null
       ? (subagent.thread_spawn as Record<string, unknown>)
       : null;
-  const nestedParentThreadId = ensureText(threadSpawn?.parent_thread_id).trim();
+  const nestedParentThreadId =
+    ensureText(threadSpawn?.parent_thread_id).trim()
+    || ensureText(threadSpawn?.parentThreadId).trim();
 
   if (nestedParentThreadId.length > 0) {
     return {
@@ -4507,11 +4568,20 @@ function resolveCodexParentThreadRelation(payload: Record<string, unknown>): {
     };
   }
 
-  const directParentThreadId = ensureText(payload.forked_from_id).trim();
+  const directParentThreadId = ensureText(payload.parent_thread_id).trim();
 
   if (directParentThreadId.length > 0) {
     return {
       parentThreadId: directParentThreadId,
+      kind: "spawn"
+    };
+  }
+
+  const forkedFromId = ensureText(payload.forked_from_id).trim();
+
+  if (forkedFromId.length > 0) {
+    return {
+      parentThreadId: forkedFromId,
       kind: "fork"
     };
   }
@@ -4532,15 +4602,7 @@ function normalizeCodexAppServerThreadMetadata(
   }
 
   const source = thread.source as unknown;
-  const sourceRecord = typeof source === "object" && source !== null
-    ? (source as Record<string, unknown>)
-    : null;
-  const subAgentSource =
-    typeof sourceRecord?.subAgent === "object" && sourceRecord.subAgent !== null
-      ? (sourceRecord.subAgent as Record<string, unknown>)
-      : typeof sourceRecord?.subagent === "object" && sourceRecord.subagent !== null
-        ? (sourceRecord.subagent as Record<string, unknown>)
-        : null;
+  const subAgentSource = readCodexSubagentSource(source);
   const threadSpawn =
     typeof subAgentSource?.thread_spawn === "object" && subAgentSource.thread_spawn !== null
       ? (subAgentSource.thread_spawn as Record<string, unknown>)
@@ -4550,8 +4612,11 @@ function normalizeCodexAppServerThreadMetadata(
   const spawnParentThreadId =
     ensureText(threadSpawn?.parent_thread_id).trim()
     || ensureText(threadSpawn?.parentThreadId).trim();
+  const directParentThreadId =
+    ensureText(thread.parentThreadId ?? thread.parent_thread_id).trim();
   const forkedFromId = ensureText(thread.forkedFromId ?? thread.forked_from_id).trim();
-  const parentProviderSessionId = spawnParentThreadId || forkedFromId || null;
+  const parentProviderSessionId =
+    spawnParentThreadId || directParentThreadId || forkedFromId || null;
   const agentNickname =
     ensureText(thread.agentNickname ?? thread.agent_nickname).trim()
     || ensureText(threadSpawn?.agent_nickname ?? threadSpawn?.agentNickname).trim()
@@ -4577,9 +4642,10 @@ function normalizeCodexAppServerThreadMetadata(
     firstUserMessage: preview || null,
     agentNickname,
     agentRole,
+    isGuardian: isCodexGuardianSource(source),
     parentProviderSessionId,
     parentRelationKind:
-      spawnParentThreadId.length > 0
+      spawnParentThreadId.length > 0 || directParentThreadId.length > 0
         ? "spawn"
         : forkedFromId.length > 0
           ? "fork"
@@ -5015,7 +5081,10 @@ function isCodexSubagentThread(
   relation: CodexSpawnRelation | null | undefined
 ): boolean {
   return Boolean(
-    relation?.kind === "spawn" || metadata?.agentRole || metadata?.agentNickname
+    metadata?.isGuardian
+    || relation?.kind === "spawn"
+    || metadata?.agentRole
+    || metadata?.agentNickname
   );
 }
 
