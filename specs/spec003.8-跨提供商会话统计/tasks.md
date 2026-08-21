@@ -139,10 +139,10 @@
 - [x] 12.1 扩展会话统计契约和新会话收费策略
   - 状态：COMPLETED
   - 这一步做什么：在既有 `ProviderSessionStats` 中定义目录费用的语义、来源和价格版本元数据；为新建 session binding 固定收费策略 ID、价格表版本和启用时间。
-  - 做完以后能看到什么：新会话可以区分原生成本和目录估算；旧会话没有收费策略，因此费用字段自然缺失。
+  - 做完以后能看到什么：新会话可以区分原生成本和目录估算；旧会话默认不带收费策略，Codex 默认模型会在显式统计确认实际模型后按需补齐。
   - 依赖什么：阶段 1 的统计契约和现有 `session_bindings` 创建流程。
   - 主要修改：`packages/session-sync-core/src/types.ts`、`session-pricing.ts`、Host `session_bindings` schema/migration/repository、runtime DTO 与 user-app API 类型。
-  - 这一步明确不做什么：本步骤不负责新建费用账本表（由 14.2 统一落库），不回填旧会话，不在运行时下载价格表。
+  - 这一步明确不做什么：本步骤不负责新建费用账本表（由 14.2 统一落库），不做全库回填，不在运行时下载价格表。
   - 最小验证：`session-billing.test.ts` 通过 2 项；新数据库能保存收费起点/profile/价格表版本，旧数据库迁移后的收费字段保持为空。
 
 - [x] 12.2 在同一次统计折叠中计算目录费用
@@ -160,7 +160,7 @@
   - 做完以后能看到什么：具备完整模型、usage 和收费策略的调用能进入同一统计折叠；订阅、代理、并发 Codex turn 或字段缺失时费用隐藏。
   - 依赖什么：12.2 的统一折叠器。
   - 主要改哪些文件：`claude-code.ts`、`legna-code.ts`、`codex.ts`、`gemini.ts`、`opencode.ts` 及各自 fixture 测试。
-  - 这一步明确不做什么：不按当前选中模型回填历史，不把 OpenCode 原生 `cost` 重算成目录价格，不为 Kimi 增加猜测逻辑。
+  - 这一步明确不做什么：不只按当前选中模型回填历史；Codex 默认模型必须等实际 `turn_context.model` 和完整用量确认，不把 OpenCode 原生 `cost` 重算成目录价格，不为 Kimi 增加猜测逻辑。
   - 最小验证：Claude、Legna、Codex、Gemini、OpenCode 定向回归共 107 项通过；新增费用 fixture 覆盖最终消息 last-wins、Codex 基线/模型/终态与并发 turn、Gemini 重写、OpenCode 原生 cost 优先。
 
 - [x] 12.4 补齐 DeepSeek Harness 的原始事件归因
@@ -205,7 +205,7 @@
   - 做完以后能看到什么：只要模型名称有明确价格表条目，新会话就能进入现有费用折叠；费用仍只在同一次 `readSessionStats()` 里生成。
   - 依赖什么：12.1、12.2、12.4、12.7，以及新会话已有的 selected model 和价格表匹配。
   - 主要修改：`packages/session-sync-core/src/session-pricing.ts`、`apps/host/src/modules/sessions/session-live-runtime-service.ts` 与对应 Host 测试。
-  - 这一步明确不做什么：不回填当前已存在的空收费 binding，不为未命中价格表的模型猜测价格，不新增费用接口或后台任务。
+  - 这一步明确不做什么：不只按当前选中模型回填当前已存在的空收费 binding；Codex 只在显式单会话统计确认实际模型后补齐，不为未命中价格表的模型猜测价格，不新增费用接口或后台任务。
   - 最小验证：session-sync-core 编译通过；Host `session-live-runtime-service` 定向测试覆盖价格表命中和未知模型；`git diff --check` 通过。
 
 ## 阶段 13：价格表快照和费用详情表格
@@ -245,7 +245,7 @@
   - 做完以后能看到什么：重启或页面刷新时可以直接读取上次成功的统计、账单和模型明细；费用不可核验时旧账单会被清除。
   - 依赖什么：14.1 的固定价格版本和现有 session_bindings 外键。
   - 主要修改：`schema.sql`、`client.ts`、新的 session stats repository、删除/演示清理路径。
-  - 明确不做什么：不回填旧会话，不另建第二套费用计算器。
+  - 明确不做什么：不启动旧会话全库回填，不另建第二套费用计算器；单会话按需确认仍复用同一统计刷新事务。
   - 最小验证：SQLite migration、事务覆盖、成功返回 `null` 清理和级联删除定向测试，`pnpm check:sqlite-runtime`。
 
 - [x] 14.3 通过 TaskManager 刷新并让 runtime 纯读快照
