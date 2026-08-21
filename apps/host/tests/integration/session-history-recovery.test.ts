@@ -672,6 +672,74 @@ describe("SessionHistoryService 恢复缺失索引", () => {
     expect(sessionIndexRepository.findIndexRecordBySessionId("session-stale-synthetic")).toBeNull();
   });
 
+  it("discoverWorkspaceSessions 会清理已经落库的 Codex Guardian 审批会话", async () => {
+    const { fixture, service, sessionBindingRepository, sessionIndexRepository } = createHarness({
+      discoveryResult: { sessions: [], isComplete: true }
+    });
+    const staleTimestamp = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const guardianThreadId = "01a01264-7747-7160-aeed-c0d5020e8980";
+    const guardianRawStoreRef = join(
+      fixture.codexHomeDir,
+      "archived_sessions",
+      `rollout-${guardianThreadId}.jsonl`
+    );
+
+    mkdirSync(join(fixture.codexHomeDir, "archived_sessions"), { recursive: true });
+    writeFileSync(
+      guardianRawStoreRef,
+      `${JSON.stringify({
+        timestamp: staleTimestamp,
+        type: "session_meta",
+        payload: {
+          id: guardianThreadId,
+          cwd: fixture.workspaceDir,
+          parent_thread_id: "01a01259-608b-7710-a1a9-de2f4a65c7c5",
+          source: {
+            subagent: {
+              other: "guardian"
+            }
+          },
+          thread_source: "subagent"
+        }
+      })}\n`,
+      "utf8"
+    );
+
+    sessionBindingRepository.upsert({
+      sessionId: "session-stale-guardian",
+      userId: "user-1",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: guardianThreadId,
+      rawStoreRef: guardianRawStoreRef,
+      providerConfigMode: "global-default",
+      providerPresetId: null,
+      runtimeHomeDir: null,
+      createdAt: staleTimestamp,
+      updatedAt: staleTimestamp
+    });
+    sessionIndexRepository.upsert({
+      sessionId: "session-stale-guardian",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      title: "Approval Request",
+      messageCount: 0,
+      isArchived: false,
+      lastMessageAt: null,
+      createdAt: staleTimestamp,
+      updatedAt: staleTimestamp
+    });
+
+    const sessions = await service.discoverWorkspaceSessions("workspace-1", "user-1", {
+      force: true,
+      refreshStateMode: "deferred"
+    });
+
+    expect(sessions.map((session) => session.sessionId)).not.toContain("session-stale-guardian");
+    expect(sessionBindingRepository.findBySessionId("session-stale-guardian")).toBeNull();
+    expect(sessionIndexRepository.findIndexRecordBySessionId("session-stale-guardian")).toBeNull();
+  });
+
   it("discoverWorkspaceSessions 不会清理已被 butler_sessions 引用的 stale hidden session", async () => {
     const {
       fixture,

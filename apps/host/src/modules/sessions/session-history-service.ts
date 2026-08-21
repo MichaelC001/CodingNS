@@ -5638,6 +5638,7 @@ export class SessionHistoryService {
         return (
           (session.provider === "codex" &&
             (
+              isCodexGuardianRawStore(session.rawStoreRef) ||
               isLegacyCodingNsRolloutSession(session.providerSessionId, session.rawStoreRef) ||
               (
                 shouldRemoveMissingSyntheticCodexSession(session.rawStoreRef) &&
@@ -8207,6 +8208,49 @@ function isLegacyCodingNsRolloutSession(providerSessionId: string, rawStoreRef: 
     };
 
     return record.type === "session_meta" && record.payload?.source === "codingns";
+  } catch {
+    return false;
+  }
+}
+
+function isCodexGuardianRawStore(rawStoreRef: string): boolean {
+  if (!existsSync(rawStoreRef)) {
+    return false;
+  }
+
+  try {
+    const firstLine = readFileSync(rawStoreRef, "utf8")
+      .split(/\r?\n/, 1)
+      .at(0)
+      ?.trim();
+
+    if (!firstLine) {
+      return false;
+    }
+
+    const record = JSON.parse(firstLine) as {
+      type?: unknown;
+      payload?: {
+        source?: unknown;
+      };
+    };
+    const source = record.payload?.source;
+
+    if (record.type !== "session_meta" || typeof source !== "object" || source === null) {
+      return false;
+    }
+
+    const sourceRecord = source as Record<string, unknown>;
+    const subagent = sourceRecord.subagent ?? sourceRecord.subAgent;
+
+    if (typeof subagent !== "object" || subagent === null) {
+      return false;
+    }
+
+    return (
+      typeof (subagent as Record<string, unknown>).other === "string"
+      && (subagent as Record<string, unknown>).other.trim().toLowerCase() === "guardian"
+    );
   } catch {
     return false;
   }
