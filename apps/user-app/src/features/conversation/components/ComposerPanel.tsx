@@ -147,6 +147,7 @@ interface ComposerPanelProps {
     options?: {
       model?: string;
       reasoningLevel?: string;
+      agentPreset?: string | null;
       providerConfigMode?: SessionProviderConfigMode;
       providerPresetId?: string | null;
       attachments?: AttachmentPayload[];
@@ -158,6 +159,7 @@ interface ComposerPanelProps {
     options?: {
       model?: string;
       reasoningLevel?: string;
+      agentPreset?: string | null;
       providerConfigMode?: SessionProviderConfigMode;
       providerPresetId?: string | null;
       attachments?: AttachmentPayload[];
@@ -218,6 +220,19 @@ interface ComposerAttachment {
 }
 
 type ComposerSelectOption = MacSelectOption;
+
+function getDeepSeekHarnessPresetLabel(id: string, name: string): string {
+  if (name !== id) {
+    return name;
+  }
+
+  return ({
+    standard: t("conversation.deepSeekHarnessModeStandard"),
+    ptc: t("conversation.deepSeekHarnessModePtc"),
+    minimal: t("conversation.deepSeekHarnessModeMinimal"),
+    creator: t("conversation.deepSeekHarnessModeCreator")
+  } as Record<string, string>)[id] ?? id;
+}
 
 const FOCUS_COMPOSER_EVENT = "workbench:focus-composer";
 const FORK_PROVIDER_IDS: ProviderId[] = [
@@ -605,6 +620,7 @@ export function ComposerPanel({
   const [content, setContent] = useState("");
   const [mentionSelections, setMentionSelections] = useState<ComposerMentionSelection[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
+  const [selectedAgentPreset, setSelectedAgentPreset] = useState<string>("");
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>("medium");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentSheetOpen, setAttachmentSheetOpen] = useState(false);
@@ -964,6 +980,18 @@ export function ComposerPanel({
     () => availableModels.find((model) => model.id === selectedModel) ?? null,
     [availableModels, selectedModel]
   );
+  const agentPresetOptions = useMemo<ComposerSelectOption[]>(
+    () => (provider === "deepseek-harness"
+      ? (effectiveCapabilities?.agentPresetOptions ?? [])
+        .filter((preset) => !preset.broken)
+        .map((preset) => ({
+          value: preset.id,
+          label: getDeepSeekHarnessPresetLabel(preset.id, preset.name)
+        }))
+      : []),
+    [effectiveCapabilities?.agentPresetOptions, provider]
+  );
+  const agentPresetLocked = taskMessages.length > 0;
   const reasoningSelectorEnabled = supportsReasoningSelector(capabilities);
   const slashMenuEnabled = shouldShowSlashMenu(capabilities);
   const reasoningLevelCatalog = useMemo(
@@ -1263,6 +1291,10 @@ export function ComposerPanel({
     });
   }, [currentProviderSelection, persistSessionSelection]);
 
+  const handleAgentPresetChange = useCallback((presetId: string) => {
+    setSelectedAgentPreset(presetId);
+  }, []);
+
   const handleDeploymentPresetChange = useCallback((presetValue: string) => {
     if (presetValue === "__global_default__") {
       setSelectedProviderConfigMode("global-default");
@@ -1297,6 +1329,48 @@ export function ComposerPanel({
       }).catch(() => undefined);
     }
   }, [provider]);
+
+  const combinedReasoningSelectOptions = useMemo<ComposerSelectOption[]>(() => {
+    if (provider !== "deepseek-harness" || agentPresetOptions.length === 0) {
+      return reasoningSelectOptions;
+    }
+
+    return [
+      ...agentPresetOptions.map((option, index) => ({
+        ...option,
+        value: `agent:${option.value}`,
+        groupLabel: index === 0 ? t("conversation.reasoningGroupMode") : undefined,
+        disabled: agentPresetLocked
+      })),
+      ...reasoningSelectOptions.map((option, index) => ({
+        ...option,
+        value: `reasoning:${option.value}`,
+        groupLabel: index === 0 ? t("conversation.reasoningGroupStrength") : undefined
+      }))
+    ];
+  }, [agentPresetLocked, agentPresetOptions, provider, reasoningSelectOptions]);
+
+  const selectedReasoningMenuValue = provider === "deepseek-harness" && agentPresetOptions.length > 0
+    ? `reasoning:${reasoningLevel}`
+    : reasoningLevel;
+  const selectedReasoningMenuValues = provider === "deepseek-harness" && agentPresetOptions.length > 0
+    ? [
+        `reasoning:${reasoningLevel}`,
+        ...(selectedAgentPreset ? [`agent:${selectedAgentPreset}`] : [])
+      ]
+    : undefined;
+
+  const handleReasoningMenuChange = useCallback((value: string) => {
+    if (value.startsWith("agent:")) {
+      handleAgentPresetChange(value.slice("agent:".length));
+      return;
+    }
+
+    const reasoningValue = value.startsWith("reasoning:")
+      ? value.slice("reasoning:".length)
+      : value;
+    handleReasoningLevelChange(reasoningValue as ReasoningLevel);
+  }, [handleAgentPresetChange, handleReasoningLevelChange]);
 
   const replaceAttachments = useCallback((nextAttachments: ComposerAttachment[]) => {
     attachmentRegistryRef.current.forEach((previewUrl) => {
@@ -1827,6 +1901,23 @@ export function ComposerPanel({
   ]);
 
   useEffect(() => {
+    if (provider !== "deepseek-harness" || agentPresetOptions.length === 0) {
+      setSelectedAgentPreset("");
+      return;
+    }
+
+    const selected = effectiveCapabilities?.selectedAgentPreset;
+    const preferred = selected && agentPresetOptions.some((option) => option.value === selected)
+      ? selected
+      : agentPresetOptions.find((option) => option.value === "standard")?.value
+        ?? agentPresetOptions[0]?.value
+        ?? "";
+    setSelectedAgentPreset((current) =>
+      current && agentPresetOptions.some((option) => option.value === current) ? current : preferred
+    );
+  }, [agentPresetOptions, effectiveCapabilities?.selectedAgentPreset, provider]);
+
+  useEffect(() => {
     let disposed = false;
     const loadVersion = quickPhraseMutationVersionRef.current;
 
@@ -2271,6 +2362,10 @@ export function ComposerPanel({
             : reasoningSelectorEnabled && availableReasoningLevels.length > 0
               ? reasoningLevel
               : undefined,
+        agentPreset:
+          hasForkDraft || provider !== "deepseek-harness"
+            ? undefined
+            : selectedAgentPreset || undefined,
         providerConfigMode:
           hasForkDraft
             ? forkProviderSelection.providerConfigMode
@@ -2817,12 +2912,15 @@ export function ComposerPanel({
                 />
               ) : null}
 
-              {!hasForkDraft && reasoningSelectorEnabled && availableReasoningLevels.length > 0 ? (
+              {!hasForkDraft
+                && reasoningSelectorEnabled
+                && combinedReasoningSelectOptions.length > 0 ? (
                 <MacSelect
                   ariaLabel={t("conversation.reasoningSelectorLabel")}
-                  value={reasoningLevel}
-                  options={reasoningSelectOptions}
-                  onChange={(value) => handleReasoningLevelChange(value as ReasoningLevel)}
+                  value={selectedReasoningMenuValue}
+                  options={combinedReasoningSelectOptions}
+                  selectedValues={selectedReasoningMenuValues}
+                  onChange={handleReasoningMenuChange}
                   compact
                 />
               ) : null}

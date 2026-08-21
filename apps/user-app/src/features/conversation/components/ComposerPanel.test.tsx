@@ -213,6 +213,13 @@ function createCapabilities(options?: {
     supportedReasoningEfforts?: string[];
     defaultReasoningEffort?: string | null;
   }>;
+  agentPresetOptions?: Array<{
+    id: string;
+    name: string;
+    description?: string | null;
+    isDefault?: boolean;
+    broken?: string | null;
+  }>;
   defaultReasoningLevel?: string | null;
 }): ProviderCapabilitiesDto {
   const provider = options?.provider ?? ("codex" as const);
@@ -273,6 +280,7 @@ function createCapabilities(options?: {
         : provider === "codex"
           ? "high"
           : undefined,
+    agentPresetOptions: options?.agentPresetOptions,
     limitations: []
   };
 }
@@ -3141,6 +3149,40 @@ describe("ComposerPanel", () => {
       expect(onSend).toHaveBeenCalledWith("使用指定模型回答", expect.objectContaining({
         model: "deepseek-official:deepseek-v4-pro",
         reasoningLevel: "off"
+      }));
+    });
+  });
+
+  it("DeepSeek Harness 将模式合并到思考强度菜单，并透传所选模式", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities({
+          provider: "deepseek-harness",
+          modelOptions: [{ id: "deepseek-v4", name: "DeepSeek-V4", supportedReasoningEfforts: ["high"] }],
+          agentPresetOptions: [
+            { id: "standard", name: "标准模式", isDefault: true },
+            { id: "ptc", name: "PTC 模式" }
+          ]
+        })}
+        isSubmitting={false}
+        onSend={onSend}
+      />
+    );
+
+    const reasoningSelect = await screen.findByLabelText(t("conversation.reasoningSelectorLabel"));
+    fireEvent.click(reasoningSelect);
+    expect(screen.getByText(t("conversation.reasoningGroupMode"))).toBeInTheDocument();
+    expect(screen.getByText(t("conversation.reasoningGroupStrength"))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "PTC 模式" }));
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "使用 PTC 模式回答" } });
+    fireEvent.submit(document.querySelector(".composer-form")!);
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith("使用 PTC 模式回答", expect.objectContaining({
+        agentPreset: "ptc"
       }));
     });
   });

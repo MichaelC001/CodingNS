@@ -7728,8 +7728,25 @@ textarea:focus-visible {
     transform var(--transition-fast);
 }
 
+.composer-mac-select-group-label {
+  padding: 7px 10px 3px 34px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 .composer-mac-select-option:hover {
   background: color-mix(in srgb, var(--bg-hover) 88%, transparent);
+}
+
+.composer-mac-select-option.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.composer-mac-select-option.is-disabled:hover {
+  background: transparent;
 }
 
 .composer-mac-select-option:active {

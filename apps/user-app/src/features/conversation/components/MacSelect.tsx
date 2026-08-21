@@ -4,6 +4,8 @@ import { createPortal } from "react-dom";
 export interface MacSelectOption {
   value: string;
   label: string;
+  groupLabel?: string;
+  disabled?: boolean;
 }
 
 const MAC_SELECT_MIN_WIDTH = 144;
@@ -63,6 +65,7 @@ export function MacSelect({
   ariaLabel,
   value,
   options,
+  selectedValues,
   onChange,
   disabled = false,
   compact = false,
@@ -72,6 +75,7 @@ export function MacSelect({
   ariaLabel: string;
   value: string;
   options: MacSelectOption[];
+  selectedValues?: string[];
   onChange: (value: string) => void;
   disabled?: boolean;
   compact?: boolean;
@@ -212,26 +216,41 @@ export function MacSelect({
                 role="listbox"
                 aria-label={ariaLabel}
               >
-                {options.map((option) => {
-                  const selected = option.value === value;
+                {options.map((option, index) => {
+                  const selected = selectedValues?.includes(option.value) ?? option.value === value;
+                  const previousOption = options[index - 1];
+                  const showGroupLabel = Boolean(
+                    option.groupLabel
+                    && option.groupLabel !== previousOption?.groupLabel
+                  );
 
                   return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      role="option"
-                      aria-selected={selected}
-                      className={`composer-mac-select-option ${selected ? "is-selected" : ""}`}
-                      onClick={() => {
-                        onChange(option.value);
-                        setOpen(false);
-                      }}
-                    >
-                      <span className="composer-mac-select-option-check" aria-hidden="true">
-                        {selected ? "✓" : ""}
-                      </span>
-                      <span className="composer-mac-select-option-label">{option.label}</span>
-                    </button>
+                    <div key={option.value} role="presentation">
+                      {showGroupLabel ? (
+                        <div className="composer-mac-select-group-label" role="presentation">
+                          {option.groupLabel}
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        aria-disabled={option.disabled || undefined}
+                        className={`composer-mac-select-option ${selected ? "is-selected" : ""}${option.disabled ? " is-disabled" : ""}`}
+                        onClick={() => {
+                          if (option.disabled) {
+                            return;
+                          }
+                          onChange(option.value);
+                          setOpen(false);
+                        }}
+                      >
+                        <span className="composer-mac-select-option-check" aria-hidden="true">
+                          {selected ? "✓" : ""}
+                        </span>
+                        <span className="composer-mac-select-option-label">{option.label}</span>
+                      </button>
+                    </div>
                   );
                 })}
               </div>

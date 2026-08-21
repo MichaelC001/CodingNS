@@ -421,6 +421,7 @@ export class SessionRuntimeStore {
     options?: {
       model?: string;
       reasoningLevel?: string;
+      agentPreset?: string | null;
       providerConfigMode?: SessionProviderConfigMode;
       providerPresetId?: string | null;
       attachments?: AttachmentPayload[];
@@ -551,6 +552,7 @@ export class SessionRuntimeStore {
     options?: {
       model?: string;
       reasoningLevel?: string;
+      agentPreset?: string | null;
       providerConfigMode?: SessionProviderConfigMode;
       providerPresetId?: string | null;
       attachments?: AttachmentPayload[];
@@ -565,6 +567,7 @@ export class SessionRuntimeStore {
         clientRequestId,
         model: options?.model ?? null,
         reasoningLevel: options?.reasoningLevel ?? null,
+        agentPreset: options?.agentPreset ?? null,
         permissionMode: getDefaultSessionPermissionMode(),
         attachments: options?.attachments ?? [],
         providerConfigMode: options?.providerConfigMode,
@@ -1672,6 +1675,7 @@ export class SessionRuntimeStore {
     options?: {
       model?: string;
       reasoningLevel?: string;
+      agentPreset?: string | null;
       providerConfigMode?: SessionProviderConfigMode;
       providerPresetId?: string | null;
       attachments?: AttachmentPayload[];
@@ -1684,6 +1688,7 @@ export class SessionRuntimeStore {
         clientRequestId,
         model: options?.model ?? null,
         reasoningLevel: options?.reasoningLevel ?? null,
+        agentPreset: options?.agentPreset ?? null,
         permissionMode: getDefaultSessionPermissionMode(),
         attachments: options?.attachments ?? [],
         providerConfigMode: options?.providerConfigMode,

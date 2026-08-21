@@ -426,6 +426,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
     options?: {
       model?: string;
       reasoningLevel?: string;
+      agentPreset?: string | null;
       providerConfigMode?: SessionProviderConfigMode;
       providerPresetId?: string | null;
       attachments?: AttachmentPayload[];
@@ -438,6 +439,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
       await store.sendMessage(content, {
         model: options?.model,
         reasoningLevel: options?.reasoningLevel,
+        agentPreset: options?.agentPreset ?? null,
         providerConfigMode: options?.providerConfigMode,
         providerPresetId: options?.providerPresetId ?? null,
         attachments: options?.attachments,
@@ -466,6 +468,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
         clientRequestId: createClientRequestId(),
         model: activeForkDraft.targetModel,
         reasoningLevel: options?.reasoningLevel ?? null,
+        agentPreset: options?.agentPreset ?? null,
         permissionMode: getDefaultSessionPermissionMode(),
         attachments: options?.attachments ?? [],
         providerConfigMode: activeForkDraft.targetProviderConfigMode ?? options?.providerConfigMode,
@@ -495,6 +498,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
     options?: {
       model?: string;
       reasoningLevel?: string;
+      agentPreset?: string | null;
       providerConfigMode?: SessionProviderConfigMode;
       providerPresetId?: string | null;
       attachments?: AttachmentPayload[];
@@ -515,6 +519,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
     options?: {
       model?: string;
       reasoningLevel?: string;
+      agentPreset?: string | null;
       providerConfigMode?: SessionProviderConfigMode;
       providerPresetId?: string | null;
       attachments?: AttachmentPayload[];
@@ -530,6 +535,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
         await store.enqueueMessage(content, {
           model: options?.model,
           reasoningLevel: options?.reasoningLevel,
+          agentPreset: options?.agentPreset ?? null,
           providerConfigMode: options?.providerConfigMode,
           providerPresetId: options?.providerPresetId ?? null,
           attachments: options?.attachments,

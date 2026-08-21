@@ -878,6 +878,14 @@ export interface ProviderModelOptionDto {
   defaultReasoningEffort?: string | null;
 }
 
+export interface ProviderAgentPresetOptionDto {
+  id: string;
+  name: string;
+  description?: string | null;
+  isDefault?: boolean;
+  broken?: string | null;
+}
+
 export interface ImportWorkspacePayload {
   path: string;
   name?: string;
@@ -1200,6 +1208,8 @@ export interface ProviderCapabilitiesDto {
   supportsAsyncPrompt?: boolean;
   supportsNativeAgents?: boolean;
   modelOptions?: ProviderModelOptionDto[];
+  agentPresetOptions?: ProviderAgentPresetOptionDto[];
+  selectedAgentPreset?: string | null;
   defaultReasoningLevel?: string | null;
   limitations: string[];
   // 新增补充字段，方便前端收口 provider 行为判定
@@ -1464,6 +1474,7 @@ export interface StartLivePayload {
   sessionVisibility?: "workspace" | "affairs_lightweight";
   model?: string | null;
   reasoningLevel?: string | null;
+  agentPreset?: string | null;
   permissionMode?: string | null;
   attachments?: AttachmentPayload[];
   parentSessionId?: string | null;
@@ -1479,6 +1490,7 @@ export interface SendLiveMessagePayload {
   clientRequestId: string;
   model?: string | null;
   reasoningLevel?: string | null;
+  agentPreset?: string | null;
   permissionMode?: string | null;
   attachments?: AttachmentPayload[];
   providerConfigMode?: SessionProviderConfigMode;
