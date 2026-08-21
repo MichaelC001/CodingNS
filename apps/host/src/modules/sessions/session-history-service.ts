@@ -8247,9 +8247,11 @@ function isCodexGuardianRawStore(rawStoreRef: string): boolean {
       return false;
     }
 
+    const other = (subagent as Record<string, unknown>).other;
+
     return (
-      typeof (subagent as Record<string, unknown>).other === "string"
-      && (subagent as Record<string, unknown>).other.trim().toLowerCase() === "guardian"
+      typeof other === "string"
+      && other.trim().toLowerCase() === "guardian"
     );
   } catch {
     return false;
