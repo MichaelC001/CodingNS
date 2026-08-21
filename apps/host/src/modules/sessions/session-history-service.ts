@@ -277,6 +277,13 @@ interface SessionStatsSnapshotReadTaskInput {
   options?: ProviderSessionStatsReadOptions;
 }
 
+interface PendingCodexBilling {
+  billingStartedAt: string;
+  pricingProfileId: string;
+  priceBookVersion: string;
+  priceBook: ProviderPriceBook;
+}
+
 export interface SessionSourceIndexRepairRequest {
   workspaceId: string;
   userId: string;
@@ -436,7 +443,10 @@ export class SessionHistoryService {
   private readonly providerDiscoveryHelperClient = getSharedProviderDiscoveryHelperClient();
   private readonly providerSessionDiscoveryConfig: ProviderSessionDiscoveryHelperConfig;
   private readonly providerRuntimeStateService: Pick<ProviderRuntimeStateService, "isProviderCliAvailable">;
-  private readonly providerPriceBookService: Pick<ProviderPriceBookService, "getPriceBook"> | null;
+  private readonly providerPriceBookService: Pick<
+    ProviderPriceBookService,
+    "getCurrentPriceBook" | "getPriceBook"
+  > | null;
   private readonly sessionStatsSnapshotRepository: SessionStatsSnapshotRepository;
   private readonly codexSessionTitleGenerator: CodexSessionTitleGenerator;
   private readonly sessionProviderConfigService: Pick<
@@ -493,7 +503,10 @@ export class SessionHistoryService {
     providerControlRepository: Pick<ProviderControlRepository, "get"> | null = null,
     providerRuntimeStateService: Pick<ProviderRuntimeStateService, "isProviderCliAvailable"> | null = null,
     claudeModelOptionsService: ClaudeModelOptionsService | null = null,
-    providerPriceBookService: Pick<ProviderPriceBookService, "getPriceBook"> | null = null,
+    providerPriceBookService: Pick<
+      ProviderPriceBookService,
+      "getCurrentPriceBook" | "getPriceBook"
+    > | null = null,
     sessionStatsSnapshotRepository: SessionStatsSnapshotRepository | null = null
   ) {
     this.sessionActivityAuthorityService = sessionActivityAuthorityService;
@@ -908,18 +921,7 @@ export class SessionHistoryService {
       return;
     }
 
-    const priceBook = this.resolveSessionPriceBook(sessionId, binding);
-    const options: ProviderSessionStatsReadOptions | undefined =
-      binding.billingStartedAt && binding.pricingProfileId && binding.priceBookVersion && priceBook
-        ? {
-            billing: {
-              billingStartedAt: binding.billingStartedAt,
-              pricingProfileId: binding.pricingProfileId,
-              priceBookVersion: binding.priceBookVersion,
-              priceBook
-            }
-          }
-        : undefined;
+    const { options, pendingCodexBilling } = this.resolveSessionStatsReadOptions(sessionId, binding);
 
     let stats: ProviderSessionStats | null;
     if (binding.provider === "deepseek-harness") {
@@ -959,7 +961,109 @@ export class SessionHistoryService {
       return;
     }
 
-    this.sessionStatsSnapshotRepository.replaceSnapshot(sessionId, stats, nowIso());
+    const updatedAt = nowIso();
+
+    if (pendingCodexBilling && this.hasConfirmedCatalogCost(stats, pendingCodexBilling)) {
+      this.sessionBindingRepository.confirmBillingIfUnset({
+        sessionId,
+        provider: binding.provider,
+        createdAt: binding.createdAt,
+        billingStartedAt: pendingCodexBilling.billingStartedAt,
+        pricingProfileId: pendingCodexBilling.pricingProfileId,
+        priceBookVersion: pendingCodexBilling.priceBookVersion,
+        updatedAt
+      });
+    }
+
+    this.sessionStatsSnapshotRepository.replaceSnapshot(sessionId, stats, updatedAt);
+  }
+
+  private resolveSessionStatsReadOptions(
+    sessionId: string,
+    binding: SessionBinding
+  ): {
+      options: ProviderSessionStatsReadOptions | undefined;
+      pendingCodexBilling: PendingCodexBilling | null;
+    } {
+    const priceBook = this.resolveSessionPriceBook(sessionId, binding);
+
+    if (binding.billingStartedAt && binding.pricingProfileId && binding.priceBookVersion && priceBook) {
+      return {
+        options: {
+          billing: {
+            billingStartedAt: binding.billingStartedAt,
+            pricingProfileId: binding.pricingProfileId,
+            priceBookVersion: binding.priceBookVersion,
+            priceBook
+          }
+        },
+        pendingCodexBilling: null
+      };
+    }
+
+    const pendingCodexBilling = this.resolvePendingCodexBilling(binding);
+
+    return pendingCodexBilling
+      ? {
+          options: {
+            billing: pendingCodexBilling
+          },
+          pendingCodexBilling
+        }
+      : {
+          options: undefined,
+          pendingCodexBilling: null
+        };
+  }
+
+  /**
+   * Codex 允许用户沿用 CLI 默认模型，启动时不会拿到实际 model。完成后的
+   * turn_context 才是可信来源，因此只把当前会话的已确认费用反向固定为绑定。
+   *
+   * 价格快照的抓取时间不是计费资格条件，否则同一个模型仅因会话创建时刻跨过
+   * 每日同步就会一有一无。首次显式统计刷新确认当前有效快照后，绑定会固定该版本；
+   * 已有任意收费字段的会话也绝不改绑到新快照。
+   */
+  private resolvePendingCodexBilling(binding: SessionBinding): PendingCodexBilling | null {
+    if (
+      binding.provider !== "codex"
+      || binding.billingStartedAt
+      || binding.pricingProfileId
+      || binding.priceBookVersion
+    ) {
+      return null;
+    }
+
+    const billingStartedAtMs = Date.parse(binding.createdAt);
+    const priceBook = this.providerPriceBookService?.getCurrentPriceBook() ?? null;
+
+    if (
+      !Number.isFinite(billingStartedAtMs)
+      || !priceBook
+      || priceBook.source !== "models.dev"
+      || priceBook.entries.length === 0
+    ) {
+      return null;
+    }
+
+    return {
+      billingStartedAt: binding.createdAt,
+      pricingProfileId: this.sessionBillingProfileId ?? "direct-api",
+      priceBookVersion: priceBook.version,
+      priceBook
+    };
+  }
+
+  private hasConfirmedCatalogCost(
+    stats: ProviderSessionStats,
+    billing: PendingCodexBilling
+  ): boolean {
+    const cost = stats.metrics.costUsd;
+
+    return cost?.pricing?.kind === "catalog-estimate"
+      && cost.pricing.coverage === "complete"
+      && cost.pricing.pricingProfileId === billing.pricingProfileId
+      && cost.pricing.priceBookVersion === billing.priceBookVersion;
   }
 
   /**

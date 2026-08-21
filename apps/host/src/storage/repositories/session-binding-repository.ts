@@ -8,6 +8,7 @@ export class SessionBindingRepository {
   private readonly findByRawStoreRefStatement: Database.Statement<any[], any>;
   private readonly listByUserIdStatement: Database.Statement<any[], any>;
   private readonly upsertStatement: Database.Statement<any[], any>;
+  private readonly confirmBillingIfUnsetStatement: Database.Statement<any[], any>;
 
   constructor(private readonly db: Database.Database) {
     this.findBySessionIdStatement = this.db.prepare(
@@ -125,6 +126,19 @@ export class SessionBindingRepository {
          pricing_profile_id = COALESCE(excluded.pricing_profile_id, session_bindings.pricing_profile_id),
          price_book_version = COALESCE(excluded.price_book_version, session_bindings.price_book_version),
          updated_at = excluded.updated_at`
+    );
+    this.confirmBillingIfUnsetStatement = this.db.prepare(
+      `UPDATE session_bindings
+       SET billing_started_at = ?,
+           pricing_profile_id = ?,
+           price_book_version = ?,
+           updated_at = ?
+       WHERE session_id = ?
+         AND provider = ?
+         AND created_at = ?
+         AND billing_started_at IS NULL
+         AND pricing_profile_id IS NULL
+         AND price_book_version IS NULL`
     );
   }
 
@@ -263,6 +277,29 @@ export class SessionBindingRepository {
         record.createdAt,
         record.updatedAt
       );
+  }
+
+  /**
+   * 后台统计完成后只补齐尚未固定的收费快照，不能用过期的完整绑定覆盖运行时更新。
+   */
+  confirmBillingIfUnset(input: {
+    sessionId: string;
+    provider: SessionBinding["provider"];
+    createdAt: string;
+    billingStartedAt: string;
+    pricingProfileId: string;
+    priceBookVersion: string;
+    updatedAt: string;
+  }): boolean {
+    return this.confirmBillingIfUnsetStatement.run(
+      input.billingStartedAt,
+      input.pricingProfileId,
+      input.priceBookVersion,
+      input.updatedAt,
+      input.sessionId,
+      input.provider,
+      input.createdAt
+    ).changes > 0;
   }
 }
 

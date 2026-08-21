@@ -11,6 +11,7 @@ import { HOST_TASK_TYPES } from "../../src/modules/tasks/task-types.js";
 import { SessionChangedFileService } from "../../src/modules/sessions/session-changed-file-service.js";
 import { SessionHistoryService } from "../../src/modules/sessions/session-history-service.js";
 import { SessionMessageAttachmentService } from "../../src/modules/sessions/session-message-attachment-service.js";
+import type { ProviderPriceBookService } from "../../src/modules/provider/provider-price-book-service.js";
 import { SessionBindingRepository } from "../../src/storage/repositories/session-binding-repository.js";
 import { SessionChangedFileRepository } from "../../src/storage/repositories/session-changed-file-repository.js";
 import { SessionIndexRepository } from "../../src/storage/repositories/session-index-repository.js";
@@ -191,6 +192,167 @@ describe("SessionHistoryService background tasks", () => {
       stats_count: 0,
       bill_count: 0,
       usage_count: 0
+    });
+
+    service.dispose();
+  });
+
+  it("Codex 默认模型在完整费用确认后固定当前快照，不回填未完成统计", async () => {
+    const priceBook = {
+      version: "models.dev-2026-08-16",
+      source: "models.dev" as const,
+      // 快照晚于会话创建也必须可以用于目录估算，不能按同步时刻把同模型会话分流。
+      fetchedAt: "2026-08-16T00:01:00.000Z",
+      entries: [{
+        provider: "codex" as const,
+        model: "gpt-5.6-terra",
+        inputUsdPerToken: 2e-6,
+        outputUsdPerToken: 12e-6
+      }]
+    };
+    const incompleteStats: ProviderSessionStats = {
+      provider: "codex",
+      capturedAt: "2026-08-16T00:01:00.000Z",
+      metrics: {
+        inputTokens: {
+          value: 100,
+          source: "provider-history-log",
+          semantic: "latest-snapshot",
+          watermark: { kind: "source-timestamp", value: "2026-08-16T00:01:00.000Z" }
+        }
+      }
+    };
+    const completeStats: ProviderSessionStats = {
+      provider: "codex",
+      capturedAt: "2026-08-16T00:02:00.000Z",
+      metrics: {
+        costUsd: {
+          value: 0.000224,
+          source: "derived-provider-metrics",
+          semantic: "priced-final-events",
+          watermark: { kind: "source-timestamp", value: "2026-08-16T00:02:00.000Z" },
+          pricing: {
+            kind: "catalog-estimate",
+            coverage: "complete",
+            pricingProfileId: "direct-api",
+            priceBookVersion: "models.dev-2026-08-16",
+            breakdown: [{
+              provider: "codex",
+              model: "gpt-5.6-terra",
+              inputTokens: 100,
+              outputTokens: 2,
+              reasoningTokens: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              costUsd: 0.000224
+            }],
+            priceBook: [{
+              provider: "codex",
+              model: "gpt-5.6-terra",
+              inputUsdPerToken: 2e-6,
+              outputUsdPerToken: 12e-6
+            }],
+            priceBookSource: "models.dev"
+          }
+        }
+      }
+    };
+    let statsResult: ProviderSessionStats = incompleteStats;
+    let beforeStatsRead: (() => void) | null = null;
+    const statsRead = vi.fn(async () => {
+      beforeStatsRead?.();
+      return statsResult;
+    });
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.sessionStatsSnapshotRead) {
+            return await statsRead(input, context.signal);
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const providerPriceBookService: Pick<
+      ProviderPriceBookService,
+      "getCurrentPriceBook" | "getPriceBook"
+    > = {
+      getCurrentPriceBook: vi.fn(() => priceBook),
+      getPriceBook: vi.fn(() => null)
+    };
+    const service = createSessionHistoryService(taskManager, providerPriceBookService);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "session-codex-default-model",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "provider-codex-default-model",
+      rawStoreRef: "/tmp/codex/provider-codex-default-model.jsonl",
+      title: "默认模型会话",
+      messageCount: 1,
+      lastMessageAt: "2026-08-16T00:02:00.000Z",
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T00:00:00.000Z"
+    });
+
+    await service.instance.requestSessionStatsRefresh(
+      "session-codex-default-model",
+      "test.codex_default_model.incomplete"
+    )?.promise;
+
+    expect(statsRead).toHaveBeenLastCalledWith(expect.objectContaining({
+      options: {
+        billing: expect.objectContaining({
+          billingStartedAt: "2026-08-16T00:00:00.000Z",
+          pricingProfileId: "direct-api",
+          priceBookVersion: "models.dev-2026-08-16"
+        })
+      }
+    }), expect.any(AbortSignal));
+    expect(service.database.db.prepare(
+      `SELECT billing_started_at, pricing_profile_id, price_book_version
+       FROM session_bindings
+       WHERE session_id = ?`
+    ).get("session-codex-default-model")).toEqual({
+      billing_started_at: null,
+      pricing_profile_id: null,
+      price_book_version: null
+    });
+
+    statsResult = completeStats;
+    beforeStatsRead = () => {
+      service.database.db.prepare(
+        `UPDATE session_bindings
+         SET selected_model = ?, updated_at = ?
+         WHERE session_id = ?`
+      ).run(
+        "gpt-5.6-terra",
+        "2026-08-16T00:01:30.000Z",
+        "session-codex-default-model"
+      );
+    };
+    await service.instance.requestSessionStatsRefresh(
+      "session-codex-default-model",
+      "test.codex_default_model.complete"
+    )?.promise;
+
+    expect(service.database.db.prepare(
+      `SELECT billing_started_at, pricing_profile_id, price_book_version, selected_model
+       FROM session_bindings
+       WHERE session_id = ?`
+    ).get("session-codex-default-model")).toEqual({
+      billing_started_at: "2026-08-16T00:00:00.000Z",
+      pricing_profile_id: "direct-api",
+      price_book_version: "models.dev-2026-08-16",
+      selected_model: "gpt-5.6-terra"
+    });
+    expect(await service.instance.getSessionStats("session-codex-default-model")).toMatchObject({
+      metrics: {
+        costUsd: {
+          value: 0.000224
+        }
+      }
     });
 
     service.dispose();
@@ -1180,7 +1342,13 @@ describe("SessionHistoryService background tasks", () => {
     service.dispose();
   });
 
-  function createSessionHistoryService(taskManager?: TaskManager) {
+  function createSessionHistoryService(
+    taskManager?: TaskManager,
+    providerPriceBookService: Pick<
+      ProviderPriceBookService,
+      "getCurrentPriceBook" | "getPriceBook"
+    > | null = null
+  ) {
     const rootDir = createTempRoot();
     const workspacePath = join(rootDir, "workspace");
     const claudeCodeHomeDir = join(rootDir, "claude-home");
@@ -1226,7 +1394,15 @@ describe("SessionHistoryService background tasks", () => {
       null,
       null,
       {},
-      taskManager
+      taskManager,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      providerPriceBookService
     );
 
     return {
