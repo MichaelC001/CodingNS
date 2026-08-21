@@ -8,7 +8,7 @@ export interface DeepSeekHarnessFakeServer {
   baseUrl: string;
   calls: Array<{ method: string; payload: unknown }>;
   workspaces: Map<string, { workspaceId: string; path: string }>;
-  sessions: Map<string, { cwd: string; workspaceId?: string; events: Array<Record<string, unknown>> }>;
+  sessions: Map<string, { cwd: string; workspaceId?: string; agentPreset?: string; events: Array<Record<string, unknown>> }>;
   archivedSessionIds: Set<string>;
   setPromptHandler(handler: ((sessionId: string) => void) | null): void;
   emitMux(frame: HarnessMuxFrame, rpcId?: string): void;
@@ -22,7 +22,7 @@ export interface DeepSeekHarnessFakeServer {
 export async function createDeepSeekHarnessFakeServer(options: { port?: number; version?: string } = {}): Promise<DeepSeekHarnessFakeServer> {
   const calls: Array<{ method: string; payload: unknown }> = [];
   const workspaces = new Map<string, { workspaceId: string; path: string }>();
-  const sessions = new Map<string, { cwd: string; workspaceId?: string; events: Array<Record<string, unknown>> }>();
+  const sessions = new Map<string, { cwd: string; workspaceId?: string; agentPreset?: string; events: Array<Record<string, unknown>> }>();
   const archivedSessionIds = new Set<string>();
   const muxClients = new Set<WebSocket>();
   const hostClients = new Set<WebSocket>();
@@ -81,7 +81,7 @@ async function handleRequest(
   response: ServerResponse,
   calls: Array<{ method: string; payload: unknown }>,
   workspaces: Map<string, { workspaceId: string; path: string }>,
-  sessions: Map<string, { cwd: string; workspaceId?: string; events: Array<Record<string, unknown>> }>,
+  sessions: Map<string, { cwd: string; workspaceId?: string; agentPreset?: string; events: Array<Record<string, unknown>> }>,
   archivedSessionIds: Set<string>,
   version: string,
   onPrompt: (sessionId: string) => void
@@ -127,12 +127,13 @@ function dispatch(
     sessions.set(sessionId, {
       cwd: workspace?.path ?? (typeof input.cwd === "string" ? input.cwd : "."),
       ...(workspaceId ? { workspaceId } : {}),
+      ...(typeof input.agentPreset === "string" ? { agentPreset: input.agentPreset } : {}),
       events: []
     });
     return { ok: true, value: { sessionId } };
   }
   if (method === "session.list") {
-    return { ok: true, value: { items: [...sessions].map(([sessionId, value]) => ({ sessionId, cwd: value.cwd, ...(value.workspaceId ? { workspaceId: value.workspaceId } : {}), messageCount: value.events.length })) } };
+    return { ok: true, value: { items: [...sessions].map(([sessionId, value]) => ({ sessionId, cwd: value.cwd, ...(value.workspaceId ? { workspaceId: value.workspaceId } : {}), ...(value.agentPreset ? { agentPreset: value.agentPreset } : {}), messageCount: value.events.length })) } };
   }
   if (method === "workspace.list") {
     return { ok: true, value: { items: [...workspaces.values()].map((workspace) => ({ workspaceId: workspace.workspaceId, path: workspace.path })), archivedSessionIds: [...archivedSessionIds] } };
@@ -185,6 +186,20 @@ function dispatch(
     };
   }
   if (method === "session.selectModel") return { ok: true, value: { accepted: true } };
+  if (method === "agentPreset.list") {
+    return { ok: true, value: { presets: [
+      { id: "standard", name: "标准模式", description: "默认 Agent 模式", isDefault: true },
+      { id: "ptc", name: "PTC 模式", description: "更强的工具调用能力" },
+      { id: "minimal", name: "极简模式", description: "更少的上下文" },
+      { id: "creator", name: "创造模式", description: "更开放的创作能力" }
+    ], authorable: false, hasDocument: false } };
+  }
+  if (method === "agentPreset.select") {
+    const session = sessions.get(String(input.sessionId));
+    if (!session || session.events.length > 0) return { ok: false, error: { code: "agent-preset-locked", message: "agent preset locked" } };
+    session.agentPreset = String(input.agentPreset ?? "");
+    return { ok: true, value: { sessionId: input.sessionId, agentPreset: session.agentPreset } };
+  }
   if (method === "unknown.error") return { ok: false, error: { code: "internal", message: "fake business error" } };
   return { ok: false, error: { code: "bad-request", message: `unknown method ${method}` } };
 }

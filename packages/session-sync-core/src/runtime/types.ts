@@ -20,6 +20,7 @@ export interface RuntimeSendOptions {
   clientRequestId: string | null;
   model: string | null;
   reasoningLevel: string | null;
+  agentPreset?: string | null;
   permissionMode: string | null;
   providerPrompt: string | null;
   providerInstructionFilePath?: string | null;

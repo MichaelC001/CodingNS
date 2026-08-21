@@ -14,6 +14,12 @@ function transport() {
       if (method === "workspace.create") return { workspace: { workspaceId: "w1" }, created: true };
       if (method === "session.create") return { sessionId: "h1" };
       if (method === "session.list") return { items: [{ sessionId: "h1", cwd: "C:/work", title: "测试", messageCount: 2 }] };
+      if (method === "agentPreset.list") return { presets: [
+        { id: "standard", name: "标准模式", description: "默认 Agent 模式", isDefault: true },
+        { id: "ptc", name: "PTC 模式", description: "工具调用模式" },
+        { id: "minimal", name: "极简模式" },
+        { id: "creator", name: "创造模式" }
+      ] };
       if (method === "workspace.list") return { items: [], archivedSessionIds: [...archivedSessionIds] };
       if (method === "workspace.archiveSession") {
         archivedSessionIds.add(payload.sessionId);
@@ -87,6 +93,27 @@ describe("DeepSeekHarnessAdapter", () => {
       { method: "workspace.create", payload: { path: "C:/work" } },
       { method: "session.create", payload: { workspaceId: "w1" } }
     ]);
+  });
+
+  it("创建会话时透传 Harness Agent 模式，并读取模式目录", async () => {
+    const t = transport();
+    const adapter = new DeepSeekHarnessAdapter({ transport: t, harnessVersion: "0.1.0-rc.5" });
+
+    await expect(adapter.startSession("C:/work", { agentPreset: "ptc" })).resolves.toMatchObject({
+      session: { providerSessionId: "h1" }
+    });
+    expect(t.calls.at(-1)).toEqual({
+      method: "session.create",
+      payload: { workspaceId: "w1", agentPreset: "ptc" }
+    });
+    await expect(adapter.getSessionCapabilities("")).resolves.toMatchObject({
+      agentPresetOptions: [
+        { id: "standard", name: "标准模式", isDefault: true },
+        { id: "ptc", name: "PTC 模式" },
+        { id: "minimal", name: "极简模式" },
+        { id: "creator", name: "创造模式" }
+      ]
+    });
   });
 
   it("会话级 fork 使用原生 session.fork，不能误传 atSeq", async () => {

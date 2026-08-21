@@ -23,8 +23,8 @@ export interface DeepSeekHarnessWorkspaceView {
 }
 
 export type DeepSeekHarnessSessionCreateTarget =
-  | { workspaceId: string }
-  | { cwd: string };
+  | { workspaceId: string; agentPreset?: string }
+  | { cwd: string; agentPreset?: string };
 
 export class DeepSeekHarnessRpcError extends Error {
   readonly code: string;
@@ -122,6 +122,18 @@ export class DeepSeekHarnessApiClient {
 
   async listSessions(signal?: AbortSignal): Promise<{ items: Array<Record<string, unknown>> }> {
     return this.call<{ items: Array<Record<string, unknown>> }>("session.list", {}, signal);
+  }
+
+  async listAgentPresets(signal?: AbortSignal): Promise<{
+    presets: Array<Record<string, unknown>>;
+    authorable?: boolean;
+    hasDocument?: boolean;
+  }> {
+    return this.call("agentPreset.list", {}, signal);
+  }
+
+  async selectAgentPreset(sessionId: string, agentPreset: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.call("agentPreset.select", { sessionId, agentPreset }, signal);
   }
 
   async listWorkspaces(signal?: AbortSignal): Promise<{ items: Array<Record<string, unknown>>; archivedSessionIds?: string[] }> {

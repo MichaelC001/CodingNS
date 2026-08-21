@@ -40,7 +40,11 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
       const workspace = await client.createWorkspace(request.workspacePath);
       const workspaceId = workspace.workspace.workspaceId?.trim();
       if (!workspaceId) throw new Error("HARNESS_WORKSPACE_ID_MISSING");
-      const created = await client.createSession({ workspaceId });
+      const agentPreset = request.options.agentPreset?.trim() || undefined;
+      const created = await client.createSession({
+        workspaceId,
+        ...(agentPreset ? { agentPreset } : {})
+      });
       providerSessionId = created.sessionId;
       sink.updateSessionBinding({ providerSessionId, rawStoreRef: `harness://${providerSessionId}` });
       await sink.emit({ type: "session_created", status: "starting", providerSessionId, rawStoreRef: `harness://${providerSessionId}`, detail: "Harness 会话已创建" });
@@ -116,6 +120,10 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
       // 在提交 prompt 前完成两条下行订阅，避免快速模型响应落在订阅空窗期。
       closed = await eventBridge.watch(providerSessionId, onEvent);
       await sink.emit({ type: "status", status: "running", providerSessionId, rawStoreRef, detail: "Harness 正在运行" });
+      const agentPreset = request.options.agentPreset?.trim();
+      if (agentPreset && request.providerSessionId && request.sequenceBase === 1) {
+        await client.selectAgentPreset(providerSessionId, agentPreset);
+      }
       const selection = parseModelSelection(request.options.model);
       if (selection) await client.selectModel(providerSessionId, selection.provider, selection.model, request.options.reasoningLevel ?? undefined);
       promptStarted = true;

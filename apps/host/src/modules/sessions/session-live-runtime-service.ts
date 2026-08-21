@@ -104,6 +104,7 @@ const RUNTIME_EVENT_SQLITE_BUSY_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 1_500, 
 interface RuntimeSendOptions {
   model?: string | null;
   reasoningLevel?: string | null;
+  agentPreset?: string | null;
   permissionMode?: string | null;
   providerInstructionFilePath?: string | null;
   attachments?: SessionAttachmentInput[];
@@ -589,6 +590,7 @@ export class SessionLiveRuntimeService {
             clientRequestId: input.clientRequestId,
             model: input.runtimeOptions?.model ?? null,
             reasoningLevel: input.runtimeOptions?.reasoningLevel ?? null,
+            agentPreset: input.runtimeOptions?.agentPreset ?? null,
             permissionMode: input.runtimeOptions?.permissionMode ?? null,
             providerPrompt: resolvedProviderPrompt,
             providerInstructionFilePath,
@@ -2262,6 +2264,7 @@ export class SessionLiveRuntimeService {
           clientRequestId: input.clientRequestId,
           model: input.runtimeOptions?.model ?? null,
           reasoningLevel: input.runtimeOptions?.reasoningLevel ?? null,
+          agentPreset: input.runtimeOptions?.agentPreset ?? null,
           permissionMode: input.runtimeOptions?.permissionMode ?? null,
           providerPrompt: resolvedProviderPrompt,
           providerInstructionFilePath,

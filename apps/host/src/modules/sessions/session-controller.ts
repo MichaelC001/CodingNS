@@ -41,6 +41,7 @@ interface SessionMessagesQuery {
 interface RuntimeOptionsBody {
   model?: string;
   reasoningLevel?: string;
+  agentPreset?: string;
   permissionMode?: string;
   providerConfigMode?: SessionProviderConfigMode;
   providerPresetId?: string | null;
@@ -234,15 +235,17 @@ function requireClientRequestIdForAttachments(
 function normalizeRuntimeOptions(input: RuntimeOptionsBody) {
   const model = input.model?.trim();
   const reasoningLevel = input.reasoningLevel?.trim();
+  const agentPreset = input.agentPreset?.trim();
   const permissionMode = input.permissionMode?.trim();
 
-  if (!model && !reasoningLevel && !permissionMode) {
+  if (!model && !reasoningLevel && !agentPreset && !permissionMode) {
     return undefined;
   }
 
   return {
     model: model ?? null,
     reasoningLevel: reasoningLevel ?? null,
+    agentPreset: agentPreset ?? null,
     permissionMode: permissionMode ?? null
   };
 }

@@ -417,6 +417,7 @@ describe("DeepSeek Harness Web API", () => {
         clientRequestId: null,
         model: "deepseek-official:deepseek-v4-pro",
         reasoningLevel: "off",
+        agentPreset: "ptc",
         permissionMode: "ask",
         providerPrompt: null,
         attachments: []
@@ -432,7 +433,7 @@ describe("DeepSeek Harness Web API", () => {
     await expect(launch.completed).resolves.toBeUndefined();
     expect(fake.calls.slice(0, 2)).toEqual([
       { method: "workspace.create", payload: { path: "C:\\workspace" } },
-      { method: "session.create", payload: { workspaceId: "workspace-1" } }
+      { method: "session.create", payload: { workspaceId: "workspace-1", agentPreset: "ptc" } }
     ]);
     expect(fake.calls).toContainEqual({
       method: "session.selectModel",

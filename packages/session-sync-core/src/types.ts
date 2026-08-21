@@ -47,6 +47,14 @@ export interface ProviderModelOption {
   defaultReasoningEffort?: string | null;
 }
 
+export interface ProviderAgentPresetOption {
+  id: string;
+  name: string;
+  description?: string | null;
+  isDefault?: boolean;
+  broken?: string | null;
+}
+
 export interface ProviderCapabilities {
   provider: ProviderId;
   canStartSession: boolean;
@@ -69,6 +77,8 @@ export interface ProviderCapabilities {
   supportsAsyncPrompt?: boolean;
   supportsNativeAgents?: boolean;
   modelOptions?: ProviderModelOption[];
+  agentPresetOptions?: ProviderAgentPresetOption[];
+  selectedAgentPreset?: string | null;
   defaultReasoningLevel?: string | null;
   limitations: string[];
 }
@@ -374,6 +384,7 @@ export interface ResumeSessionResult {
 
 export interface StartSessionOptions {
   initialPrompt?: string;
+  agentPreset?: string | null;
 }
 
 export interface StartSessionResult {

@@ -10,6 +10,7 @@ import type {
   NormalizedMessage,
   ProviderAdapter,
   ProviderArchiveUpdateResult,
+  ProviderAgentPresetOption,
   ProviderCapabilities,
   ProviderModelOption,
   ProviderRealtimeEvent,
@@ -325,7 +326,11 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
     const workspace = await this.options.transport.call<{ workspace?: { workspaceId?: string } }>("workspace.create", { path: workspacePath });
     const workspaceId = String(workspace.workspace?.workspaceId ?? "").trim();
     if (!workspaceId) throw new Error("HARNESS_WORKSPACE_ID_MISSING");
-    const created = await this.options.transport.call<{ sessionId: string }>("session.create", { workspaceId });
+    const agentPreset = normalizeOptionalText(options.agentPreset);
+    const created = await this.options.transport.call<{ sessionId: string }>("session.create", {
+      workspaceId,
+      ...(agentPreset ? { agentPreset } : {})
+    });
     const sessionId = String(created.sessionId);
     if (options.initialPrompt?.trim()) await this.options.transport.call("session.prompt", { sessionId, content: [{ type: "text", text: options.initialPrompt.trim() }], mode: "queue" });
     return {
@@ -515,11 +520,23 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
 
   async getSessionCapabilities(providerSessionId: string): Promise<ProviderCapabilities> {
     try {
-      const response = await this.options.transport.call<unknown>(
+      const presetResponse = await this.options.transport.call<unknown>("agentPreset.list", {}).catch(() => null);
+      const presetOptions = parseHarnessAgentPresetOptions(presetResponse);
+      const sessionResponse = providerSessionId && presetOptions.length > 0
+        ? await this.options.transport.call<{ items?: unknown[] }>("session.list", {})
+        : null;
+      const selectedAgentPreset = providerSessionId
+        ? readSelectedAgentPreset(sessionResponse, providerSessionId)
+        : null;
+      const modelResponse = await this.options.transport.call<unknown>(
         providerSessionId ? "session.models" : "llm.models",
         providerSessionId ? { sessionId: providerSessionId } : {}
       );
-      return harnessCapabilities(parseHarnessModelOptions(response));
+      return harnessCapabilities(
+        parseHarnessModelOptions(modelResponse),
+        presetOptions,
+        selectedAgentPreset
+      );
     } catch {
       // 模型目录不可用时仍保留会话的基本能力，避免只因下拉列表失败而阻断对话。
       return harnessCapabilities();
@@ -1051,8 +1068,17 @@ function isHarnessMissingSessionError(error: unknown): boolean {
   return /session[- ]?not[- ]?found|unknown session|no such session/i.test(message);
 }
 
+function normalizeOptionalText(value: unknown): string | null {
+  const text = ensureText(value).trim();
+  return text || null;
+}
+
 function buildRawStoreRef(version: string | undefined, sessionId: string): string { return `harness://${version ?? DEEPSEEK_HARNESS_CURRENT_VERSION}/${sessionId}`; }
-function harnessCapabilities(modelOptions?: ProviderModelOption[]): ProviderCapabilities {
+function harnessCapabilities(
+  modelOptions?: ProviderModelOption[],
+  agentPresetOptions?: ProviderAgentPresetOption[],
+  selectedAgentPreset?: string | null
+): ProviderCapabilities {
   return {
     provider: "deepseek-harness",
     canStartSession: true,
@@ -1073,12 +1099,53 @@ function harnessCapabilities(modelOptions?: ProviderModelOption[]): ProviderCapa
     supportsAsyncPrompt: true,
     supportsNativeAgents: true,
     ...(modelOptions && modelOptions.length > 0 ? { modelOptions } : {}),
+    ...(agentPresetOptions && agentPresetOptions.length > 0 ? { agentPresetOptions } : {}),
+    ...(selectedAgentPreset !== undefined ? { selectedAgentPreset } : {}),
     limitations: [
       "Harness 仍是 Developer Preview，版本必须锁定。",
       "断线恢复先读取 history，不依赖 events.mux 的 since。",
       "删除会话会归档当前 sidecar 中的会话并清理 JSONL 历史目录；不支持 Diff、Share 和独立 resume。"
     ]
   };
+}
+
+function parseHarnessAgentPresetOptions(input: unknown): ProviderAgentPresetOption[] {
+  const presets = asRecord(input).presets;
+
+  if (!Array.isArray(presets)) {
+    return [];
+  }
+
+  const options: ProviderAgentPresetOption[] = [];
+
+  for (const value of presets) {
+    const record = asRecord(value);
+    const id = ensureText(record.id).trim();
+    if (!id) {
+      continue;
+    }
+
+    options.push({
+      id,
+      name: ensureText(record.name).trim() || id,
+      description: ensureText(record.description).trim() || null,
+      isDefault: record.isDefault === true,
+      broken: ensureText(record.broken).trim() || null
+    });
+  }
+
+  return options;
+}
+
+function readSelectedAgentPreset(
+  input: { items?: unknown[] } | null,
+  providerSessionId: string
+): string | null {
+  const session = (input?.items ?? [])
+    .map((value) => asRecord(value))
+    .find((value) => ensureText(value.sessionId ?? value.id).trim() === providerSessionId);
+  const agentPreset = asRecord(session?.agentPreset);
+  return normalizeOptionalText(agentPreset.id ?? session?.agentPreset);
 }
 
 /** 将 DSH 的 provider/model 二元组编码为运行时 selectModel 可直接消费的稳定模型 ID。 */
