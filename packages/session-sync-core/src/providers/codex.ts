@@ -4269,7 +4269,8 @@ function buildCodexUsageLines(
       inputTokens: 0,
       outputTokens: 0,
       completed: false,
-      timestamp: ""
+      timestamp: "",
+      unavailableReason: "concurrent-turns"
     }];
   }
 
@@ -4330,7 +4331,8 @@ function buildCodexUsageLines(
         inputTokens: 0,
         outputTokens: 0,
         completed: false,
-        timestamp: snapshot.timestamp
+        timestamp: snapshot.timestamp,
+        unavailableReason: "cost-calculation-invalid"
       }];
     }
 

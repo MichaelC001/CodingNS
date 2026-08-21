@@ -27,7 +27,7 @@ import type {
   StartSessionResult
 } from "../types.js";
 import { addDerivedCacheHitRate } from "../session-stats.js";
-import { addProviderNativeCostMetric } from "../session-pricing.js";
+import { addProviderNativeCostMetric, addUnavailableCostMetric } from "../session-pricing.js";
 import {
   ensureText,
   nextTimestamp,
@@ -346,6 +346,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const nativeCost = readNonNegativeSessionNumber(row.cost);
     if (nativeCost !== null) {
       addProviderNativeCostMetric(metrics, nativeCost, watermark);
+    } else {
+      addUnavailableCostMetric(metrics, "provider-cost-unavailable", watermark, "provider-native");
     }
     addOpenCodeSessionMetric(metrics, "inputTokens", row.tokens_input, watermark);
     addOpenCodeSessionMetric(metrics, "outputTokens", row.tokens_output, watermark);

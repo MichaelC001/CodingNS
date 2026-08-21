@@ -5,6 +5,7 @@ import type {
   ProviderId,
   ProviderSessionPriceBook,
   ProviderSessionBillingContext,
+  ProviderSessionCostUnavailableReason,
   ProviderSessionStatValue,
   ProviderSessionStats,
   ProviderSessionStatsReadOptions,
@@ -101,6 +102,7 @@ export interface VerifiedUsageLine {
   inputIncludesCacheRead?: boolean;
   completed: boolean;
   timestamp: string;
+  unavailableReason?: ProviderSessionCostUnavailableReason;
 }
 
 /** 将已核验调用按 provider/model 聚合，未知价格仍保留 token 用量但不填费用。 */
@@ -170,6 +172,7 @@ export function addProviderNativeCostMetric(
   watermark: ProviderSessionStatValue["watermark"]
 ): void {
   if (!Number.isFinite(value) || value < 0) {
+    addUnavailableCostMetric(metrics, "provider-cost-unavailable", watermark, "provider-native");
     return;
   }
 
@@ -181,6 +184,37 @@ export function addProviderNativeCostMetric(
     pricing: {
       kind: "provider-native",
       coverage: "complete",
+      exchangeRate: DEFAULT_PROVIDER_COST_EXCHANGE_RATE
+    }
+  };
+}
+
+/**
+ * 保留费用指标的可见性，即使当前没有足够数据计算金额。
+ * `value` 只是兼容旧 DTO 的占位值，调用方必须先检查 coverage。
+ */
+export function addUnavailableCostMetric(
+  metrics: ProviderSessionStats["metrics"],
+  reason: ProviderSessionCostUnavailableReason,
+  watermark: ProviderSessionStatValue["watermark"],
+  kind: "provider-native" | "catalog-estimate" = "catalog-estimate",
+  billing?: ProviderSessionBillingContext
+): void {
+  if (metrics.costUsd?.pricing?.coverage === "complete") {
+    return;
+  }
+
+  metrics.costUsd = {
+    value: 0,
+    source: "derived-provider-metrics",
+    semantic: "unavailable",
+    watermark,
+    pricing: {
+      kind,
+      coverage: "unavailable",
+      unavailableReason: reason,
+      ...(billing?.pricingProfileId ? { pricingProfileId: billing.pricingProfileId } : {}),
+      ...(billing?.priceBookVersion ? { priceBookVersion: billing.priceBookVersion } : {}),
       exchangeRate: DEFAULT_PROVIDER_COST_EXCHANGE_RATE
     }
   };
@@ -198,30 +232,66 @@ export function addCatalogCostMetric(
     ? toProviderPriceBook(billing.priceBook)
     : priceBook;
 
-  if (!billing || !isDirectPricingProfile(billing.pricingProfileId)) {
+  if (!billing) {
+    addUnavailableCostMetric(metrics, "billing-context-missing", watermark);
     return;
   }
 
-  if (effectivePriceBook.version !== billing.priceBookVersion || lines.length === 0) {
+  if (!isDirectPricingProfile(billing.pricingProfileId)) {
+    addUnavailableCostMetric(metrics, "pricing-profile-unsupported", watermark, "catalog-estimate", billing);
+    return;
+  }
+
+  if (effectivePriceBook.version !== billing.priceBookVersion) {
+    addUnavailableCostMetric(metrics, "price-book-version-mismatch", watermark, "catalog-estimate", billing);
+    return;
+  }
+
+  if (effectivePriceBook.entries.length === 0) {
+    addUnavailableCostMetric(metrics, "price-book-unavailable", watermark, "catalog-estimate", billing);
+    return;
+  }
+
+  if (lines.length === 0) {
+    addUnavailableCostMetric(metrics, "usage-unavailable", watermark, "catalog-estimate", billing);
     return;
   }
 
   let total = 0;
 
   for (const line of lines) {
-    if (!line.completed || !line.model.trim() || line.timestamp < billing.billingStartedAt) {
+    if (line.unavailableReason) {
+      addUnavailableCostMetric(metrics, line.unavailableReason, watermark, "catalog-estimate", billing);
+      return;
+    }
+
+    if (!line.completed || !line.model.trim() || !line.timestamp) {
+      addUnavailableCostMetric(metrics, "usage-incomplete", watermark, "catalog-estimate", billing);
+      return;
+    }
+
+    if (line.timestamp < billing.billingStartedAt) {
+      addUnavailableCostMetric(metrics, "usage-unavailable", watermark, "catalog-estimate", billing);
       return;
     }
 
     const entry = findPriceBookEntry(effectivePriceBook, line.provider, line.model);
 
     if (!entry) {
+      addUnavailableCostMetric(metrics, "model-price-unavailable", watermark, "catalog-estimate", billing);
       return;
     }
 
     const cost = calculateUsageLineCost(line, entry);
 
     if (cost === null) {
+      addUnavailableCostMetric(
+        metrics,
+        getUnpricedUsageReason(line, entry),
+        watermark,
+        "catalog-estimate",
+        billing
+      );
       return;
     }
 
@@ -229,6 +299,7 @@ export function addCatalogCostMetric(
   }
 
   if (!Number.isFinite(total) || total < 0) {
+    addUnavailableCostMetric(metrics, "cost-calculation-invalid", watermark, "catalog-estimate", billing);
     return;
   }
 
@@ -251,6 +322,29 @@ export function addCatalogCostMetric(
       exchangeRate: DEFAULT_PROVIDER_COST_EXCHANGE_RATE
     }
   };
+}
+
+function getUnpricedUsageReason(
+  line: VerifiedUsageLine,
+  entry: ProviderPriceBookEntry
+): ProviderSessionCostUnavailableReason {
+  const input = nonNegativeInteger(line.inputTokens);
+  const output = nonNegativeInteger(line.outputTokens);
+  const reasoning = nonNegativeInteger(line.reasoningTokens ?? 0);
+  const cacheRead = nonNegativeInteger(line.cacheReadTokens ?? 0);
+  const cacheWrite = nonNegativeInteger(line.cacheWriteTokens ?? 0);
+
+  if (cacheRead !== null && cacheRead > 0 && entry.cacheReadUsdPerToken === undefined) {
+    return "cache-price-unavailable";
+  }
+
+  if (cacheWrite !== null && cacheWrite > 0 && entry.cacheWriteUsdPerToken === undefined) {
+    return "cache-price-unavailable";
+  }
+
+  return input === null || output === null || reasoning === null || cacheRead === null || cacheWrite === null
+    ? "cost-calculation-invalid"
+    : "usage-incomplete";
 }
 
 function buildCostBreakdown(
@@ -398,7 +492,7 @@ export function filterUsageLinesByBillingStart(
     return [];
   }
 
-  return lines.filter((line) => line.timestamp >= billing.billingStartedAt);
+  return lines.filter((line) => line.unavailableReason || line.timestamp >= billing.billingStartedAt);
 }
 
 function findPriceBookEntry(

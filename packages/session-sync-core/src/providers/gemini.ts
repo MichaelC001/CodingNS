@@ -514,14 +514,10 @@ export class GeminiAdapter implements ProviderAdapter {
       .sort()
       .at(-1);
 
-    if (latestTimestamp) {
-      addCatalogCostMetric(
-        metrics,
-        billingLines,
-        options,
-        { kind: "source-timestamp", value: latestTimestamp }
-      );
-    }
+    const costWatermark = latestTimestamp
+      ? { kind: "source-timestamp" as const, value: latestTimestamp }
+      : { kind: "captured-at" as const, value: nextTimestamp() };
+    addCatalogCostMetric(metrics, billingLines, options, costWatermark);
 
     const modelUsages = buildProviderSessionModelUsages(usageLines);
 

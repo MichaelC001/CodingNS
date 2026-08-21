@@ -810,14 +810,10 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       .sort()
       .at(-1);
 
-    if (latestTimestamp) {
-      addCatalogCostMetric(
-        metrics,
-        billingLines,
-        options,
-        { kind: "source-timestamp", value: latestTimestamp }
-      );
-    }
+    const costWatermark = latestTimestamp
+      ? { kind: "source-timestamp" as const, value: latestTimestamp }
+      : { kind: "captured-at" as const, value: nextTimestamp() };
+    addCatalogCostMetric(metrics, billingLines, options, costWatermark);
 
     // 模型用量始终记录真实 token；模型费用只由完整账单中的 breakdown 写入数据库。
     const modelUsages = buildProviderSessionModelUsages(usageLines);

@@ -133,7 +133,8 @@ export type ProviderSessionStatSemantic =
   | "sum-of-final-events"
   | "latest-snapshot"
   | "derived-ratio"
-  | "priced-final-events";
+  | "priced-final-events"
+  | "unavailable";
 
 /**
  * 指标所覆盖的原始数据水位。
@@ -185,6 +186,22 @@ export interface ProviderSessionCostExchangeRate {
   source: "application-fixed";
 }
 
+/** 费用无法核验时返回给界面的原因代码，由前端负责本地化展示。 */
+export type ProviderSessionCostUnavailableReason =
+  | "billing-context-missing"
+  | "pricing-profile-unsupported"
+  | "price-book-unavailable"
+  | "price-book-version-mismatch"
+  | "usage-unavailable"
+  | "usage-incomplete"
+  | "concurrent-turns"
+  | "model-price-unavailable"
+  | "cache-price-unavailable"
+  | "cost-calculation-invalid"
+  | "provider-cost-unavailable"
+  | "statistics-unavailable"
+  | "cost-not-returned";
+
 /** 统计读取时固定使用的价格表快照。 */
 export interface ProviderSessionPriceBook {
   version: string;
@@ -195,7 +212,8 @@ export interface ProviderSessionPriceBook {
 
 export interface ProviderSessionCostProvenance {
   kind: "provider-native" | "catalog-estimate";
-  coverage: "complete";
+  coverage: "complete" | "unavailable";
+  unavailableReason?: ProviderSessionCostUnavailableReason;
   pricingProfileId?: string;
   priceBookVersion?: string;
   breakdown?: readonly ProviderSessionCostBreakdown[];

@@ -298,7 +298,10 @@ describe("各 Provider 的模型归因和费用", () => {
         billing
       );
 
-      expect(stats?.metrics.costUsd).toBeUndefined();
+      expect(stats?.metrics.costUsd?.pricing).toMatchObject({
+        coverage: "unavailable",
+        unavailableReason: "concurrent-turns"
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

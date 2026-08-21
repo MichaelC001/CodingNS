@@ -172,7 +172,7 @@ describe("会话费用折叠", () => {
     });
   });
 
-  it("缺少模型价格时隐藏整个会话费用", () => {
+  it("价格表为空时保留费用状态并说明价格表不可用", () => {
     const metrics = {};
 
     addCatalogCostMetric(
@@ -197,13 +197,20 @@ describe("会话费用折叠", () => {
       { version: "test", entries: [] }
     );
 
-    expect(metrics.costUsd).toBeUndefined();
+    expect(metrics.costUsd).toMatchObject({
+      value: 0,
+      semantic: "unavailable",
+      pricing: {
+        coverage: "unavailable",
+        unavailableReason: "price-book-unavailable"
+      }
+    });
   });
 
   it.each([
     ["订阅路由", "subscription-plan", "test"],
     ["价格表版本不一致", "direct-api", "other"]
-  ])("%s 时隐藏目录费用", (_label, pricingProfileId, priceBookVersion) => {
+  ])("%s 时保留不可用费用原因", (_label, pricingProfileId, priceBookVersion) => {
     const metrics = {};
 
     addCatalogCostMetric(
@@ -236,10 +243,15 @@ describe("会话费用折叠", () => {
       }
     );
 
-    expect(metrics.costUsd).toBeUndefined();
+    expect(metrics.costUsd?.pricing).toMatchObject({
+      coverage: "unavailable",
+      unavailableReason: pricingProfileId === "subscription-plan"
+        ? "pricing-profile-unsupported"
+        : "price-book-version-mismatch"
+    });
   });
 
-  it("任一最终 usage 桶缺失时隐藏整个目录费用", () => {
+  it("任一最终 usage 桶缺失时说明用量尚未完成", () => {
     const metrics = {};
 
     addCatalogCostMetric(
@@ -272,6 +284,9 @@ describe("会话费用折叠", () => {
       }
     );
 
-    expect(metrics.costUsd).toBeUndefined();
+    expect(metrics.costUsd?.pricing).toMatchObject({
+      coverage: "unavailable",
+      unavailableReason: "usage-incomplete"
+    });
   });
 });
