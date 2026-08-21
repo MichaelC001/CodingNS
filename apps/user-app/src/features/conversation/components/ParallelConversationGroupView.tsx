@@ -832,6 +832,7 @@ function ParallelConversationMemberPane({
     sending,
     replyingPermissionRequestId,
     deletingQueueItemId,
+    updatingQueueItemId,
     steeringQueueItemId,
     forkDraft,
     setForkDraft,
@@ -848,6 +849,7 @@ function ParallelConversationMemberPane({
     interrupt,
     replyPermissionRequest,
     deleteQueuedMessage,
+    updateQueuedMessage,
     steerQueuedMessage
   } = useLiveSessionController({
     sessionId,
@@ -1547,6 +1549,8 @@ function ParallelConversationMemberPane({
         <QueuedMessageList
           items={queuedMessages}
           deletingQueueItemId={deletingQueueItemId}
+          updatingQueueItemId={updatingQueueItemId}
+          onUpdate={updateQueuedMessage}
           steeringQueueItemId={steeringQueueItemId}
           canSteer={canSteerQueuedMessage}
           onDelete={deleteQueuedMessage}

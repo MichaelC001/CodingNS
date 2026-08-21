@@ -38,6 +38,7 @@ import {
   sendSessionMessage,
   sendLiveMessage,
   steerSessionQueueItem,
+  updateSessionQueueItem,
   type HistoryMessageDto,
   type ProviderCapabilitiesDto,
   type SessionPermissionRequestDto,
@@ -581,6 +582,20 @@ export class SessionRuntimeStore {
 
   async deleteQueuedMessage(queueItemId: string): Promise<void> {
     await deleteSessionQueueItem(this.sessionId, queueItemId, { targetHostId: this.options.targetHostId });
+    await this.refreshQueue();
+  }
+
+  async updateQueuedMessage(queueItemId: string, content: string): Promise<void> {
+    const updatedItem = await updateSessionQueueItem(
+      this.sessionId,
+      queueItemId,
+      { content },
+      { targetHostId: this.options.targetHostId }
+    );
+
+    this.patch({
+      queuedMessages: upsertQueuedMessage(this.state.queuedMessages, updatedItem)
+    });
     await this.refreshQueue();
   }
 

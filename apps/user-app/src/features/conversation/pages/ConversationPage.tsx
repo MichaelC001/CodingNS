@@ -517,6 +517,7 @@ function LiveConversationPage({
     sending,
     replyingPermissionRequestId,
     deletingQueueItemId,
+    updatingQueueItemId,
     steeringQueueItemId,
     forkDraft,
     setForkDraft,
@@ -533,6 +534,7 @@ function LiveConversationPage({
     interrupt,
     replyPermissionRequest,
     deleteQueuedMessage,
+    updateQueuedMessage,
     steerQueuedMessage
   } = useLiveSessionController({
     sessionId,
@@ -1066,9 +1068,11 @@ function LiveConversationPage({
             <QueuedMessageList
               items={queuedMessages}
               deletingQueueItemId={deletingQueueItemId}
+              updatingQueueItemId={updatingQueueItemId}
               steeringQueueItemId={steeringQueueItemId}
               canSteer={canSteerQueuedMessage}
               onDelete={deleteQueuedMessage}
+              onUpdate={updateQueuedMessage}
               onSteer={steerQueuedMessage}
             />
             {!mobileToolPanel.isOpen ? (

@@ -24,6 +24,7 @@ const mocked = vi.hoisted(() => {
   const getSessionRuntime = vi.fn();
   const markSessionSeen = vi.fn();
   const enqueueSessionMessage = vi.fn();
+  const updateSessionQueueItem = vi.fn();
   const deleteSessionQueueItem = vi.fn();
   const steerSessionQueueItem = vi.fn();
   const replySessionPermissionRequest = vi.fn();
@@ -62,6 +63,7 @@ const mocked = vi.hoisted(() => {
     getSessionRuntime,
     markSessionSeen,
     enqueueSessionMessage,
+    updateSessionQueueItem,
     deleteSessionQueueItem,
     steerSessionQueueItem,
     replySessionPermissionRequest,
@@ -83,6 +85,7 @@ vi.mock("../api/conversation-api", () => ({
   markSessionSeen: mocked.markSessionSeen,
   sendSessionMessage: mocked.sendSessionMessage,
   enqueueSessionMessage: mocked.enqueueSessionMessage,
+  updateSessionQueueItem: mocked.updateSessionQueueItem,
   deleteSessionQueueItem: mocked.deleteSessionQueueItem,
   steerSessionQueueItem: mocked.steerSessionQueueItem,
   replySessionPermissionRequest: mocked.replySessionPermissionRequest
@@ -564,6 +567,38 @@ describe("SessionRuntimeStore queue", () => {
 
     expect(mocked.deleteSessionQueueItem).toHaveBeenCalledWith("session-1", "queue-1", { targetHostId: undefined });
     expect(mocked.getSessionQueue).toHaveBeenCalledWith("session-1", { targetHostId: undefined });
+  });
+
+  it("updateQueuedMessage 会保存正文并刷新队列", async () => {
+    const store = new SessionRuntimeStore("session-1");
+    const updatedItem = {
+      id: "queue-1",
+      sessionId: "session-1",
+      content: "修改后的消息",
+      clientRequestId: null,
+      model: null,
+      reasoningLevel: null,
+      permissionMode: null,
+      status: "queued" as const,
+      orderIndex: 1,
+      errorDetail: null,
+      createdAt: "2026-03-24T10:00:00.000Z",
+      updatedAt: "2026-03-24T10:00:01.000Z"
+    };
+    mocked.updateSessionQueueItem.mockResolvedValueOnce(updatedItem);
+    mocked.getSessionQueue.mockReset();
+    mocked.getSessionQueue.mockResolvedValue({ items: [updatedItem] });
+
+    await store.updateQueuedMessage("queue-1", "修改后的消息");
+
+    expect(mocked.updateSessionQueueItem).toHaveBeenCalledWith(
+      "session-1",
+      "queue-1",
+      { content: "修改后的消息" },
+      { targetHostId: undefined }
+    );
+    expect(store.getState().queuedMessages[0]?.content).toBe("修改后的消息");
+    store.destroy();
   });
 
   it("steerQueuedMessage 会立刻引导等待项并刷新运行态与队列", async () => {

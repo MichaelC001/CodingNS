@@ -10353,6 +10353,10 @@ textarea:focus-visible {
   gap: 8px;
 }
 
+.queued-message-item--editing .queued-message-item__main {
+  align-items: start;
+}
+
 .queued-message-item__order {
   display: inline-flex;
   align-items: center;
@@ -10389,6 +10393,27 @@ textarea:focus-visible {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.queued-message-item__editor {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 68px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border-primary));
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.queued-message-item__editor:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  outline-offset: 1px;
 }
 
 .queued-message-item__actions {
@@ -10437,6 +10462,12 @@ textarea:focus-visible {
   color: var(--accent);
 }
 
+.queued-message-item__action > svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+
 .queued-message-item__action--steer {
   padding: 0 9px;
   font-size: 11px;
@@ -10446,6 +10477,19 @@ textarea:focus-visible {
 .queued-message-item__action--delete {
   width: 22px;
   font-size: 16px;
+}
+
+.queued-message-item__action--edit,
+.queued-message-item__action--save,
+.queued-message-item__action--cancel {
+  width: 22px;
+}
+
+.queued-message-item__edit-error {
+  margin: 6px 0 0 30px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--status-danger);
 }
 
 .message-list {
@@ -31230,6 +31274,28 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .ios-workbench-shell[data-mobile-presentation="conversation-focus"] .queued-message-list,
 .android-workbench-shell[data-mobile-presentation="conversation-focus"] .queued-message-list {
   margin-inline: 14px;
+}
+
+@media (max-width: 560px) {
+  .queued-message-item__main {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .queued-message-item__status {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+    margin-top: 2px;
+  }
+
+  .queued-message-item__actions {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    align-self: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
 }
 
 .mobile-workbench-shell[data-mobile-presentation="conversation-focus"] .composer-panel,

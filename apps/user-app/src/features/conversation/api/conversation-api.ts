@@ -1581,6 +1581,10 @@ export interface SessionQueueItemDto {
   updatedAt: string;
 }
 
+export interface UpdateSessionQueueItemPayload {
+  content: string;
+}
+
 export interface ContextUsageDto {
   provider: ProviderId;
   promptTokens: number;
@@ -3116,6 +3120,22 @@ export function enqueueSessionMessage(
     `/api/sessions/${encodeURIComponent(sessionId)}/queue`,
     {
       method: "POST",
+      targetHostId: options?.targetHostId ?? undefined,
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function updateSessionQueueItem(
+  sessionId: string,
+  queueItemId: string,
+  payload: UpdateSessionQueueItemPayload,
+  options?: ScopedRequestOptions
+) {
+  return httpClient.request<SessionQueueItemDto>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/queue/${encodeURIComponent(queueItemId)}`,
+    {
+      method: "PATCH",
       targetHostId: options?.targetHostId ?? undefined,
       body: JSON.stringify(payload)
     }

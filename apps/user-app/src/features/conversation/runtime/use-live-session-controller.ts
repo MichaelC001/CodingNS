@@ -86,6 +86,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
   const [sending, setSending] = useState(false);
   const [replyingPermissionRequestId, setReplyingPermissionRequestId] = useState<string | null>(null);
   const [deletingQueueItemId, setDeletingQueueItemId] = useState<string | null>(null);
+  const [updatingQueueItemId, setUpdatingQueueItemId] = useState<string | null>(null);
   const [steeringQueueItemId, setSteeringQueueItemId] = useState<string | null>(null);
   const [forkDraft, setForkDraft] = useState<ForkComposerDraft | null>(null);
   const toast = useToast();
@@ -569,6 +570,26 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
     }
   }, [store]);
 
+  const updateQueuedMessage = useCallback(async (
+    queueItemId: string,
+    content: string
+  ): Promise<void> => {
+    setUpdatingQueueItemId(queueItemId);
+
+    try {
+      await store.updateQueuedMessage(queueItemId, content);
+    } catch (error) {
+      showToast({
+        title: t("conversation.queueUpdateFailed"),
+        description: error instanceof Error ? error.message : undefined,
+        tone: "error"
+      });
+      throw error;
+    } finally {
+      setUpdatingQueueItemId(null);
+    }
+  }, [showToast, store]);
+
   const steerQueuedMessage = useCallback(async (queueItemId: string): Promise<void> => {
     setSteeringQueueItemId(queueItemId);
 
@@ -607,6 +628,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
     sending,
     replyingPermissionRequestId,
     deletingQueueItemId,
+    updatingQueueItemId,
     steeringQueueItemId,
     forkDraft,
     setForkDraft,
@@ -623,6 +645,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
     interrupt,
     replyPermissionRequest,
     deleteQueuedMessage,
+    updateQueuedMessage,
     steerQueuedMessage
   };
 }
