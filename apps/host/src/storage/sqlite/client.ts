@@ -687,6 +687,7 @@ function ensureButlerControlSessionOwnershipSchema(
 function ensureWorkspaceOwnerSchema(db: BetterSqliteDatabase): void {
   ensureWorkspaceOwnerColumn(db);
   ensurePeerHostSchema(db);
+  backfillWorktreeWorkspaceOwners(db);
 
   const legacyOwnerUserId = readLegacyDefaultUserId(db);
   if (legacyOwnerUserId) {
@@ -698,6 +699,31 @@ function ensureWorkspaceOwnerSchema(db: BetterSqliteDatabase): void {
   }
 
   db.exec("CREATE INDEX IF NOT EXISTS idx_workspaces_owner_user_id ON workspaces(owner_user_id, removed_at, sort_order)");
+}
+
+function backfillWorktreeWorkspaceOwners(db: BetterSqliteDatabase): void {
+  if (!tableExists(db, "workspace_worktrees")) {
+    return;
+  }
+
+  db.exec(`
+    UPDATE workspaces AS child
+    SET owner_user_id = (
+      SELECT root.owner_user_id
+      FROM workspace_worktrees AS worktree
+      INNER JOIN workspaces AS root ON root.id = worktree.root_workspace_id
+      WHERE worktree.workspace_id = child.id
+    )
+    WHERE (child.owner_user_id IS NULL OR TRIM(child.owner_user_id) = '')
+      AND EXISTS (
+        SELECT 1
+        FROM workspace_worktrees AS worktree
+        INNER JOIN workspaces AS root ON root.id = worktree.root_workspace_id
+        WHERE worktree.workspace_id = child.id
+          AND root.owner_user_id IS NOT NULL
+          AND TRIM(root.owner_user_id) <> ''
+      )
+  `);
 }
 
 function ensureWorkspaceOwnerColumn(db: BetterSqliteDatabase): void {

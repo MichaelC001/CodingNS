@@ -127,7 +127,9 @@ export class WorktreeManager {
       );
       worktreeCreated = true;
 
-      createdWorkspace = this.workspaceService.importWorkspace(targetPath, displayName);
+      createdWorkspace = sourceWorkspace.ownerUserId
+        ? this.workspaceService.importWorkspaceForUser(sourceWorkspace.ownerUserId, targetPath, displayName)
+        : this.workspaceService.importWorkspace(targetPath, displayName);
       this.commandTemplateService.cloneTemplatesToWorkspace({
         sourceWorkspaceId: rootWorkspace.id,
         targetWorkspaceId: createdWorkspace.id,

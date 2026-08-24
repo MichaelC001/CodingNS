@@ -1161,6 +1161,46 @@ describe("sqlite 启动引导", () => {
     );
   });
 
+  it("启动时会将无归属工作树绑定到根工作区的所属用户", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-worktree-owner-bootstrap-"));
+    tempDirs.push(tempDir);
+    const databasePath = path.join(tempDir, "host.sqlite");
+    const seed = createDatabaseClient(databasePath);
+
+    seed.db.exec(`
+      INSERT INTO auth_users (id, username, password_hash, role, created_at, updated_at) VALUES
+        ('default-user', 'default', 'hash', 'admin', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+        ('root-user', 'root', 'hash', 'admin', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z');
+
+      INSERT INTO workspaces (
+        id, owner_user_id, name, path, repo_root, favorite, sort_order, created_at, updated_at, removed_at
+      ) VALUES
+        ('root-workspace', 'root-user', 'Root', '/tmp/root-workspace', '/tmp/root-workspace', 0, 0,
+          '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z', NULL),
+        ('child-workspace', NULL, 'Child', '/tmp/child-workspace', '/tmp/child-workspace', 0, 1,
+          '2026-01-03T00:00:00.000Z', '2026-01-03T00:00:00.000Z', NULL);
+
+      INSERT INTO workspace_worktrees (
+        workspace_id, root_workspace_id, parent_workspace_id, source_workspace_id, merge_target_workspace_id,
+        branch_name, base_ref, base_commit, head_commit, display_name, depth, lifecycle_status,
+        merged_at, removed_at, created_at, updated_at
+      ) VALUES (
+        'child-workspace', 'root-workspace', 'root-workspace', 'root-workspace', 'root-workspace',
+        'feat/child', 'main', 'base-commit', 'head-commit', 'Child', 1, 'active',
+        NULL, NULL, '2026-01-03T00:00:00.000Z', '2026-01-03T00:00:00.000Z'
+      );
+    `);
+    seed.close();
+
+    const client = createDatabaseClient(databasePath);
+    const child = client.db
+      .prepare("SELECT owner_user_id FROM workspaces WHERE id = ?")
+      .get("child-workspace") as { owner_user_id: string } | undefined;
+    client.close();
+
+    expect(child).toEqual({ owner_user_id: "root-user" });
+  });
+
   it("初始化数据库时会创建 spec007.1 调试编排表，并补齐终端关联字段", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-debug-target-bootstrap-"));
     tempDirs.push(tempDir);

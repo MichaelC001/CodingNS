@@ -67,6 +67,7 @@ describe("worktree routes", () => {
         id: string;
         path: string;
         name: string;
+        ownerUserId: string | null;
       };
       meta: {
         workspaceId: string;
@@ -84,6 +85,9 @@ describe("worktree routes", () => {
 
     expect(body.workspace.path).toBe(expectedPath);
     expect(body.workspace.name).toBe("feat/login");
+    expect(body.workspace.ownerUserId).toBe(
+      hosted.services.repositories.workspaceRepository.findById(fixture.workspaceId)?.ownerUserId
+    );
     expect(body.meta).toMatchObject({
       workspaceId: body.workspace.id,
       rootWorkspaceId: fixture.workspaceId,
@@ -126,8 +130,19 @@ describe("worktree routes", () => {
       fixture.workspaceId
     ]);
     expect(workbenchResponse.statusCode).toBe(200);
-    expect(workbenchResponse.json().items.map((item: { workspace: { id: string } }) => item.workspace.id)).toEqual([
-      fixture.workspaceId
+    expect(workbenchResponse.json().items).toMatchObject([
+      {
+        workspace: {
+          id: fixture.workspaceId
+        },
+        childWorktrees: [
+          {
+            workspace: {
+              id: body.workspace.id
+            }
+          }
+        ]
+      }
     ]);
   });
 
@@ -1171,7 +1186,7 @@ async function bootstrapWorkspace(
   hosted: ReturnType<typeof createTestApp>,
   fixture: GitWorkspaceFixture
 ): Promise<void> {
-  await hosted.app.inject({
+  const setupResponse = await hosted.app.inject({
     method: "POST",
     url: "/api/public/setup",
     payload: {
@@ -1179,11 +1194,13 @@ async function bootstrapWorkspace(
       password: "admin1234"
     }
   });
+  const ownerUserId = setupResponse.json().userId as string;
 
   const timestamp = nowIso();
 
   hosted.services.repositories.workspaceRepository.create({
     id: fixture.workspaceId,
+    ownerUserId,
     name: "Git 工作区",
     path: fixture.workspaceDir,
     repoRoot: fixture.workspaceDir,
