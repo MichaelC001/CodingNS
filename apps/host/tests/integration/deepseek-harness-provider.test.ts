@@ -249,6 +249,114 @@ describe("DeepSeek Harness Web API", () => {
     expect(seen).toEqual([{ sequence: 2, content: "正常回复" }]);
   });
 
+  it("允许读取 Host 管理的附件目录，即使附件不在工作区内", async () => {
+    fake = await createDeepSeekHarnessFakeServer();
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const attachmentRootDir = mkdtempSync(join(tmpdir(), "codingns-harness-attachments-"));
+    const attachmentPath = join(attachmentRootDir, "session-1", "request-1", "image.png");
+    mkdirSync(join(attachmentRootDir, "session-1", "request-1"), { recursive: true });
+    writeFileSync(attachmentPath, Buffer.from([0, 1, 2, 3]));
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager(), { attachmentRootDir });
+    const sink: ProviderRuntimeEventSink = {
+      emit: async () => undefined,
+      updateSessionBinding: vi.fn()
+    };
+    const request: ProviderRuntimeRunRequest = {
+      sessionId: "codingns-attachment",
+      workspaceId: "workspace-1",
+      workspacePath: "/Users/jackson/Code/GCAC",
+      provider: "deepseek-harness",
+      providerSessionId: null,
+      rawStoreRef: null,
+      options: {
+        content: "请分析图片",
+        clientRequestId: "request-1",
+        model: null,
+        reasoningLevel: null,
+        permissionMode: "ask",
+        providerPrompt: null,
+        attachments: [{
+          id: "attachment-1",
+          kind: "image",
+          fileName: "image.png",
+          mimeType: "image/png",
+          fileSize: 4,
+          filePath: attachmentPath
+        }]
+      }
+    };
+    fake.setPromptHandler((sessionId) => {
+      fake?.emitMux({ type: "session/event", sessionId, event: { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } } });
+      fake?.emitHost({ type: "host/session-status", sessionId, running: false });
+    });
+
+    try {
+      const launch = await adapter.startSession(request, sink);
+      await expect(launch.completed).resolves.toBeUndefined();
+      expect(fake.calls).toContainEqual({
+        method: "session.prompt",
+        payload: expect.objectContaining({
+          content: [
+            { type: "text", text: "请分析图片" },
+            { type: "image", mediaType: "image/png", data: "AAECAw==", name: "image.png" }
+          ]
+        })
+      });
+    } finally {
+      rmSync(attachmentRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("仍然拒绝不属于工作区或 Host 附件目录的路径，并且不会产生未处理拒绝", async () => {
+    fake = await createDeepSeekHarnessFakeServer();
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const outsideRootDir = mkdtempSync(join(tmpdir(), "codingns-harness-outside-"));
+    const attachmentPath = join(outsideRootDir, "image.png");
+    writeFileSync(attachmentPath, Buffer.from([1, 2, 3]));
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager());
+    const sink: ProviderRuntimeEventSink = {
+      emit: async () => undefined,
+      updateSessionBinding: vi.fn()
+    };
+    const request: ProviderRuntimeRunRequest = {
+      sessionId: "codingns-forbidden-attachment",
+      workspaceId: "workspace-1",
+      workspacePath: "/Users/jackson/Code/GCAC",
+      provider: "deepseek-harness",
+      providerSessionId: null,
+      rawStoreRef: null,
+      options: {
+        content: "不应读取",
+        clientRequestId: "request-1",
+        model: null,
+        reasoningLevel: null,
+        permissionMode: "ask",
+        providerPrompt: null,
+        attachments: [{
+          id: "attachment-2",
+          kind: "image",
+          fileName: "image.png",
+          mimeType: "image/png",
+          fileSize: 3,
+          filePath: attachmentPath
+        }]
+      }
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      await expect(adapter.startSession(request, sink)).rejects.toThrow("HARNESS_WORKSPACE_FORBIDDEN");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(fake.calls.map((call) => call.method)).not.toContain("session.prompt");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      rmSync(outsideRootDir, { recursive: true, force: true });
+    }
+  });
+
   it("按真实 DSH 工具事件只发出一组配对的写入调用和结果", async () => {
     fake = await createDeepSeekHarnessFakeServer();
     const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });

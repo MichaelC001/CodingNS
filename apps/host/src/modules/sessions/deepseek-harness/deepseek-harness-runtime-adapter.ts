@@ -14,8 +14,14 @@ import type { TaskManager } from "../../tasks/task-manager.js";
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
+export interface DeepSeekHarnessRuntimeAdapterOptions {
+  /** Host 持久化用户附件的目录；这些文件不要求位于工作区内。 */
+  attachmentRootDir?: string;
+}
+
 export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
   readonly providerId = "deepseek-harness" as const;
+  private readonly attachmentRootDir: string | null;
 
   private runtime: Promise<{ client: DeepSeekHarnessApiClient; eventBridge: DeepSeekHarnessEventBridge }> | null = null;
   private permissionRequestHandler: ((input: {
@@ -27,7 +33,13 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
     respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
   }) => Promise<void>) | null = null;
 
-  constructor(private readonly clientFactory: () => Promise<DeepSeekHarnessApiClient>, private readonly taskManager: TaskManager) {}
+  constructor(
+    private readonly clientFactory: () => Promise<DeepSeekHarnessApiClient>,
+    private readonly taskManager: TaskManager,
+    options: DeepSeekHarnessRuntimeAdapterOptions = {}
+  ) {
+    this.attachmentRootDir = options.attachmentRootDir ? path.resolve(options.attachmentRootDir) : null;
+  }
 
   setPermissionRequestHandler(handler: NonNullable<DeepSeekHarnessRuntimeAdapter["permissionRequestHandler"]>): void {
     this.permissionRequestHandler = handler;
@@ -64,8 +76,7 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
     let promptStarted = false;
     let settled = false;
     let resolveCompleted!: () => void;
-    let rejectCompleted!: (error: unknown) => void;
-    const completed = new Promise<void>((resolve, reject) => { resolveCompleted = resolve; rejectCompleted = reject; });
+    const completed = new Promise<void>((resolve) => { resolveCompleted = resolve; });
     const settle = () => {
       if (settled) return;
       settled = true;
@@ -127,10 +138,14 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
       const selection = parseModelSelection(request.options.model);
       if (selection) await client.selectModel(providerSessionId, selection.provider, selection.model, request.options.reasoningLevel ?? undefined);
       promptStarted = true;
-      await client.prompt(providerSessionId, await buildPromptContent(request.options, request.workspacePath), resolvePromptMode(request.options));
+      await client.prompt(
+        providerSessionId,
+        await buildPromptContent(request.options, request.workspacePath, this.attachmentRootDir),
+        resolvePromptMode(request.options)
+      );
     } catch (error) {
-      closed?.close();
-      rejectCompleted(error);
+      // 启动阶段不会把 launch 返回给调用方，不能留下一个没人消费的 rejected Promise。
+      settle();
       throw error;
     }
 
@@ -146,7 +161,7 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
 
         await client.prompt(
           providerSessionId!,
-          await buildPromptContent(options, request.workspacePath),
+          await buildPromptContent(options, request.workspacePath, this.attachmentRootDir),
           resolvePromptMode(options)
         );
       },
@@ -174,15 +189,35 @@ function parseModelSelection(value: string | null): { provider: string; model: s
   return { provider: normalized.slice(0, separator), model: normalized.slice(separator + 1) };
 }
 
-async function buildPromptContent(options: RuntimeSendOptions, workspacePath: string): Promise<Array<Record<string, string>>> {
+async function buildPromptContent(
+  options: RuntimeSendOptions,
+  workspacePath: string,
+  attachmentRootDir: string | null
+): Promise<Array<Record<string, string>>> {
   const content: Array<Record<string, string>> = [{ type: "text", text: options.content }];
   for (const attachment of options.attachments) {
     const absolutePath = path.resolve(attachment.filePath);
-    const relative = path.relative(path.resolve(workspacePath), absolutePath);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("HARNESS_WORKSPACE_FORBIDDEN");
+    if (!isAllowedAttachmentPath(absolutePath, workspacePath, attachmentRootDir)) {
+      throw new Error("HARNESS_WORKSPACE_FORBIDDEN");
+    }
     const data = await readFile(absolutePath);
     if (data.byteLength > MAX_ATTACHMENT_BYTES) throw new Error("HARNESS_ATTACHMENT_TOO_LARGE");
     if (attachment.kind === "image") content.push({ type: "image", mediaType: attachment.mimeType, data: data.toString("base64"), ...(attachment.fileName ? { name: attachment.fileName } : {}) });
   }
   return content;
+}
+
+function isAllowedAttachmentPath(
+  attachmentPath: string,
+  workspacePath: string,
+  attachmentRootDir: string | null
+): boolean {
+  return isPathWithinRoot(attachmentPath, workspacePath)
+    || (attachmentRootDir !== null && isPathWithinRoot(attachmentPath, attachmentRootDir));
+}
+
+function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
+  const candidate = path.resolve(candidatePath);
+  const root = path.resolve(rootPath);
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }

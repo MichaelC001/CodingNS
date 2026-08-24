@@ -536,7 +536,10 @@ export function createServer(config: HostConfig) {
   });
   const deepSeekHarnessRuntimeAdapter = new DeepSeekHarnessRuntimeAdapter(
     () => deepSeekHarnessSidecarManager.createClient(),
-    taskManager
+    taskManager,
+    {
+      attachmentRootDir: path.join(path.dirname(config.databasePath), "session-attachments")
+    }
   );
   const npmGlobalPackageService = new NpmGlobalPackageService(config);
   const serviceUpdateTaskService = new ServiceUpdateTaskService(
