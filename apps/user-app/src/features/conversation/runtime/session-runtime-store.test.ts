@@ -6,7 +6,7 @@ import { authStore } from "../../auth/store/auth-store";
 import { clearViewSnapshot, readViewSnapshot, writeViewSnapshot } from "../../../shared/cache/view-snapshot-cache";
 import { t } from "../../../shared/i18n";
 import { ApiError } from "../../../shared/network/api-error";
-import { createPendingMessage } from "./session-runtime-machine";
+import { createPendingMessage, toViewMessage } from "./session-runtime-machine";
 import {
   applyTimelineEventToLayers,
   SessionRuntimeStore,
@@ -3347,6 +3347,56 @@ describe("SessionRuntimeStore", () => {
     expect(snapshotAfterBackfill?.messages.map((message) => message.id)).toEqual([
       "assistant-history-1"
     ]);
+
+    store.destroy();
+  });
+
+  it("持久化快照会裁剪长工具输出、移除附件 Base64，并且不重复保存时间线", () => {
+    const store = new SessionRuntimeStore("session-1");
+    const attachmentPayload = createImageAttachmentPayload("large.png", 1024 * 1024);
+    const messages = Array.from({ length: 120 }, (_, index) => {
+      const message = toViewMessage("session-1", createHistoryMessage({
+        messageId: `snapshot-message-${index + 1}`,
+        provider: "codex",
+        providerSessionId: "raw-1",
+        role: "tool",
+        kind: "tool_result",
+        content: "正文".repeat(20_000),
+        timestamp: `2026-04-13T10:${String(index).padStart(2, "0")}:00.000Z`,
+        sequence: index + 1,
+        rawRef: `codex://raw#line=${index + 1}`
+      }));
+
+      message.toolCall = {
+        callId: message.id,
+        name: "shell",
+        input: "input".repeat(10_000),
+        output: "output".repeat(10_000),
+        error: null,
+        status: "completed"
+      };
+      message.attachmentPayloads = [attachmentPayload];
+      return message;
+    });
+
+    (store as any).authoritativeMessages = messages;
+    (store as any).persistSnapshot();
+
+    const snapshot = readViewSnapshot<{
+      messages: Array<{
+        content: string;
+        toolCall: { input: string; output: string | null } | null;
+        attachmentPayloads: unknown;
+      }>;
+      timelineItems?: unknown;
+    }>(SESSION_RUNTIME_SNAPSHOT_KEY, Number.POSITIVE_INFINITY);
+
+    expect(snapshot?.messages.length).toBeLessThan(120);
+    expect(snapshot?.messages[0]?.content).toContain("内容已裁剪");
+    expect(snapshot?.messages[0]?.toolCall?.input.length).toBeLessThanOrEqual(16_000);
+    expect(snapshot?.messages[0]?.toolCall?.output?.length).toBeLessThanOrEqual(16_000);
+    expect(snapshot?.messages[0]?.attachmentPayloads).toBeNull();
+    expect(snapshot?.timelineItems).toBeUndefined();
 
     store.destroy();
   });

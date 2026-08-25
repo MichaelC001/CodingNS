@@ -85,7 +85,11 @@ const INITIAL_HISTORY_LIMIT = 30;
 // 首屏和历史分页都要比以前厚，否则长消息场景下一屏就会把当前页吃完。
 const OLDER_HISTORY_PAGE_LIMIT = 80;
 const REALTIME_LIMIT = 60;
-const SNAPSHOT_HISTORY_LIMIT = 600;
+const SNAPSHOT_HISTORY_LIMIT = 120;
+const SNAPSHOT_MAX_BYTES = 1_500_000;
+const SNAPSHOT_MESSAGE_MAX_CONTENT_LENGTH = 32_000;
+const SNAPSHOT_TOOL_FIELD_MAX_LENGTH = 16_000;
+const SNAPSHOT_TEXT_TRUNCATION_MARKER = "\n...[内容已裁剪，重新加载会话可查看完整内容]...\n";
 const SESSION_RUNTIME_SNAPSHOT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const SESSION_MARK_SEEN_DELAY_MS = 600;
 const SESSION_MARK_SEEN_MIN_INTERVAL_MS = 5_000;
@@ -109,7 +113,8 @@ interface SessionRuntimeSnapshot {
   sessionStats: ProviderSessionStatsDto | null;
   permissionStatus: SessionRuntimePermissionStatusDto | null;
   messages: SessionMessageViewModel[];
-  timelineItems: ConversationTimelineSourceItem[];
+  // 旧版本曾把由 messages 派生的时间线重复写入快照；读取时保留可选字段以兼容旧缓存。
+  timelineItems?: ConversationTimelineSourceItem[];
   permissionRequests: SessionPermissionRequestDto[];
   queuedMessages: SessionQueueItemDto[];
   olderCursor: string | null;
@@ -233,18 +238,19 @@ export class SessionRuntimeStore {
     );
     this.hasAuthoritativeBootstrapMessages = (options.bootstrapMessages?.length ?? 0) > 0;
     const seededSession = pickFreshestSessionSummary(options.initialSession ?? null, cachedSnapshot?.session ?? null);
+    const cachedSnapshotMessages = buildSnapshotMessages(cachedSnapshot?.messages ?? []);
     const seededTimeline = applyTimelineEventToLayers(
       createEmptyTimelineLayers(),
       this.sessionId,
       {
         type: "timeline.seed",
         source: "constructor_seed",
-        snapshotMessages: cachedSnapshot?.messages ?? [],
+        snapshotMessages: cachedSnapshotMessages,
         bootstrapMessages: options.bootstrapMessages ?? [],
         replaceSnapshotSeedOnBackfill:
           !this.hasAuthoritativeBootstrapMessages
-          && (cachedSnapshot?.messages.length ?? 0) > 0
-          && (cachedSnapshot?.messages.length ?? 0) <= REALTIME_LIMIT
+          && cachedSnapshotMessages.length > 0
+          && cachedSnapshotMessages.length <= REALTIME_LIMIT
           && (cachedSnapshot?.pagesLoaded ?? 0) <= 1
       }
     );
@@ -281,7 +287,7 @@ export class SessionRuntimeStore {
       sessionId: this.sessionId,
       targetHostId: this.options.targetHostId ?? null,
       bootstrapMessageCount: options.bootstrapMessages?.length ?? 0,
-      cachedMessageCount: cachedSnapshot?.messages?.length ?? 0,
+      cachedMessageCount: cachedSnapshotMessages.length,
       cachedTimelineItemCount: cachedSnapshot?.timelineItems?.length ?? 0
     });
   }
@@ -361,15 +367,16 @@ export class SessionRuntimeStore {
       buildSessionRuntimeSnapshotKey(this.sessionId, this.options.targetHostId),
       SESSION_RUNTIME_SNAPSHOT_CACHE_MAX_AGE_MS
     );
+    const cachedSnapshotMessages = buildSnapshotMessages(cachedSnapshot?.messages ?? []);
     const reloadedTimeline = this.applyTimelineEvent({
       type: "timeline.seed",
       source: "reload_seed",
-      snapshotMessages: cachedSnapshot?.messages ?? [],
+      snapshotMessages: cachedSnapshotMessages,
       bootstrapMessages: this.options.bootstrapMessages ?? [],
       replaceSnapshotSeedOnBackfill:
         !this.hasAuthoritativeBootstrapMessages
-        && (cachedSnapshot?.messages.length ?? 0) > 0
-        && (cachedSnapshot?.messages.length ?? 0) <= REALTIME_LIMIT
+        && cachedSnapshotMessages.length > 0
+        && cachedSnapshotMessages.length <= REALTIME_LIMIT
         && (cachedSnapshot?.pagesLoaded ?? 0) <= 1
     });
     this.state = createInitialRuntimeState({
@@ -1925,6 +1932,8 @@ export class SessionRuntimeStore {
   }
 
   private persistSnapshot(): void {
+    const snapshotMessages = buildSnapshotMessages(this.authoritativeMessages);
+
     writeViewSnapshot<SessionRuntimeSnapshot>(buildSessionRuntimeSnapshotKey(this.sessionId, this.options.targetHostId), {
       session: this.state.session,
       capabilities: this.state.capabilities,
@@ -1933,13 +1942,9 @@ export class SessionRuntimeStore {
       contextUsage: this.state.contextUsage,
       sessionStats: this.state.sessionStats,
       permissionStatus: this.state.permissionStatus,
-      messages: buildSnapshotMessages(this.authoritativeMessages),
-      timelineItems: buildConversationTimelineStateItems(
-        this.state.session,
-        buildSnapshotMessages(this.authoritativeMessages)
-      ),
-      permissionRequests: this.state.permissionRequests,
-      queuedMessages: this.state.queuedMessages,
+      messages: snapshotMessages,
+      permissionRequests: buildSnapshotPermissionRequests(this.state.permissionRequests),
+      queuedMessages: buildSnapshotQueuedMessages(this.state.queuedMessages),
       olderCursor: this.state.olderCursor,
       hasOlderMessages: this.state.hasOlderMessages,
       lastCursor: this.state.lastCursor,
@@ -3855,7 +3860,8 @@ export function applyTimelineEventToLayers(
               authoritativeAttachments.length > 0
                 ? authoritativeAttachments
                 : pending.attachments ?? [],
-            attachmentPayloads: pending.attachmentPayloads ?? item.attachmentPayloads ?? null,
+            // 上传已经成功，权威消息只需要附件元数据；失败的 pending 才继续保留 Base64 供重试。
+            attachmentPayloads: null,
             clientRequestId: event.clientRequestId
           };
         });
@@ -4950,7 +4956,7 @@ function isSessionRuntimePatchValueEqual(
   }
 
   if (key === "messages") {
-    return areRenderedMessagesEquivalent(
+    return areSessionRuntimeMessagesEquivalent(
       (previousValue as SessionRuntimeState["messages"]) ?? [],
       (nextValue as SessionRuntimeState["messages"]) ?? []
     );
@@ -4971,6 +4977,24 @@ function isSessionRuntimePatchValueEqual(
   }
 
   return Object.is(previousValue, nextValue);
+}
+
+function areSessionRuntimeMessagesEquivalent(
+  left: SessionMessageViewModel[],
+  right: SessionMessageViewModel[]
+): boolean {
+  if (!areRenderedMessagesEquivalent(left, right)) {
+    return false;
+  }
+
+  return left.every((message, index) => {
+    const other = right[index];
+    return Boolean(
+      other
+      && message.deliveryState === other.deliveryState
+      && message.clientRequestId === other.clientRequestId
+    );
+  });
 }
 
 function areSessionRuntimeSessionsEquivalent(
@@ -6099,9 +6123,90 @@ function buildSessionRuntimeSnapshotKey(sessionId: string, targetHostId?: string
 }
 
 function buildSnapshotMessages(messages: SessionMessageViewModel[]): SessionMessageViewModel[] {
-  return messages
+  const compactedMessages = messages
     .filter((message) => message.deliveryState === "sent")
-    .slice(-SNAPSHOT_HISTORY_LIMIT);
+    .slice(-SNAPSHOT_HISTORY_LIMIT)
+    .map(compactSnapshotMessage);
+  const messageSizes = compactedMessages.map(estimateSnapshotMessageBytes);
+  let totalBytes = messageSizes.reduce((total, size) => total + size, 0);
+  let firstMessageIndex = 0;
+
+  while (
+    firstMessageIndex < compactedMessages.length - 1
+    && totalBytes > SNAPSHOT_MAX_BYTES
+  ) {
+    totalBytes -= messageSizes[firstMessageIndex] ?? 0;
+    firstMessageIndex += 1;
+  }
+
+  return compactedMessages.slice(firstMessageIndex);
+}
+
+function compactSnapshotMessage(message: SessionMessageViewModel): SessionMessageViewModel {
+  return {
+    ...message,
+    content: truncateSnapshotText(message.content, SNAPSHOT_MESSAGE_MAX_CONTENT_LENGTH),
+    toolCall: message.toolCall
+      ? {
+          ...message.toolCall,
+          input: truncateSnapshotText(message.toolCall.input, SNAPSHOT_TOOL_FIELD_MAX_LENGTH),
+          output: message.toolCall.output === null
+            ? null
+            : truncateSnapshotText(message.toolCall.output, SNAPSHOT_TOOL_FIELD_MAX_LENGTH),
+          error: message.toolCall.error === null
+            ? null
+            : truncateSnapshotText(message.toolCall.error, SNAPSHOT_TOOL_FIELD_MAX_LENGTH)
+        }
+      : null,
+    // 已发送消息不需要在快照里重放二进制附件，避免 Base64 在多个层级重复驻留。
+    attachmentPayloads: null
+  };
+}
+
+function truncateSnapshotText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const availableLength = Math.max(0, maxLength - SNAPSHOT_TEXT_TRUNCATION_MARKER.length);
+  const headLength = Math.ceil(availableLength * 0.6);
+  const tailLength = Math.max(0, availableLength - headLength);
+
+  return `${value.slice(0, headLength)}${SNAPSHOT_TEXT_TRUNCATION_MARKER}${tailLength > 0 ? value.slice(-tailLength) : ""}`;
+}
+
+function estimateSnapshotMessageBytes(message: SessionMessageViewModel): number {
+  try {
+    return JSON.stringify(message).length * 2;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function buildSnapshotQueuedMessages(items: SessionQueueItemDto[]): SessionQueueItemDto[] {
+  return items.map((item) => ({
+    ...item,
+    content: truncateSnapshotText(item.content, SNAPSHOT_MESSAGE_MAX_CONTENT_LENGTH),
+    errorDetail: item.errorDetail === null
+      ? null
+      : truncateSnapshotText(item.errorDetail, SNAPSHOT_TOOL_FIELD_MAX_LENGTH)
+  }));
+}
+
+function buildSnapshotPermissionRequests(
+  items: SessionPermissionRequestDto[]
+): SessionPermissionRequestDto[] {
+  return items.map((item) => ({
+    ...item,
+    title: truncateSnapshotText(item.title, SNAPSHOT_TOOL_FIELD_MAX_LENGTH),
+    summary: truncateSnapshotText(item.summary, SNAPSHOT_TOOL_FIELD_MAX_LENGTH),
+    detail: item.detail === null ? null : truncateSnapshotText(item.detail, SNAPSHOT_TOOL_FIELD_MAX_LENGTH),
+    reason: item.reason === null ? null : truncateSnapshotText(item.reason, SNAPSHOT_TOOL_FIELD_MAX_LENGTH),
+    command: item.command === null ? null : truncateSnapshotText(item.command, SNAPSHOT_TOOL_FIELD_MAX_LENGTH),
+    rawPayload: item.rawPayload === null
+      ? null
+      : truncateSnapshotText(item.rawPayload, SNAPSHOT_TOOL_FIELD_MAX_LENGTH)
+  }));
 }
 
 function upsertQueuedMessage(

@@ -178,6 +178,15 @@ function createImageAttachment(fileName: string, fileSize: number) {
   };
 }
 
+function createImageAttachmentPayload(fileName: string, fileSize: number) {
+  return {
+    kind: "image" as const,
+    fileName,
+    mimeType: "image/png",
+    fileSize,
+    contentBase64: "iVBORw0KGgo=".repeat(32)
+  };
+}
 
 
 describe("SessionRuntimeStore send message", () => {
@@ -401,6 +410,69 @@ describe("SessionRuntimeStore send message", () => {
     );
     expect(store.getState().session?.runningState).toBe("running");
     expect(store.getState().runtimeCanInterrupt).toBe(true);
+  });
+
+  it("附件发送成功后，权威消息只保留附件元数据，不继续持有 Base64", async () => {
+    const store = new SessionRuntimeStore("session-1");
+    const attachment = createImageAttachment("screen.png", 2048);
+    const payload = createImageAttachmentPayload(attachment.fileName, attachment.fileSize);
+
+    mocked.sendLiveMessage.mockResolvedValueOnce({
+      sessionId: "session-1",
+      acceptedAt: "2026-03-24T10:00:02.000Z",
+      clientRequestId: "client-image-1",
+      provider: "codex",
+      providerSessionId: "raw-1",
+      message: {
+        messageId: "user-image-1",
+        provider: "codex",
+        providerSessionId: "raw-1",
+        role: "user",
+        kind: "text",
+        content: "分析图片",
+        timestamp: "2026-03-24T10:00:02.000Z",
+        sequence: 61,
+        rawRef: "codex://raw#line=61",
+        toolCall: null,
+        attachments: [attachment],
+        attachmentPayloads: [payload]
+      }
+    });
+
+    await store.sendMessage("分析图片", {
+      attachments: [payload],
+      attachmentMeta: [attachment]
+    });
+
+    expect(store.getState().messages).toMatchObject([
+      {
+        id: "user-image-1",
+        attachments: [attachment],
+        attachmentPayloads: null,
+        deliveryState: "sent"
+      }
+    ]);
+  });
+
+  it("附件发送失败时，pending 消息仍保留 Base64 以支持重试", async () => {
+    const store = new SessionRuntimeStore("session-1");
+    const attachment = createImageAttachment("screen.png", 2048);
+    const payload = createImageAttachmentPayload(attachment.fileName, attachment.fileSize);
+    const error = new Error("send failed");
+    mocked.sendLiveMessage.mockRejectedValueOnce(error);
+
+    await expect(store.sendMessage("分析图片", {
+      attachments: [payload],
+      attachmentMeta: [attachment]
+    })).rejects.toBe(error);
+
+    expect(store.getState().messages).toMatchObject([
+      {
+        role: "user",
+        deliveryState: "failed",
+        attachmentPayloads: [payload]
+      }
+    ]);
   });
 
   it("Claude 会话上一轮已中断后，再次发送也会立刻恢复可中断状态", async () => {
