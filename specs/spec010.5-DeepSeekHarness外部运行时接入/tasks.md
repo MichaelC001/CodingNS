@@ -2,6 +2,14 @@
 
 状态：Completed
 
+## 本轮协议兼容改造
+
+- [x] Harness 握手返回协议版本和能力集合，Host 解析平铺或嵌套的 `protocolVersion`、`capabilities`。
+- [x] CodingNS 按协议版本和能力矩阵计算 `ready`、`degraded`、`read-only`，应用版本只用于旧版无握手回退和诊断。
+- [x] 未知协议或未知应用版本不会让 `deepseek-harness` 从 Provider catalog 消失；安全读取保留，创建会话、发送消息等写操作在请求发出前返回 `HARNESS_CAPABILITY_UNSUPPORTED`。
+- [x] fake server、sidecar manager、Host Provider 和 core Provider 测试覆盖新协议、未知协议只读、缺能力降级和旧版回退。
+- [x] 升级流程已写入协议基线文档：先运行协议集成测试，测试通过后再更新兼容矩阵；不以真实模型调用成功作为协议兼容结论。
+
 ## 这份文档是干什么的
 
 这份任务清单用于把 Harness 接入拆成可以单独执行和验收的工作单元。每个任务都写清楚要解决的问题、主要文件、明确不做什么以及完成后的验证方式。
@@ -413,7 +421,7 @@
   - 怎么算完成：
     1. 核心链路、断线恢复、权限、隔离和不支持能力均有自动化验证。
     2. 任务观测能看到 enqueue、dedupe、started、finished、failed、timeout。
-    3. 文档记录固定版本、启动前提、已知限制和回滚步骤。
+    3. 文档记录协议版本、能力矩阵、启动前提、已知限制和回滚步骤。
   - 怎么验证：
     - 按变更文件运行 `pnpm test:related -- <变更文件>` 或仓库对应最小测试命令。
     - 运行 Harness 专项集成测试并保留结果。

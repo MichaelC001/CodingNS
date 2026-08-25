@@ -113,7 +113,7 @@ CodingNS 已经有统一的会话、运行时、权限和消息事件接口。De
 1. WHEN CodingNS 查询 Harness Provider 能力 THEN System SHALL 返回稳定的 `ProviderCapabilities` 快照。
 2. WHEN Harness 只部分支持某项 CodingNS 能力 THEN System SHALL 标记为受限，并说明限制，例如 Fork 只支持已完成 turn。
 3. WHEN Harness 没有对应 Web API THEN System SHALL 返回“不支持”错误，至少覆盖收藏、删除、Changed Files、Diff 和 Session Share。
-4. WHEN Harness 版本升级导致能力变化 THEN System SHALL 在 sidecar 健康检查和日志中记录版本，并允许适配器按版本拒绝不兼容能力。
+4. WHEN Harness 版本升级导致能力变化 THEN System SHALL 读取握手协议版本和能力集合，按能力矩阵开放或拒绝操作；应用版本只用于诊断和旧版无握手回退。
 
 ### 需求 7：外部依赖故障和可观测性
 

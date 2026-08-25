@@ -24,7 +24,7 @@
 ### 1.3 技术约束
 
 - 后端：CodingNS Host、Fastify、现有 `session-sync-core`、Provider/Runtime 服务。
-- 外部运行时：DeepSeek Harness Web，使用固定版本，不直接依赖 Harness 源码内部模块。
+- 外部运行时：DeepSeek Harness Web，使用协议版本和能力集合协商，不直接依赖 Harness 源码内部模块。
 - 通信：HTTP JSON-RPC `POST /api/<method>`、HTTP `POST /api/respond`、下行 WebSocket `/api/events.mux` 和 `/api/events.host`。
 - 数据存储：优先复用 CodingNS 现有会话索引和运行时持久化；不复制 Harness 的完整日志作为第二份权威数据源。
 - 认证授权：所有用户请求先经过 CodingNS 现有认证和 workspace 权限；sidecar 只接受 loopback 流量，不承担用户认证。
@@ -130,6 +130,9 @@ Harness 在 CodingNS 中以 `deepseek-harness` Provider 路由出现，但这个
 | `pid` | `number \| null` | 否 | 仅记录 CodingNS 自己启动的 PID | 退出后清空 |
 | `baseUrl` | `string \| null` | 否 | `http://127.0.0.1:<port>` | 禁止非 loopback |
 | `harnessVersion` | `string \| null` | 否 | sidecar 实际版本 | 健康检查后写入 |
+| `protocolVersion` | `string \| null` | 否 | `host.describe` 返回的协议版本 | 能力判断主键，未知时只读 |
+| `capabilities` | `string[]` | 是 | Harness 握手声明的 RPC/事件能力 | 不把未声明能力当成可用 |
+| `compatibilityStatus` | `ready \| degraded \| read-only` | 是 | 当前握手和能力矩阵结果 | 不会因为未知版本隐藏 Provider |
 | `startedAt` | `string \| null` | 否 | 启动时间 | ISO 时间 |
 | `lastError` | `string \| null` | 否 | 最近一次启动、协议或连接错误 | 不含密钥和完整路径 |
 
@@ -164,18 +167,18 @@ Harness 在 CodingNS 中以 `deepseek-harness` Provider 路由出现，但这个
 
 | CodingNS 能力 | 首版值 | 说明 |
 | --- | --- | --- |
-| `canStartSession` | `true` | `session.create` 可用时开启 |
+| `canStartSession` | 按矩阵 | `workspace.create` 和 `session.create` 都声明时开启 |
 | `canResumeSession` | `false` | Web API 没有独立 resume RPC，首版不伪造 |
-| `canSendMessage` | `true` | `session.prompt` 可用时开启 |
+| `canSendMessage` | 按矩阵 | `session.prompt` 声明时开启 |
 | `inRunInputMode` | `queued_guidance` | queue/steer 可映射，暂不声明 streaming guidance |
-| `supportsSubagents` | `true` | 以 subagent RPC 和事件契约测试为准 |
-| `supportsInterrupt` | `true` | `session.cancel` |
+| `supportsSubagents` | 按矩阵 | `agentPreset.list/select` 都声明时开启 |
+| `supportsInterrupt` | 按矩阵 | `session.cancel` |
 | `supportsStructuredToolCalls` | `true` | tool/call 与 tool/result |
 | `supportsTokenUsage` | `false` | 首版不依赖事件中不稳定的 usage 字段 |
-| `supportsAttachments` | `true` | 受图片大小和模型能力限制 |
-| `supportsPermissionPrompt` | `true` | approval/question + respond |
-| `supportsSessionFork` | `true` | DeepSeek 内部调用原生 Fork；其他 Provider 分叉到 DeepSeek 时重建可见文本 |
-| `supportsSessionDelete` | `false` | Harness Web API 无公开删除接口 |
+| `supportsAttachments` | 按矩阵 | `session.attachment` 声明且受图片大小和模型能力限制 |
+| `supportsPermissionPrompt` | 按矩阵 | `approval.respond` 声明 |
+| `supportsSessionFork` | 按矩阵 | `session.fork` 声明；其他 Provider 分叉到 DeepSeek 时重建可见文本 |
+| `supportsSessionDelete` | 按矩阵 | `session.cancel` 和 `workspace.archiveSession` 都声明时开启 |
 | `supportsSessionDiff` | `false` | 无 changed-files/diff 接口 |
 | `supportsSessionShare` | `false` | 无分享接口 |
 | `supportsAsyncPrompt` | `true` | prompt 返回 accepted，结果由事件流提供 |
@@ -212,10 +215,10 @@ Harness 在 CodingNS 中以 `deepseek-harness` Provider 路由出现，但这个
 #### 3.3.4 `DeepSeekHarnessCapabilityMapper.snapshot`
 
 - 类型：内部 Function
-- 输入：sidecar 版本、RPC 可用性、运行配置。
+- 输入：握手协议版本、能力集合、应用版本（仅诊断）和运行配置。
 - 输出：CodingNS `ProviderCapabilities`。
 - 校验：不支持的能力必须为 false，并写入限制说明。
-- 错误：版本不在允许范围时返回 `HARNESS_VERSION_UNSUPPORTED`，不开放 Provider。
+- 错误：缺失能力在调用前返回 `HARNESS_CAPABILITY_UNSUPPORTED`；未知协议进入 `read-only`，Provider 仍保留在目录中。
 
 #### 3.3.5 现有 CodingNS 路由兼容面
 
@@ -278,7 +281,8 @@ CodingNS session binding 是访问控制入口；Harness session 是 Agent 执�
 | `ready` | 可接受 RPC 和事件订阅 | `host.describe` 或等价健康检查通过 | 进程退出、协议失败 |
 | `degraded` | 进程还在但事件/RPC 不完整 | socket 断线、恢复失败 | 恢复成功或进程退出 |
 | `stopping` | CodingNS 正在关闭 sidecar | Host shutdown | 进程退出 |
-| `failed` | 启动或协议不兼容 | 启动失败、版本拒绝 | 明确重启请求 |
+| `failed` | 进程启动或健康检查失败 | spawn 失败、超时、进程退出 | 明确重启请求 |
+| `read-only` | 握手协议未知或无法验证 | 未知协议、缺少能力集合、未知应用版本且无旧版回退 | 重新握手得到已知协议 |
 
 #### 4.2.2 会话运行状态
 
@@ -308,7 +312,7 @@ CodingNS session binding 是访问控制入口；Harness session 是 Agent 执�
 
 - `HARNESS_SIDECAR_START_FAILED`：sidecar 无法启动或健康检查超时。
 - `HARNESS_SIDECAR_UNAVAILABLE`：进程退出、连接拒绝或正在恢复。
-- `HARNESS_VERSION_UNSUPPORTED`：Harness 版本不在适配器允许范围。
+- `HARNESS_CAPABILITY_UNSUPPORTED`：协议或能力矩阵没有声明请求的能力；未知协议不会让 Provider 消失，而是进入只读。
 - `HARNESS_RPC_TRANSPORT_ERROR`：HTTP 非 2xx、超时或连接中断。
 - `HARNESS_RPC_PROTOCOL_ERROR`：envelope、rpcId、method 或 frame 校验失败。
 - `HARNESS_RPC_BUSINESS_ERROR`：Harness 返回 `result.ok=false`。
