@@ -15,6 +15,20 @@ export function mapSessionProviderError(error: unknown): AppError {
     });
   }
 
+  if (error instanceof Error && (
+    error.message === "HARNESS_CAPABILITY_UNSUPPORTED"
+    || ("code" in error && error.code === "HARNESS_CAPABILITY_UNSUPPORTED")
+  )) {
+    return new AppError({
+      statusCode: 409,
+      errorCode: "HARNESS_CAPABILITY_UNSUPPORTED",
+      detail: error.message === "HARNESS_CAPABILITY_UNSUPPORTED"
+        ? "当前 Harness 运行时处于降级或只读状态，不支持这项操作"
+        : error.message,
+      field: "provider"
+    });
+  }
+
   if (error instanceof Error && error.message === "PROVIDER_FORK_NOT_SUPPORTED") {
     return new AppError({
       statusCode: 400,

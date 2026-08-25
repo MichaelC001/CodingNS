@@ -2,6 +2,7 @@ import {
   DeepSeekHarnessAdapter,
   DEEPSEEK_HARNESS_CURRENT_VERSION,
   type DeepSeekHarnessEnvelope,
+  type DeepSeekHarnessCompatibility,
   type DeepSeekHarnessTransport,
   type ProviderAdapter,
   type ProviderSubscription
@@ -26,6 +27,10 @@ export class DeepSeekHarnessProviderAdapter extends DeepSeekHarnessAdapter imple
 
 class LazyHarnessTransport implements DeepSeekHarnessTransport {
   constructor(private readonly manager: DeepSeekHarnessSidecarManager) {}
+
+  getCompatibility(): DeepSeekHarnessCompatibility | null {
+    return this.manager.getCompatibility();
+  }
 
   async call<T>(method: string, payload: unknown): Promise<T> {
     const client = await this.manager.createClient();

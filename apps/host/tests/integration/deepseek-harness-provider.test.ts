@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DeepSeekHarnessAdapter, type ProviderRuntimeEventSink, type ProviderRuntimeRunRequest } from "@codingns/session-sync-core";
+import {
+  DEEPSEEK_HARNESS_CAPABILITIES,
+  DeepSeekHarnessAdapter,
+  type ProviderRuntimeEventSink,
+  type ProviderRuntimeRunRequest
+} from "@codingns/session-sync-core";
 
 import { DeepSeekHarnessApiClient, DeepSeekHarnessRpcError } from "../../src/modules/sessions/deepseek-harness/deepseek-harness-api-client.js";
 import { DeepSeekHarnessSessionBindingStore } from "../../src/modules/sessions/deepseek-harness/deepseek-harness-session-binding-store.js";
@@ -39,6 +44,55 @@ describe("DeepSeek Harness Web API", () => {
     await expect(client.call("unknown.error", {})).rejects.toMatchObject({ code: "HARNESS_RPC_BUSINESS_ERROR" });
     await expect(client.call("bad-rpc", {})).rejects.toBeInstanceOf(DeepSeekHarnessRpcError);
     expect(() => parseHarnessServerResponse({ type: "server-response", rpcId: "other", result: { ok: true, value: {} } }, "expected")).toThrow("HARNESS_RPC_PROTOCOL_ERROR");
+  });
+
+  it("按协议版本和能力集合判断兼容性，不要求应用版本精确匹配", async () => {
+    fake = await createDeepSeekHarnessFakeServer({
+      version: "9.9.9",
+      protocolVersion: "1",
+      capabilities: DEEPSEEK_HARNESS_CAPABILITIES
+    });
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+
+    await client.describe();
+
+    expect(client.getCompatibility()).toMatchObject({
+      status: "ready",
+      harnessVersion: "9.9.9",
+      protocolVersion: "1"
+    });
+    await expect(client.createWorkspace("C:\\workspace")).resolves.toMatchObject({ created: true });
+  });
+
+  it("未知协议进入只读模式，保留安全读取但拦截写操作", async () => {
+    fake = await createDeepSeekHarnessFakeServer({
+      version: "9.9.9",
+      protocolVersion: "999",
+      capabilities: DEEPSEEK_HARNESS_CAPABILITIES
+    });
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+
+    await client.describe();
+
+    expect(client.getCompatibility()).toMatchObject({ status: "read-only", protocolVersion: "999" });
+    await expect(client.listSessions()).resolves.toMatchObject({ items: [] });
+    await expect(client.createWorkspace("C:\\workspace")).rejects.toMatchObject({ code: "HARNESS_CAPABILITY_UNSUPPORTED" });
+    expect(fake.calls.some((call) => call.method === "workspace.create")).toBe(false);
+  });
+
+  it("协议版本已知但缺少写能力时进入 degraded，并保留模型读取", async () => {
+    fake = await createDeepSeekHarnessFakeServer({
+      version: "9.9.9",
+      protocolVersion: "1",
+      capabilities: ["host.describe", "session.list", "session.history", "session.models", "llm.models", "workspace.list"]
+    });
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+
+    await client.describe();
+
+    expect(client.getCompatibility()).toMatchObject({ status: "degraded", protocolVersion: "1" });
+    await expect(client.models("")).resolves.toHaveProperty("groups");
+    await expect(client.prompt("h1", [{ type: "text", text: "不能发送" }])).rejects.toMatchObject({ code: "HARNESS_CAPABILITY_UNSUPPORTED" });
   });
 
   it("支持创建、历史、取消和下行 mux/host 夹具", async () => {
@@ -539,7 +593,7 @@ describe("DeepSeek Harness Web API", () => {
 
     const launch = await adapter.startSession(request, sink);
     await expect(launch.completed).resolves.toBeUndefined();
-    expect(fake.calls.slice(0, 2)).toEqual([
+    expect(fake.calls.filter((call) => call.method !== "host.describe").slice(0, 2)).toEqual([
       { method: "workspace.create", payload: { path: "C:\\workspace" } },
       { method: "session.create", payload: { workspaceId: "workspace-1", agentPreset: "ptc" } }
     ]);

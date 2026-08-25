@@ -38,6 +38,25 @@ describe("DeepSeekHarnessSidecarManager", () => {
     expect(manager.getState().status).toBe("stopped");
   });
 
+  it("未知应用版本且没有握手元数据时进入只读，不抛版本不支持", async () => {
+    const manager = new DeepSeekHarnessSidecarManager({
+      taskManager: createTaskManager(),
+      commandPath: process.execPath,
+      commandArgs: ["-e", FAKE_HARNESS_SCRIPT.replaceAll("0.1.1-rc.2", "9.9.9")],
+      startupTimeoutMs: 5_000
+    });
+
+    try {
+      await expect(manager.ensureReady()).resolves.toMatchObject({
+        harnessVersion: "9.9.9",
+        compatibility: { status: "read-only" }
+      });
+      expect(manager.getState()).toMatchObject({ status: "read-only", lastError: expect.stringContaining("握手") });
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
   it("启动 sidecar 时会传入配置的 DSH_HOME", async () => {
     const manager = new DeepSeekHarnessSidecarManager({
       taskManager: createTaskManager(),
@@ -76,7 +95,11 @@ describe("DeepSeekHarnessSidecarManager", () => {
     });
 
     try {
-      await expect(manager.ensureReady()).resolves.toMatchObject({ harnessVersion: "0.1.1-rc.2" });
+      await expect(manager.ensureReady()).resolves.toMatchObject({
+        harnessVersion: "0.1.1-rc.2",
+        compatibility: { status: "ready" }
+      });
+      expect(manager.getState()).toMatchObject({ status: "ready", harnessVersion: "0.1.1-rc.2" });
     } finally {
       await manager.shutdown();
       rmSync(tempDir, { recursive: true, force: true });

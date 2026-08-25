@@ -1,4 +1,10 @@
 import {
+  DEEPSEEK_HARNESS_CAPABILITIES,
+  isDeepSeekHarnessCapabilityAllowed,
+  resolveDeepSeekHarnessCompatibility,
+  type DeepSeekHarnessCompatibility,
+} from "@codingns/session-sync-core";
+import {
   createClientRequest,
   createClientResponse,
   parseHarnessServerResponse,
@@ -6,6 +12,7 @@ import {
   type HarnessRpcResult,
   type HarnessServerRequest
 } from "./deepseek-harness-protocol.js";
+import { parseHarnessHandshake } from "./deepseek-harness-protocol.js";
 
 export type HarnessFetch = typeof fetch;
 
@@ -13,6 +20,7 @@ export interface DeepSeekHarnessApiClientOptions {
   baseUrl: string;
   fetchImpl?: HarnessFetch;
   requestTimeoutMs?: number;
+  compatibility?: DeepSeekHarnessCompatibility;
 }
 
 export interface DeepSeekHarnessWorkspaceView {
@@ -43,6 +51,8 @@ export class DeepSeekHarnessApiClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: HarnessFetch;
   private readonly requestTimeoutMs: number;
+  private compatibility: DeepSeekHarnessCompatibility | null;
+  private handshakePromise: Promise<void> | null = null;
 
   constructor(options: DeepSeekHarnessApiClientOptions) {
     const parsed = new URL(options.baseUrl);
@@ -54,9 +64,20 @@ export class DeepSeekHarnessApiClient {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.requestTimeoutMs = Math.max(100, options.requestTimeoutMs ?? 10_000);
+    this.compatibility = options.compatibility ?? null;
   }
 
   async call<T>(method: string, payload: unknown, signal?: AbortSignal): Promise<T> {
+    await this.ensureCompatibility(method, signal);
+    this.assertCapability(method);
+    return this.callRaw<T>(method, payload, signal);
+  }
+
+  getCompatibility(): DeepSeekHarnessCompatibility | null {
+    return this.compatibility;
+  }
+
+  private async callRaw<T>(method: string, payload: unknown, signal?: AbortSignal): Promise<T> {
     const request = createClientRequest(method, payload);
     const response = await this.fetchWithTimeout(
       `${this.baseUrl}/api/${method}`,
@@ -90,6 +111,8 @@ export class DeepSeekHarnessApiClient {
   }
 
   async respond(rpcId: string, result: HarnessRpcResult<unknown>, signal?: AbortSignal): Promise<void> {
+    await this.ensureCompatibility("approval.respond", signal);
+    this.assertCapability("approval.respond");
     const request: HarnessClientResponse = createClientResponse(rpcId, result);
     const response = await this.fetchWithTimeout(
       `${this.baseUrl}/api/respond`,
@@ -108,7 +131,10 @@ export class DeepSeekHarnessApiClient {
   }
 
   async describe(signal?: AbortSignal): Promise<Record<string, unknown>> {
-    return this.call<Record<string, unknown>>("host.describe", {}, signal);
+    const value = await this.callRaw<Record<string, unknown>>("host.describe", {}, signal);
+    const handshake = parseHarnessHandshake(value);
+    this.compatibility = resolveDeepSeekHarnessCompatibility(handshake);
+    return value;
   }
 
   async createWorkspace(path: string, signal?: AbortSignal): Promise<{ workspace: DeepSeekHarnessWorkspaceView; created: boolean }> {
@@ -181,6 +207,8 @@ export class DeepSeekHarnessApiClient {
   }
 
   async subscribe(pathname: "/api/events.mux" | "/api/events.host", onEnvelope: (request: HarnessServerRequest) => void, signal?: AbortSignal, onClose?: () => void): Promise<() => void> {
+    await this.ensureCompatibility(pathname === "/api/events.mux" ? "events.mux" : "events.host", signal);
+    this.assertCapability(pathname === "/api/events.mux" ? "events.mux" : "events.host");
     const WebSocketCtor = await resolveWebSocket();
     const url = this.baseUrl.replace(/^http/, "ws") + pathname;
     const socket = new WebSocketCtor(url);
@@ -222,6 +250,33 @@ export class DeepSeekHarnessApiClient {
       onClose?.();
     });
     return close;
+  }
+
+  private assertCapability(capability: string): void {
+    if (!this.compatibility) {
+      throw new DeepSeekHarnessRpcError("HARNESS_HANDSHAKE_REQUIRED", "Harness 握手尚未完成", true);
+    }
+    // 通用 call 仍允许测试和诊断探测未知 RPC；矩阵只约束已知业务能力。
+    if (!(DEEPSEEK_HARNESS_CAPABILITIES as readonly string[]).includes(capability)) return;
+    if (isDeepSeekHarnessCapabilityAllowed(this.compatibility, capability)) return;
+
+    throw new DeepSeekHarnessRpcError(
+      "HARNESS_CAPABILITY_UNSUPPORTED",
+      this.compatibility.detail
+        ? `${capability} 不在 Harness 当前能力集合中：${this.compatibility.detail}`
+        : `${capability} 不在 Harness 当前能力集合中`,
+      false
+    );
+  }
+
+  private async ensureCompatibility(method: string, signal?: AbortSignal): Promise<void> {
+    if (method === "host.describe" || this.compatibility) return;
+    if (!this.handshakePromise) {
+      this.handshakePromise = this.describe(signal)
+        .then(() => undefined)
+        .finally(() => { this.handshakePromise = null; });
+    }
+    await this.handshakePromise;
   }
 
   private async fetchWithTimeout(input: string | URL, init: RequestInit, parentSignal?: AbortSignal): Promise<Response> {

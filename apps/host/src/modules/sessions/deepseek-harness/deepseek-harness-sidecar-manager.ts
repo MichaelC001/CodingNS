@@ -4,16 +4,17 @@ import { once } from "node:events";
 import net from "node:net";
 
 import {
-  DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS,
-  DEEPSEEK_HARNESS_CURRENT_VERSION
+  resolveDeepSeekHarnessCompatibility,
+  type DeepSeekHarnessCompatibility
 } from "@codingns/session-sync-core";
 import { TaskManager } from "../../tasks/task-manager.js";
 import { HOST_TASK_TYPES } from "../../tasks/task-types.js";
 import { resolveCommandLaunch } from "../../../shared/utils/command-launch.js";
 import { resolveCommandVersion } from "../../../shared/utils/command-version.js";
 import { DeepSeekHarnessApiClient } from "./deepseek-harness-api-client.js";
+import { parseHarnessHandshake } from "./deepseek-harness-protocol.js";
 
-export type DeepSeekHarnessSidecarStatus = "stopped" | "starting" | "ready" | "degraded" | "stopping" | "failed";
+export type DeepSeekHarnessSidecarStatus = "stopped" | "starting" | "ready" | "degraded" | "read-only" | "stopping" | "failed";
 
 export interface DeepSeekHarnessSidecarState {
   instanceId: string;
@@ -21,6 +22,9 @@ export interface DeepSeekHarnessSidecarState {
   pid: number | null;
   baseUrl: string | null;
   harnessVersion: string | null;
+  protocolVersion: string | null;
+  capabilities: string[];
+  compatibility: DeepSeekHarnessCompatibility | null;
   startedAt: string | null;
   lastError: string | null;
 }
@@ -32,8 +36,6 @@ export interface DeepSeekHarnessSidecarManagerOptions {
   bindHost?: "127.0.0.1" | "0.0.0.0";
   requestTimeoutMs?: number;
   startupTimeoutMs?: number;
-  expectedVersion?: string;
-  supportedVersions?: readonly string[];
   env?: NodeJS.ProcessEnv;
   spawnImpl?: typeof spawn;
   portAllocator?: () => Promise<number>;
@@ -42,7 +44,7 @@ export interface DeepSeekHarnessSidecarManagerOptions {
 
 /** 只管理 CodingNS 自己启动的 sidecar，外部进程不会被接管。 */
 export class DeepSeekHarnessSidecarManager {
-  private readonly options: Required<Pick<DeepSeekHarnessSidecarManagerOptions, "requestTimeoutMs" | "startupTimeoutMs" | "expectedVersion" | "supportedVersions">> & DeepSeekHarnessSidecarManagerOptions;
+  private readonly options: Required<Pick<DeepSeekHarnessSidecarManagerOptions, "requestTimeoutMs" | "startupTimeoutMs">> & DeepSeekHarnessSidecarManagerOptions;
   private child: ChildProcess | null = null;
   private state: DeepSeekHarnessSidecarState = {
     instanceId: "sidecar-" + randomUUID(),
@@ -50,18 +52,18 @@ export class DeepSeekHarnessSidecarManager {
     pid: null,
     baseUrl: null,
     harnessVersion: null,
+    protocolVersion: null,
+    capabilities: [],
+    compatibility: null,
     startedAt: null,
     lastError: null
   };
 
   constructor(options: DeepSeekHarnessSidecarManagerOptions) {
-    const expectedVersion = options.expectedVersion ?? DEEPSEEK_HARNESS_CURRENT_VERSION;
     this.options = {
       ...options,
-      requestTimeoutMs: 5_000,
-      startupTimeoutMs: 45_000,
-      expectedVersion,
-      supportedVersions: options.supportedVersions ?? (options.expectedVersion ? [expectedVersion] : DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS)
+      requestTimeoutMs: options.requestTimeoutMs ?? 5_000,
+      startupTimeoutMs: options.startupTimeoutMs ?? 45_000
     };
     this.options.taskManager.register({
       taskType: HOST_TASK_TYPES.harnessSidecarHealth,
@@ -77,12 +79,16 @@ export class DeepSeekHarnessSidecarManager {
     return { ...this.state };
   }
 
-  async ensureReady(): Promise<{ baseUrl: string; instanceId: string; harnessVersion: string | null }> {
-    if (this.state.status === "ready" && this.state.baseUrl) {
-      return { baseUrl: this.state.baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion };
+  getCompatibility(): DeepSeekHarnessCompatibility | null {
+    return this.state.compatibility;
+  }
+
+  async ensureReady(): Promise<{ baseUrl: string; instanceId: string; harnessVersion: string | null; compatibility: DeepSeekHarnessCompatibility }> {
+    if (["ready", "degraded", "read-only"].includes(this.state.status) && this.state.baseUrl && this.state.compatibility) {
+      return { baseUrl: this.state.baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility: this.state.compatibility };
     }
 
-    const handle = this.options.taskManager.enqueue<{}, { baseUrl: string; instanceId: string; harnessVersion: string | null }>(HOST_TASK_TYPES.harnessSidecarHealth, {
+    const handle = this.options.taskManager.enqueue<{}, { baseUrl: string; instanceId: string; harnessVersion: string | null; compatibility: DeepSeekHarnessCompatibility }>(HOST_TASK_TYPES.harnessSidecarHealth, {
       key: "deepseek-harness",
       input: {},
       source: "deepseek-harness"
@@ -95,6 +101,7 @@ export class DeepSeekHarnessSidecarManager {
     return new DeepSeekHarnessApiClient({
       baseUrl: ready.baseUrl,
       requestTimeoutMs: this.options.requestTimeoutMs,
+      compatibility: ready.compatibility,
       fetchImpl: this.options.fetchImpl
     });
   }
@@ -102,7 +109,7 @@ export class DeepSeekHarnessSidecarManager {
   async shutdown(): Promise<void> {
     const child = this.child;
     if (!child) {
-      this.state = { ...this.state, status: "stopped", pid: null, baseUrl: null };
+      this.state = resetHandshakeState({ ...this.state, status: "stopped", pid: null, baseUrl: null });
       return;
     }
 
@@ -110,15 +117,15 @@ export class DeepSeekHarnessSidecarManager {
     child.kill();
     await Promise.race([once(child, "exit"), delay(2_000)]);
     this.child = null;
-    this.state = { ...this.state, status: "stopped", pid: null, baseUrl: null };
+    this.state = resetHandshakeState({ ...this.state, status: "stopped", pid: null, baseUrl: null });
   }
 
-  private async startOwnedSidecar(signal?: AbortSignal): Promise<{ baseUrl: string; instanceId: string; harnessVersion: string | null }> {
-    if (this.state.status === "ready" && this.state.baseUrl) {
-      return { baseUrl: this.state.baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion };
+  private async startOwnedSidecar(signal?: AbortSignal): Promise<{ baseUrl: string; instanceId: string; harnessVersion: string | null; compatibility: DeepSeekHarnessCompatibility }> {
+    if (["ready", "degraded", "read-only"].includes(this.state.status) && this.state.baseUrl && this.state.compatibility) {
+      return { baseUrl: this.state.baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility: this.state.compatibility };
     }
 
-    this.state = { ...this.state, status: "starting", lastError: null };
+    this.state = resetHandshakeState({ ...this.state, status: "starting", lastError: null });
     const port = await (this.options.portAllocator ?? allocateLoopbackPort)();
     const baseUrl = `http://127.0.0.1:${port}`;
     const bindHost = this.options.bindHost ?? "127.0.0.1";
@@ -130,12 +137,8 @@ export class DeepSeekHarnessSidecarManager {
       throw new Error("HARNESS_BIND_HOST_UNSUPPORTED");
     }
 
-    // 当前兼容版本的 host.describe.version 是上游占位值 0.0.1，必须读取 CLI 本身的版本。
+    // CLI 版本只用于诊断和旧版无握手回退，不能再作为新协议的精确匹配条件。
     const commandVersion = usesDefaultCommandArgs ? resolveCommandVersion(commandPath) : null;
-    if (usesDefaultCommandArgs && !this.isSupportedVersion(commandVersion)) {
-      this.state = { ...this.state, status: "failed", baseUrl: null, lastError: "HARNESS_VERSION_UNSUPPORTED" };
-      throw new Error("HARNESS_VERSION_UNSUPPORTED");
-    }
 
     const launch = resolveCommandLaunch(commandPath, commandArgs);
     const child = (this.options.spawnImpl ?? spawn)(launch.command, launch.args, {
@@ -153,7 +156,7 @@ export class DeepSeekHarnessSidecarManager {
       child.once("error", reject);
       child.once("exit", () => {
         if (this.child === child && this.state.status !== "stopping") {
-          this.state = { ...this.state, status: "failed", pid: null, baseUrl: null, lastError: "HARNESS_SIDECAR_EXITED" };
+          this.state = resetHandshakeState({ ...this.state, status: "failed", pid: null, baseUrl: null, lastError: "HARNESS_SIDECAR_EXITED" });
           this.child = null;
         }
         resolve();
@@ -164,19 +167,35 @@ export class DeepSeekHarnessSidecarManager {
       const client = new DeepSeekHarnessApiClient({ baseUrl, requestTimeoutMs: this.options.requestTimeoutMs, fetchImpl: this.options.fetchImpl });
       const description = await waitForReady(client, this.options.startupTimeoutMs, exitPromise, signal);
       const harnessVersion = commandVersion ?? readVersion(description);
-      if (!this.isSupportedVersion(harnessVersion)) throw new Error("HARNESS_VERSION_UNSUPPORTED");
-      this.state = { ...this.state, status: "ready", harnessVersion };
-      return { baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion };
+      const handshake = parseHarnessHandshake(description, harnessVersion);
+      const compatibility = resolveDeepSeekHarnessCompatibility(handshake);
+      this.state = {
+        ...this.state,
+        status: compatibility.status,
+        harnessVersion,
+        protocolVersion: compatibility.protocolVersion,
+        capabilities: compatibility.capabilities,
+        compatibility,
+        lastError: compatibility.detail
+      };
+      return { baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility };
     } catch (error) {
-      this.state = { ...this.state, status: "failed", pid: child.pid ?? null, lastError: sanitizeError(error) };
+      this.state = resetHandshakeState({ ...this.state, status: "failed", pid: child.pid ?? null, lastError: sanitizeError(error) });
       child.kill();
       throw error;
     }
   }
 
-  private isSupportedVersion(version: string | null): boolean {
-    return version !== null && this.options.supportedVersions.includes(version);
-  }
+}
+
+function resetHandshakeState(state: DeepSeekHarnessSidecarState): DeepSeekHarnessSidecarState {
+  return {
+    ...state,
+    harnessVersion: null,
+    protocolVersion: null,
+    capabilities: [],
+    compatibility: null
+  };
 }
 
 async function waitForReady(client: DeepSeekHarnessApiClient, timeoutMs: number, exitPromise: Promise<unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {

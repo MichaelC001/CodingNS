@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import type { DeepSeekHarnessCompatibilityInput } from "@codingns/session-sync-core";
+
 /** Harness 0.1.1-rc.2 使用的 JSON-RPC 信封。这里不复用 Harness 源码类型，避免外部包污染 Host。 */
 export interface HarnessClientRequest {
   type: "client-request";
@@ -38,6 +40,14 @@ export interface HarnessRpcError {
 }
 
 export type HarnessDownlinkEnvelope = HarnessServerRequest;
+
+/** `host.describe` 返回的握手元数据。应用版本和协议版本必须分开保存。 */
+export interface HarnessHandshakeMetadata extends DeepSeekHarnessCompatibilityInput {
+  harnessVersion: string | null;
+  protocolVersion: string | null;
+  capabilities: string[] | null;
+  hasHandshake: boolean;
+}
 
 export interface HarnessSessionSummary {
   sessionId: string;
@@ -135,6 +145,40 @@ export function parseHarnessDownlink(value: unknown): HarnessDownlinkEnvelope | 
   return value as unknown as HarnessDownlinkEnvelope;
 }
 
+/** 兼容平铺和嵌套 handshake 字段，避免把上游无关的 host.describe 字段带入核心。 */
+export function parseHarnessHandshake(value: unknown, fallbackHarnessVersion: string | null = null): HarnessHandshakeMetadata {
+  const record = isRecord(value) ? value : {};
+  const handshake = isRecord(record.handshake) ? record.handshake : {};
+  const protocol = isRecord(record.protocol) ? record.protocol : {};
+  const protocolVersion = readString(
+    record.protocolVersion,
+    handshake.protocolVersion,
+    handshake.version,
+    protocol.protocolVersion,
+    protocol.version
+  );
+  const capabilities = readCapabilities(
+    record.capabilities,
+    handshake.capabilities,
+    protocol.capabilities
+  );
+  const hasHandshake = (
+    "protocolVersion" in record
+    || "capabilities" in record
+    || "handshake" in record
+    || "protocol" in record
+  );
+
+  return {
+    // 默认启动路径拿到的 CLI 版本是真实应用版本；当前 Harness 的
+    // host.describe.version 仍可能返回上游占位值 0.0.1，不能覆盖它。
+    harnessVersion: fallbackHarnessVersion ?? readString(record.harnessVersion, record.hostVersion, record.version),
+    protocolVersion,
+    capabilities,
+    hasHandshake
+  };
+}
+
 function isHarnessRpcResult(value: unknown): value is HarnessRpcResult<unknown> {
   if (!isRecord(value) || typeof value.ok !== "boolean") {
     return false;
@@ -149,4 +193,26 @@ function isHarnessRpcResult(value: unknown): value is HarnessRpcResult<unknown> 
 
 function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function readCapabilities(...values: unknown[]): string[] | null {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      return value.filter((item): item is string => typeof item === "string");
+    }
+    if (isRecord(value)) {
+      const names = value.names ?? value.methods ?? value.rpc;
+      if (Array.isArray(names)) {
+        return names.filter((item): item is string => typeof item === "string");
+      }
+    }
+  }
+  return null;
 }

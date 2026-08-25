@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import type { HarnessClientRequest, HarnessServerResponse, HarnessMuxFrame, HarnessHostFrame } from "../../src/modules/sessions/deepseek-harness/deepseek-harness-protocol.js";
+import { DEEPSEEK_HARNESS_CAPABILITIES } from "@codingns/session-sync-core";
 
 export interface DeepSeekHarnessFakeServer {
   baseUrl: string;
@@ -19,7 +20,12 @@ export interface DeepSeekHarnessFakeServer {
 }
 
 /** 不访问真实模型和用户目录的协议夹具，覆盖成功、业务错误、坏 rpcId 和断线。 */
-export async function createDeepSeekHarnessFakeServer(options: { port?: number; version?: string } = {}): Promise<DeepSeekHarnessFakeServer> {
+export async function createDeepSeekHarnessFakeServer(options: {
+  port?: number;
+  version?: string;
+  protocolVersion?: string;
+  capabilities?: readonly string[];
+} = {}): Promise<DeepSeekHarnessFakeServer> {
   const calls: Array<{ method: string; payload: unknown }> = [];
   const workspaces = new Map<string, { workspaceId: string; path: string }>();
   const sessions = new Map<string, { cwd: string; workspaceId?: string; agentPreset?: string; events: Array<Record<string, unknown>> }>();
@@ -28,7 +34,18 @@ export async function createDeepSeekHarnessFakeServer(options: { port?: number; 
   const hostClients = new Set<WebSocket>();
   let promptHandler: ((sessionId: string) => void) | null = null;
   const httpServer = createServer((request, response) => {
-    void handleRequest(request, response, calls, workspaces, sessions, archivedSessionIds, options.version ?? "0.1.0-rc.5", (sessionId) => promptHandler?.(sessionId));
+    void handleRequest(
+      request,
+      response,
+      calls,
+      workspaces,
+      sessions,
+      archivedSessionIds,
+      options.version ?? "0.1.0-rc.5",
+      options.protocolVersion,
+      options.capabilities,
+      (sessionId) => promptHandler?.(sessionId)
+    );
   });
   const muxServer = new WebSocketServer({ noServer: true });
   const hostServer = new WebSocketServer({ noServer: true });
@@ -84,6 +101,8 @@ async function handleRequest(
   sessions: Map<string, { cwd: string; workspaceId?: string; agentPreset?: string; events: Array<Record<string, unknown>> }>,
   archivedSessionIds: Set<string>,
   version: string,
+  protocolVersion: string | undefined,
+  capabilities: readonly string[] | undefined,
   onPrompt: (sessionId: string) => void
 ): Promise<void> {
   if (request.method !== "POST") { response.writeHead(405).end(); return; }
@@ -94,7 +113,7 @@ async function handleRequest(
   if (!parsed || parsed.type !== "client-request") { response.writeHead(400).end(); return; }
   const requestBody = parsed;
   calls.push({ method: requestBody.method, payload: requestBody.payload });
-  const result = dispatch(requestBody.method, requestBody.payload, workspaces, sessions, archivedSessionIds, version, onPrompt);
+  const result = dispatch(requestBody.method, requestBody.payload, workspaces, sessions, archivedSessionIds, version, protocolVersion, capabilities, onPrompt);
   const envelope: HarnessServerResponse = { type: "server-response", rpcId: requestBody.rpcId === "bad-rpc" ? "wrong-rpc" : requestBody.rpcId, result };
   response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(envelope));
 }
@@ -106,10 +125,23 @@ function dispatch(
   sessions: Map<string, { cwd: string; workspaceId?: string; events: Array<Record<string, unknown>> }>,
   archivedSessionIds: Set<string>,
   version: string,
+  protocolVersion: string | undefined,
+  capabilities: readonly string[] | undefined,
   onPrompt: (sessionId: string) => void
 ): { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } } {
   const input = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
-  if (method === "host.describe") return { ok: true, value: { version } };
+  if (method === "host.describe") {
+    return {
+      ok: true,
+      value: {
+        version,
+        ...(protocolVersion ? {
+          protocolVersion,
+          capabilities: capabilities ?? [...DEEPSEEK_HARNESS_CAPABILITIES]
+        } : {})
+      }
+    };
+  }
   if (method === "workspace.create") {
     const workspacePath = typeof input.path === "string" ? input.path : ".";
     const existing = workspaces.get(workspacePath);
