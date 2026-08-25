@@ -23,6 +23,7 @@ export interface SessionActivityDisplayInput {
 
 type SessionIndicatorVariant =
   | "error"
+  | "needs_user_answer"
   | "idle"
   | "unread"
   | "running"
@@ -32,6 +33,7 @@ type SessionIndicatorVariant =
 
 type SessionIndicatorClassVariant =
   | "error"
+  | "needs-user-answer"
   | "idle"
   | "unread"
   | "running"
@@ -56,6 +58,7 @@ export function resolveSessionIndicatorClassName(
   options?: {
     hasSubagents?: boolean;
     isActive?: boolean;
+    needsUserAnswer?: boolean;
   }
 ): string {
   return `${baseClassName} is-${resolveSessionIndicatorClassVariant(session, options)}`;
@@ -66,10 +69,15 @@ export function resolveSessionIndicatorClassVariant(
   options?: {
     hasSubagents?: boolean;
     isActive?: boolean;
+    needsUserAnswer?: boolean;
   }
 ): SessionIndicatorClassVariant {
   void options?.isActive;
-  const variant = resolveSessionIndicatorVariant(session);
+  const variant = resolveSessionIndicatorVariant(session, options);
+
+  if (variant === "needs_user_answer") {
+    return "needs-user-answer";
+  }
 
   if (options?.hasSubagents) {
     if (variant === "error") {
@@ -198,10 +206,17 @@ export function isSessionRunning(session: SessionActivityDisplayInput | null | u
 }
 
 function resolveSessionIndicatorVariant(
-  session: SessionActivityDisplayInput
+  session: SessionActivityDisplayInput,
+  options?: {
+    needsUserAnswer?: boolean;
+  }
 ): SessionIndicatorVariant {
   if (hasSessionDisplayError(session)) {
     return "error";
+  }
+
+  if (options?.needsUserAnswer) {
+    return "needs_user_answer";
   }
 
   if (session.runningState === "stale") {

@@ -6981,6 +6981,77 @@ describe("WorkbenchLayout", () => {
     }
   });
 
+  it("会话需要回答问题时在会话列显示黄色叹号", async () => {
+    const currentSnapshot = createWorkbenchSnapshot([
+      {
+        workspace: createWorkspace("workspace-1", "项目一"),
+        sessions: [
+          createSessionSummary({
+            sessionId: "session-1",
+            title: "当前会话",
+            workspaceId: "workspace-1",
+            runningState: "running",
+            activityState: "running"
+          }),
+          createSessionSummary({
+            sessionId: "session-2",
+            title: "等待回答",
+            workspaceId: "workspace-1",
+            runningState: "running",
+            activityState: "running"
+          })
+        ]
+      }
+    ]);
+
+    MockWebSocket.workbenchSnapshot = currentSnapshot;
+    global.fetch = vi.fn(async (rawInput: RequestInfo | URL) => {
+      const url = typeof rawInput === "string" ? rawInput : rawInput.toString();
+
+      if (url.endsWith("/api/workbench")) {
+        return createJsonResponse(currentSnapshot);
+      }
+
+      if (url.endsWith("/api/sessions/session-1/permission-requests")) {
+        return createJsonResponse({ items: [] });
+      }
+
+      if (url.endsWith("/api/sessions/session-2/permission-requests")) {
+        return createJsonResponse({
+          items: [
+            {
+              ...createPermissionRequest({
+                id: "question-1",
+                sessionId: "session-2",
+                title: "需要你回答的问题"
+              }),
+              kind: "user_input",
+              questions: [
+                {
+                  id: "question",
+                  header: "问题",
+                  question: "请选择一个选项",
+                  allowOther: false,
+                  secret: false,
+                  options: []
+                }
+              ]
+            }
+          ]
+        });
+      }
+
+      throw new Error(`未处理的请求: ${url}`);
+    }) as typeof fetch;
+
+    renderWorkbenchRoute("/workspaces/workspace-1/sessions/session-1");
+
+    await waitFor(async () => {
+      const card = await findSessionCardByTitle("等待回答");
+      expect(card.querySelector(".session-state-indicator")).toHaveClass("is-needs-user-answer");
+    });
+  });
+
   it("后台运行会话收到新的权限申请时会推送系统通知", async () => {
     const originalNotification = window.Notification;
     const invokeSpy = vi.fn(async (_command?: string, _args?: Record<string, unknown>) => undefined);

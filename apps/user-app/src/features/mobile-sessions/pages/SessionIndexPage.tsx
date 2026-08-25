@@ -40,6 +40,7 @@ export function SessionIndexPage() {
   const navigate = useNavigate();
   const {
     navigationGroups,
+    pendingUserInputSessionIds = new Set(),
     favoriteSessionIds,
     currentWorkspaceRef,
     currentWorkspaceId,
@@ -299,6 +300,7 @@ export function SessionIndexPage() {
             entry={node.item}
             isFavorite={favoriteSet.has(sessionId)}
             isActive={currentSessionId === sessionId}
+            needsUserAnswer={pendingUserInputSessionIds.has(sessionId)}
             depth={node.depth}
             variant="mobile"
             workspaceTone={workspaceVisualContextMap[node.item.workspace.id]?.tone ?? "root"}

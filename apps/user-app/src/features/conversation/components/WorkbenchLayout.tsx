@@ -1930,6 +1930,7 @@ export function getVisibleSessionTreeNodes(
 interface WorkbenchShellContextValue {
   shellMode: WorkbenchShellMode;
   navigationGroups: WorkspaceSessionGroup[];
+  pendingUserInputSessionIds: ReadonlySet<string>;
   navigationLoading: boolean;
   navigationError: string | null;
   currentWorkspaceId: string | null;
@@ -2542,6 +2543,7 @@ function sessionStateClassName(
   options?: {
     hasSubagents?: boolean;
     isActive?: boolean;
+    needsUserAnswer?: boolean;
   }
 ) {
   return resolveSessionIndicatorClassName("session-state-indicator", session, options);
@@ -2552,6 +2554,7 @@ function sessionStateVariantName(
   options?: {
     hasSubagents?: boolean;
     isActive?: boolean;
+    needsUserAnswer?: boolean;
   }
 ) {
   return resolveSessionIndicatorClassVariant(session, options);
@@ -4833,6 +4836,7 @@ function SessionCard({
   exportDisabled = false,
   hasSubagents = false,
   subagentListExpanded = false,
+  needsUserAnswer = false,
   showParallelBadge = true,
   hideMetaRow = false,
   selectionMode = false,
@@ -4863,6 +4867,7 @@ function SessionCard({
   exportDisabled?: boolean;
   hasSubagents?: boolean;
   subagentListExpanded?: boolean;
+  needsUserAnswer?: boolean;
   showParallelBadge?: boolean;
   hideMetaRow?: boolean;
   selectionMode?: boolean;
@@ -5177,7 +5182,8 @@ function SessionCard({
             style={subagentToggleLayerStyle}
             data-indicator-variant={sessionStateVariantName(session, {
               hasSubagents: true,
-              isActive
+              isActive,
+              needsUserAnswer
             })}
             aria-label={subagentListExpanded ? t("shell.subagentCollapse") : t("shell.subagentExpand")}
             title={subagentListExpanded ? t("shell.subagentCollapse") : t("shell.subagentExpand")}
@@ -5190,7 +5196,8 @@ function SessionCard({
             <span
               className={sessionStateClassName(session, {
                 hasSubagents: true,
-                isActive
+                isActive,
+                needsUserAnswer
               })}
               data-activity-source={session.activitySource}
               aria-hidden="true"
@@ -5201,7 +5208,7 @@ function SessionCard({
           </button>
         ) : (
           <span
-            className={sessionStateClassName(session, { isActive })}
+            className={sessionStateClassName(session, { isActive, needsUserAnswer })}
             data-activity-source={session.activitySource}
             aria-hidden="true"
           />
@@ -5869,6 +5876,7 @@ function SidebarContent({
   navigationLoading,
   navigationError,
   activeSessionId,
+  pendingUserInputSessionIds,
   currentTargetHostId,
   onRefreshNavigation,
   onSessionUpdated,
@@ -5926,6 +5934,7 @@ function SidebarContent({
   navigationLoading: boolean;
   navigationError: string | null;
   activeSessionId: string | null;
+  pendingUserInputSessionIds: ReadonlySet<string>;
   currentTargetHostId?: string | null;
   onRefreshNavigation: () => Promise<void>;
   onSessionUpdated: (session: SessionSummaryDto) => void;
@@ -8576,6 +8585,7 @@ function SidebarContent({
             exportDisabled={exportingSessionId !== null}
             hasSubagents={allowToggle && childNodes.length > 0}
             subagentListExpanded={subagentListExpanded}
+            needsUserAnswer={pendingUserInputSessionIds.has(session.sessionId)}
             showParallelBadge={showParallelBadge}
             selectionMode={selectionMode}
             selected={selectedSessionIdSet.has(session.sessionId)}
@@ -8694,6 +8704,7 @@ function SidebarContent({
                     hideMetaRow
                     depth={0}
                     showActions
+                    needsUserAnswer={pendingUserInputSessionIds.has(session.sessionId)}
                     exportDisabled
                     onExport={() => undefined}
                     menuAnchorPoint={openSessionMenuKey === menuKey ? openSessionMenuAnchorPoint : null}
@@ -9797,6 +9808,7 @@ function SidebarContent({
                           hideMetaRow
                           depth={0}
                           showActions
+                          needsUserAnswer={pendingUserInputSessionIds.has(item.session.sessionId)}
                           exportDisabled
                           onExport={() => undefined}
                           menuAnchorPoint={openSessionMenuKey === menuKey ? openSessionMenuAnchorPoint : null}
@@ -12059,6 +12071,10 @@ export function WorkbenchLayout({
   );
   const permissionPollBaselineReadyRef = useRef(false);
   const pendingPermissionRequestIdsBySessionRef = useRef(new Map<string, Set<string>>());
+  const pendingUserInputSessionIdsRef = useRef(new Set<string>());
+  const [pendingUserInputSessionIds, setPendingUserInputSessionIds] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
   const permissionRefreshSignatureRef = useRef<string>("");
   const permissionWatchSessionsRef = useRef<
     Array<{ sessionId: string; workspaceId: string; title: string }>
@@ -13905,6 +13921,8 @@ export function WorkbenchLayout({
           permissionPollBaselineReadyRef.current = true;
         }
         permissionRefreshSignatureRef.current = "";
+        pendingUserInputSessionIdsRef.current.clear();
+        setPendingUserInputSessionIds((current) => current.size === 0 ? current : new Set());
         return;
       }
 
@@ -13936,6 +13954,11 @@ export function WorkbenchLayout({
         }
 
         const pendingRequests = result.items.filter((request) => request.status === "pending");
+        if (pendingRequests.some((request) => request.kind === "user_input")) {
+          pendingUserInputSessionIdsRef.current.add(result.session.sessionId);
+        } else {
+          pendingUserInputSessionIdsRef.current.delete(result.session.sessionId);
+        }
         const nextPendingRequestIds = new Set(pendingRequests.map((request) => request.id));
         const previousPendingRequestIds =
           pendingPermissionRequestIdsBySessionRef.current.get(result.session.sessionId) ?? new Set<string>();
@@ -13987,7 +14010,21 @@ export function WorkbenchLayout({
           pendingPermissionRequestIdsBySessionRef.current.delete(sessionId);
         }
       }
+      for (const sessionId of pendingUserInputSessionIdsRef.current) {
+        if (!watchedSessionIdSet.has(sessionId)) {
+          pendingUserInputSessionIdsRef.current.delete(sessionId);
+        }
+      }
+      setPendingUserInputSessionIds((current) => {
+        if (
+          current.size === pendingUserInputSessionIdsRef.current.size
+          && [...current].every((sessionId) => pendingUserInputSessionIdsRef.current.has(sessionId))
+        ) {
+          return current;
+        }
 
+        return new Set(pendingUserInputSessionIdsRef.current);
+      });
       const nextRefreshSignature = buildPermissionRefreshSignature(
         pendingPermissionRequestIdsBySessionRef.current,
         watchedSessionIdSet
@@ -16772,6 +16809,7 @@ export function WorkbenchLayout({
     () => ({
       shellMode,
       navigationGroups,
+      pendingUserInputSessionIds,
       navigationLoading,
       navigationError,
       currentWorkspaceId,
@@ -16847,6 +16885,7 @@ export function WorkbenchLayout({
       archivedNotificationIds,
       markNavigationSessionSeen,
       navigationError,
+      pendingUserInputSessionIds,
       navigationGroups,
       navigationLoading,
       unreadNotificationCount,
@@ -17346,6 +17385,7 @@ export function WorkbenchLayout({
       navigationLoading={navigationLoading}
       navigationError={navigationError}
       activeSessionId={currentSessionId}
+      pendingUserInputSessionIds={pendingUserInputSessionIds}
       currentTargetHostId={currentTargetHostId}
       onRefreshNavigation={refreshNavigation}
       onSessionUpdated={upsertNavigationSession}
@@ -17535,6 +17575,7 @@ export function WorkbenchLayout({
                     navigationLoading={navigationLoading}
                     navigationError={navigationError}
                     activeSessionId={currentSessionId}
+                    pendingUserInputSessionIds={pendingUserInputSessionIds}
                     currentTargetHostId={currentTargetHostId}
                     onRefreshNavigation={refreshNavigation}
                     onSessionUpdated={upsertNavigationSession}
@@ -18052,6 +18093,7 @@ export function useWorkbenchShell(): WorkbenchShellContextValue {
   return (
     context ?? {
       navigationGroups: [],
+      pendingUserInputSessionIds: new Set(),
       navigationLoading: false,
       navigationError: null,
       shellMode: "desktop",

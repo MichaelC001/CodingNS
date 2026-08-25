@@ -8,6 +8,39 @@ import {
 import { t } from "../../shared/i18n";
 
 describe("resolveSessionIndicatorClassName", () => {
+  it("待回答问题优先显示黄色叹号状态", () => {
+    expect(
+      resolveSessionIndicatorClassName(
+        "session-state-indicator",
+        {
+          activityState: "running",
+          activitySource: "runtime",
+          runningState: "running"
+        },
+        {
+          needsUserAnswer: true
+        }
+      )
+    ).toBe("session-state-indicator is-needs-user-answer");
+  });
+
+  it("子 Agent 会话待回答问题时也保留叹号状态", () => {
+    expect(
+      resolveSessionIndicatorClassName(
+        "session-state-indicator",
+        {
+          activityState: "running",
+          activitySource: "runtime",
+          runningState: "running"
+        },
+        {
+          hasSubagents: true,
+          needsUserAnswer: true
+        }
+      )
+    ).toBe("session-state-indicator is-needs-user-answer");
+  });
+
   it("多 agent 会话在运行中时显示子 Agent 旋转指示器", () => {
     expect(
       resolveSessionIndicatorClassName(

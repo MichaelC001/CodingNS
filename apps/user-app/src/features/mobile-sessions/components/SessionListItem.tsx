@@ -67,6 +67,7 @@ interface SessionListItemProps {
   readonly variant?: "default" | "mobile";
   readonly workspaceTone?: "root" | "worktree";
   readonly hasSubsessions?: boolean;
+  readonly needsUserAnswer?: boolean;
   readonly subsessionsExpanded?: boolean;
   readonly showActions?: boolean;
   readonly onActivate: (sessionId: string) => void;
@@ -85,6 +86,7 @@ export function SessionListItem({
   variant = "default",
   workspaceTone = "root",
   hasSubsessions = false,
+  needsUserAnswer = false,
   subsessionsExpanded = false,
   showActions = true,
   onActivate,
@@ -351,7 +353,8 @@ export function SessionListItem({
           <span
             className={resolveSessionListIndicatorClassName(session, {
               isActive,
-              hasSubsessions
+              hasSubsessions,
+              needsUserAnswer
             })}
             aria-hidden="true"
           />
@@ -360,7 +363,8 @@ export function SessionListItem({
         <span
           className={resolveSessionListIndicatorClassName(session, {
             isActive,
-            hasSubsessions
+            hasSubsessions,
+            needsUserAnswer
           })}
           aria-hidden="true"
         />
@@ -412,11 +416,13 @@ function resolveSessionListIndicatorClassName(
   options: {
     isActive: boolean;
     hasSubsessions: boolean;
+    needsUserAnswer: boolean;
   }
 ) {
   return resolveSessionIndicatorClassName("session-list-indicator", session, {
     isActive: options.isActive,
-    hasSubagents: options.hasSubsessions
+    hasSubagents: options.hasSubsessions,
+    needsUserAnswer: options.needsUserAnswer
   });
 }
 

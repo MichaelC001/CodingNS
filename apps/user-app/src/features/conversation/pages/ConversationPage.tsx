@@ -147,6 +147,7 @@ const MOBILE_PREVIEW_EXPAND_THRESHOLD_PX = 48;
 const MOBILE_PREVIEW_CLOSE_THRESHOLD_PX = 34;
 const MOBILE_PREVIEW_EDGE_ACTIVATION_PX = 96;
 const MOBILE_PREVIEW_MENU_ESTIMATED_HEIGHT_PX = 196;
+const EMPTY_PENDING_USER_INPUT_SESSION_IDS: ReadonlySet<string> = new Set();
 
 export function ConversationPage() {
   const { sessionId = "", workspaceId: routeWorkspaceIdParam } = useParams();
@@ -350,6 +351,7 @@ function LiveConversationPage({
   const {
     shellMode,
     navigationGroups,
+    pendingUserInputSessionIds = EMPTY_PENDING_USER_INPUT_SESSION_IDS,
     requestNavigationRefresh,
     selectWorkspace,
     setSessionWorkspace,
@@ -916,6 +918,7 @@ function LiveConversationPage({
             isDragging={mobilePreview.isDragging}
             gestureHandlers={mobilePreview.railGestureHandlers}
             activeSessionId={sessionId}
+            pendingUserInputSessionIds={pendingUserInputSessionIds}
             createSessionActionLabel={
               mobileNavigationWorkspaceId && mobileDraftProvider ? t("shell.createSession") : undefined
             }
@@ -1366,6 +1369,7 @@ function DraftConversationPage({
   const {
     shellMode,
     navigationGroups,
+    pendingUserInputSessionIds = EMPTY_PENDING_USER_INPUT_SESSION_IDS,
     requestNavigationRefresh,
     selectWorkspace,
     setSessionWorkspace,
@@ -1605,6 +1609,7 @@ function DraftConversationPage({
           isDragging={mobilePreview.isDragging}
           gestureHandlers={mobilePreview.railGestureHandlers}
           activeSessionId={draft.sessionId}
+          pendingUserInputSessionIds={pendingUserInputSessionIds}
           createSessionActionLabel={t("shell.createSession")}
           favoriteItems={mobileFavoritePreviewItems}
           items={mobilePreviewItems}
@@ -2878,6 +2883,7 @@ function MobileConversationPreviewRail({
   isDragging,
   gestureHandlers,
   activeSessionId,
+  pendingUserInputSessionIds,
   createSessionActionLabel,
   favoriteItems,
   items,
@@ -2901,6 +2907,7 @@ function MobileConversationPreviewRail({
   isDragging: boolean;
   gestureHandlers: MobileConversationPreviewGestureHandlers;
   activeSessionId: string;
+  pendingUserInputSessionIds: ReadonlySet<string>;
   createSessionActionLabel?: string;
   favoriteItems: WorkbenchNavigationTreeNode[];
   items: WorkbenchNavigationTreeNode[];
@@ -2989,6 +2996,7 @@ function MobileConversationPreviewRail({
           <MobileConversationPreviewEntryButton
             entry={node.item}
             activeSessionId={activeSessionId}
+            pendingUserInputSessionIds={pendingUserInputSessionIds}
             hasSubsessions={allowToggle}
             subsessionsExpanded={isExpanded}
             workspaceName={workspaceName}
@@ -3115,6 +3123,7 @@ function MobileConversationPreviewRail({
 function MobileConversationPreviewEntryButton({
   entry,
   activeSessionId,
+  pendingUserInputSessionIds,
   isFavorite,
   hasSubsessions = false,
   subsessionsExpanded = false,
@@ -3129,6 +3138,7 @@ function MobileConversationPreviewEntryButton({
 }: {
   entry: WorkbenchNavigationEntry;
   activeSessionId: string;
+  pendingUserInputSessionIds: ReadonlySet<string>;
   isFavorite: boolean;
   hasSubsessions?: boolean;
   subsessionsExpanded?: boolean;
@@ -3350,7 +3360,8 @@ function MobileConversationPreviewEntryButton({
           <span
             className={resolvePreviewIndicatorClassName(entry.session, {
               isActive,
-              hasSubsessions
+              hasSubsessions,
+              needsUserAnswer: pendingUserInputSessionIds.has(entry.session.sessionId)
             })}
             aria-hidden="true"
           />
@@ -3359,7 +3370,8 @@ function MobileConversationPreviewEntryButton({
         <span
           className={resolvePreviewIndicatorClassName(entry.session, {
             isActive,
-            hasSubsessions
+            hasSubsessions,
+            needsUserAnswer: pendingUserInputSessionIds.has(entry.session.sessionId)
           })}
           aria-hidden="true"
         />
@@ -3418,10 +3430,12 @@ function resolvePreviewIndicatorClassName(
   options: {
     isActive: boolean;
     hasSubsessions: boolean;
+    needsUserAnswer?: boolean;
   }
 ) {
   const className = resolveSessionIndicatorClassName("mobile-conversation-preview-indicator", session, {
-    hasSubagents: options.hasSubsessions
+    hasSubagents: options.hasSubsessions,
+    needsUserAnswer: options.needsUserAnswer
   });
 
   if (className.endsWith(" is-idle") && options.isActive) {
