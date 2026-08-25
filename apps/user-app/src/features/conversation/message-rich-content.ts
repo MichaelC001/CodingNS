@@ -39,8 +39,47 @@ const INTERNAL_ATTACHMENT_BLOCK_PATTERN =
 const INTERNAL_ATTACHMENT_TAIL_PATTERN =
   /\[\[CODINGNS_IMAGE_ATTACHMENTS\]\][\s\S]*$/g;
 const QUESTION_CODE_BLOCK_PATTERN = /```question\s*([\s\S]*?)```/i;
+const MAX_RICH_CONTENT_CACHE_ENTRIES = 128;
+const MAX_RICH_CONTENT_CACHE_BYTES = 2 * 1024 * 1024;
+const MAX_RICH_CONTENT_CACHE_INPUT_LENGTH = 64 * 1024;
+
+interface RichContentCacheEntry {
+  value: ParsedMessageRichContent;
+  sizeBytes: number;
+}
+
+const richContentCache = new Map<string, RichContentCacheEntry>();
 
 export function parseMessageRichContent(content: string): ParsedMessageRichContent {
+  if (content.length <= MAX_RICH_CONTENT_CACHE_INPUT_LENGTH) {
+    const cached = richContentCache.get(content);
+
+    if (cached) {
+      richContentCache.delete(content);
+      richContentCache.set(content, cached);
+      return cached.value;
+    }
+  }
+
+  const parsed = parseMessageRichContentUncached(content);
+
+  if (content.length <= MAX_RICH_CONTENT_CACHE_INPUT_LENGTH) {
+    const sizeBytes = (content.length + estimateParsedRichContentLength(parsed)) * 2;
+
+    if (sizeBytes <= MAX_RICH_CONTENT_CACHE_BYTES) {
+      richContentCache.delete(content);
+      richContentCache.set(content, {
+        value: parsed,
+        sizeBytes
+      });
+      trimRichContentCache();
+    }
+  }
+
+  return parsed;
+}
+
+function parseMessageRichContentUncached(content: string): ParsedMessageRichContent {
   const sanitizedContent = stripInternalAttachmentDebugContent(content);
   const parsedQuestionCodeBlock = parseQuestionCodeBlockContent(sanitizedContent);
 
@@ -58,6 +97,36 @@ export function parseMessageRichContent(content: string): ParsedMessageRichConte
     ...extractInlineImagesFromText(sanitizedContent),
     structuredQuestions: null
   };
+}
+
+function estimateParsedRichContentLength(value: ParsedMessageRichContent): number {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function trimRichContentCache(): void {
+  let totalBytes = Array.from(richContentCache.values()).reduce(
+    (total, entry) => total + entry.sizeBytes,
+    0
+  );
+
+  while (
+    richContentCache.size > MAX_RICH_CONTENT_CACHE_ENTRIES
+    || totalBytes > MAX_RICH_CONTENT_CACHE_BYTES
+  ) {
+    const oldestKey = richContentCache.keys().next().value as string | undefined;
+
+    if (!oldestKey) {
+      break;
+    }
+
+    const oldestEntry = richContentCache.get(oldestKey);
+    richContentCache.delete(oldestKey);
+    totalBytes -= oldestEntry?.sizeBytes ?? 0;
+  }
 }
 
 function parseQuestionCodeBlockContent(content: string): ParsedMessageRichContent | null {
