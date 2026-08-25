@@ -3,14 +3,75 @@ interface SnapshotEnvelope<T> {
   value: T;
 }
 
-const memorySnapshotCache = new Map<string, SnapshotEnvelope<unknown>>();
+interface MemorySnapshotEntry {
+  envelope: SnapshotEnvelope<unknown>;
+  sizeBytes: number;
+}
+
+const memorySnapshotCache = new Map<string, MemorySnapshotEntry>();
+const MAX_MEMORY_SNAPSHOT_COUNT = 24;
+const MAX_MEMORY_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 const MAX_PERSISTED_SNAPSHOT_COUNT = 48;
+const MAX_PERSISTED_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 
 type PersistSnapshotResult = "success" | "quota_exceeded" | "failed";
 
 interface PersistedSnapshotEntry {
   key: string;
   savedAt: number;
+  sizeBytes: number;
+}
+
+function estimateStorageBytes(value: string): number {
+  // Web Storage 通常按 UTF-16 code unit 计量，按 2 字节估算可以避免把上限算得过松。
+  return value.length * 2;
+}
+
+function touchMemorySnapshot(cacheKey: string, entry: MemorySnapshotEntry): void {
+  memorySnapshotCache.delete(cacheKey);
+  memorySnapshotCache.set(cacheKey, entry);
+}
+
+function trimMemorySnapshotEntries(): void {
+  let totalBytes = Array.from(memorySnapshotCache.values()).reduce(
+    (total, entry) => total + entry.sizeBytes,
+    0
+  );
+
+  while (
+    memorySnapshotCache.size > MAX_MEMORY_SNAPSHOT_COUNT
+    || totalBytes > MAX_MEMORY_SNAPSHOT_BYTES
+  ) {
+    const oldestKey = memorySnapshotCache.keys().next().value as string | undefined;
+
+    if (!oldestKey) {
+      break;
+    }
+
+    const oldestEntry = memorySnapshotCache.get(oldestKey);
+    memorySnapshotCache.delete(oldestKey);
+    totalBytes -= oldestEntry?.sizeBytes ?? 0;
+  }
+}
+
+function cacheMemorySnapshot<T>(
+  cacheKey: string,
+  envelope: SnapshotEnvelope<T>,
+  serializedSnapshot: string
+): boolean {
+  const sizeBytes = estimateStorageBytes(serializedSnapshot);
+
+  if (sizeBytes > MAX_MEMORY_SNAPSHOT_BYTES) {
+    memorySnapshotCache.delete(cacheKey);
+    return false;
+  }
+
+  touchMemorySnapshot(cacheKey, {
+    envelope: envelope as SnapshotEnvelope<unknown>,
+    sizeBytes
+  });
+  trimMemorySnapshotEntries();
+  return true;
 }
 
 function canUseSessionStorage() {
@@ -84,7 +145,8 @@ function collectPersistedSnapshotEntries(): PersistedSnapshotEntry[] {
 
     entries.push({
       key,
-      savedAt: parsedSnapshot.savedAt
+      savedAt: parsedSnapshot.savedAt,
+      sizeBytes: estimateStorageBytes(key) + estimateStorageBytes(rawSnapshot)
     });
   }
 
@@ -106,20 +168,27 @@ function removePersistedSnapshot(cacheKey: string) {
 function trimPersistedSnapshotEntries(options?: {
   preserveKeys?: readonly string[];
   maxCount?: number;
+  maxBytes?: number;
 }) {
   const preserveKeys = new Set(options?.preserveKeys ?? []);
   const maxCount = options?.maxCount ?? MAX_PERSISTED_SNAPSHOT_COUNT;
-  const candidates = collectPersistedSnapshotEntries().filter((entry) => !preserveKeys.has(entry.key));
-  const overflowCount = Math.max(0, preserveKeys.size + candidates.length - maxCount);
+  const maxBytes = options?.maxBytes ?? MAX_PERSISTED_SNAPSHOT_BYTES;
+  const entries = collectPersistedSnapshotEntries();
+  const candidates = entries.filter((entry) => !preserveKeys.has(entry.key));
+  let remainingCount = entries.length;
+  let totalBytes = entries.reduce((total, entry) => total + entry.sizeBytes, 0);
 
-  for (let index = 0; index < overflowCount; index += 1) {
-    const entry = candidates[index];
+  for (const entry of candidates) {
+    const exceedsCount = remainingCount > maxCount;
+    const exceedsBytes = totalBytes > maxBytes;
 
-    if (!entry) {
+    if (!exceedsCount && !exceedsBytes) {
       break;
     }
 
     removePersistedSnapshot(entry.key);
+    remainingCount -= 1;
+    totalBytes -= entry.sizeBytes;
   }
 }
 
@@ -149,6 +218,11 @@ function tryPersistSnapshot(cacheKey: string, serializedSnapshot: string): Persi
 }
 
 function persistSnapshotWithCleanup(cacheKey: string, serializedSnapshot: string) {
+  if (estimateStorageBytes(serializedSnapshot) > MAX_PERSISTED_SNAPSHOT_BYTES) {
+    removePersistedSnapshot(cacheKey);
+    return;
+  }
+
   const initialPersistResult = tryPersistSnapshot(cacheKey, serializedSnapshot);
 
   if (initialPersistResult === "success") {
@@ -192,11 +266,12 @@ function persistSnapshotWithCleanup(cacheKey: string, serializedSnapshot: string
 }
 
 export function readViewSnapshot<T>(cacheKey: string, maxAgeMs: number): T | null {
-  const memorySnapshot = memorySnapshotCache.get(cacheKey) as SnapshotEnvelope<T> | undefined;
+  const memorySnapshot = memorySnapshotCache.get(cacheKey);
 
   if (memorySnapshot) {
-    if (!isSnapshotExpired(memorySnapshot.savedAt, maxAgeMs)) {
-      return memorySnapshot.value;
+    if (!isSnapshotExpired(memorySnapshot.envelope.savedAt, maxAgeMs)) {
+      touchMemorySnapshot(cacheKey, memorySnapshot);
+      return memorySnapshot.envelope.value as T;
     }
 
     memorySnapshotCache.delete(cacheKey);
@@ -226,7 +301,7 @@ export function readViewSnapshot<T>(cacheKey: string, maxAgeMs: number): T | nul
     return null;
   }
 
-  memorySnapshotCache.set(cacheKey, parsedSnapshot as SnapshotEnvelope<unknown>);
+  cacheMemorySnapshot(cacheKey, parsedSnapshot, rawSnapshot);
   return parsedSnapshot.value;
 }
 
@@ -236,14 +311,13 @@ export function writeViewSnapshot<T>(cacheKey: string, value: T) {
     value
   };
 
-  memorySnapshotCache.set(cacheKey, snapshot as SnapshotEnvelope<unknown>);
-
-  if (!canUseSessionStorage()) {
-    return;
-  }
-
   try {
-    persistSnapshotWithCleanup(cacheKey, JSON.stringify(snapshot));
+    const serializedSnapshot = JSON.stringify(snapshot);
+    cacheMemorySnapshot(cacheKey, snapshot, serializedSnapshot);
+
+    if (canUseSessionStorage()) {
+      persistSnapshotWithCleanup(cacheKey, serializedSnapshot);
+    }
   } catch {
     // 忽略缓存写入失败，不能为了快照把正常流程搞挂。
   }

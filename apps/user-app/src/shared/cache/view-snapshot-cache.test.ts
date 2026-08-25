@@ -101,6 +101,35 @@ describe("view-snapshot-cache", () => {
     expect(window.sessionStorage.getItem("snapshot-59")).not.toBeNull();
   });
 
+  it("会按总字节数裁剪快照，避免少量大快照占满 sessionStorage", () => {
+    const originalSessionStorage = window.sessionStorage;
+    const storageController = createMockStorageController();
+
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: storageController.storage
+    });
+
+    try {
+      for (let index = 0; index < 48; index += 1) {
+        writeViewSnapshot(`large-snapshot-${index}`, {
+          payload: "x".repeat(80_000)
+        });
+        vi.advanceTimersByTime(1);
+      }
+
+      const persistedKeys = storageController.listEntries().map(([key]) => key);
+      expect(persistedKeys.length).toBeLessThan(48);
+      expect(storageController.listEntries().some(([key]) => key === "large-snapshot-0")).toBe(false);
+      expect(storageController.listEntries().some(([key]) => key === "large-snapshot-47")).toBe(true);
+    } finally {
+      Object.defineProperty(window, "sessionStorage", {
+        configurable: true,
+        value: originalSessionStorage
+      });
+    }
+  });
+
   it("超配额时会先清理旧快照再重试写入", () => {
     const originalSessionStorage = window.sessionStorage;
     const storageController = createMockStorageController(700);
