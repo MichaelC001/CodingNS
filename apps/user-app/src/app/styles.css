@@ -2255,6 +2255,24 @@ body[data-code-terminal-dock-resizing="true"] .code-workbench-terminal-resizer::
   background: transparent;
 }
 
+.session-state-indicator.is-needs-user-answer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--warning);
+  color: color-mix(in srgb, var(--warning) 78%, #3b2600);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.session-state-indicator.is-needs-user-answer::before {
+  content: "!";
+}
+
 .session-state-indicator.is-unread {
   background: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
@@ -2429,6 +2447,25 @@ body[data-code-terminal-dock-resizing="true"] .code-workbench-terminal-resizer::
 
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes session-needs-user-answer-blink {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-state-indicator.is-needs-user-answer::before,
+  .session-list-indicator.is-needs-user-answer::after,
+  .mobile-conversation-preview-indicator.is-needs-user-answer::after {
+    animation: none;
   }
 }
 

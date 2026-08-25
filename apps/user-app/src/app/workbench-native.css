@@ -4759,7 +4759,8 @@ body[data-runtime-platform="desktop"][data-os-family="macos"] .workbench-host-sw
 .session-state-indicator.is-running,
 .session-state-indicator.is-subagent-running,
 .session-state-indicator.is-running-inferred,
-.session-state-indicator.is-error {
+.session-state-indicator.is-error,
+.session-state-indicator.is-needs-user-answer {
   background: transparent;
   border: none;
   box-shadow: none;
@@ -4845,6 +4846,21 @@ body[data-runtime-platform="desktop"][data-os-family="macos"] .workbench-host-sw
   height: 7px;
   background: #ff3b30;
   box-shadow: 0 0 0 2px rgba(255, 59, 48, 0.16);
+}
+
+.session-state-indicator.is-needs-user-answer::before {
+  content: "!";
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--warning);
+  color: color-mix(in srgb, var(--warning) 78%, #3b2600);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 12px;
+  text-align: center;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 18%, transparent);
+  animation: session-needs-user-answer-blink 1.1s ease-in-out infinite;
 }
 
 .session-activity-badge {
