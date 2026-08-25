@@ -80,6 +80,14 @@ export interface ProviderCapabilities {
   agentPresetOptions?: ProviderAgentPresetOption[];
   selectedAgentPreset?: string | null;
   defaultReasoningLevel?: string | null;
+  /** 外部运行时当前的兼容状态；其他 Provider 不需要填写。 */
+  runtimeStatus?: "ready" | "degraded" | "read-only";
+  /** 外部运行时应用版本，仅用于诊断，不参与能力判定。 */
+  runtimeVersion?: string | null;
+  /** 外部运行时协议版本，能力判定的主键。 */
+  protocolVersion?: string | null;
+  /** Harness 握手声明的原始能力名。 */
+  runtimeCapabilities?: string[];
   limitations: string[];
 }
 

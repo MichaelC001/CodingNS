@@ -2,7 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DeepSeekHarnessAdapter, deleteDeepSeekHarnessSessionFiles, mapHarnessEntries, mapHarnessEntry } from "../dist/index.js";
+import {
+  DEEPSEEK_HARNESS_CAPABILITIES,
+  DeepSeekHarnessAdapter,
+  deleteDeepSeekHarnessSessionFiles,
+  mapHarnessEntries,
+  mapHarnessEntry,
+  resolveDeepSeekHarnessCompatibility
+} from "../dist/index.js";
 
 function transport() {
   const calls = [];
@@ -70,6 +77,42 @@ function modelDirectory() {
 }
 
 describe("DeepSeekHarnessAdapter", () => {
+  it("应用版本未知但协议和能力兼容时仍允许写能力", () => {
+    const compatibility = resolveDeepSeekHarnessCompatibility({
+      harnessVersion: "9.9.9",
+      protocolVersion: "1",
+      capabilities: DEEPSEEK_HARNESS_CAPABILITIES,
+      hasHandshake: true
+    });
+
+    expect(compatibility).toMatchObject({ status: "ready", protocolVersion: "1" });
+    expect(new DeepSeekHarnessAdapter({ transport: transport(), compatibility }).getProviderCapabilities()).toMatchObject({
+      runtimeStatus: "ready",
+      runtimeVersion: "9.9.9",
+      canStartSession: true,
+      canSendMessage: true
+    });
+  });
+
+  it("未知协议只保留只读能力，不让 Provider 消失", () => {
+    const compatibility = resolveDeepSeekHarnessCompatibility({
+      harnessVersion: "9.9.9",
+      protocolVersion: "999",
+      capabilities: DEEPSEEK_HARNESS_CAPABILITIES,
+      hasHandshake: true
+    });
+    const capabilities = new DeepSeekHarnessAdapter({ transport: transport(), compatibility }).getProviderCapabilities();
+
+    expect(capabilities).toMatchObject({
+      runtimeStatus: "read-only",
+      canStartSession: false,
+      canSendMessage: false,
+      supportsInterrupt: false,
+      supportsSessionFork: false
+    });
+    expect(capabilities.limitations.some((value) => value.includes("未知 Harness 协议版本"))).toBe(true);
+  });
+
   it("只发现当前 workspace，并暴露受限能力矩阵", async () => {
     const t = transport();
     const adapter = new DeepSeekHarnessAdapter({ transport: t, harnessVersion: "0.1.0-rc.5" });

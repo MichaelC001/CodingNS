@@ -43,6 +43,159 @@ export const DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS = [
   "0.1.0-rc.5"
 ] as const;
 
+/** Harness 握手协议版本。应用版本可以变化，但这个版本才决定字段和能力语义。 */
+export const DEEPSEEK_HARNESS_PROTOCOL_VERSION = "1";
+
+export const DEEPSEEK_HARNESS_CAPABILITIES = [
+  "host.describe",
+  "session.list",
+  "session.history",
+  "session.models",
+  "llm.models",
+  "workspace.list",
+  "workspace.create",
+  "session.create",
+  "session.prompt",
+  "session.cancel",
+  "session.updateQueue",
+  "session.fork",
+  "session.rename",
+  "workspace.archiveSession",
+  "session.selectModel",
+  "session.attachment",
+  "agentPreset.list",
+  "agentPreset.select",
+  "approval.respond",
+  "events.mux",
+  "events.host"
+] as const;
+
+/** 未知运行时只允许读取这些不会改变会话状态的接口。 */
+export const DEEPSEEK_HARNESS_SAFE_READ_CAPABILITIES = [
+  "host.describe",
+  "session.list",
+  "session.history",
+  "session.models",
+  "llm.models",
+  "workspace.list",
+  "events.mux",
+  "events.host"
+] as const;
+
+const DEEPSEEK_HARNESS_REQUIRED_CAPABILITIES = [
+  "host.describe",
+  "session.list",
+  "session.history",
+  "workspace.list",
+  "workspace.create",
+  "session.create",
+  "session.prompt"
+] as const;
+
+export type DeepSeekHarnessCapability = (typeof DEEPSEEK_HARNESS_CAPABILITIES)[number] | (string & {});
+export type DeepSeekHarnessCompatibilityStatus = "ready" | "degraded" | "read-only";
+
+export interface DeepSeekHarnessCompatibilityInput {
+  harnessVersion?: string | null;
+  protocolVersion?: string | null;
+  capabilities?: readonly string[] | null;
+  /** 没有 protocol/capabilities 字段时，按旧版应用版本走兼容回退。 */
+  hasHandshake?: boolean;
+}
+
+export interface DeepSeekHarnessCompatibility {
+  status: DeepSeekHarnessCompatibilityStatus;
+  harnessVersion: string | null;
+  protocolVersion: string | null;
+  capabilities: string[];
+  detail: string | null;
+}
+
+/**
+ * 只根据协议版本和握手能力计算兼容状态。应用版本只用于旧协议回退和诊断，
+ * 不再作为新协议的精确匹配条件。
+ */
+export function resolveDeepSeekHarnessCompatibility(
+  input: DeepSeekHarnessCompatibilityInput
+): DeepSeekHarnessCompatibility {
+  const harnessVersion = normalizeOptionalVersion(input.harnessVersion);
+  const protocolVersion = normalizeProtocolVersion(input.protocolVersion);
+  const declaredCapabilities = normalizeCapabilities(input.capabilities);
+  const hasHandshake = input.hasHandshake === true || protocolVersion !== null || (input.capabilities !== undefined && input.capabilities !== null);
+
+  if (!hasHandshake && harnessVersion && DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS.includes(harnessVersion as (typeof DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS)[number])) {
+    return {
+      status: "ready",
+      harnessVersion,
+      protocolVersion: null,
+      capabilities: [...DEEPSEEK_HARNESS_CAPABILITIES],
+      detail: "旧版 Harness 未返回握手元数据，使用已验证的兼容回退矩阵"
+    };
+  }
+
+  if (!protocolVersion || protocolVersion !== DEEPSEEK_HARNESS_PROTOCOL_VERSION) {
+    return {
+      status: "read-only",
+      harnessVersion,
+      protocolVersion,
+      capabilities: intersectCapabilities(declaredCapabilities, DEEPSEEK_HARNESS_SAFE_READ_CAPABILITIES),
+      detail: protocolVersion ? `未知 Harness 协议版本 ${protocolVersion}` : "Harness 未返回可验证的协议握手元数据"
+    };
+  }
+
+  if (!declaredCapabilities) {
+    return {
+      status: "read-only",
+      harnessVersion,
+      protocolVersion,
+      capabilities: [...DEEPSEEK_HARNESS_SAFE_READ_CAPABILITIES],
+      detail: "Harness 握手缺少能力集合"
+    };
+  }
+
+  const missingRequired = DEEPSEEK_HARNESS_REQUIRED_CAPABILITIES.filter((capability) => !declaredCapabilities.includes(capability));
+  return {
+    status: missingRequired.length > 0 ? "degraded" : "ready",
+    harnessVersion,
+    protocolVersion,
+    capabilities: declaredCapabilities,
+    detail: missingRequired.length > 0 ? `Harness 缺少能力：${missingRequired.join(", ")}` : null
+  };
+}
+
+export function isDeepSeekHarnessCapabilityAllowed(
+  compatibility: DeepSeekHarnessCompatibility,
+  capability: string
+): boolean {
+  if (compatibility.status === "read-only") {
+    return (DEEPSEEK_HARNESS_SAFE_READ_CAPABILITIES as readonly string[]).includes(capability);
+  }
+
+  return compatibility.capabilities.includes(capability);
+}
+
+function normalizeOptionalVersion(value: string | null | undefined): string | null {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
+}
+
+function normalizeProtocolVersion(value: string | null | undefined): string | null {
+  const normalized = normalizeOptionalVersion(value);
+  if (!normalized) return null;
+  if (normalized === "1.0" || normalized === "1.0.0") return DEEPSEEK_HARNESS_PROTOCOL_VERSION;
+  return normalized;
+}
+
+function normalizeCapabilities(value: readonly string[] | null | undefined): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean))];
+}
+
+function intersectCapabilities(left: string[] | null, right: readonly string[]): string[] {
+  if (!left) return [...right];
+  return left.filter((capability) => (right as readonly string[]).includes(capability));
+}
+
 export interface DeepSeekHarnessEnvelope {
   rpcId: string;
   method: string;
@@ -52,11 +205,13 @@ export interface DeepSeekHarnessEnvelope {
 export interface DeepSeekHarnessTransport {
   call<T>(method: string, payload: unknown): Promise<T>;
   subscribe(channel: "mux" | "host", onEnvelope: (envelope: DeepSeekHarnessEnvelope) => void): ProviderSubscription;
+  getCompatibility?(): DeepSeekHarnessCompatibility | null;
 }
 
 export interface DeepSeekHarnessProviderOptions {
   transport: DeepSeekHarnessTransport;
   harnessVersion?: string;
+  compatibility?: DeepSeekHarnessCompatibility;
   dshHomeDir?: string;
 }
 
@@ -104,7 +259,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
   constructor(private readonly options: DeepSeekHarnessProviderOptions) {}
 
   async detectSessions(workspacePath: string, _options?: DetectSessionsOptions): Promise<ProviderSessionSummary[]> {
-    const response = await this.options.transport.call<{ items?: unknown[] }>("session.list", {});
+    const response = await this.call<{ items?: unknown[] }>("session.list", {});
     const archivedSessionIds = await this.readArchivedSessionIds();
     return (response.items ?? [])
       .map((item) => normalizeSummary(item, workspacePath, this.options.harnessVersion))
@@ -117,7 +272,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
     providerSessionId: string,
     _rawStoreRef: string
   ): Promise<ProviderSessionActivityObservation | null> {
-    const response = await this.options.transport.call<{ items?: unknown[] }>("session.list", {});
+    const response = await this.call<{ items?: unknown[] }>("session.list", {});
     const session = (response.items ?? [])
       .map((item) => asRecord(item))
       .find((item) => ensureText(item.sessionId ?? item.id).trim() === providerSessionId.trim());
@@ -139,7 +294,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
       };
     }
 
-    const history = await this.options.transport.call<{ events?: unknown[] }>("session.history", {
+    const history = await this.call<{ events?: unknown[] }>("session.history", {
       sessionId: providerSessionId,
       maxMessages: 100
     });
@@ -158,7 +313,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
     const cursorSequence = cursor ? decodeHarnessCursor(cursor) : null;
     const safeLimit = Math.max(1, Math.min(limit, 100));
     const beforeSeq = direction === "backward" ? cursorSequence ?? undefined : undefined;
-    const response = await this.options.transport.call<{ events?: unknown[]; hasMore?: boolean }>("session.history", {
+    const response = await this.call<{ events?: unknown[]; hasMore?: boolean }>("session.history", {
       sessionId: providerSessionId,
       ...(beforeSeq === undefined ? {} : { beforeSeq }),
       maxMessages: safeLimit
@@ -318,21 +473,21 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
   }
 
   async resumeSession(providerSessionId: string, rawStoreRef: string): Promise<ResumeSessionResult> {
-    await this.options.transport.call("session.history", { sessionId: providerSessionId, maxMessages: 1 });
+    await this.call("session.history", { sessionId: providerSessionId, maxMessages: 1 });
     throw new Error("HARNESS_CAPABILITY_UNSUPPORTED");
   }
 
   async startSession(workspacePath: string, options: StartSessionOptions): Promise<StartSessionResult> {
-    const workspace = await this.options.transport.call<{ workspace?: { workspaceId?: string } }>("workspace.create", { path: workspacePath });
+    const workspace = await this.call<{ workspace?: { workspaceId?: string } }>("workspace.create", { path: workspacePath });
     const workspaceId = String(workspace.workspace?.workspaceId ?? "").trim();
     if (!workspaceId) throw new Error("HARNESS_WORKSPACE_ID_MISSING");
     const agentPreset = normalizeOptionalText(options.agentPreset);
-    const created = await this.options.transport.call<{ sessionId: string }>("session.create", {
+    const created = await this.call<{ sessionId: string }>("session.create", {
       workspaceId,
       ...(agentPreset ? { agentPreset } : {})
     });
     const sessionId = String(created.sessionId);
-    if (options.initialPrompt?.trim()) await this.options.transport.call("session.prompt", { sessionId, content: [{ type: "text", text: options.initialPrompt.trim() }], mode: "queue" });
+    if (options.initialPrompt?.trim()) await this.call("session.prompt", { sessionId, content: [{ type: "text", text: options.initialPrompt.trim() }], mode: "queue" });
     return {
       session: {
         provider: this.providerId,
@@ -358,7 +513,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
     const atSeq = forkAnchor?.atSeq;
     const inheritedPrefixMessageCount = forkAnchor?.inheritedPrefixMessageCount
       ?? await this.resolveSessionForkMessageCount(providerSessionId, options.rawStoreRef);
-    const response = await this.options.transport.call<{ sessionId: string }>("session.fork", {
+    const response = await this.call<{ sessionId: string }>("session.fork", {
       sessionId: providerSessionId,
       ...(atSeq === undefined ? {} : { atSeq })
     });
@@ -427,7 +582,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
     const seenCursors = new Set<number>();
 
     while (true) {
-      const response = await this.options.transport.call<{ events?: unknown[]; hasMore?: boolean }>("session.history", {
+      const response = await this.call<{ events?: unknown[]; hasMore?: boolean }>("session.history", {
         sessionId: providerSessionId,
         ...(beforeSeq === undefined ? {} : { beforeSeq }),
         maxMessages: 100
@@ -456,13 +611,13 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
 
   async sendMessage(providerSessionId: string, _rawStoreRef: string, content: string, clientRequestId: string | null, permissionMode?: string | null): Promise<SendMessageResult> {
     const acceptedAt = nextTimestamp();
-    await this.options.transport.call("session.prompt", { sessionId: providerSessionId, content: [{ type: "text", text: content }], mode: permissionMode === "steer" ? "steer" : "queue" });
+    await this.call("session.prompt", { sessionId: providerSessionId, content: [{ type: "text", text: content }], mode: permissionMode === "steer" ? "steer" : "queue" });
     const message = createAcceptedMessage(providerSessionId, content, acceptedAt);
     return { acceptedAt, clientRequestId, message };
   }
 
   async readSessionTitle(providerSessionId: string): Promise<string> {
-    const response = await this.options.transport.call<{ items?: unknown[] }>("session.list", {});
+    const response = await this.call<{ items?: unknown[] }>("session.list", {});
     const summaries = (response.items ?? [])
       .map((item) => normalizeSummary(item, "", this.options.harnessVersion))
       .filter((item): item is ProviderSessionSummary => item !== null);
@@ -470,12 +625,12 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
   }
 
   async renameSessionTitle(providerSessionId: string, _rawStoreRef: string, title: string): Promise<string> {
-    const response = await this.options.transport.call<{ title?: string }>("session.rename", { sessionId: providerSessionId, title });
+    const response = await this.call<{ title?: string }>("session.rename", { sessionId: providerSessionId, title });
     return response.title?.trim() || title.trim();
   }
 
   async deleteSession(providerSessionId: string, _rawStoreRef: string): Promise<void> {
-    const response = await this.options.transport.call<{ items?: unknown[] }>("session.list", {});
+    const response = await this.call<{ items?: unknown[] }>("session.list", {});
     const record = (response.items ?? [])
       .map((item) => asRecord(item))
       .find((item) => ensureText(item.sessionId ?? item.id).trim() === providerSessionId.trim());
@@ -501,7 +656,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
     values: Record<string, unknown>;
     events: unknown[];
   }> {
-    const response = await this.options.transport.call<{ projections?: unknown; events?: unknown[] }>("session.history", {
+    const response = await this.call<{ projections?: unknown; events?: unknown[] }>("session.history", {
       sessionId: providerSessionId,
       maxMessages: includeEvents ? 1000 : 1
     });
@@ -515,37 +670,38 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
   }
 
   getProviderCapabilities(): ProviderCapabilities {
-    return harnessCapabilities();
+    return harnessCapabilities(undefined, undefined, undefined, this.getCompatibility());
   }
 
   async getSessionCapabilities(providerSessionId: string): Promise<ProviderCapabilities> {
     try {
-      const presetResponse = await this.options.transport.call<unknown>("agentPreset.list", {}).catch(() => null);
+      const presetResponse = await this.call<unknown>("agentPreset.list", {}).catch(() => null);
       const presetOptions = parseHarnessAgentPresetOptions(presetResponse);
       const sessionResponse = providerSessionId && presetOptions.length > 0
-        ? await this.options.transport.call<{ items?: unknown[] }>("session.list", {})
+        ? await this.call<{ items?: unknown[] }>("session.list", {})
         : null;
       const selectedAgentPreset = providerSessionId
         ? readSelectedAgentPreset(sessionResponse, providerSessionId)
         : null;
-      const modelResponse = await this.options.transport.call<unknown>(
+      const modelResponse = await this.call<unknown>(
         providerSessionId ? "session.models" : "llm.models",
         providerSessionId ? { sessionId: providerSessionId } : {}
       );
       return harnessCapabilities(
         parseHarnessModelOptions(modelResponse),
         presetOptions,
-        selectedAgentPreset
+        selectedAgentPreset,
+        this.getCompatibility()
       );
     } catch {
       // 模型目录不可用时仍保留会话的基本能力，避免只因下拉列表失败而阻断对话。
-      return harnessCapabilities();
+      return harnessCapabilities(undefined, undefined, undefined, this.getCompatibility());
     }
   }
 
   private async readArchivedSessionIds(): Promise<Set<string>> {
     try {
-      const response = await this.options.transport.call<{ archivedSessionIds?: unknown[] }>("workspace.list", {});
+      const response = await this.call<{ archivedSessionIds?: unknown[] }>("workspace.list", {});
       return new Set(
         (response.archivedSessionIds ?? [])
           .map((value) => ensureText(value).trim())
@@ -559,12 +715,27 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
 
   private async callIgnoringMissingSession(method: string, payload: unknown): Promise<void> {
     try {
-      await this.options.transport.call(method, payload);
+      await this.call(method, payload);
     } catch (error) {
       if (!isHarnessMissingSessionError(error)) {
         throw error;
       }
     }
+  }
+
+  private getCompatibility(): DeepSeekHarnessCompatibility {
+    return this.options.compatibility
+      ?? this.options.transport.getCompatibility?.()
+      ?? resolveDeepSeekHarnessCompatibility({ harnessVersion: this.options.harnessVersion });
+  }
+
+  private async call<T>(method: string, payload: unknown): Promise<T> {
+    const compatibility = this.getCompatibility();
+    if (!isDeepSeekHarnessCapabilityAllowed(compatibility, method)) {
+      throw new Error("HARNESS_CAPABILITY_UNSUPPORTED");
+    }
+
+    return this.options.transport.call<T>(method, payload);
   }
 }
 
@@ -1077,35 +1248,44 @@ function buildRawStoreRef(version: string | undefined, sessionId: string): strin
 function harnessCapabilities(
   modelOptions?: ProviderModelOption[],
   agentPresetOptions?: ProviderAgentPresetOption[],
-  selectedAgentPreset?: string | null
+  selectedAgentPreset?: string | null,
+  compatibility = resolveDeepSeekHarnessCompatibility({ harnessVersion: DEEPSEEK_HARNESS_CURRENT_VERSION })
 ): ProviderCapabilities {
+  const allows = (capability: string) => isDeepSeekHarnessCapabilityAllowed(compatibility, capability);
+  const limitations = [
+    "Harness 仍是 Developer Preview；应用版本只用于诊断，兼容性按协议版本和能力集合判断。",
+    "断线恢复先读取 history，不依赖 events.mux 的 since。",
+    "删除会话会归档当前 sidecar 中的会话并清理 JSONL 历史目录；不支持 Diff、Share 和独立 resume。",
+    ...(compatibility.detail ? [compatibility.detail] : [])
+  ];
+
   return {
     provider: "deepseek-harness",
-    canStartSession: true,
+    canStartSession: allows("workspace.create") && allows("session.create"),
     canResumeSession: false,
-    canSendMessage: true,
+    canSendMessage: allows("session.prompt"),
     inRunInputMode: "queued_guidance",
-    supportsSubagents: true,
-    supportsInterrupt: true,
+    supportsSubagents: allows("agentPreset.list") && allows("agentPreset.select"),
+    supportsInterrupt: allows("session.cancel"),
     supportsStructuredToolCalls: true,
     supportsTokenUsage: false,
-    supportsAttachments: true,
-    supportsPermissionPrompt: true,
+    supportsAttachments: allows("session.attachment"),
+    supportsPermissionPrompt: allows("approval.respond"),
     supportsCheckpoint: false,
     supportsSessionDiff: false,
-    supportsSessionFork: true,
-    supportsSessionDelete: true,
+    supportsSessionFork: allows("session.fork"),
+    supportsSessionDelete: allows("session.cancel") && allows("workspace.archiveSession"),
     supportsSessionShare: false,
-    supportsAsyncPrompt: true,
-    supportsNativeAgents: true,
+    supportsAsyncPrompt: allows("session.prompt"),
+    supportsNativeAgents: allows("session.create"),
+    runtimeStatus: compatibility.status,
+    runtimeVersion: compatibility.harnessVersion,
+    protocolVersion: compatibility.protocolVersion,
+    runtimeCapabilities: compatibility.capabilities,
     ...(modelOptions && modelOptions.length > 0 ? { modelOptions } : {}),
     ...(agentPresetOptions && agentPresetOptions.length > 0 ? { agentPresetOptions } : {}),
     ...(selectedAgentPreset !== undefined ? { selectedAgentPreset } : {}),
-    limitations: [
-      "Harness 仍是 Developer Preview，版本必须锁定。",
-      "断线恢复先读取 history，不依赖 events.mux 的 since。",
-      "删除会话会归档当前 sidecar 中的会话并清理 JSONL 历史目录；不支持 Diff、Share 和独立 resume。"
-    ]
+    limitations
   };
 }
 
