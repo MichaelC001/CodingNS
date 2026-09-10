@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { t } from "../../../shared/i18n";
 import type { ConversationTimelineSourceItem } from "../timeline-source-items";
 import type { SessionMessageViewModel } from "../runtime/session-runtime-machine";
 import { MessageTimeline } from "./MessageTimeline";
@@ -79,9 +80,16 @@ describe("MessageTimeline 虚拟列表", () => {
     useVirtualizerMock.mockImplementation((options: {
       count: number;
       getItemKey: (index: number) => string | number;
+      getScrollElement: () => HTMLDivElement | null;
     }) => ({
       containerRef: () => undefined,
       measureElement: () => undefined,
+      scrollToEnd: vi.fn(() => {
+        const list = options.getScrollElement();
+        if (list) {
+          list.scrollTop = list.scrollHeight;
+        }
+      }),
       getVirtualItems: () => [...new Set([0, 1, options.count - 1])]
         .filter((index) => index >= 0 && index < options.count)
         .map((index) => ({ index, key: options.getItemKey(index) }))
@@ -122,6 +130,13 @@ describe("MessageTimeline 虚拟列表", () => {
         { isScrolling: true }
       )
     ).toBe(false);
+    expect(
+      virtualizer.shouldAdjustScrollPositionOnItemSizeChange?.(
+        {},
+        20,
+        { isScrolling: false }
+      )
+    ).toBe(true);
     expect(options.useFlushSync).toBe(true);
   });
 
@@ -301,5 +316,74 @@ describe("MessageTimeline 虚拟列表", () => {
         { isScrolling: false }
       )
     ).toBe(true);
+  });
+
+  it("首次加载和切换到没有历史位置的会话都交给虚拟器滚到真实尾部", () => {
+    const firstView = renderTimeline(createItems([createMessage(0), createMessage(1)]));
+    const firstVirtualizer = useVirtualizerMock.mock.results.at(-1)?.value as {
+      scrollToEnd: ReturnType<typeof vi.fn>;
+    };
+
+    expect(firstVirtualizer.scrollToEnd).toHaveBeenCalled();
+
+    firstView.rerender(
+      <MessageTimeline
+        sessionId="session-other"
+        items={createItems([createMessage(0)])}
+        historyState="ready"
+        onRetryMessage={noopRetry}
+        provider="codex"
+      />
+    );
+    firstView.rerender(
+      <MessageTimeline
+        sessionId="session-virtual"
+        items={createItems([createMessage(0), createMessage(1)])}
+        historyState="ready"
+        onRetryMessage={noopRetry}
+        provider="codex"
+      />
+    );
+
+    const switchedVirtualizer = useVirtualizerMock.mock.results.at(-1)?.value as {
+      scrollToEnd: ReturnType<typeof vi.fn>;
+    };
+    expect(switchedVirtualizer.scrollToEnd).toHaveBeenCalled();
+  });
+
+  it("虚拟列表的回到底部按钮使用虚拟器的尾部协调", () => {
+    renderTimeline(createItems([createMessage(0), createMessage(1), createMessage(2)]));
+
+    const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+    expect(messageList).not.toBeNull();
+    Object.defineProperty(messageList, "scrollHeight", {
+      value: 5_000,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "scrollTop", {
+      value: 0,
+      writable: true,
+      configurable: true
+    });
+    fireEvent.scroll(messageList!);
+
+    const button = screen.getByRole("button", {
+      name: t("conversation.scrollToBottomAction")
+    });
+    const countScrollToEndCalls = () => useVirtualizerMock.mock.results.reduce(
+      (count, result) => count + (
+        (result.value as { scrollToEnd?: ReturnType<typeof vi.fn> } | undefined)
+          ?.scrollToEnd?.mock.calls.length ?? 0
+      ),
+      0
+    );
+    const previousCallCount = countScrollToEndCalls();
+    fireEvent.click(button);
+
+    expect(countScrollToEndCalls()).toBeGreaterThan(previousCallCount);
   });
 });

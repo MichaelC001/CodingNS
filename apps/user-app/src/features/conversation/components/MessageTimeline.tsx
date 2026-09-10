@@ -6313,13 +6313,14 @@ export function MessageTimeline({
     // 行高补偿会同时写 scrollTop 和行 transform，必须在同一帧提交，避免出现跳位闪烁。
     useFlushSync: true
   });
-  // 用户滚动或已经跟随尾部时，不要因为异步行高测量再次写回 scrollTop。
-  // 这类补偿会和原生滚动手势、底部自动跟随互相争抢，表现为到达底部时抖动。
+  // 用户仍在滚动时不做行高补偿；滚动停止后由虚拟列表完成增量补偿。
+  // 贴底时也必须保留补偿，否则尾部流式内容变高后 scrollHeight 变化会滞后一帧，
+  // 再由 tail_update_follow 整体写回 scrollTop，造成高频细微抖动。
   timelineVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
     _item,
     _delta,
     instance
-  ) => !instance.isScrolling && !stickToBottomRef.current;
+  ) => !instance.isScrolling;
   const showTimelineSkeleton = historyState === "loading" && messages.length === 0;
 
   useEffect(() => {
@@ -6716,7 +6717,14 @@ export function MessageTimeline({
       reason,
       ...extra
     });
-    list.scrollTop = list.scrollHeight;
+    if (shouldVirtualizeTimeline) {
+      // 不能直接写 list.scrollTop：这会绕过虚拟器的 scrollOffset 和滚动协调器。
+      // 会话切换或行高重新测量后，虚拟器仍会按旧位置计算可见范围，导致只滚动到
+      // 估算出来的尾部。由 scrollToEnd 负责按最新总高度持续校正到真实尾部。
+      timelineVirtualizer.scrollToEnd({ behavior: "auto" });
+    } else {
+      list.scrollTop = list.scrollHeight;
+    }
     emitTimelineScrollDebug("jump_to_bottom.after", list, {
       reason,
       ...extra
@@ -6745,6 +6753,8 @@ export function MessageTimeline({
     const nextScrollTop = Math.max(0, Math.min(targetScrollTop, maxScrollableTop));
 
     lastProgrammaticRestoreScrollTopRef.current = nextScrollTop;
+    // 历史位置只恢复一次，不启动虚拟器的持续滚动协调，避免用户接管滚动后
+    // 又被恢复目标拉回去。底部跟随则统一走 jumpToBottom/scrollToEnd。
     list.scrollTop = nextScrollTop;
     stickToBottomRef.current = false;
     emitTimelineScrollDebug("manual_restore.apply", list, {
