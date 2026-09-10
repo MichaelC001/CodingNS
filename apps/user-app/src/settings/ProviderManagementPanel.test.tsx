@@ -187,6 +187,45 @@ describe("ProviderManagementPanel", () => {
       ).toBe(true);
     });
   });
+
+  it("展示外部运行时状态、版本和能力限制", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (url.endsWith("/api/providers/catalog") && method === "GET") {
+        return createJsonResponse({
+          items: [
+            createProviderCatalogEntry("grok", true)
+          ]
+        });
+      }
+
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    }) as typeof fetch;
+
+    renderPanel();
+
+    await userEvent.click(screen.getByRole("button", { name: t("settings.providerManagementManageAction") }));
+
+    const dialog = await screen.findByRole("dialog", { name: t("settings.providerManagementModalTitle") });
+    await waitFor(() => {
+      expect(within(dialog).getByText("Grok Build")).toBeInTheDocument();
+    });
+
+    expect(within(dialog).getByText(t("settings.providerManagementRuntimeDegraded"))).toBeInTheDocument();
+    expect(within(dialog).getByText("运行版本: 0.1.0-test")).toBeInTheDocument();
+    expect(within(dialog).getByText("协议版本: 1")).toBeInTheDocument();
+    expect(dialog.querySelector(".settings-provider-matrix-runtime-label")).toBeNull();
+    const limitationsTrigger = within(dialog).getByRole("button", {
+      name: t("settings.providerManagementLimitations")
+    });
+    expect(limitationsTrigger).toHaveAttribute("title", t("settings.providerManagementLimitations"));
+    expect(limitationsTrigger).toHaveAttribute("aria-describedby");
+    expect(within(dialog).getByRole("tooltip")).toHaveTextContent(
+      "首版不支持 CodingNS 权限桥接、附件、Token Usage、原生 Fork、删除和分享。"
+    );
+  });
 });
 
 function renderPanel() {
@@ -230,13 +269,15 @@ function createProviderCatalogResponse() {
 }
 
 function createProviderCatalogEntry(
-  provider: "codex" | "claude-code" | "opencode",
+  provider: "codex" | "claude-code" | "opencode" | "grok",
   enabled: boolean
 ) {
   const displayName = provider === "claude-code"
     ? "Claude Code"
     : provider === "opencode"
       ? "OpenCode"
+      : provider === "grok"
+        ? "Grok Build"
       : "Codex";
 
   return {
@@ -253,14 +294,26 @@ function createProviderCatalogEntry(
     },
     capabilities: {
       provider,
-      canStartSession: enabled,
-      canResumeSession: enabled,
-      canSendMessage: enabled,
-      supportsStructuredToolCalls: true,
-      supportsPermissionPrompt: true,
+      canStartSession: provider === "grok" ? false : enabled,
+      canResumeSession: provider === "grok" ? false : enabled,
+      canSendMessage: provider === "grok" ? false : enabled,
+      supportsStructuredToolCalls: provider !== "grok",
+      supportsPermissionPrompt: provider !== "grok",
       supportsCheckpoint: false,
       supportsSubagents: provider === "codex",
-      limitations: []
+      limitations: provider === "grok"
+        ? [
+            "首版不支持 CodingNS 权限桥接、附件、Token Usage、原生 Fork、删除和分享。"
+          ]
+        : [],
+      ...(provider === "grok"
+        ? {
+            runtimeStatus: "degraded" as const,
+            runtimeVersion: "0.1.0-test",
+            protocolVersion: "1",
+            runtimeCapabilities: ["session/new"]
+          }
+        : {})
     },
     productCapabilities: {
       streamingOutput: true,
@@ -270,6 +323,12 @@ function createProviderCatalogEntry(
       skillUsage: true
     },
     commandPath: `/usr/local/bin/${provider}`,
-    version: provider === "claude-code" ? "1.7.5" : provider === "opencode" ? "1.4.2" : "1.8.0"
+    version: provider === "grok"
+      ? "0.1.0-test"
+      : provider === "claude-code"
+        ? "1.7.5"
+        : provider === "opencode"
+          ? "1.4.2"
+          : "1.8.0"
   };
 }

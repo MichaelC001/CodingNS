@@ -190,7 +190,8 @@ function resolvePromptMode(options: RuntimeSendOptions): "queue" | "steer" {
 
 function parseModelSelection(value: string | null): { provider: string; model: string } | null {
   const normalized = value?.trim();
-  if (!normalized) return null;
+  // 草稿页的兜底选项表示使用 Harness 默认模型，不应发出非法的 selectModel 请求。
+  if (!normalized || normalized === "provider-default") return null;
   const separator = normalized.indexOf(":");
   if (separator <= 0 || separator === normalized.length - 1) return { provider: "deepseek", model: normalized };
   return { provider: normalized.slice(0, separator), model: normalized.slice(separator + 1) };

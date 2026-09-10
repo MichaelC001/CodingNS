@@ -796,7 +796,7 @@ describe("WorkbenchLayout", () => {
     expect(screen.getByRole("menuitem", { name: t("conversation.exportHtmlAction") })).toBeInTheDocument();
   });
 
-  it("删除当前工作区会话后会调用真实删除接口并回到会话列表", async () => {
+  it.each(["codex", "grok"] as const)("%s 删除当前工作区会话后会调用真实删除接口并回到会话列表", async (provider) => {
     showDesktopContextMenuMock.mockResolvedValue(undefined);
     mockNavigator({
       userAgent:
@@ -814,6 +814,7 @@ describe("WorkbenchLayout", () => {
     });
     const betaSession = createSessionSummary({
       sessionId: "session-2",
+      provider,
       title: "会话 Beta",
       workspaceId: "workspace-1"
     });

@@ -394,7 +394,8 @@ const SESSION_START_DEFERRED_PROVIDERS = new Set([
   "legna-code",
   "opencode",
   "gemini",
-  "kimi"
+  "kimi",
+  "grok"
 ]);
 const MUTABLE_HISTORY_TAIL_PROVIDERS = new Set([
   "claude-code",
@@ -402,7 +403,8 @@ const MUTABLE_HISTORY_TAIL_PROVIDERS = new Set([
   "codex",
   "gemini",
   "kimi",
-  "opencode"
+  "opencode",
+  "grok"
 ]);
 const MUTABLE_HISTORY_TAIL_REFRESH_INTERVAL_MS = 1_200;
 const WORKSPACE_DISCOVERY_BACKGROUND_MAX_AGE_MS = 15_000;
@@ -556,7 +558,8 @@ export class SessionHistoryService {
       kimiHomeDir: config.kimiHomeDir,
       opencodeBaseUrl: config.opencodeBaseUrl,
       opencodeDataDir: config.opencodeDataDir,
-      opencodeDbPath: config.opencodeDbPath
+      opencodeDbPath: config.opencodeDbPath,
+      grokHomeDir: config.grokHomeDir
     };
     this.providerRegistry = new ProviderRegistry([
       new ClaudeCodeAdapter({ homeDir: config.claudeCodeHomeDir }),
@@ -849,6 +852,7 @@ export class SessionHistoryService {
       }, void>({
         taskType: HOST_TASK_TYPES.providerCapabilityRefresh,
         executionLane: "external_process",
+        timeoutMs: 60_000,
         run: async ({ capabilities, workspacePath }) => {
           const value = await this.enrichProviderCapabilities(capabilities, workspacePath);
           this.providerCapabilityCache.set(
@@ -1579,6 +1583,19 @@ export class SessionHistoryService {
         return this.applyProviderEnabledState(refreshed);
       }
 
+      if (baseCapabilities.provider === "grok" && workspacePath) {
+        try {
+          return this.applyProviderEnabledState(
+            await this.refreshProviderCapabilities(baseCapabilities, workspacePath)
+          );
+        } catch {
+          // Grok 能力发现失败时仍返回静态能力，避免模型探测故障阻断新建会话。
+          return this.applyProviderEnabledState(
+            this.resolveProviderCapabilitiesImmediate(baseCapabilities, workspacePath)
+          );
+        }
+      }
+
       if (baseCapabilities.provider === "claude-code" && baseCapabilities.canSendMessage) {
         const refreshed = await this.refreshProviderCapabilities(baseCapabilities, workspacePath);
         return this.applyProviderEnabledState(refreshed);
@@ -1600,7 +1617,7 @@ export class SessionHistoryService {
 
     return this.capabilityService
       .getSessionCapabilities(binding.provider, binding.providerSessionId)
-      .then((capabilities) => {
+      .then(async (capabilities) => {
         const normalizedCapabilities = this.applyProviderCliAvailability(capabilities);
 
         if (normalizedCapabilities.provider === "opencode") {
@@ -1622,6 +1639,18 @@ export class SessionHistoryService {
           return this.applyProviderEnabledState(normalizedCapabilities);
         }
 
+        if (normalizedCapabilities.provider === "grok" && workspacePath) {
+          try {
+            return this.applyProviderEnabledState(
+              await this.refreshProviderCapabilities(normalizedCapabilities, workspacePath)
+            );
+          } catch {
+            return this.applyProviderEnabledState(
+              this.resolveProviderCapabilitiesImmediate(normalizedCapabilities, workspacePath)
+            );
+          }
+        }
+
         this.scheduleProviderCapabilityRefresh(normalizedCapabilities, workspacePath);
         return this.applyProviderEnabledState(
           this.resolveProviderCapabilitiesImmediate(normalizedCapabilities, workspacePath)
@@ -1636,6 +1665,13 @@ export class SessionHistoryService {
     capabilities: ProviderCapabilities,
     workspacePath: string | null
   ): Promise<ProviderCapabilities> {
+    if (capabilities.provider === "grok" && workspacePath) {
+      return this.capabilityService.getProviderCapabilitiesForWorkspace(
+        capabilities.provider,
+        workspacePath
+      );
+    }
+
     const claudeEnriched = await enrichClaudeCapabilitiesWithDiscovery(
       capabilities,
       {
@@ -2956,6 +2992,11 @@ export class SessionHistoryService {
     providerSessionId: string;
     rawStoreRef: string;
   }): Promise<void> {
+    if (input.provider === "grok") {
+      await this.sessionSyncService.deleteSession(input.provider, input.providerSessionId, input.rawStoreRef);
+      return;
+    }
+
     if (input.provider === "deepseek-harness") {
       try {
         await this.sessionSyncService.deleteSession(
@@ -6849,12 +6890,13 @@ function filterProjectedIsolatedWorkspaceSessionTree(
 
 function isProviderCliBacked(
   provider: string
-): provider is "claude-code" | "legna-code" | "codex" | "gemini" | "kimi" {
+): provider is "claude-code" | "legna-code" | "codex" | "gemini" | "kimi" | "grok" {
   return provider === "claude-code"
     || provider === "legna-code"
     || provider === "codex"
     || provider === "gemini"
-    || provider === "kimi";
+    || provider === "kimi"
+    || provider === "grok";
 }
 
 function buildProviderCliUnavailableMessage(provider: string): string {
@@ -6869,6 +6911,8 @@ function buildProviderCliUnavailableMessage(provider: string): string {
       return "未检测到 Gemini CLI";
     case "kimi":
       return "未检测到 Kimi CLI";
+    case "grok":
+      return "未检测到 Grok CLI";
     default:
       return "未检测到对应 CLI";
   }
@@ -7337,7 +7381,10 @@ function pickPreferredSessionTitle(target: string | null, source: string | null)
 }
 
 function looksLikeGeneratedSessionTitle(title: string): boolean {
-  return /^(Claude|Codex|OpenCode)\s+会话\b/i.test(title);
+  return (
+    /^(Claude|Codex|OpenCode|Grok)\s+会话(?:\s|$)/i.test(title)
+    || /^Grok\s+[0-9a-f]{8,}(?:[-_][0-9a-f]+)*$/i.test(title)
+  );
 }
 
 function resolveFirstUserMessageSessionTitle(
@@ -8379,7 +8426,9 @@ function buildRecoveredSessionTitle(provider: string, providerSessionId: string)
             ? "Kimi"
             : normalizedProvider === "opencode"
               ? "OpenCode"
-              : provider;
+              : normalizedProvider === "grok"
+                ? "Grok"
+                : provider;
 
   return `${providerLabel} 会话 ${providerSessionId.slice(0, 8)}`;
 }

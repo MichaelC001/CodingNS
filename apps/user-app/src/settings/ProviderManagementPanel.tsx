@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { FiInfo } from "react-icons/fi";
 
 import { DesktopModal } from "../components/DesktopModal";
 import { MobileSheet } from "../components/MobileSheet";
@@ -252,11 +253,14 @@ export function ProviderManagementPanel() {
                       </td>
                     ))}
                     <td className="settings-provider-matrix-status-cell">
-                      <ModalTag tone={entry.enabled ? "success" : "default"}>
-                        {entry.enabled
-                          ? t("settings.providerManagementStatusEnabled")
-                          : t("settings.providerManagementStatusDisabled")}
-                      </ModalTag>
+                      <div className="settings-provider-matrix-status">
+                        <ModalTag tone={entry.enabled ? "success" : "default"}>
+                          {entry.enabled
+                            ? t("settings.providerManagementStatusEnabled")
+                            : t("settings.providerManagementStatusDisabled")}
+                        </ModalTag>
+                        <ProviderRuntimeStatus capabilities={entry.capabilities} />
+                      </div>
                     </td>
                     <td className="settings-provider-matrix-toggle-cell">
                       <label className="settings-provider-matrix-switch">
@@ -379,6 +383,92 @@ function CapabilityCell({ enabled, label }: { enabled: boolean; label: string })
       <span className="settings-provider-matrix-capability-check" aria-hidden="true" />
     </span>
   );
+}
+
+function ProviderRuntimeStatus({
+  capabilities
+}: {
+  capabilities: ProviderCatalogEntryDto["capabilities"];
+}) {
+  const hasRuntimeDetails = Boolean(
+    capabilities.runtimeStatus
+      || capabilities.runtimeVersion
+      || capabilities.protocolVersion
+      || capabilities.limitations.length > 0
+  );
+
+  if (!hasRuntimeDetails) {
+    return null;
+  }
+
+  return (
+    <div className="settings-provider-matrix-runtime">
+      {capabilities.runtimeStatus ? (
+        <ModalTag tone={resolveRuntimeStatusTone(capabilities.runtimeStatus)}>
+          {resolveRuntimeStatusLabel(capabilities.runtimeStatus)}
+        </ModalTag>
+      ) : null}
+      {capabilities.runtimeVersion ? (
+        <span className="settings-provider-matrix-runtime-meta">
+          {t("settings.providerManagementRuntimeVersion")}: {capabilities.runtimeVersion}
+        </span>
+      ) : null}
+      {capabilities.protocolVersion ? (
+        <span className="settings-provider-matrix-runtime-meta">
+          {t("settings.providerManagementProtocolVersion")}: {capabilities.protocolVersion}
+        </span>
+      ) : null}
+      {capabilities.limitations.length > 0 ? (
+        <ProviderLimitations limitations={capabilities.limitations} />
+      ) : null}
+    </div>
+  );
+}
+
+function ProviderLimitations({ limitations }: { limitations: string[] }) {
+  const tooltipId = useId();
+  const label = t("settings.providerManagementLimitations");
+
+  return (
+    <div className="settings-provider-matrix-limitations">
+      <button
+        type="button"
+        className="settings-provider-matrix-limitations-trigger"
+        aria-label={label}
+        aria-describedby={tooltipId}
+        title={label}
+      >
+        <FiInfo aria-hidden="true" />
+      </button>
+      <div id={tooltipId} className="settings-provider-matrix-limitations-tooltip" role="tooltip">
+        <span className="settings-provider-matrix-limitations-title">{label}</span>
+        <ul>
+          {limitations.map((limitation) => (
+            <li key={limitation}>{limitation}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function resolveRuntimeStatusLabel(
+  status: NonNullable<ProviderCatalogEntryDto["capabilities"]["runtimeStatus"]>
+): string {
+  switch (status) {
+    case "ready":
+      return t("settings.providerManagementRuntimeReady");
+    case "degraded":
+      return t("settings.providerManagementRuntimeDegraded");
+    case "read-only":
+      return t("settings.providerManagementRuntimeReadOnly");
+  }
+}
+
+function resolveRuntimeStatusTone(
+  status: NonNullable<ProviderCatalogEntryDto["capabilities"]["runtimeStatus"]>
+): "default" | "success" | "warning" {
+  return status === "ready" ? "success" : "warning";
 }
 
 function replaceProviderEntry(

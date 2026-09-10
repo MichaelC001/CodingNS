@@ -37,10 +37,13 @@ class LazyHarnessTransport implements DeepSeekHarnessTransport {
     return client.call<T>(method, payload);
   }
 
-  subscribe(channel: "mux" | "host", onEnvelope: (envelope: DeepSeekHarnessEnvelope) => void): ProviderSubscription {
+  subscribe(channel: "mux" | "host", onEnvelope: (envelope: DeepSeekHarnessEnvelope) => void, options?: { sessionId?: string }): ProviderSubscription {
     let closed = false;
     let close: (() => void) | null = null;
-    void this.manager.createClient().then((client: DeepSeekHarnessApiClient) => client.subscribe(channel === "mux" ? "/api/events.mux" : "/api/events.host", onEnvelope, undefined).then((closeFn) => {
+    void this.manager.createClient().then((client: DeepSeekHarnessApiClient) => (channel === "mux" && options?.sessionId
+      ? client.subscribeSessionEvents(options.sessionId, onEnvelope, undefined)
+      : client.subscribe(channel === "mux" ? "/api/events.mux" : "/api/events.host", onEnvelope, undefined)
+    ).then((closeFn) => {
       if (closed) closeFn();
       else close = closeFn;
     })).catch(() => undefined);

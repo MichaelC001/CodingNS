@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { DeepSeekHarnessCompatibilityInput } from "@codingns/session-sync-core";
 
-/** Harness 0.1.1-rc.2 使用的 JSON-RPC 信封。这里不复用 Harness 源码类型，避免外部包污染 Host。 */
+/** 旧版 Harness JSON-RPC 信封。0.1.2 Remote 协议复用同一响应信封，但请求参数改为 args。 */
 export interface HarnessClientRequest {
   type: "client-request";
   rpcId: string;
@@ -40,6 +40,16 @@ export interface HarnessRpcError {
 }
 
 export type HarnessDownlinkEnvelope = HarnessServerRequest;
+
+/** Harness 0.1.2 Remote mux 的逻辑流帧。物理 WebSocket 只承载这些帧。 */
+export type HarnessRemoteStreamFrame =
+  | { type: "item"; streamId: string; value?: unknown }
+  | { type: "end"; streamId: string }
+  | { type: "error"; streamId: string; error: HarnessRpcError };
+
+export type HarnessRemoteStreamRequest =
+  | { type: "open"; streamId: string; endpoint: string; payload: unknown }
+  | { type: "cancel"; streamId: string };
 
 /** `host.describe` 返回的握手元数据。应用版本和协议版本必须分开保存。 */
 export interface HarnessHandshakeMetadata extends DeepSeekHarnessCompatibilityInput {

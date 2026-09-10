@@ -13,6 +13,7 @@ import geminiIcon from "../../../assets/provider-icons/gemini.png";
 import kimiIcon from "../../../assets/provider-icons/kimi.png";
 import openCodeIcon from "../../../assets/provider-icons/opencode.png";
 import deepSeekHarnessIcon from "../../../assets/provider-icons/deepseek-harness.svg";
+import grokIcon from "../../../assets/provider-icons/grok.png";
 
 const REASONING_LEVEL_SET = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 
@@ -42,7 +43,8 @@ export const REGISTERED_PROVIDER_IDS: BuiltinProviderId[] = [
   "gemini",
   "kimi",
   "legna-code",
-  "deepseek-harness"
+  "deepseek-harness",
+  "grok"
 ];
 
 export const SESSION_PROVIDER_PICKER_IDS: BuiltinProviderId[] = [
@@ -52,7 +54,8 @@ export const SESSION_PROVIDER_PICKER_IDS: BuiltinProviderId[] = [
   "gemini",
   "kimi",
   "legna-code",
-  "deepseek-harness"
+  "deepseek-harness",
+  "grok"
 ];
 
 export function orderProviderIds(providerIds: readonly ProviderId[]): ProviderId[] {
@@ -185,6 +188,21 @@ const PROVIDER_METADATA: Record<BuiltinProviderId, ProviderMetadata> = {
     supportsSlashMenuByDefault: false,
     supportsSessionDeleteByDefault: true,
     foldRulesMessagesByDefault: true
+  },
+  grok: {
+    displayNameKey: "conversation.providerGrok",
+    draftTitleKey: "conversation.draftTitleGrok",
+    defaultModelLabelKey: "conversation.modelUseCliDefault",
+    icon: grokIcon,
+    defaultRunInputMode: "none",
+    reasoningLevelPersists: true,
+    defaultReasoningLevel: null,
+    supportsInterrupt: false,
+    supportsAttachments: false,
+    supportsPermissionPrompt: false,
+    supportsSlashMenuByDefault: false,
+    supportsSessionDeleteByDefault: true,
+    foldRulesMessagesByDefault: false
   }
 };
 

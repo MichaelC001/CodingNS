@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import Fastify from "fastify";
+import { GrokAdapter, GrokRuntimeAdapter } from "@codingns/session-sync-core";
 
 import type { HostConfig } from "../config/env.js";
 import { disposeSharedOpenCodeSystemProbeHelperClient } from "../config/opencode-system-probe-helper-client.js";
@@ -541,6 +542,16 @@ export function createServer(config: HostConfig) {
       attachmentRootDir: path.join(path.dirname(config.databasePath), "session-attachments")
     }
   );
+  const grokProviderAdapter = new GrokAdapter({
+    homeDir: config.grokHomeDir,
+    commandPath: config.grokCliPath,
+    apiBaseUrl: config.grokApiBaseUrl
+  });
+  const grokRuntimeAdapter = new GrokRuntimeAdapter({
+    commandPath: config.grokCliPath,
+    homeDir: config.grokHomeDir,
+    apiBaseUrl: config.grokApiBaseUrl
+  });
   const npmGlobalPackageService = new NpmGlobalPackageService(config);
   const serviceUpdateTaskService = new ServiceUpdateTaskService(
     taskManager,
@@ -862,7 +873,8 @@ export function createServer(config: HostConfig) {
         new DeepSeekHarnessProviderAdapter(
           deepSeekHarnessSidecarManager,
           config.deepseekHarnessHomeDir
-        )
+        ),
+        grokProviderAdapter
       ]
     },
     taskManager,
@@ -1036,7 +1048,8 @@ export function createServer(config: HostConfig) {
       new DeepSeekHarnessProviderAdapter(
         deepSeekHarnessSidecarManager,
         config.deepseekHarnessHomeDir
-      )
+      ),
+      grokProviderAdapter
     ]
   );
   runtimeObservabilityService = new RuntimeObservabilityService(
@@ -1064,7 +1077,8 @@ export function createServer(config: HostConfig) {
     sessionActivityAuthorityService,
     workspaceSessionRuntimeContextService,
     deepSeekHarnessRuntimeAdapter,
-    providerPriceBookService
+    providerPriceBookService,
+    grokRuntimeAdapter
   );
   sessionHistoryService.registerLiveActivityObservationResolver((sessionId) =>
     sessionLiveRuntimeService.resolveLiveActivityObservation(sessionId)

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { userPreferenceStore } from "../../../preferences/user-preference-store";
 import {
   SESSION_PROVIDER_PICKER_IDS,
   createDraftCapabilities,
@@ -10,6 +11,12 @@ import {
   shouldFoldRulesMessages,
   warmProviderIconCache
 } from "./provider-ui";
+
+const initialPreferenceState = userPreferenceStore.getState();
+
+afterEach(() => {
+  userPreferenceStore.hydrate(initialPreferenceState);
+});
 
 describe("provider-ui", () => {
   it("会把 gemini 暴露为会话创建入口", () => {
@@ -27,6 +34,20 @@ describe("provider-ui", () => {
     expect(getProviderDisplayName("deepseek-harness", "full")).toBe("DeepSeek Harness");
     expect(shouldPersistReasoningLevel("deepseek-harness")).toBe(true);
     expect(createDraftCapabilities("deepseek-harness").supportsSessionDelete).toBe(true);
+  });
+
+  it("会正确显示 Grok Build 的国际化文案并使用附件 logo", () => {
+    userPreferenceStore.hydrate({
+      ...initialPreferenceState,
+      profile: {
+        ...initialPreferenceState.profile,
+        language: "zh-CN"
+      }
+    });
+    expect(SESSION_PROVIDER_PICKER_IDS.includes("grok")).toBe(true);
+    expect(getProviderDisplayName("grok")).toBe("Grok Build");
+    expect(getDraftTitle("grok")).toBe("新的 Grok Build 会话");
+    expect(getProviderIcon("grok")).toContain("grok.png");
   });
 
   it("会把 legna-code 排在 kimi 之后", () => {

@@ -519,6 +519,15 @@ export interface ProviderAdapter {
     options?: ProviderSessionStatsReadOptions
   ): Promise<ProviderSessionStats | null>;
   getProviderCapabilities(): ProviderCapabilities;
+  /**
+   * 在已有工作区上下文下读取 provider 的实时能力。
+   *
+   * 大多数 provider 只需要静态能力；外部运行时可以实现这个可选方法，
+   * 通过一次短生命周期握手读取真实模型目录等动态信息。
+   */
+  getProviderCapabilitiesForWorkspace?(
+    workspacePath: string
+  ): Promise<ProviderCapabilities>;
   getSessionCapabilities(providerSessionId: string): Promise<ProviderCapabilities>;
 }
 

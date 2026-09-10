@@ -10,7 +10,8 @@ export type BuiltinProviderId =
   | "opencode"
   | "gemini"
   | "kimi"
-  | "deepseek-harness";
+  | "deepseek-harness"
+  | "grok";
 export type ProviderId = BuiltinProviderId | (string & {});
 export type SyncStatus = "idle" | "syncing" | "error";
 export type DeliveryState = "sending" | "sent" | "failed";
@@ -1218,6 +1219,10 @@ export interface ProviderCapabilitiesDto {
   supportsRunSteering?: boolean;
   supportsQueueWhileRunning?: boolean;
   supportsRulesMessageFolding?: boolean;
+  runtimeStatus?: "ready" | "degraded" | "read-only";
+  runtimeVersion?: string | null;
+  protocolVersion?: string | null;
+  runtimeCapabilities?: string[];
 }
 
 export interface ProviderCatalogEntryDto {

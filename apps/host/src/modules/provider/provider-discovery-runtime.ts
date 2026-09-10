@@ -2,6 +2,7 @@ import {
   ClaudeCodeAdapter,
   CodexAdapter,
   GeminiAdapter,
+  GrokAdapter,
   KimiAdapter,
   LegnaCodeAdapter,
   OpenCodeAdapter,
@@ -258,6 +259,9 @@ function getWorkspaceDiscoveryService(
       baseUrl: config.opencodeBaseUrl,
       dataDir: config.opencodeDataDir,
       dbPath: config.opencodeDbPath
+    }),
+    new GrokAdapter({
+      homeDir: config.grokHomeDir
     })
   ].filter((adapter) => !enabledProviderSet || enabledProviderSet.has(adapter.providerId)));
   const service = new SessionSyncService(registry);

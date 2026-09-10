@@ -25512,7 +25512,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 }
 
 .settings-provider-matrix-status-col {
-  width: 108px;
+  width: 190px;
 }
 
 .settings-provider-matrix-toggle-col {
@@ -25585,6 +25585,118 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .settings-provider-matrix-status-cell,
 .settings-provider-matrix-toggle-cell {
   text-align: center;
+}
+
+.settings-provider-matrix-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.settings-provider-matrix-runtime {
+  display: flex;
+  max-width: 180px;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.settings-provider-matrix-runtime-meta,
+.settings-provider-matrix-runtime-label {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.settings-provider-matrix-limitations {
+  position: relative;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-provider-matrix-limitations-trigger {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border-primary) 78%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-secondary) 76%, var(--bg-surface) 24%);
+  color: var(--text-secondary);
+  cursor: help;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.settings-provider-matrix-limitations-trigger:hover,
+.settings-provider-matrix-limitations-trigger:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--border-primary));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-surface));
+  color: var(--accent);
+  outline: none;
+}
+
+.settings-provider-matrix-limitations-trigger svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.2;
+}
+
+.settings-provider-matrix-limitations-tooltip {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  z-index: 5;
+  width: min(300px, calc(100vw - 48px));
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-primary) 82%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-elevated, var(--bg-primary)) 96%, black 4%);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(4px);
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
+  visibility: hidden;
+  text-align: left;
+}
+
+.settings-provider-matrix-limitations:hover .settings-provider-matrix-limitations-tooltip,
+.settings-provider-matrix-limitations:focus-within .settings-provider-matrix-limitations-tooltip {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+  visibility: visible;
+}
+
+.settings-provider-matrix-limitations-title {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.settings-provider-matrix-limitations-tooltip ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 14px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .settings-provider-matrix-capability {

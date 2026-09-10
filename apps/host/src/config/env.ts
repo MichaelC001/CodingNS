@@ -46,6 +46,9 @@ export interface HostConfig {
   deepseekHarnessCliPath: string;
   deepseekHarnessHomeDir: string;
   deepseekHarnessBindHost: "127.0.0.1" | "0.0.0.0";
+  grokCliPath: string;
+  grokHomeDir: string;
+  grokApiBaseUrl: string | null;
   sessionBillingProfileId: string | null;
   sessionBillingPriceBookVersion: string;
   chromeExecutablePath: string;
@@ -136,6 +139,15 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
   const deepseekHarnessBindHost = resolveDeepSeekHarnessBindHost(
     overrides.deepseekHarnessBindHost ?? process.env.CODINGNS_DEEPSEEK_HARNESS_HOST
   );
+  const grokCliPath =
+    normalizeOptionalText(overrides.grokCliPath ?? process.env.CODINGNS_GROK_COMMAND) ?? "grok";
+  const grokHomeDir =
+    overrides.grokHomeDir
+    ?? normalizeOptionalText(process.env.CODINGNS_GROK_HOME)
+    ?? path.join(homeDir, ".grok");
+  const grokApiBaseUrl = normalizeOptionalText(
+    overrides.grokApiBaseUrl ?? process.env.CODINGNS_GROK_BASE_URL ?? null
+  );
   const configuredOpenCodeBaseUrl = normalizeOptionalText(
     overrides.opencodeBaseUrl ?? process.env.CODINGNS_OPENCODE_BASE_URL ?? null
   );
@@ -223,6 +235,9 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
     deepseekHarnessCliPath,
     deepseekHarnessHomeDir,
     deepseekHarnessBindHost,
+    grokCliPath,
+    grokHomeDir,
+    grokApiBaseUrl,
     sessionBillingProfileId:
       overrides.sessionBillingProfileId
       ?? normalizeOptionalText(process.env.CODINGNS_SESSION_BILLING_PROFILE),

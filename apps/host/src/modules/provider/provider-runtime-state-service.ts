@@ -23,7 +23,8 @@ export class ProviderRuntimeStateService {
     "gemini",
     "kimi",
     "opencode",
-    "deepseek-harness"
+    "deepseek-harness",
+    "grok"
   ];
   private readonly providerInstallCommands: Readonly<Partial<Record<ProviderId, string>>>;
   private readonly stateByProvider = new Map<ProviderId, ProviderRuntimeStateSnapshot>();
@@ -39,7 +40,8 @@ export class ProviderRuntimeStateService {
       gemini: config.geminiCliPath,
       kimi: config.kimiCliPath,
       opencode: config.opencodeCliPath,
-      "deepseek-harness": config.deepseekHarnessCliPath
+      "deepseek-harness": config.deepseekHarnessCliPath,
+      grok: config.grokCliPath
     };
 
     this.hydrateFromRepository();

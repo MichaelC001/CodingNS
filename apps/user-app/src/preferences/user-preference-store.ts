@@ -46,7 +46,8 @@ const PREFERENCE_PROVIDER_IDS: PreferenceProviderId[] = [
   "opencode",
   "gemini",
   "kimi",
-  "deepseek-harness"
+  "deepseek-harness",
+  "grok"
 ];
 const SHADOW_STORAGE_KEY = "codingns.account.preferences.shadow";
 const LEGACY_CLIENT_CONFIG_KEY = "codingns.client.runtime-config";
@@ -158,6 +159,10 @@ function createDefaultProviders(): AccountPreferenceState["providers"] {
       defaultReasoningLevel: null
     },
     "deepseek-harness": {
+      defaultModel: null,
+      defaultReasoningLevel: null
+    },
+    grok: {
       defaultModel: null,
       defaultReasoningLevel: null
     }

@@ -444,7 +444,8 @@ export class SessionLiveRuntimeService {
     private readonly providerPriceBookService: Pick<
       ProviderPriceBookService,
       "getCurrentPriceBook" | "requestRefreshIfStale"
-    > | null = null
+    > | null = null,
+    private readonly grokRuntimeAdapter: ProviderRuntimeAdapter | null = null
   ) {
     this.sessionActivityAuthorityService = sessionActivityAuthorityService;
     this.sessionPermissionRequestService = new SessionPermissionRequestService(
@@ -480,7 +481,8 @@ export class SessionLiveRuntimeService {
           input.providerSessionId,
           input.request
         ),
-      deepSeekHarnessRuntimeAdapter: this.deepSeekHarnessRuntimeAdapter
+      deepSeekHarnessRuntimeAdapter: this.deepSeekHarnessRuntimeAdapter,
+      grokRuntimeAdapter: this.grokRuntimeAdapter
     });
     this.runtimeAdapterDisposables = runtimeAdapters.disposables;
     this.providerRuntimeService = new ProviderRuntimeService(runtimeAdapters.adapters);
@@ -4894,6 +4896,7 @@ function createProviderRuntimeAdapters(
       request: Record<string, unknown>;
     }) => Promise<unknown>;
     deepSeekHarnessRuntimeAdapter?: ProviderRuntimeAdapter | null;
+    grokRuntimeAdapter?: ProviderRuntimeAdapter | null;
   } = {}
 ): {
   adapters: ProviderRuntimeAdapter[];
@@ -4976,7 +4979,8 @@ function createProviderRuntimeAdapters(
         releaseManagedServerLease:
           config.opencodeBaseUrlResolver?.releaseManagedServerLease.bind(config.opencodeBaseUrlResolver)
       }),
-      ...(options.deepSeekHarnessRuntimeAdapter ? [options.deepSeekHarnessRuntimeAdapter] : [])
+      ...(options.deepSeekHarnessRuntimeAdapter ? [options.deepSeekHarnessRuntimeAdapter] : []),
+      ...(options.grokRuntimeAdapter ? [options.grokRuntimeAdapter] : [])
     ],
     disposables
   };

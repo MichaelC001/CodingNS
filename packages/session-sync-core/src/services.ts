@@ -336,6 +336,16 @@ export class CapabilityService {
     return this.registry.get(providerId).getProviderCapabilities();
   }
 
+  async getProviderCapabilitiesForWorkspace(
+    providerId: string,
+    workspacePath: string
+  ): Promise<ProviderCapabilities> {
+    const provider = this.registry.get(providerId);
+    return provider.getProviderCapabilitiesForWorkspace
+      ? provider.getProviderCapabilitiesForWorkspace(workspacePath)
+      : provider.getProviderCapabilities();
+  }
+
   async getSessionCapabilities(
     providerId: string,
     providerSessionId: string

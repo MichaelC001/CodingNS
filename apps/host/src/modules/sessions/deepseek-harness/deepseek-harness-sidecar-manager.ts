@@ -46,6 +46,8 @@ export interface DeepSeekHarnessSidecarManagerOptions {
 export class DeepSeekHarnessSidecarManager {
   private readonly options: Required<Pick<DeepSeekHarnessSidecarManagerOptions, "requestTimeoutMs" | "startupTimeoutMs">> & DeepSeekHarnessSidecarManagerOptions;
   private child: ChildProcess | null = null;
+  private authUrl: string | null = null;
+  private authCookie: string | null = null;
   private state: DeepSeekHarnessSidecarState = {
     instanceId: "sidecar-" + randomUUID(),
     status: "stopped",
@@ -102,6 +104,9 @@ export class DeepSeekHarnessSidecarManager {
       baseUrl: ready.baseUrl,
       requestTimeoutMs: this.options.requestTimeoutMs,
       compatibility: ready.compatibility,
+      harnessVersion: ready.harnessVersion,
+      protocol: ready.compatibility.protocolVersion === "remote-v1" ? "remote" : "legacy",
+      authCookie: this.authCookie,
       fetchImpl: this.options.fetchImpl
     });
   }
@@ -109,6 +114,8 @@ export class DeepSeekHarnessSidecarManager {
   async shutdown(): Promise<void> {
     const child = this.child;
     if (!child) {
+      this.authCookie = null;
+      this.authUrl = null;
       this.state = resetHandshakeState({ ...this.state, status: "stopped", pid: null, baseUrl: null });
       return;
     }
@@ -117,6 +124,8 @@ export class DeepSeekHarnessSidecarManager {
     child.kill();
     await Promise.race([once(child, "exit"), delay(2_000)]);
     this.child = null;
+    this.authCookie = null;
+    this.authUrl = null;
     this.state = resetHandshakeState({ ...this.state, status: "stopped", pid: null, baseUrl: null });
   }
 
@@ -126,6 +135,8 @@ export class DeepSeekHarnessSidecarManager {
     }
 
     this.state = resetHandshakeState({ ...this.state, status: "starting", lastError: null });
+    this.authUrl = null;
+    this.authCookie = null;
     const port = await (this.options.portAllocator ?? allocateLoopbackPort)();
     const baseUrl = `http://127.0.0.1:${port}`;
     const bindHost = this.options.bindHost ?? "127.0.0.1";
@@ -148,6 +159,14 @@ export class DeepSeekHarnessSidecarManager {
     });
     this.child = child;
     this.state = { ...this.state, pid: child.pid ?? null, baseUrl, startedAt: new Date().toISOString() };
+    const captureOutput = (chunk: Buffer | string) => {
+      const text = String(chunk);
+      for (const line of text.split(/\r?\n/u)) {
+        const match = line.match(/dsh web:\s+(https?:\/\/[^\s]+)/u);
+        if (match?.[1]) this.authUrl = match[1];
+      }
+    };
+    child.stdout?.on("data", captureOutput);
     // sidecar 的日志不属于 Host 业务数据，必须持续消费，避免子进程因管道写满而卡死。
     child.stdout?.resume();
     child.stderr?.resume();
@@ -164,11 +183,28 @@ export class DeepSeekHarnessSidecarManager {
     });
 
     try {
-      const client = new DeepSeekHarnessApiClient({ baseUrl, requestTimeoutMs: this.options.requestTimeoutMs, fetchImpl: this.options.fetchImpl });
-      const description = await waitForReady(client, this.options.startupTimeoutMs, exitPromise, signal);
+      let protocol: "legacy" | "remote" = isRemoteHarnessVersion(commandVersion) ? "remote" : "legacy";
+      let authCookie: string | null = null;
+      const createClient = async () => {
+        if (protocol === "legacy" && this.authUrl) protocol = "remote";
+        if (protocol === "remote" && !authCookie) {
+          if (!this.authUrl) throw new Error("HARNESS_AUTH_URL_NOT_READY");
+          authCookie = await DeepSeekHarnessApiClient.exchangeAuthCookie(this.authUrl, this.options.fetchImpl ?? fetch);
+        }
+        return new DeepSeekHarnessApiClient({
+          baseUrl,
+          requestTimeoutMs: this.options.requestTimeoutMs,
+          fetchImpl: this.options.fetchImpl,
+          protocol,
+          harnessVersion: commandVersion,
+          authCookie
+        });
+      };
+      const description = await waitForReady(createClient, this.options.startupTimeoutMs, exitPromise, signal, () => protocol === "remote");
       const harnessVersion = commandVersion ?? readVersion(description);
       const handshake = parseHarnessHandshake(description, harnessVersion);
       const compatibility = resolveDeepSeekHarnessCompatibility(handshake);
+      this.authCookie = authCookie;
       this.state = {
         ...this.state,
         status: compatibility.status,
@@ -198,13 +234,24 @@ function resetHandshakeState(state: DeepSeekHarnessSidecarState): DeepSeekHarnes
   };
 }
 
-async function waitForReady(client: DeepSeekHarnessApiClient, timeoutMs: number, exitPromise: Promise<unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+async function waitForReady(
+  createClient: () => Promise<DeepSeekHarnessApiClient>,
+  timeoutMs: number,
+  exitPromise: Promise<unknown>,
+  signal: AbortSignal | undefined,
+  remote: () => boolean
+): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
+  let lastError: unknown = null;
   while (Date.now() - startedAt < timeoutMs) {
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("HARNESS_SIDECAR_START_ABORTED");
     try {
-      return await client.describe(signal);
-    } catch {
+      const client = await createClient();
+      const description = await client.describe(signal);
+      if (remote()) await client.listSessions(signal);
+      return description;
+    } catch (error) {
+      lastError = error;
       if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("HARNESS_SIDECAR_START_ABORTED");
       const outcome = await Promise.race([
         delay(150).then(() => ({ kind: "waiting" as const })),
@@ -217,7 +264,19 @@ async function waitForReady(client: DeepSeekHarnessApiClient, timeoutMs: number,
       if (outcome.kind === "exited") throw new Error("HARNESS_SIDECAR_EXITED");
     }
   }
+  if (lastError instanceof Error) throw lastError;
   throw new Error("HARNESS_SIDECAR_START_FAILED");
+}
+
+function isRemoteHarnessVersion(version: string | null): boolean {
+  if (typeof version !== "string") return false;
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  // Remote Gateway 从 0.1.2 开始；未知大版本仍交给 legacy 握手和只读降级判断。
+  return major === 0 && minor === 1 && patch >= 2;
 }
 
 async function allocateLoopbackPort(): Promise<number> {

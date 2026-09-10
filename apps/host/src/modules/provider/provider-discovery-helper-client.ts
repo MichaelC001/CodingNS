@@ -437,6 +437,7 @@ export interface ProviderSessionDiscoveryHelperConfig {
   opencodeBaseUrl: string;
   opencodeDataDir: string;
   opencodeDbPath: string;
+  grokHomeDir: string;
 }
 
 function resolveHelperLaunch(): { command: string; args: string[] } {

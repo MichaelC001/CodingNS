@@ -27,7 +27,8 @@ const STREAMING_OUTPUT_PROVIDER_IDS = new Set<ProviderId>([
   "opencode",
   "gemini",
   "kimi",
-  "deepseek-harness"
+  "deepseek-harness",
+  "grok"
 ]);
 const ASSISTANT_SERVICE_PROVIDER_IDS = new Set<ProviderId>(["codex", "claude-code"]);
 const SKILL_TARGET_PROVIDER_IDS = new Set<ProviderId>([
@@ -273,6 +274,8 @@ function resolveProviderDisplayName(provider: ProviderId): string {
       return "Kimi";
     case "deepseek-harness":
       return "DeepSeek Harness";
+    case "grok":
+      return "Grok Build";
     default:
       return provider;
   }
@@ -294,6 +297,8 @@ function buildProviderMissingMessage(provider: ProviderId): string {
       return "未检测到 Kimi CLI";
     case "deepseek-harness":
       return "未检测到 DeepSeek Harness sidecar";
+    case "grok":
+      return "未检测到 Grok CLI";
     default:
       return "未检测到对应 provider 运行环境";
   }

@@ -1558,6 +1558,147 @@ describe("SessionRuntimeStore", () => {
     store.destroy();
   });
 
+  it("WebSocket 未完成订阅时，首屏仍会通过 HTTP 加载历史消息", async () => {
+    vi.useFakeTimers();
+    mocked.getSessionMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          messageId: "user-message-1",
+          provider: "grok",
+          providerSessionId: "grok-session-1",
+          role: "user",
+          kind: "text",
+          content: "对话测试",
+          timestamp: "2026-09-10T08:00:00.000Z",
+          sequence: 1,
+          rawRef: "grok://session/grok-session-1/message/user%3Astream-1",
+          toolCall: null
+        }
+      ],
+      cursor: "1",
+      nextCursor: null,
+      total: 1
+    });
+    const store = new SessionRuntimeStore("session-1");
+
+    await store.initialize();
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(mocked.getSessionMessages).toHaveBeenCalledWith(
+      "session-1",
+      null,
+      60,
+      "backward",
+      { targetHostId: undefined }
+    );
+    expect(store.getState().messages).toHaveLength(1);
+    expect(store.getState().messages[0]).toMatchObject({
+      role: "user",
+      content: "对话测试",
+      sequence: 1
+    });
+
+    store.destroy();
+  });
+
+  it("缓存只有游标没有消息时，会从头读取而不是跳过第一条用户消息", async () => {
+    vi.useFakeTimers();
+    writeViewSnapshot(SESSION_RUNTIME_SNAPSHOT_KEY, {
+      session: null,
+      capabilities: null,
+      runtimeHasActiveRun: null,
+      runtimeCanInterrupt: null,
+      contextUsage: null,
+      sessionStats: null,
+      permissionStatus: null,
+      messages: [],
+      permissionRequests: [],
+      queuedMessages: [],
+      olderCursor: null,
+      hasOlderMessages: false,
+      lastCursor: "1",
+      pagesLoaded: 1,
+      interruptSource: null
+    });
+    mocked.getSessionMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          messageId: "user-message-1",
+          provider: "grok",
+          providerSessionId: "grok-session-1",
+          role: "user",
+          kind: "text",
+          content: "第一条消息",
+          timestamp: "2026-09-10T08:00:00.000Z",
+          sequence: 1,
+          rawRef: "grok://session/grok-session-1/message/user%3Astream-1",
+          toolCall: null
+        }
+      ],
+      cursor: "1",
+      nextCursor: null,
+      total: 1
+    });
+    const store = new SessionRuntimeStore("session-1");
+
+    await store.initialize();
+
+    expect(mocked.realtimeInstances[0]?.options.cursor).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(store.getState().messages[0]?.content).toBe("第一条消息");
+    expect(store.getState().messages[0]?.sequence).toBe(1);
+
+    store.destroy();
+  });
+
+  it("空 backfill 不应阻止 HTTP 兜底加载实际存在的用户消息", async () => {
+    vi.useFakeTimers();
+    mocked.getSessionMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          messageId: "user-message-1",
+          provider: "grok",
+          providerSessionId: "grok-session-1",
+          role: "user",
+          kind: "text",
+          content: "空 backfill 后的真实消息",
+          timestamp: "2026-09-10T08:00:00.000Z",
+          sequence: 1,
+          rawRef: "grok://session/grok-session-1/message/user%3Astream-1",
+          toolCall: null
+        }
+      ],
+      cursor: "1",
+      nextCursor: null,
+      total: 1
+    });
+    const store = new SessionRuntimeStore("session-1");
+
+    await store.initialize();
+    emitRealtimeSubscribed();
+    emitRealtimeEnvelope({
+      type: "session.backfill",
+      sessionId: "session-1",
+      cursor: "1",
+      olderCursor: null,
+      messages: []
+    });
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(mocked.getSessionMessages).toHaveBeenCalledWith(
+      "session-1",
+      null,
+      60,
+      "backward",
+      { targetHostId: undefined }
+    );
+    expect(store.getState().messages[0]?.content).toBe("空 backfill 后的真实消息");
+
+    store.destroy();
+  });
+
   it("活动会话已有较多缓存消息时，HTTP 历史兜底不会主动把首屏拉短", async () => {
     vi.useFakeTimers();
     writeViewSnapshot(SESSION_RUNTIME_SNAPSHOT_KEY, {

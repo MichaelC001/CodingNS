@@ -35,16 +35,20 @@ import { deleteDeepSeekHarnessSessionFiles } from "./deepseek-harness-session-st
 import { ensureText, extractTextBlocks, messageIdFromStableKey, nextTimestamp } from "./utils.js";
 
 /** 当前本机 DeepSeek Harness 运行时版本。 */
-export const DEEPSEEK_HARNESS_CURRENT_VERSION = "0.1.1-rc.2";
+export const DEEPSEEK_HARNESS_CURRENT_VERSION = "0.1.2-rc.1";
 
 /** 仍允许用于回滚的旧版运行时版本。 */
 export const DEEPSEEK_HARNESS_COMPATIBLE_VERSIONS = [
   DEEPSEEK_HARNESS_CURRENT_VERSION,
+  "0.1.1-rc.2",
   "0.1.0-rc.5"
 ] as const;
 
 /** Harness 握手协议版本。应用版本可以变化，但这个版本才决定字段和能力语义。 */
 export const DEEPSEEK_HARNESS_PROTOCOL_VERSION = "1";
+
+/** Harness 0.1.2 的 Remote Gateway 协议没有 host.describe 握手，使用独立协议标识。 */
+export const DEEPSEEK_HARNESS_REMOTE_PROTOCOL_VERSION = "remote-v1";
 
 export const DEEPSEEK_HARNESS_CAPABILITIES = [
   "host.describe",
@@ -52,6 +56,9 @@ export const DEEPSEEK_HARNESS_CAPABILITIES = [
   "session.history",
   "session.models",
   "llm.models",
+  "llm.listProviders",
+  "llm.listConfigurableProviders",
+  "llm.discoverModels",
   "workspace.list",
   "workspace.create",
   "session.create",
@@ -65,7 +72,37 @@ export const DEEPSEEK_HARNESS_CAPABILITIES = [
   "session.attachment",
   "agentPreset.list",
   "agentPreset.select",
+  "session.control",
   "approval.respond",
+  "events.mux",
+  "events.host"
+] as const;
+
+/** 0.1.2 Remote API 映射到 Provider 逻辑能力后的完整能力集合。 */
+export const DEEPSEEK_HARNESS_REMOTE_CAPABILITIES = [
+  "session.list",
+  "session.history",
+  "session.models",
+  // Provider 能力查询在没有具体会话时使用 llm.models，Remote 仍映射到 session/modelCatalog。
+  "llm.models",
+  "llm.listProviders",
+  "llm.listConfigurableProviders",
+  "llm.discoverModels",
+  "workspace.list",
+  "workspace.create",
+  "session.create",
+  "session.prompt",
+  "session.cancel",
+  "session.updateQueue",
+  "session.fork",
+  "session.rename",
+  "workspace.archiveSession",
+  "session.selectModel",
+  "session.attachment",
+  "approval.respond",
+  "agentPreset.list",
+  "agentPreset.select",
+  "session.control",
   "events.mux",
   "events.host"
 ] as const;
@@ -130,6 +167,16 @@ export function resolveDeepSeekHarnessCompatibility(
       protocolVersion: null,
       capabilities: [...DEEPSEEK_HARNESS_CAPABILITIES],
       detail: "旧版 Harness 未返回握手元数据，使用已验证的兼容回退矩阵"
+    };
+  }
+
+  if (protocolVersion === DEEPSEEK_HARNESS_REMOTE_PROTOCOL_VERSION) {
+    return {
+      status: "ready",
+      harnessVersion,
+      protocolVersion,
+      capabilities: declaredCapabilities ?? [...DEEPSEEK_HARNESS_REMOTE_CAPABILITIES],
+      detail: null
     };
   }
 
@@ -204,7 +251,11 @@ export interface DeepSeekHarnessEnvelope {
 
 export interface DeepSeekHarnessTransport {
   call<T>(method: string, payload: unknown): Promise<T>;
-  subscribe(channel: "mux" | "host", onEnvelope: (envelope: DeepSeekHarnessEnvelope) => void): ProviderSubscription;
+  subscribe(
+    channel: "mux" | "host",
+    onEnvelope: (envelope: DeepSeekHarnessEnvelope) => void,
+    options?: { sessionId?: string }
+  ): ProviderSubscription;
   getCompatibility?(): DeepSeekHarnessCompatibility | null;
 }
 
@@ -469,7 +520,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
       const messages = streamMapper.map(sourceEvent, sequence);
       if (messages.length === 0) return;
       void onEvent({ messages, cursor: encodeHarnessCursor(lastSeq) });
-    });
+    }, { sessionId: providerSessionId });
   }
 
   async resumeSession(providerSessionId: string, rawStoreRef: string): Promise<ResumeSessionResult> {

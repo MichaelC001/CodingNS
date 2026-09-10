@@ -43,6 +43,7 @@ export class DeepSeekHarnessEventBridge {
   private readonly listeners = new Map<string, Set<(event: DeepSeekHarnessBridgeEvent) => void>>();
   private readonly cursors = new Map<string, number>();
   private readonly closeFns: Array<() => void> = [];
+  private readonly remoteSessionCloseFns = new Map<string, () => void>();
   private readonly streamMappers = new Map<string, DeepSeekHarnessStreamMessageMapper>();
   private readonly pendingStreamMessages = new Map<string, Map<string, DeepSeekHarnessBridgeEvent>>();
   private readonly streamFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -70,6 +71,7 @@ export class DeepSeekHarnessEventBridge {
     this.cursors.set(sessionId, this.cursors.get(sessionId) ?? -1);
     try {
       await this.start();
+      if (this.options.client.isRemoteProtocol()) await this.openRemoteSession(sessionId);
     } catch (error) {
       set.delete(listener);
       if (set.size === 0) this.listeners.delete(sessionId);
@@ -77,6 +79,8 @@ export class DeepSeekHarnessEventBridge {
     }
     return {
       close: () => {
+        this.remoteSessionCloseFns.get(sessionId)?.();
+        this.remoteSessionCloseFns.delete(sessionId);
         set.delete(listener);
         if (set.size !== 0) return;
         this.listeners.delete(sessionId);
@@ -94,6 +98,8 @@ export class DeepSeekHarnessEventBridge {
   async close(): Promise<void> {
     this.disposed = true;
     for (const close of this.closeFns.splice(0)) close();
+    for (const close of this.remoteSessionCloseFns.values()) close();
+    this.remoteSessionCloseFns.clear();
     for (const timer of this.streamFlushTimers.values()) clearTimeout(timer);
     this.streamFlushTimers.clear();
     this.pendingStreamMessages.clear();
@@ -119,6 +125,13 @@ export class DeepSeekHarnessEventBridge {
       this.started = false;
       this.requestReconcile("harness-event-bridge.closed");
     };
+    if (this.options.client.isRemoteProtocol()) {
+      const hostClose = await this.options.client.subscribe("/api/events.host", (envelope) => this.handleEnvelope(envelope), undefined, onClose);
+      const controlClose = await this.options.client.subscribeSessionControl((envelope) => this.handleEnvelope(envelope), undefined, onClose);
+      this.closeFns.push(hostClose, controlClose);
+      for (const sessionId of this.listeners.keys()) await this.openRemoteSession(sessionId);
+      return;
+    }
     const muxClose = await this.options.client.subscribe("/api/events.mux", (envelope) => this.handleEnvelope(envelope), undefined, onClose);
     try {
       const hostClose = await this.options.client.subscribe("/api/events.host", (envelope) => this.handleEnvelope(envelope), undefined, onClose);
@@ -127,6 +140,18 @@ export class DeepSeekHarnessEventBridge {
       muxClose();
       throw error;
     }
+  }
+
+  private async openRemoteSession(sessionId: string): Promise<void> {
+    if (this.remoteSessionCloseFns.has(sessionId) || this.disposed) return;
+    const close = await this.options.client.subscribeSessionEvents(sessionId, (envelope) => this.handleEnvelope(envelope), undefined, () => {
+      this.remoteSessionCloseFns.delete(sessionId);
+      if (this.disposed) return;
+      this.started = false;
+      this.requestReconcile("harness-event-bridge.remote-follow-closed");
+    });
+    if (this.disposed || !this.listeners.has(sessionId)) close();
+    else this.remoteSessionCloseFns.set(sessionId, close);
   }
 
   private async reconcile(): Promise<void> {

@@ -7,7 +7,8 @@ export type PreferenceProviderId =
   | "opencode"
   | "gemini"
   | "kimi"
-  | "deepseek-harness";
+  | "deepseek-harness"
+  | "grok";
 export type PreferenceThemeId = "light" | "dark" | "sky-blue" | "eye-green";
 export type PreferenceReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type DebugPortPoolRole = "frontend" | "backend" | "worker" | "mock" | "custom";

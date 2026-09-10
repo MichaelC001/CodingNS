@@ -477,6 +477,12 @@ export const enUS = {
     providerManagementInstallMissing: "Not detected",
     providerManagementInstallUnknown: "Unknown",
     providerManagementVersionLocation: "Version location",
+    providerManagementRuntimeReady: "Ready",
+    providerManagementRuntimeDegraded: "Limited",
+    providerManagementRuntimeReadOnly: "Read-only",
+    providerManagementRuntimeVersion: "Runtime version",
+    providerManagementProtocolVersion: "Protocol version",
+    providerManagementLimitations: "Current limitations",
     providerManagementStateEnabled:
       "This CLI is currently shown in new session, fork, assistant, and Skill-related entry points.",
     providerManagementStateDisabled:

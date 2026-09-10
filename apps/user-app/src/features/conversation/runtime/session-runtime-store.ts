@@ -199,6 +199,7 @@ export class SessionRuntimeStore {
   private listeners = new Set<RuntimeListener>();
   private realtimeClient: RealtimeClient | null = null;
   private historyBootstrapFallbackTimer: number | null = null;
+  private historyBootstrapFallbackInFlight = false;
   private historyBootstrapEnvelopeReceived = false;
   private markSeenTimer: number | null = null;
   private markSeenInFlight = false;
@@ -348,6 +349,9 @@ export class SessionRuntimeStore {
 
     try {
       this.startRealtime();
+      // 历史首屏不能依赖 WebSocket 的订阅确认。WebSocket 建连失败、首包丢失
+      // 或服务端只返回了空 backfill 时，仍要通过 HTTP 把真实历史加载出来。
+      this.scheduleHistoryBootstrapFallback();
 
       if (hasBootstrappedMessages) {
         this.scheduleMarkSeen();
@@ -739,10 +743,14 @@ export class SessionRuntimeStore {
       return;
     }
 
+    const realtimeCursor = this.authoritativeMessages.length > 0
+      ? this.state.lastCursor
+      : null;
+
     this.realtimeClient = new RealtimeClient({
       targetHostId: this.options.targetHostId,
       sessionId: this.sessionId,
-      cursor: this.state.lastCursor,
+      cursor: realtimeCursor,
       limit: REALTIME_LIMIT,
       onSubscribed: () => {
         logPerfDebug("session_send.realtime_subscribed", {
@@ -793,8 +801,15 @@ export class SessionRuntimeStore {
       },
       onEnvelope: (event) => {
         const isFirstHistoryEnvelope = !this.historyBootstrapEnvelopeReceived;
-        this.historyBootstrapEnvelopeReceived = true;
-        this.clearHistoryBootstrapFallbackTimer();
+        const hasUsableHistoryEnvelope =
+          event.messages.length > 0
+          || this.authoritativeMessages.length > 0
+          || this.historyBootstrapEnvelopeReceived;
+
+        if (hasUsableHistoryEnvelope) {
+          this.historyBootstrapEnvelopeReceived = true;
+          this.clearHistoryBootstrapFallbackTimer();
+        }
         const shouldAttemptReplaceSnapshotSeed =
           isFirstHistoryEnvelope
           && this.replaceSnapshotSeedOnBackfill
@@ -848,6 +863,10 @@ export class SessionRuntimeStore {
 
         if (this.state.queuedMessages.length > 0) {
           void this.refreshQueue();
+        }
+
+        if (!this.historyBootstrapEnvelopeReceived) {
+          this.scheduleHistoryBootstrapFallback();
         }
       },
       onOlderHistory: (event) => {
@@ -1197,7 +1216,12 @@ export class SessionRuntimeStore {
   }
 
   private scheduleHistoryBootstrapFallback(): void {
-    if (this.historyBootstrapEnvelopeReceived || this.historyBootstrapFallbackTimer !== null) {
+    if (
+      this.hasAuthoritativeBootstrapMessages
+      || this.historyBootstrapEnvelopeReceived
+      || this.historyBootstrapFallbackTimer !== null
+      || this.historyBootstrapFallbackInFlight
+    ) {
       return;
     }
 
@@ -1222,6 +1246,12 @@ export class SessionRuntimeStore {
   }
 
   private async resolveHistoryBootstrapFallback(): Promise<void> {
+    if (this.historyBootstrapFallbackInFlight) {
+      return;
+    }
+
+    this.historyBootstrapFallbackInFlight = true;
+
     try {
       // WebSocket 首包偶发丢失时，主动拉一页最新历史兜底，避免首次点开会话看到旧快照。
       const fallbackLimit = Math.min(
@@ -1236,7 +1266,7 @@ export class SessionRuntimeStore {
         { targetHostId: this.options.targetHostId }
       );
 
-      if (this.historyBootstrapEnvelopeReceived) {
+      if (this.destroyed || this.historyBootstrapEnvelopeReceived) {
         return;
       }
 
@@ -1281,6 +1311,8 @@ export class SessionRuntimeStore {
       this.scheduleOlderHistoryPrefetch("bootstrap_fallback");
     } catch {
       // 兜底失败不打断主链路，继续沿用当前状态。
+    } finally {
+      this.historyBootstrapFallbackInFlight = false;
     }
   }
 
