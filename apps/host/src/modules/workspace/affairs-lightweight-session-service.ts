@@ -3,6 +3,11 @@ import os from "node:os";
 import path from "node:path";
 
 import type { HistoryPage, ProviderId, SyncStatus } from "@codingns/session-sync-core";
+import type {
+  ProviderRuntimeAdapter,
+  ProviderRuntimeRunRequest,
+  RuntimeEventInput
+} from "@codingns/session-sync-core/runtime/types";
 
 import { AppError } from "../../shared/errors/app-error.js";
 import { createId } from "../../shared/utils/id.js";
@@ -16,7 +21,7 @@ import type {
 import type { SessionProviderConfigService } from "../sessions/session-provider-config-service.js";
 import type { WorkspaceService } from "./workspace-service.js";
 
-const LIGHTWEIGHT_PROVIDER_IDS = new Set<ProviderId>(["codex", "claude-code"]);
+const LIGHTWEIGHT_PROVIDER_IDS = new Set<ProviderId>(["codex", "claude-code", "deepseek-harness"]);
 const LIGHTWEIGHT_STORAGE_VERSION = 1;
 const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
 const DEFAULT_OPENAI_MODEL = "gpt-5.4";
@@ -197,7 +202,8 @@ export class AffairsLightweightSessionService {
   constructor(
     private readonly hostDataRootDir: string,
     private readonly sessionProviderConfigService: Pick<SessionProviderConfigService, "prepareSessionBinding" | "resolveLaunchContext"> | null = null,
-    private readonly workspaceService: Pick<WorkspaceService, "getWorkspaceOrThrow"> | null = null
+    private readonly workspaceService: Pick<WorkspaceService, "getWorkspaceOrThrow"> | null = null,
+    private readonly deepSeekHarnessRuntimeAdapter: ProviderRuntimeAdapter | null = null
   ) {}
 
   configureTeableMirrorSyncNotifier(notifier: (userId: string, reason: string) => void): void {
@@ -517,7 +523,7 @@ export class AffairsLightweightSessionService {
       providerConfigMode: input.providerConfigMode ?? document.session.providerConfigMode ?? null,
       providerPresetId: input.providerPresetId ?? document.session.providerPresetId ?? null
     });
-    const userMessage = createUserMessage({
+    let userMessage = createUserMessage({
       provider,
       providerSessionId: document.session.providerSessionId,
       sessionId: document.session.sessionId,
@@ -571,8 +577,22 @@ export class AffairsLightweightSessionService {
         await this.writeSessionDocument(workingDocument);
         await onEvent?.({ type: "tool", ...event });
       };
-      const assistantContent = provider === "codex"
-        ? await this.generateOpenAiResponse(
+      let assistantContent: string;
+      if (provider === "deepseek-harness") {
+        const harnessResult = await this.generateDeepSeekHarnessResponse(
+          runningDocument,
+          input,
+          providerBinding,
+          onEvent,
+          (nextDocument) => {
+            workingDocument = nextDocument;
+            userMessage = workingDocument.messages.find((message) => message.messageId === userMessage.messageId) ?? userMessage;
+          }
+        );
+        workingDocument = harnessResult.document;
+        assistantContent = harnessResult.content;
+      } else if (provider === "codex") {
+        assistantContent = await this.generateOpenAiResponse(
             runningDocument,
             input,
             onEvent
@@ -581,8 +601,9 @@ export class AffairsLightweightSessionService {
                 }
               : undefined,
             handleToolEvent
-          )
-        : await this.generateAnthropicResponse(
+        );
+      } else {
+        assistantContent = await this.generateAnthropicResponse(
             runningDocument,
             input,
             onEvent
@@ -591,7 +612,9 @@ export class AffairsLightweightSessionService {
                 }
               : undefined,
             handleToolEvent
-          );
+        );
+      }
+      userMessage = workingDocument.messages.find((message) => message.messageId === userMessage.messageId) ?? userMessage;
       const completedAt = new Date().toISOString();
       const assistantMessage = createAssistantMessage({
         provider,
@@ -691,6 +714,202 @@ export class AffairsLightweightSessionService {
       }
     }
     return this.generateAnthropicResponseSync(document, input);
+  }
+
+  private async generateDeepSeekHarnessResponse(
+    document: AffairsLightweightSessionDocument,
+    input: SendAffairsLightweightSessionMessageInput & { clientRequestId: string },
+    providerBinding: LightweightProviderBinding,
+    onEvent?: (event: AffairsLightweightSessionStreamEvent) => Promise<void> | void,
+    onDocumentChange?: (document: AffairsLightweightSessionDocument) => void
+  ): Promise<{ content: string; document: AffairsLightweightSessionDocument }> {
+    if (!this.deepSeekHarnessRuntimeAdapter) {
+      throw new AppError({
+        statusCode: 503,
+        errorCode: "DEEPSEEK_HARNESS_RUNTIME_UNAVAILABLE",
+        detail: "DeepSeek Harness sidecar 当前不可用，请检查 Host 的 Harness 配置。"
+      });
+    }
+    if ((input.attachments ?? []).length > 0) {
+      throw new AppError({
+        statusCode: 400,
+        errorCode: "DEEPSEEK_HARNESS_LIGHTWEIGHT_ATTACHMENTS_UNSUPPORTED",
+        detail: "DeepSeek Harness 轻量会话暂不支持附件，请切换到 Agent 会话。",
+        field: "attachments"
+      });
+    }
+
+    const workspaceId = document.session.sourceWorkspaceId?.trim() || document.session.workspaceId;
+    const workspace = this.workspaceService?.getWorkspaceOrThrow(workspaceId);
+    const workspacePath = typeof workspace?.path === "string" ? workspace.path.trim() : "";
+    if (!workspacePath) {
+      throw new AppError({
+        statusCode: 500,
+        errorCode: "DEEPSEEK_HARNESS_WORKSPACE_UNAVAILABLE",
+        detail: "无法为 DeepSeek Harness 找到当前工作区路径。"
+      });
+    }
+
+    let workingDocument = document;
+    let userMessage = workingDocument.messages.find((message) => message.role === "user" && message.rawRef.includes(input.clientRequestId))
+      ?? workingDocument.messages[workingDocument.messages.length - 1];
+    let terminalError: AppError | null = null;
+    const assistantParts = new Map<string, { content: string; sequence: number }>();
+
+    const applyBinding = (binding: { providerSessionId?: string | null; rawStoreRef?: string | null }): void => {
+      const providerSessionId = binding.providerSessionId?.trim() || workingDocument.session.providerSessionId;
+      const requestedRawStoreRef = binding.rawStoreRef?.trim() || "";
+      // Harness adapter 的旧会话请求可能仍携带轻量 JSON 路径，不能覆盖已经确认的 harness:// 引用。
+      const rawStoreRef = requestedRawStoreRef
+        && (!workingDocument.session.rawStoreRef.startsWith("harness://") || requestedRawStoreRef.startsWith("harness://"))
+        ? requestedRawStoreRef
+        : workingDocument.session.rawStoreRef;
+      if (providerSessionId === workingDocument.session.providerSessionId && rawStoreRef === workingDocument.session.rawStoreRef) {
+        return;
+      }
+      workingDocument = {
+        ...workingDocument,
+        session: {
+          ...workingDocument.session,
+          providerSessionId,
+          rawStoreRef
+        },
+        messages: workingDocument.messages.map((message) => ({
+          ...message,
+          providerSessionId,
+          rawRef: message.rawRef.replace(document.session.rawStoreRef, rawStoreRef)
+        }))
+      };
+      onDocumentChange?.(workingDocument);
+      userMessage = userMessage
+        ? {
+            ...userMessage,
+            providerSessionId,
+            rawRef: userMessage.rawRef.replace(document.session.rawStoreRef, rawStoreRef)
+          }
+        : userMessage;
+    };
+
+    const handleToolEvent = async (event: LightweightToolLifecycleEvent): Promise<void> => {
+      workingDocument = upsertToolLifecycleMessage({
+        document: workingDocument,
+        event,
+        observedAt: new Date().toISOString()
+      });
+      onDocumentChange?.(workingDocument);
+      await this.writeSessionDocument(workingDocument);
+      await onEvent?.({ type: "tool", ...event });
+    };
+
+    const emitToolMessage = async (message: HistoryPage["messages"][number]): Promise<void> => {
+      if (!message.toolCall) return;
+      await handleToolEvent({
+        toolCallId: message.toolCall.callId,
+        toolName: message.toolCall.name,
+        status: message.toolCall.status,
+        detail: message.toolCall.error,
+        input: message.toolCall.input,
+        output: message.toolCall.output
+      });
+    };
+
+    const handleRuntimeEvent = async (event: RuntimeEventInput): Promise<void> => {
+      applyBinding(event);
+      if (event.type === "message" && event.message) {
+        const message = event.message;
+        if (message.role === "tool") {
+          await emitToolMessage(message);
+          return;
+        }
+        if (message.role !== "assistant" || message.kind !== "text") {
+          return;
+        }
+        const previous = assistantParts.get(message.messageId)?.content ?? "";
+        assistantParts.set(message.messageId, {
+          content: message.content,
+          sequence: message.sequence
+        });
+        const delta = message.content.startsWith(previous)
+          ? message.content.slice(previous.length)
+          : message.content;
+        if (delta) {
+          await onEvent?.({ type: "delta", delta });
+        }
+        return;
+      }
+      if (event.type === "error") {
+        terminalError = new AppError({
+          statusCode: 502,
+          errorCode: event.errorCode?.trim() || "DEEPSEEK_HARNESS_RUNTIME_FAILED",
+          detail: event.detail?.trim() || "DeepSeek Harness 运行失败"
+        });
+        return;
+      }
+      if (event.type === "interrupted") {
+        terminalError = new AppError({
+          statusCode: 409,
+          errorCode: "DEEPSEEK_HARNESS_INTERRUPTED",
+          detail: event.detail?.trim() || "DeepSeek Harness 会话已中断"
+        });
+      }
+    };
+
+    const isFirstTurn = document.session.providerSessionId.startsWith("affairs-lightweight:");
+    const request: ProviderRuntimeRunRequest = {
+      sessionId: document.session.sessionId,
+      workspaceId: document.session.workspaceId,
+      workspacePath,
+      provider: "deepseek-harness",
+      providerSessionId: isFirstTurn ? null : document.session.providerSessionId,
+      rawStoreRef: document.session.rawStoreRef,
+      runtimeHomeDir: providerBinding.runtimeHomeDir,
+      sequenceBase: document.messages.length + 1,
+      options: {
+        content: input.content,
+        clientRequestId: input.clientRequestId,
+        model: input.model?.trim() || null,
+        reasoningLevel: input.reasoningLevel?.trim() || null,
+        agentPreset: isFirstTurn ? "minimal" : null,
+        permissionMode: null,
+        providerPrompt: `${LIGHTWEIGHT_SYSTEM_PROMPT}\n\n用户问题：${input.content}`,
+        attachments: []
+      }
+    };
+    const sink = {
+      emit: handleRuntimeEvent,
+      updateSessionBinding: applyBinding
+    };
+    const launch = isFirstTurn
+      ? await this.deepSeekHarnessRuntimeAdapter.startSession(request, sink)
+      : await this.deepSeekHarnessRuntimeAdapter.continueSession(request, sink);
+    applyBinding({
+      providerSessionId: launch.providerSessionId,
+      rawStoreRef: workingDocument.session.rawStoreRef.startsWith("harness://")
+        ? workingDocument.session.rawStoreRef
+        : launch.rawStoreRef
+    });
+    await this.writeSessionDocument(workingDocument);
+    await launch.completed;
+    if (terminalError) {
+      throw terminalError;
+    }
+
+    const assistantContent = [...assistantParts.values()]
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((part) => part.content.trim())
+      .filter(Boolean)
+      .join("\n\n");
+    if (!assistantContent) {
+      throw new AppError({
+        statusCode: 502,
+        errorCode: "DEEPSEEK_HARNESS_EMPTY_RESPONSE",
+        detail: "DeepSeek Harness 没有返回正文"
+      });
+    }
+    return {
+      content: assistantContent,
+      document: workingDocument
+    };
   }
 
   private async generateOpenAiResponseSync(
@@ -996,7 +1215,8 @@ export class AffairsLightweightSessionService {
   }
 
   private async writeSessionDocument(document: AffairsLightweightSessionDocument): Promise<void> {
-    const filePath = document.session.rawStoreRef;
+    // rawStoreRef 属于 provider 原生存储；轻量会话自己的 JSON 文件始终按会话 ID 定位。
+    const filePath = this.resolveSessionFilePath(document.session.workspaceId, document.session.sessionId);
     const tempFilePath = `${filePath}.${process.pid}.${createId()}${LIGHTWEIGHT_SESSION_TMP_FILE_SUFFIX}`;
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(tempFilePath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
@@ -1307,7 +1527,7 @@ function validateLightweightProvider(provider: string): asserts provider is Prov
     throw new AppError({
       statusCode: 400,
       errorCode: "INVALID_INPUT",
-      detail: "事务轻量会话只支持 Codex 和 Claude Code",
+      detail: "事务轻量会话只支持 Codex、Claude Code 和 DeepSeek Harness",
       field: "provider"
     });
   }

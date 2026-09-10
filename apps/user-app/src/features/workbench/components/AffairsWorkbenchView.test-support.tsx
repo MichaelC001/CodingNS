@@ -1485,7 +1485,8 @@ beforeEach(() => {
     { provider: "codex", enabled: true },
     { provider: "claude-code", enabled: true },
     { provider: "opencode", enabled: true },
-    { provider: "legna-code", enabled: true }
+    { provider: "legna-code", enabled: true },
+    { provider: "deepseek-harness", enabled: true }
   ]);
   conversationApiMock.listProviderCapabilities.mockResolvedValue({});
   const lightweightStartResponse = {

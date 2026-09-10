@@ -1532,7 +1532,8 @@ export function createServer(config: HostConfig) {
   const affairsLightweightSessionService = new AffairsLightweightSessionService(
     path.dirname(config.databasePath),
     sessionProviderConfigService,
-    workspaceService
+    workspaceService,
+    deepSeekHarnessRuntimeAdapter
   );
   const teableCredentialService = new TeableCredentialService(
     repositories.userTeableCredentialRepository,

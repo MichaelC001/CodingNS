@@ -1835,7 +1835,8 @@ describe("AffairsWorkbenchView", () => {
       { provider: "codex", enabled: true },
       { provider: "claude-code", enabled: true },
       { provider: "opencode", enabled: true },
-      { provider: "legna-code", enabled: true }
+      { provider: "legna-code", enabled: true },
+      { provider: "deepseek-harness", enabled: true }
     ]);
     conversationApiMock.listProviderCapabilities.mockResolvedValue({});
     const lightweightStartResponse = {
@@ -2722,7 +2723,7 @@ describe("AffairsWorkbenchView", () => {
     const user = userEvent.setup();
     renderWorkbenchWithSectionMenu();
 
-    const conversationTab = screen.getByRole("tab", { name: "对话" });
+    const conversationTab = screen.getByRole("tab", { name: "纯对话" });
     expect(conversationTab).toBeInTheDocument();
 
     await user.click(conversationTab);
@@ -2738,10 +2739,11 @@ describe("AffairsWorkbenchView", () => {
 
     const dialog = await screen.findByRole("dialog", { name: t("shell.createSessionModalTitle") });
     const dialogScope = within(dialog);
-    expect(dialogScope.getByText("轻量模式")).toBeInTheDocument();
+    expect(dialogScope.getByText("纯对话模式")).toBeInTheDocument();
     expect(dialogScope.getByText("助手模式")).toBeInTheDocument();
     expect(dialogScope.getAllByRole("button", { name: "Codex" })).toHaveLength(2);
     expect(dialogScope.getAllByRole("button", { name: "Claude Code" })).toHaveLength(2);
+    expect(dialogScope.getAllByRole("button", { name: "DeepSeek Harness" })).toHaveLength(1);
     expect(dialogScope.queryByRole("button", { name: "Gemini" })).not.toBeInTheDocument();
     expect(dialogScope.queryByRole("button", { name: "Kimi" })).not.toBeInTheDocument();
   });
@@ -2754,7 +2756,7 @@ describe("AffairsWorkbenchView", () => {
       primarySection: "conversation",
       selectedNodeId: null
     }, navigationGroupsWithBoundLibraryWorkspace);
-    const conversationHeading = await screen.findByRole("heading", { name: "纯对话" });
+    const conversationHeading = await screen.findByRole("heading", { level: 1, name: "纯对话" });
     const conversationShell = conversationHeading.closest(".affairs-conversation-empty-state");
     expect(conversationShell).not.toBeNull();
     await user.click(within(conversationShell as HTMLElement).getByRole("button", { name: "新建对话" }));
@@ -2776,7 +2778,7 @@ describe("AffairsWorkbenchView", () => {
       primarySection: "conversation",
       selectedNodeId: null
     }, navigationGroupsWithBoundLibraryWorkspace);
-    const conversationHeading = await screen.findByRole("heading", { name: "纯对话" });
+    const conversationHeading = await screen.findByRole("heading", { level: 1, name: "纯对话" });
     const conversationShell = conversationHeading.closest(".affairs-conversation-empty-state");
     expect(conversationShell).not.toBeNull();
     await user.click(within(conversationShell as HTMLElement).getByRole("button", { name: "新建对话" }));
@@ -3208,13 +3210,13 @@ describe("AffairsWorkbenchView", () => {
 
     renderWorkbenchWithSectionMenu();
 
-    await user.click(screen.getByRole("tab", { name: "对话" }));
-    const conversationHeading = await screen.findByRole("heading", { name: "事务对话" });
+    await user.click(screen.getByRole("tab", { name: "纯对话" }));
+    const conversationHeading = await screen.findByRole("heading", { level: 1, name: "纯对话" });
     const conversationShell = conversationHeading.closest(".affairs-conversation-empty-state");
     expect(conversationShell).not.toBeNull();
     await user.click(within(conversationShell as HTMLElement).getByRole("button", { name: "新建对话" }));
     const dialog = await screen.findByRole("dialog", { name: t("shell.createSessionModalTitle") });
-    const lightweightSection = within(dialog).getByText("轻量模式").closest("section");
+    const lightweightSection = within(dialog).getByText("纯对话模式").closest("section");
     expect(lightweightSection).not.toBeNull();
     await user.click(within(lightweightSection as HTMLElement).getByRole("button", { name: "Codex" }));
     await user.click(screen.getByTestId("affairs-composer-send"));
@@ -3339,13 +3341,13 @@ describe("AffairsWorkbenchView", () => {
     });
     renderWorkbenchWithSectionMenu();
 
-    await user.click(screen.getByRole("tab", { name: "对话" }));
-    const conversationHeading = await screen.findByRole("heading", { name: "事务对话" });
+    await user.click(screen.getByRole("tab", { name: "纯对话" }));
+    const conversationHeading = await screen.findByRole("heading", { level: 1, name: "纯对话" });
     const conversationShell = conversationHeading.closest(".affairs-conversation-empty-state");
     expect(conversationShell).not.toBeNull();
     await user.click(within(conversationShell as HTMLElement).getByRole("button", { name: "新建对话" }));
     const dialog = await screen.findByRole("dialog", { name: t("shell.createSessionModalTitle") });
-    const lightweightSection = within(dialog).getByText("轻量模式").closest("section");
+    const lightweightSection = within(dialog).getByText("纯对话模式").closest("section");
     expect(lightweightSection).not.toBeNull();
     await user.click(within(lightweightSection as HTMLElement).getByRole("button", { name: "Codex" }));
 

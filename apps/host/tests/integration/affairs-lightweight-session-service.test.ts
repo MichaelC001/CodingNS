@@ -3,6 +3,12 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { NormalizedMessage } from "@codingns/session-sync-core";
+import type {
+  ProviderRuntimeAdapter,
+  ProviderRuntimeEventSink,
+  ProviderRuntimeRunRequest
+} from "@codingns/session-sync-core/runtime/types";
 
 import { AffairsLightweightSessionService } from "../../src/modules/workspace/affairs-lightweight-session-service.js";
 
@@ -712,7 +718,189 @@ describe("AffairsLightweightSessionService", () => {
     const workspaceDirEntries = await fs.readdir(path.dirname(sessionFilePath));
     expect(workspaceDirEntries.filter((name) => name.includes(".tmp"))).toEqual([]);
   });
+
+  it("DeepSeek Harness 轻量会话使用 minimal preset，并保存 web_search 工具事件", async () => {
+    const hostDataRootDir = await fs.mkdtemp(path.join(os.tmpdir(), "affairs-lightweight-harness-"));
+    const requests: ProviderRuntimeRunRequest[] = [];
+    const adapter = createFakeHarnessAdapter({
+      onStart: async (request, sink) => {
+        requests.push(request);
+        sink.updateSessionBinding({
+          providerSessionId: "harness-session-1",
+          rawStoreRef: "harness://harness-session-1"
+        });
+        await sink.emit({
+          type: "message",
+          providerSessionId: "harness-session-1",
+          rawStoreRef: "harness://harness-session-1",
+          message: createHarnessMessage({
+            messageId: "tool-call-1",
+            providerSessionId: "harness-session-1",
+            role: "tool",
+            kind: "tool_call",
+            content: "{\"queries\":[\"CodingNS 最新版本\"]}",
+            sequence: 2,
+            toolCall: {
+              callId: "web-search-1",
+              name: "web_search",
+              input: "{\"queries\":[\"CodingNS 最新版本\"]}",
+              output: null,
+              error: null,
+              status: "running"
+            }
+          })
+        });
+        await sink.emit({
+          type: "message",
+          providerSessionId: "harness-session-1",
+          rawStoreRef: "harness://harness-session-1",
+          message: createHarnessMessage({
+            messageId: "tool-result-1",
+            providerSessionId: "harness-session-1",
+            role: "tool",
+            kind: "tool_result",
+            content: "https://codingns.example/releases",
+            sequence: 3,
+            toolCall: {
+              callId: "web-search-1",
+              name: "web_search",
+              input: "",
+              output: "https://codingns.example/releases",
+              error: null,
+              status: "completed"
+            }
+          })
+        });
+        await sink.emit({
+          type: "message",
+          providerSessionId: "harness-session-1",
+          rawStoreRef: "harness://harness-session-1",
+          message: createHarnessMessage({
+            messageId: "assistant-1",
+            providerSessionId: "harness-session-1",
+            role: "assistant",
+            kind: "text",
+            content: "我已联网搜索并找到最新信息。",
+            sequence: 4
+          })
+        });
+        await sink.emit({
+          type: "complete",
+          status: "completed",
+          providerSessionId: "harness-session-1",
+          rawStoreRef: "harness://harness-session-1"
+        });
+      }
+    });
+    const service = new AffairsLightweightSessionService(
+      hostDataRootDir,
+      null,
+      { getWorkspaceOrThrow: () => ({ path: "/tmp/codingns-workspace" }) },
+      adapter
+    );
+
+    const result = await service.startSession({
+      workspaceId: "workspace-1",
+      userId: "user-1",
+      provider: "deepseek-harness",
+      content: "搜索 CodingNS 的最新版本"
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.providerSessionId).toBeNull();
+    expect(requests[0]?.options.agentPreset).toBe("minimal");
+    expect(requests[0]?.options.providerPrompt).toContain("需要最新信息时，优先使用联网搜索");
+    expect(result.session.providerSessionId).toBe("harness-session-1");
+    expect(result.session.rawStoreRef).toBe("harness://harness-session-1");
+    expect(result.userMessage.providerSessionId).toBe("harness-session-1");
+    expect(result.assistantMessage.content).toContain("联网搜索");
+    expect(result.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        kind: "tool_result",
+        toolCall: expect.objectContaining({
+          name: "web_search",
+          status: "completed",
+          output: "https://codingns.example/releases"
+        })
+      })
+    ]));
+    const stored = await service.readMessages("workspace-1", result.session.sessionId, "user-1");
+    expect(stored.messages.at(-1)?.content).toContain("联网搜索");
+  });
+
+  it("DeepSeek Harness 失败时轻量会话保持失败状态，不生成成功回复", async () => {
+    const hostDataRootDir = await fs.mkdtemp(path.join(os.tmpdir(), "affairs-lightweight-harness-failed-"));
+    let sessionId = "";
+    const adapter = createFakeHarnessAdapter({
+      onStart: async (request, sink) => {
+        sessionId = request.sessionId;
+        await sink.emit({
+          type: "error",
+          errorCode: "HARNESS_TURN_FAILED",
+          detail: "web_search backend unavailable"
+        });
+      }
+    });
+    const service = new AffairsLightweightSessionService(
+      hostDataRootDir,
+      null,
+      { getWorkspaceOrThrow: () => ({ path: "/tmp/codingns-workspace" }) },
+      adapter
+    );
+
+    await expect(service.startSession({
+      workspaceId: "workspace-1",
+      userId: "user-1",
+      provider: "deepseek-harness",
+      content: "搜索今天的新闻"
+    })).rejects.toMatchObject({ errorCode: "HARNESS_TURN_FAILED" });
+
+    const session = await service.getSession("workspace-1", sessionId, "user-1");
+    expect(session.runningState).toBe("failed");
+    expect(session.lastErrorCode).toBe("HARNESS_TURN_FAILED");
+    const messages = await service.readMessages("workspace-1", sessionId, "user-1");
+    expect(messages.messages.some((message) => message.role === "assistant")).toBe(false);
+  });
 });
+
+function createFakeHarnessAdapter(input: {
+  onStart: (request: ProviderRuntimeRunRequest, sink: ProviderRuntimeEventSink) => Promise<void>;
+}): ProviderRuntimeAdapter {
+  const launch = (request: ProviderRuntimeRunRequest, sink: ProviderRuntimeEventSink) => input.onStart(request, sink).then(() => ({
+    providerSessionId: "harness-session-1",
+    rawStoreRef: "harness://harness-session-1",
+    completed: Promise.resolve()
+  }));
+  return {
+    providerId: "deepseek-harness",
+    startSession: launch,
+    continueSession: launch
+  };
+}
+
+function createHarnessMessage(input: {
+  messageId: string;
+  providerSessionId: string;
+  role: NormalizedMessage["role"];
+  kind: NormalizedMessage["kind"];
+  content: string;
+  sequence: number;
+  toolCall?: NormalizedMessage["toolCall"];
+}): NormalizedMessage {
+  return {
+    messageId: input.messageId,
+    provider: "deepseek-harness",
+    providerSessionId: input.providerSessionId,
+    role: input.role,
+    kind: input.kind,
+    content: input.content,
+    toolCall: input.toolCall ?? null,
+    timestamp: "2026-08-25T00:00:00.000Z",
+    sequence: input.sequence,
+    rawRef: `harness://${input.providerSessionId}#${input.sequence}`
+  };
+}
 
 function restoreEnv(name: string, value: string | undefined) {
   if (value === undefined) {

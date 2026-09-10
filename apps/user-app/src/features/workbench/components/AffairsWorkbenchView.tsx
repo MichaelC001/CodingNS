@@ -1497,7 +1497,7 @@ function resolveHtmlSourceScopeOption(
   return options.find((option) => option.value === normalizedValue) ?? null;
 }
 
-const AFFAIRS_LIGHTWEIGHT_PROVIDER_IDS: ProviderId[] = ["codex", "claude-code"];
+const AFFAIRS_LIGHTWEIGHT_PROVIDER_IDS: ProviderId[] = ["codex", "claude-code", "deepseek-harness"];
 const AFFAIRS_ASSISTANT_PROVIDER_IDS: ProviderId[] = ["codex", "claude-code"];
 const affairsLightweightRuntimeMemory = new Map<string, AffairsLightweightRuntimeSnapshot>();
 
@@ -8104,6 +8104,7 @@ function isAffairsAssistantProvider(provider: ProviderId | null | undefined): pr
 }
 
 function createAffairsLightweightCapabilities(provider: ProviderId): ProviderCapabilitiesDto {
+  const isDeepSeekHarness = provider === "deepseek-harness";
   return {
     provider,
     canStartSession: true,
@@ -8111,10 +8112,10 @@ function createAffairsLightweightCapabilities(provider: ProviderId): ProviderCap
     canSendMessage: true,
     inRunInputMode: "none",
     supportsSubagents: false,
-    supportsInterrupt: false,
-    supportsStructuredToolCalls: false,
+    supportsInterrupt: isDeepSeekHarness,
+    supportsStructuredToolCalls: isDeepSeekHarness,
     supportsTokenUsage: false,
-    supportsAttachments: true,
+    supportsAttachments: !isDeepSeekHarness,
     supportsPermissionPrompt: false,
     supportsCheckpoint: false,
     supportsSlashMenu: false,
