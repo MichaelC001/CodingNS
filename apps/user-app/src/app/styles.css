@@ -7727,6 +7727,8 @@ textarea:focus-visible {
   left: 0;
   bottom: calc(100% + 10px);
   z-index: 90;
+  max-height: 80vh;
+  max-height: 80dvh;
   width: max(100%, min(300px, calc(100vw - 96px)));
   padding: 6px;
   border-radius: 16px;
@@ -7743,7 +7745,8 @@ textarea:focus-visible {
 
 .composer-mac-select-list {
   display: flex;
-  max-height: 240px;
+  max-height: calc(80vh - 14px);
+  max-height: calc(80dvh - 14px);
   flex-direction: column;
   gap: 3px;
   overflow-y: auto;
