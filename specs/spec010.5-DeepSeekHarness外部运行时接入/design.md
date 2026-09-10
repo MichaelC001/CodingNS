@@ -25,7 +25,7 @@
 
 - 后端：CodingNS Host、Fastify、现有 `session-sync-core`、Provider/Runtime 服务。
 - 外部运行时：DeepSeek Harness Web，使用协议版本和能力集合协商，不直接依赖 Harness 源码内部模块。
-- 通信：HTTP JSON-RPC `POST /api/<method>`、HTTP `POST /api/respond`、下行 WebSocket `/api/events.mux` 和 `/api/events.host`。
+- 通信：legacy 使用 HTTP JSON-RPC `POST /api/<method>`、`POST /api/respond` 和两个下行 WebSocket；`0.1.2-rc.1` 使用 Remote RPC `POST /api/<namespace>/<method>`、`/api/remote.mux` 逻辑流以及 `$events/result`。
 - 数据存储：优先复用 CodingNS 现有会话索引和运行时持久化；不复制 Harness 的完整日志作为第二份权威数据源。
 - 认证授权：所有用户请求先经过 CodingNS 现有认证和 workspace 权限；sidecar 只接受 loopback 流量，不承担用户认证。
 - 后台任务：sidecar 健康检查、外部会话恢复和需要跨请求复用的刷新必须接入现有 `TaskManager`，不新增私有全局 timer、inflight Map 或重试队列。
@@ -85,7 +85,7 @@ Harness 在 CodingNS 中以 `deepseek-harness` Provider 路由出现，但这个
 
 1. CodingNS 读取已授权的 binding。
 2. 适配器把 CodingNS cursor 转换为 Harness `beforeSeq` 和 `maxMessages`。
-3. 调用 `session.history`，取得 `HistoryEntry[]`。
+3. legacy 调用 `session.history`；Remote 先从 `session/follow` 快照取得 cursor，再调用 `session/page`，取得 `HistoryEntry[]`。
 4. `DeepSeekHarnessMessageMapper` 只把可表达为 `NormalizedMessage` 的事件写入 CodingNS history page。
 5. 原始 Harness event type、seq 和 sidecar instance id 写入 `rawRef` 或诊断元数据。
 
@@ -93,7 +93,7 @@ Harness 在 CodingNS 中以 `deepseek-harness` Provider 路由出现，但这个
 
 1. `DeepSeekHarnessEventBridge` 发现 mux 或 host socket 关闭，先标记连接为 degraded。
 2. 通过 `TaskManager` 以 `harness.session.reconcile` 和 `harness.sidecar.health` 的稳定 task key 合并重复恢复请求。
-3. 读取每个受影响会话的最后 Harness seq，调用 `session.history` 获取缺口。
+3. 读取每个受影响会话的最后 Harness seq，legacy 调用 `session.history`，Remote 调用 `session/page` 获取缺口。
 4. 按 seq、事件类型、事件原始引用去重，再交给 CodingNS runtime/history 广播。
 5. 历史补齐成功后重新建立下行 WebSocket，并重放当前 pending approval/question/queue 快照。
 6. 恢复失败时保留最近成功快照，向用户报告运行时降级，不删除 session binding。
@@ -231,7 +231,7 @@ Harness 在 CodingNS 中以 `deepseek-harness` Provider 路由出现，但这个
 | `/api/sessions/:id/messages/live` | `session.prompt` + EventBridge |
 | `/api/sessions/:id/queue` | `session.prompt(mode=queue)` |
 | `/api/sessions/:id/interrupt` | `session.cancel` |
-| `/api/sessions/:id/messages` GET/历史服务 | `session.history` |
+| `/api/sessions/:id/messages` GET/历史服务 | legacy `session.history`；Remote `session/follow` cursor + `session/page` |
 | `/api/sessions/:id/forks` | DeepSeek 源会话调用 `session.fork`，仅支持完成 turn；其他 Provider 以可见文本历史创建新的 DeepSeek 会话 |
 | `/api/sessions/:id/permission-requests/:requestId/reply` | `/api/respond` |
 | `/api/sessions/:id/attachments/...` | `session.attachment` |
@@ -433,7 +433,7 @@ CodingNS session binding 是访问控制入口；Harness session 是 Agent 执�
 - Harness 仍处于 Developer Preview，API endpoint、事件字段和启动方式可能发生兼容性破坏。
 - Harness Web API 当前没有认证层，任何非 loopback 暴露都会放大代码执行风险。
 - Harness session history 是事件日志，CodingNS 使用 NormalizedMessage；转换遗漏会导致 UI、搜索或运行时状态不一致。
-- Harness `events.mux` 的 since 恢复能力当前未实现，断线恢复依赖 history 读取和本地去重。
+- Harness `events.mux` 的 since 恢复能力当前未实现，断线恢复依赖 history 读取和本地去重。`0.1.2-rc.1` 另外订阅 `session/control` 获取队列和任务状态，不能只依赖 `$events`。
 - Windows 下 sidecar 进程树、退出信号和端口释放需要单独验证。
 - 如果 CodingNS 是多用户 Host，共享 sidecar 的全局会话列表必须由 BindingStore 做严格过滤。
 

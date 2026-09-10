@@ -16,6 +16,8 @@ Grok Build 是 xAI 发布的终端编码 Agent，提供 TUI、无头模式和 AC
 - **Grok Runtime**：由 CodingNS 启动并管理的 `grok agent ... stdio` 子进程。
 - **Grok 会话**：由 ACP `session/new` 或 `session/load` 管理、由 Grok 持久化的会话。
 - **能力快照**：根据 ACP 握手、配置选项和实际验证结果生成的 `ProviderCapabilities`。
+  安装缺失、认证失败等诊断状态通过 Host runtime state 和错误码返回，不扩展
+  `ProviderCapabilities.runtimeStatus` 枚举。
 
 ## 范围说明
 
@@ -35,7 +37,7 @@ Grok Build 是 xAI 发布的终端编码 Agent，提供 TUI、无头模式和 AC
 - 将 Grok Rust 源码或内部 crate 合并进 CodingNS。
 - 把 Grok 当作 OpenAI 兼容模型 API 接入。
 - 首版直接扫描并导入用户全部 `~/.grok/sessions`。
-- 在未验证 ACP 请求字段前开放原生 Fork、附件、分享、删除和 Token Usage。
+- 在未验证 ACP 请求字段前开放原生 Fork、附件、分享和 Token Usage。
 - 首版通过 `--always-approve` 宣称已经复用 CodingNS 权限审计；权限桥接另列任务。
 - 让浏览器或远程客户端直接访问 Grok stdio/WebSocket 进程。
 
@@ -95,7 +97,7 @@ Grok Build 是 xAI 发布的终端编码 Agent，提供 TUI、无头模式和 AC
 #### 验收标准
 
 1. WHEN 创建或恢复 Grok 会话 THEN System SHALL 只使用 CodingNS 解析出的规范工作区路径，不接受前端任意 cwd 覆盖。
-2. WHEN 保存绑定 THEN System SHALL 持久化 CodingNS session id、Grok session id、workspace id 和受控 `rawStoreRef`。
+2. WHEN 保存绑定 THEN System SHALL 复用现有 `SessionBinding`/`session_bindings` 持久化 CodingNS session id、Grok session id、workspace id、user id、受控 `rawStoreRef` 和 runtime home；不新增 Grok 专用会话表。
 3. WHEN 读取历史 THEN System SHALL 将 Grok `updates.jsonl` 或 ACP 恢复结果转换为 `NormalizedMessage`，保留可追溯原始引用。
 4. WHEN 工作区路径或用户校验失败 THEN System SHALL 在启动 Grok 请求前拒绝，不创建半成品绑定。
 5. WHEN 首版无法可靠扫描 Grok 全局会话目录 THEN System SHALL 只读取 CodingNS 已绑定的 Grok session，不伪造完整发现结果。
@@ -109,7 +111,7 @@ Grok Build 是 xAI 发布的终端编码 Agent，提供 TUI、无头模式和 AC
 1. WHEN Provider 能力被查询 THEN System SHALL 返回 `canStartSession`、`canResumeSession`、`canSendMessage`、中断、工具、权限、附件和 Fork 的真实状态。
 2. WHEN `session/new` 或 `session/load` 返回模型和 reasoning effort 配置 THEN System SHALL 转换为 CodingNS 配置选项。
 3. WHEN Grok 版本增加未知 `x.ai/*` 扩展 THEN System SHALL 忽略未识别扩展并保留已验证基础能力。
-4. WHEN Token Usage、附件、原生 Fork 或删除尚未完成验证 THEN System SHALL 保持关闭并写入限制说明。
+4. WHEN Token Usage、附件或原生 Fork尚未完成验证 THEN System SHALL 保持关闭并写入限制说明。
 
 ### 需求 7：故障隔离与安全回收
 
@@ -148,5 +150,9 @@ Grok Build 是 xAI 发布的终端编码 Agent，提供 TUI、无头模式和 AC
 - CodingNS 能在不影响其他 Provider 的情况下启动和关闭 Grok ACP 运行时。
 - Grok 会话可以完成创建、发送、流式输出、恢复和中断主流程。
 - 文本、思考、工具调用和工具结果在 CodingNS 中不重复、不乱序、不伪造。
-- 未接入的权限、附件、Fork、删除和 Token Usage 能力明确关闭。
+- 未接入的权限、附件、Fork 和 Token Usage 能力明确关闭。
 - 协议、进程、认证和工作区边界都有自动化测试或明确的人工验证记录。
+
+### Grok 本地会话删除
+
+用户可以通过现有删除入口删除已绑定的 Grok 会话。运行中的会话仍禁止删除；先删除 GROK_HOME/sessions 下对应的会话目录，再清理 CodingNS 绑定和索引。原始目录已缺失时仍允许清理本地记录，其他文件删除错误必须保留绑定并报告失败。删除不依赖 ACP 在线能力，也不表示删除远端服务数据。

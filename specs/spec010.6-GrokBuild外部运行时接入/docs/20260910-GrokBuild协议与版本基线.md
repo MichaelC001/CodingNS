@@ -1,6 +1,6 @@
 # Grok Build 协议与版本基线
 
-状态：已记录，待实现阶段通过契约测试重新确认
+状态：已记录，并已通过 macOS arm64 真实 Grok CLI 与自定义 endpoint 的最小 ACP 回放重新确认
 
 ## 1. 资料来源
 
@@ -132,3 +132,29 @@ $GROK_HOME/sessions/<encoded-cwd>/<session-id>/
 - ACP protocol version、initialize capabilities 和已验证方法集合用于能力判定。
 - 未知版本保留 Provider 目录项；安全读取可以继续，未经验证的写操作进入 `degraded` 或 `read-only`。
 - 上游文档、CLI 版本和实际握手结果不一致时，以实际握手和契约测试为准，并回写本文件。
+
+## 9. 2026-09-10 真实回放结果
+
+本轮在 macOS arm64 的隔离临时工作区执行，真实 CLI 版本为：
+
+```text
+grok 1.0.25 (f7e67d6988e2)
+```
+
+启动参数为：
+
+```text
+grok agent --no-leader --always-approve --xai-api-base-url <自定义地址> stdio
+```
+
+结果：
+
+- `initialize`：成功，协议版本 `1`。
+- `session/new`：成功，返回 Grok session id。
+- `session/prompt`：成功，返回 `stopReason` 和 `_meta`。
+- `session/update`：收到真实文本更新及其他状态通知。
+- `session/load`：成功，返回 `models`、`configOptions` 和 `_meta`。
+- `session/cancel`：真实版本返回 `Method not found`，中断能力保持关闭，不能宣称已支持。
+
+认证信息使用 Grok 标准环境变量 `XAI_API_KEY`，只保存在本机用户私有的
+`~/.grok/api-env`（权限 `600`）；未写入仓库、SQLite、会话消息或验收文档。

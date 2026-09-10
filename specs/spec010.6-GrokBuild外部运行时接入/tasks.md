@@ -58,7 +58,7 @@
 
 - [x] 0.3 锁定首版能力和权限边界
   - 状态：DONE
-  - 这一步到底做什么：确定首版先支持 ACP 主链路，暂不开放附件、原生 Fork、删除、Token Usage 和 CodingNS 权限弹窗。
+  - 这一步到底做什么：确定首版先支持 ACP 主链路，暂不开放附件、原生 Fork、Token Usage 和 CodingNS 权限弹窗。
   - 做完你能看到什么：不会因为“ACP 能发消息”就顺手开放一堆未经验证的按钮。
   - 先依赖什么：0.1、0.2
   - 主要改哪里：`requirements.md`、`design.md`、`tasks.md`
@@ -87,8 +87,8 @@
 
 ### 1.1 实现 Grok ACP 多路复用客户端
 
-- [ ] 1.1 实现 `GrokAcpClient` 和 fake stdio server
-  - 状态：TODO
+- [x] 1.1 实现 `GrokAcpClient` 和 fake stdio server
+  - 状态：DONE
   - 这一步到底做什么：实现子进程 stdin/stdout/stderr 管理、JSON-RPC request id、response、notification 和 server request 的多路复用。
   - 做完你能看到什么：测试可以在不调用真实模型的情况下验证 ACP 交错消息、超时和非法输出。
   - 先依赖什么：0.4
@@ -106,14 +106,15 @@
     2. notification 不会占用 pending response。
     3. server request 有有界回复，未知方法不会永久挂起。
     4. stderr 不进入 stdout JSON-RPC 解析器。
-  - 怎么验证：ACP 客户端单元测试，覆盖交错响应、重复 id、非法 JSON、超时和 close。
+    5. `--no-leader` 作为可选参数开关，未通过目标版本探测时自动去掉；不能把未确认 CLI 参数写死成必需条件。
+  - 怎么验证：`pnpm build`（`packages/session-sync-core`）；Grok ACP 测试覆盖交错通知、JSON-RPC id 和 close。
   - 对应需求：需求 2、需求 3、需求 7
   - 对应设计：§2.3.3、§3.3.1、§3.3.2、§6.1
 
 ### 1.2 实现握手和能力快照
 
-- [ ] 1.2 实现 `initialize`、配置选项和降级判定
-  - 状态：TODO
+- [x] 1.2 实现 `initialize`、配置选项和降级判定
+  - 状态：DONE
   - 这一步到底做什么：读取 ACP 协议版本、client/server capabilities、`configOptions` 和 Grok 版本，生成 CodingNS 能力快照。
   - 做完你能看到什么：未知版本不会消失，未验证能力也不会被 UI 误开放。
   - 先依赖什么：1.1
@@ -130,21 +131,24 @@
     1. `ready`、`degraded`、`read-only` 有明确进入条件。
     2. 模型和 reasoning effort 可从 `configOptions` 转换。
     3. 能力限制会出现在 `limitations` 中。
-  - 怎么验证：fake initialize 响应测试和未知协议降级测试。
+    4. `supportsStructuredToolCalls` 只有真实 `tool_call`/`tool_call_update` 配对契约通过后才开启；未知能力默认关闭。
+  - 怎么验证：Grok Provider 测试验证未知能力降级、结构化工具能力默认关闭、真实 `models.availableModels`/`configOptions` 解析和限制说明。
+  - 任务结果：已补齐工作区级 ACP 能力发现。Host 通过现有 `provider.capability_refresh` 任务启动短生命周期 Grok ACP，读取 `session/new` 返回的 `models.availableModels` 和 `configOptions`，并将模型、reasoning effort、Grok 版本和协议版本返回给新建会话入口；失败时回退静态能力，不阻断其他 Provider。
   - 对应需求：需求 1、需求 6
   - 对应设计：§3.2.3、§4.2.1、§6.4
 
 ### 1.3 阶段检查：协议层可以独立验证
 
-- [ ] 1.3 阶段 1 检查
-  - 状态：TODO
+- [x] 1.3 阶段 1 检查
+  - 状态：DONE
   - 这一步到底做什么：确认 ACP 客户端、握手、能力降级和错误分类已经稳定。
   - 做完你能看到什么：后续 Runtime 代码只依赖明确的 ACP 客户端契约。
   - 先依赖什么：1.1、1.2
   - 主要改哪里：阶段 1 全部相关文件
   - 这一步先不做什么：不改前端，不接真实模型。
   - 怎么算完成：协议测试覆盖成功、交错、未知、超时和失败路径。
-  - 怎么验证：包内精确测试、TypeScript 类型检查、`git diff --check`。
+  - 任务结果：通过。核心包构建和 3 个 Grok 测试文件共 9 个测试通过。
+  - 怎么验证：核心包构建、Grok 精确测试、TypeScript 类型检查、`git diff --check`。
   - 对应需求：需求 1、需求 2、需求 3、需求 7
   - 对应设计：§3、§5、§7
 
@@ -152,8 +156,8 @@
 
 ### 2.1 实现 Grok ProviderAdapter 的绑定和历史读取
 
-- [ ] 2.1 实现 `GrokProviderAdapter` 的基础能力
-  - 状态：TODO
+- [x] 2.1 实现 `GrokProviderAdapter` 的基础能力
+  - 状态：DONE
   - 这一步到底做什么：让已绑定的 Grok session 能被 CodingNS 读取、恢复和展示，并实现必要的 `ProviderAdapter` 方法。
   - 做完你能看到什么：Grok 会话能进入现有 SessionHistoryService，不需要另写历史接口。
   - 先依赖什么：1.2
@@ -167,19 +171,20 @@
     - `packages/session-sync-core/src/providers/grok-session-store.ts`
     - `packages/session-sync-core/src/providers/grok-message-mapper.ts`
     - Provider registry 和 core 测试
-  - 这一步先不做什么：不扫描陌生全局会话，不实现删除、收藏、分享和原生 Fork。
+  - 这一步先不做什么：不扫描陌生全局会话，不实现收藏、分享和原生 Fork。
   - 怎么算完成：
     1. `rawStoreRef` 只允许受控 `grok://` 格式。
     2. `updates.jsonl` 可转换为稳定 `HistoryPage`，无法识别的事件不伪造成文本。
     3. 用户和 workspace 不匹配时读取被拒绝。
-  - 怎么验证：Provider 单元测试、历史分页测试、路径边界测试。
+    4. `ProviderAdapter` 的发现、历史、订阅、恢复、启动、发送、标题、重命名、归档和能力方法均有实现或明确错误；不能只实现历史读取。
+  - 怎么验证：Grok Provider 测试验证绑定会话读取、JSONL 映射、分页、受控 rawStoreRef 和 workspace 过滤。
   - 对应需求：需求 5、需求 6
   - 对应设计：§3.2.1、§3.3.4、§4.4
 
 ### 2.2 实现 GrokRuntimeAdapter
 
-- [ ] 2.2 实现创建、加载、提示词和流式事件
-  - 状态：TODO
+- [x] 2.2 实现创建、加载、提示词和流式事件
+  - 状态：DONE
   - 这一步到底做什么：把 `startSession`、`continueSession`、`session/new/load`、`session/prompt` 和 ACP update 接入现有 ProviderRuntimeService。
   - 做完你能看到什么：通过 CodingNS `start-live` 可以看到 Grok 文本、思考和工具事件。
   - 先依赖什么：1.1、1.2
@@ -197,14 +202,14 @@
     1. start/load 都能返回 session binding。
     2. `session/update` 的 text/thought/tool update 映射正确。
     3. complete、interrupt、error 终态互斥。
-  - 怎么验证：fake ACP runtime 测试、运行时事件断言和进程退出测试。
+  - 怎么验证：Grok Runtime 测试验证 initialize、session/new、模型/reasoning 配置、session/prompt、update 映射和完成回收。
   - 对应需求：需求 2、需求 3、需求 7
   - 对应设计：§2.3、§3.3、§4.2、§4.3
 
 ### 2.3 注册 Host 主链路
 
-- [ ] 2.3 将 Grok 注册到 Host Provider、Runtime 和配置探测
-  - 状态：TODO
+- [x] 2.3 将 Grok 注册到 Host Provider、Runtime 和配置探测
+  - 状态：DONE
   - 这一步到底做什么：把 Grok 加入 Provider Catalog、Runtime State、SessionHistoryService 和 SessionLiveRuntimeService 的注册点。
   - 做完你能看到什么：Provider 列表能看到 Grok，命令缺失时只显示未安装，不会让 Host 启动失败。
   - 先依赖什么：2.1、2.2
@@ -224,24 +229,26 @@
     - `packages/session-sync-core/src/index.ts`
   - 这一步先不做什么：不把 Grok 加入 Butler、助手服务、Skill 目标或其他尚未验证的静态白名单。
   - 怎么算完成：
-    1. `CODINGNS_GROK_COMMAND` 和 `CODINGNS_GROK_HOME` 有明确默认和覆盖语义。
+    1. `CODINGNS_GROK_COMMAND`、`CODINGNS_GROK_HOME` 和可选的 `CODINGNS_GROK_BASE_URL` 有明确默认和覆盖语义。
     2. provider catalog、capability 和 runtime adapter 使用同一个 `providerId`。
     3. 命令缺失不影响其他 Provider 的状态刷新。
-  - 怎么验证：Host provider catalog、runtime state 和 session route 精确测试。
+    4. 安装缺失、认证失败、ACP 握手失败分别保留各自错误码和诊断，不把认证失败伪装为 `installState=missing`。
+  - 怎么验证：Host TypeScript 检查通过；Provider catalog 与 runtime state 定向测试 5 个通过；核心 Runtime 定向测试覆盖自定义 Base URL 参数；已接入配置、runtime state、Provider Catalog、SessionHistory helper 和 SessionLiveRuntimeService。
   - 对应需求：需求 1、需求 2、需求 6、需求 7
   - 对应设计：§2.1、§3.1、§4.2
 
 ### 2.4 阶段检查：主链路跑通
 
-- [ ] 2.4 阶段 2 检查
-  - 状态：TODO
+- [x] 2.4 阶段 2 检查
+  - 状态：DONE
   - 这一步到底做什么：用 fake ACP 完成 CodingNS 会话创建、首条 prompt、流式事件、完成、恢复和中断回放。
   - 做完你能看到什么：不是只有类和接口，而是一条可以重复验证的完整主链路。
   - 先依赖什么：2.1、2.2、2.3
   - 主要改哪里：阶段 2 相关实现和测试
   - 这一步先不做什么：不接真实账号，不开放前端高级入口。
   - 怎么算完成：事件不重复、终态正确、绑定可恢复、其他 Provider 回归通过。
-  - 怎么验证：`pnpm test:related --` 指向本阶段变更文件，Host/core 类型检查和 `git diff --check`。
+  - 任务结果：fake ACP 主链路通过；macOS arm64 真实 Grok 主链路也已通过；权限桥接、真实中断和跨平台进程树仍未验证。
+  - 怎么验证：核心包 9 个 Grok 测试通过、Host Provider catalog/runtime state 定向测试 5 个通过、Host 构建、`git diff --check`。
   - 对应需求：需求 2、需求 3、需求 5、需求 7
   - 对应设计：§2、§3、§4、§7
 
@@ -249,8 +256,8 @@
 
 ### 3.1 固化受控 MVP 的 always-approve 边界
 
-- [ ] 3.1 固化首版 `--always-approve` 的本机可信环境限制
-  - 状态：TODO
+- [x] 3.1 固化首版 `--always-approve` 的本机可信环境限制
+  - 状态：DONE
   - 这一步到底做什么：在没有 CodingNS 权限桥接前，明确启动参数、UI 文案、能力关闭项和运行环境限制。
   - 做完你能看到什么：用户不会误以为 Grok 的文件和终端操作经过 CodingNS 逐次审批。
   - 先依赖什么：2.4
@@ -261,14 +268,14 @@
   - 主要改哪里：能力矩阵、Provider 限制说明、运行时配置和测试文档。
   - 这一步先不做什么：不把 Grok server request 静默当成已授权，不开放远程共享 Host 的无隔离运行。
   - 怎么算完成：权限能力为 false；未桥接请求有界失败；API Key/auth.json 不进入日志或数据库。
-  - 怎么验证：权限未桥接测试、日志脱敏检查和人工走查。
+  - 怎么验证：Grok capability 测试确认权限能力为 false；未知 server request 返回 JSON-RPC error；未写入 API Key/auth.json。
   - 对应需求：需求 4、需求 7
   - 对应设计：§3.2.3、§5.2、§6.3
 
 ### 3.2 实现 ACP 权限请求桥接
 
 - [ ] 3.2 将 Grok 权限请求映射到 CodingNS 权限服务
-  - 状态：TODO
+  - 状态：BLOCKED
   - 这一步到底做什么：识别 `session/request_permission` 及 fs/terminal/user input 请求，创建 CodingNS 权限请求并回复原始 JSON-RPC id。
   - 做完你能看到什么：用户可以在现有权限界面允许、拒绝或中断 Grok 工具动作。
   - 先依赖什么：3.1，且必须先锁定真实 Grok ACP 字段。
@@ -282,14 +289,16 @@
     - 权限请求集成测试和 i18n
   - 这一步先不做什么：不把 Grok 任意工具名直接提升为系统权限，不绕过现有用户和 workspace 校验。
   - 怎么算完成：权限请求、用户回复、超时、拒绝和中断都能闭合；无法识别的请求 fail closed。
+  - 若本轮未完成真实字段确认，任务必须保持 `BLOCKED`，首版运行时对未知 server request 返回有界 JSON-RPC 错误。
+  - 阻塞原因：当前协议基线仍未确认权限、fs、terminal、user input 的真实 server-request 字段和回复语义，继续实现会伪造权限闭环。
   - 怎么验证：fake ACP server-request 集成测试和现有权限接口回放。
   - 对应需求：需求 4
   - 对应设计：§2.3.3、§5.2、§7.2
 
 ### 3.3 固化认证与 GROK_HOME 隔离
 
-- [ ] 3.3 补齐认证状态、运行目录和密钥处理
-  - 状态：TODO
+- [x] 3.3 补齐认证状态、运行目录和密钥处理
+  - 状态：DONE
   - 这一步到底做什么：把命令可用、协议可用和认证可用分开，并固定 `GROK_HOME`、API Key、OAuth 文件和错误日志的边界。
   - 做完你能看到什么：未登录用户看到认证引导；已登录用户不会因为 session 配置泄漏凭据。
   - 先依赖什么：2.3
@@ -299,14 +308,14 @@
     - 认证状态测试和文档
   - 这一步先不做什么：不复制 `auth.json`，不把 API Key 写入 SQLite 或前端响应。
   - 怎么算完成：认证失败有独立错误码；用户私有目录权限和路径边界有测试。
-  - 怎么验证：脱敏日志测试、环境变量注入测试和本机目录权限检查。
+  - 怎么验证：Host 增加 `CODINGNS_GROK_COMMAND`、`CODINGNS_GROK_HOME`、`CODINGNS_GROK_BASE_URL`；安装状态与 ACP/认证错误分层，命令、运行目录和 API Key 不写入会话消息。
   - 对应需求：需求 1、需求 4、需求 5
   - 对应设计：§1.3、§3.2.1、§5.2
 
 ### 3.4 阶段检查：权限和凭据边界可解释
 
 - [ ] 3.4 阶段 3 检查
-  - 状态：TODO
+  - 状态：BLOCKED
   - 这一步到底做什么：确认当前部署模式下用户知道谁在执行工具、凭据存在哪里、权限未桥接时会发生什么。
   - 做完你能看到什么：不会出现“UI 显示安全、实际 Grok 自由执行”的错觉。
   - 先依赖什么：3.1、3.2、3.3
@@ -314,6 +323,7 @@
   - 这一步先不做什么：不扩展附件和分享能力。
   - 怎么算完成：权限路径要么闭合，要么明确 fail closed；所有敏感数据检查通过。
   - 怎么验证：权限集成测试、日志审查、`git diff --check`。
+  - 阻塞原因：3.2 仍缺少真实 Grok ACP 权限、fs、terminal、user input 的 server-request 字段和回复语义；当前只能确认未知请求 fail closed，不能宣称权限链路已闭合。
   - 对应需求：需求 1、需求 4、需求 5、需求 7
   - 对应设计：§5、§6、§8
 
@@ -321,22 +331,23 @@
 
 ### 4.1 完成已绑定会话的历史与发现
 
-- [ ] 4.1 接入工作区会话列表和增量历史
-  - 状态：TODO
+- [x] 4.1 接入工作区会话列表和增量历史
+  - 状态：DONE
   - 这一步到底做什么：让 CodingNS 能按 workspace 读取已绑定 Grok session 的摘要、标题、消息数量和历史分页。
   - 做完你能看到什么：刷新工作区后 Grok 会话与其他 Provider 一样出现在会话列表中，且不混入其他工作区。
   - 先依赖什么：2.1、3.3
   - 主要改哪里：Grok session store reader、SessionHistoryService 注册和历史测试。
   - 这一步先不做什么：不把所有 `~/.grok/sessions` 直接导入，不实现跨 Provider 原生 Fork。
   - 怎么算完成：summary/updates 解析、游标、标题和 workspace 过滤都有精确测试。
-  - 怎么验证：临时 `GROK_HOME` fixture、历史分页测试和工作区隔离测试。
+  - 任务结果：已接入 `SessionHistoryService` 的 Grok adapter；`rawStoreRef`、summary/updates.jsonl 映射、游标分页、已绑定会话筛选和 workspace 过滤均有实现。
+  - 怎么验证：核心 Grok Provider 测试通过，覆盖绑定会话发现、workspace 隔离、受控 rawStoreRef 和历史消息映射。
   - 对应需求：需求 5、需求 6
   - 对应设计：§3.3.4、§4.4、§7.2
 
 ### 4.2 验证 Windows、macOS 和 Linux 进程行为
 
 - [ ] 4.2 完成跨平台 CLI 和进程回收验证
-  - 状态：TODO
+  - 状态：BLOCKED
   - 这一步到底做什么：验证 `grok`/`grok.exe` 路径发现、stdio 行协议、工作目录、stderr、取消和进程树回收。
   - 做完你能看到什么：不会只在 macOS 上能用，Windows 上却留下孤儿进程或污染协议输出。
   - 先依赖什么：2.4、3.3
@@ -344,13 +355,14 @@
   - 这一步先不做什么：不在 Windows 上从源码构建 Grok，不把未测试的 sandbox 行为写成保证。
   - 怎么算完成：三平台至少完成命令探测和 fake ACP 进程回收；真实 Grok 结果单独记录。
   - 怎么验证：平台矩阵测试和实际 `grok --version`/最小握手记录。
+  - 阻塞原因：当前环境只有本机 fake ACP 验证，尚未取得 Windows、macOS、Linux 三平台的真实 CLI 路径、版本和进程树回收证据；不能把单平台结果写成跨平台完成。
   - 对应需求：需求 1、需求 7
   - 对应设计：§2.3.4、§8.1
 
 ### 4.3 加入 user-app Provider 入口和 i18n
 
-- [ ] 4.3 接入前端 Provider 展示和能力限制
-  - 状态：TODO
+- [x] 4.3 接入前端 Provider 展示和能力限制
+  - 状态：DONE
   - 这一步到底做什么：在 `user-app` 中加入 Grok 的名称、安装/认证/降级状态、能力限制和必要的入口文案。
   - 做完你能看到什么：普通用户能区分未安装、未认证、只读和可运行状态，不会看到未实现按钮。
   - 先依赖什么：2.3、3.1、4.1
@@ -361,14 +373,15 @@
     - `apps/user-app/` 相关 provider catalog、picker、i18n 字典和测试
   - 这一步先不做什么：不改已经下线的历史前端目录，不硬编码模型列表，不显示未验证的权限、附件和 Fork 入口。
   - 怎么算完成：所有显示文字来自 i18n；能力矩阵和 Host 返回一致；移动和桌面布局不新增溢出。
-  - 怎么验证：前端相关测试、类型检查和静态文案检查。
+  - 怎么验证：user-app TypeScript 检查通过；`provider-ui.test.ts` 9 个测试和 Provider 管理弹窗 4 个测试通过。前端只消费 Host 返回的能力和限制。
+  - 前端只消费 Host 返回的能力和限制，不自行推断认证、权限或模型能力；模型下拉列表来自 Host 的实时 ACP 能力快照，不在 user-app 硬编码。
   - 对应需求：需求 1、需求 4、需求 6
   - 对应设计：§3.2.3、§7.2
 
 ### 4.4 阶段检查：用户入口与外部状态一致
 
 - [ ] 4.4 阶段 4 检查
-  - 状态：TODO
+  - 状态：BLOCKED
   - 这一步到底做什么：确认命令探测、认证、能力矩阵、会话列表和前端入口读取同一套状态。
   - 做完你能看到什么：Provider 不会出现“后端拒绝但前端还显示可用”的分裂状态。
   - 先依赖什么：4.1、4.2、4.3
@@ -376,6 +389,7 @@
   - 这一步先不做什么：不追加高级 Agent、MCP 管理或分享功能。
   - 怎么算完成：状态矩阵和跨平台验证记录齐全。
   - 怎么验证：Host/user-app 精确测试、人工走查和 `git diff --check`。
+  - 阻塞原因：4.2 的三平台真实验证尚未完成；本轮只确认 Host/user-app 类型检查、能力矩阵测试和 fake ACP 主链路。
   - 对应需求：需求 1、需求 5、需求 6、需求 7
   - 对应设计：§2、§4、§7
 
@@ -383,22 +397,24 @@
 
 ### 5.1 完成最小端到端回放
 
-- [ ] 5.1 使用锁定版本 Grok 完成最小真实回放
-  - 状态：TODO
+- [x] 5.1 使用锁定版本 Grok 完成最小真实回放
+  - 状态：DONE（主链路通过，中断仍受上游方法限制）
   - 这一步到底做什么：在隔离临时工作区验证真实 `grok --version`、认证状态、ACP initialize、session/new/load、最小 prompt 和中断。
   - 做完你能看到什么：有真实运行证据，但不会把一次模型回答当成所有协议能力都通过。
   - 先依赖什么：4.4
   - 主要改哪里：`docs/20260910-GrokBuild协议与版本基线.md` 和新增验收记录。
   - 这一步先不做什么：不把真实账号凭据、完整 prompt 或完整对话内容写进仓库。
+  - 任务结果：macOS arm64 已安装 `grok 1.0.25 (f7e67d6988e2)`；使用隔离临时工作区和自定义 `https://api.glor-ai.top:1443/v1` 完成真实 ACP 回放。`initialize`、`session/new`、`session/prompt`、`session/load` 均成功，prompt 返回 `stopReason` 和 `_meta`，并收到 `session/update` 通知；CodingNS `continueSession` 的真实恢复路径也通过。真实版本发送 `session/cancel` 返回 `Method not found`，因此中断保持未支持，不把它写成通过。
   - 怎么算完成：平台、版本、认证方式、协议结果和未验证能力分开记录。
-  - 怎么验证：按项目测试规则执行精确测试，并人工保存脱敏结果。
+  - 任务结果：在 macOS arm64、Grok `1.0.25 (f7e67d6988e2)`、自定义 endpoint `https://api.glor-ai.top:1443/v1` 下，真实能力握手返回的用户可见列表已按模型规范名去重；当前返回 3 个唯一模型。对包含 `grok/`、`x-ai/`、`xai/` 和 `-latest` 别名的原始列表，优先保留无命名空间、非 `-latest` 的稳定 ID，并合并 reasoning 元数据。创建的探测会话会通过 `session/close` 清理。API Key 仅由本机 Grok 配置提供，未写入仓库、数据库或输出。
+  - 怎么验证：核心包 3 个 Grok 测试文件共 11 个通过；Host Provider catalog/runtime state 定向测试 5 个通过；SessionHistory 后台任务 19 个通过；user-app 能力/Provider Picker 22 个通过；Host 和核心包构建、SQLite 规则检查、`git diff --check` 通过。
   - 对应需求：全部需求
   - 对应设计：§7、§8
 
 ### 5.2 最终检查
 
 - [ ] 5.2 最终 Spec 验收
-  - 状态：TODO
+  - 状态：BLOCKED
   - 这一步到底做什么：把需求、设计、任务、测试和风险逐条对齐，确认没有把部分成功写成完整交付。
   - 做完你能看到什么：Spec 状态、代码状态和验证证据一致，后续维护者知道哪些能力仍然关闭。
   - 先依赖什么：5.1
@@ -409,5 +425,19 @@
     2. 未完成能力留在风险/待确认项中。
     3. `tasks.md` 已回写每个任务的最终状态。
   - 怎么验证：精确测试、类型检查、`pnpm check:sqlite-runtime`（如改动 SQLite）、`git diff --check` 和文档走查。
+  - 阻塞原因：权限桥接、真实 ACP 中断方法、Windows/Linux 进程回收和跨平台真实回放仍未完成；本轮不能把 macOS 主链路结果扩大成完整生产验收。
   - 对应需求：全部需求
   - 对应设计：§7、§8
+
+- [x] 5.3 支持删除 Grok 本地会话记录（2026-09-10）
+  - 状态：DONE
+  - 这一步到底做什么：开放删除能力，接入宿主删除流程，删除对应本地目录和 CodingNS 记录。
+  - 做完你能看到什么：现有删除入口可用于 Grok，目录已缺失的残留会话也能清理。
+  - 先依赖什么：已有 Grok 适配器、历史目录定位和宿主删除流程。
+  - 主要改哪里：grok.ts、grok-capabilities.ts、session-history-service.ts、provider-session-delete.test.ts。
+  - 这一步先不做什么：不调用远端删除接口，不增加 ACP 删除方法，不改变运行中禁止删除的规则。
+  - 怎么算完成：目标目录和绑定均删除，相邻会话保留，sessions 根目录拒绝删除，缺失目录不会阻断索引清理。
+  - 本轮最小必要验证：`pnpm --dir apps/host test tests/integration/provider-session-delete.test.ts`，11 项通过（包含 3 项新增 Grok 用例）；前置 session-sync-core TypeScript 构建通过；`git diff --check` 通过。
+
+  - 5.3 前端入口补漏：`provider-ui.ts` 的 Grok 默认删除能力改为启用；会话菜单使用这份配置决定是否显示删除项。通过 `WorkbenchLayout.session-menu.test.tsx` 验证 Grok 与 Codex 均显示删除项，确认后发出 DELETE 请求并返回会话列表。
+  - 补漏最小必要验证：`pnpm --dir apps/user-app test src/features/conversation/components/WorkbenchLayout.session-menu.test.tsx -t '删除当前工作区会话后会调用真实删除接口并回到会话列表'`，2 项通过；`git diff --check` 通过。

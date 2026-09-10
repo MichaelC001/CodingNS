@@ -465,6 +465,12 @@
 
 ## 统一验证记录
 
+- 2026-09-10 Remote 协议兼容补齐：本机 `dsh --version` 返回 `0.1.2-rc.1`。Host 已按 `remote-v1` 使用 `/api/remote.mux`、`session/follow`、`session/page`、`workspace/follow`、`session/control`、`$events` 和 `$events/result`；修复 `session/list` 必须使用 `_request` 的参数错误，并补齐 `agentPresets/list/select`、模型目录和 Remote 事件拒绝结果格式。
+- 2026-09-10 真实 sidecar 回放：通过 `DeepSeekHarnessSidecarManager` 完成 token Cookie 交换、Remote 握手、`session/list`（66 条会话）、Agent preset 列表、workspace baseline、model catalog 和非空会话历史读取（实测 76 条记录）；未发送模型 prompt。
+- 2026-09-10 Remote 认证回归：token URL 返回 `303` 并签发 `dsh-auth-*` Cookie；无 Cookie HTTP 请求返回 `401`；带 Cookie 的 HTTP RPC 和 Remote WebSocket 均通过。
+- 2026-09-10 自动化验证：`deepseek-harness-remote.test.ts` 2/2、`deepseek-harness-sidecar-manager.test.ts` 6/6；Core build、`git diff --check` 和 `pnpm check:sqlite-runtime` 通过。真实 sidecar 仅做只读协议回放，未验证真实模型调用和权限交互。
+- 2026-09-10 新建会话与模型列表修复：Remote 能力矩阵补齐 `llm.models`，真实 `session/modelCatalog` 返回 3 个模型及 reasoning 选项；草稿 `provider-default` 不再触发非法 `session.selectModel`，裸模型名兼容映射到 `deepseek-official`。Host Harness 29/29、Core Provider 22/22、Host 类型检查和真实 sidecar 能力回放通过。
+
 - 2026-08-14 真实运行时验证：固定提交 `47f943859bef60e4160492346772ded9b24f765a` 已完整构建，`dsh --version` 返回 `0.1.0-rc.5`。通过 `DeepSeekHarnessSidecarManager` 实际启动 `dsh web`，完成 `host.describe` 和 `session.create`，关闭后 sidecar 状态为 `stopped`。`host.describe.version` 返回上游占位值 `0.0.1`，版本校验以 CLI 输出为准。未发送模型 prompt，真实模型回答仍依赖 Harness 自身凭据。
 - 2026-08-14 真实凭据回归：用户配置凭据并发送消息后，Harness `session.history` 记录了第二轮的连续 `assistant/chunk`、最终 `assistant/message` 和 `turn/end`，证明模型实际成功返回。问题是 CodingNS 在下行订阅完成前发出了 `session.prompt`，导致快速完成的事件没有转发。现已等待两条订阅就绪后再发 prompt；`pnpm --dir apps/host test -- tests/integration/deepseek-harness-provider.test.ts tests/integration/deepseek-harness-sidecar-manager.test.ts` 通过，9 项测试全部通过；其中新增快速完成不丢消息回归。
 - 2026-08-14 Provider 可见性回归：`pnpm --dir apps/host test -- provider-catalog-routes.test.ts provider-cli-availability.test.ts` 通过，7 项测试全部通过；覆盖 Harness 的版本号和可执行文件路径。

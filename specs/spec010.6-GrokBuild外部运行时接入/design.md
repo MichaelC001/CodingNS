@@ -27,7 +27,7 @@
 - 外部运行时：Grok Build 官方预编译 CLI；不依赖 Grok 内部 Rust crate。
 - 通信：ACP JSON-RPC 2.0 over stdio；stdout 只承载协议，stderr 只承载诊断。
 - 会话：首版以 Grok `sessionId` 为外部权威 ID，CodingNS 只保存绑定和展示投影。
-- 配置：命令通过 `CODINGNS_GROK_COMMAND`，运行目录通过 `CODINGNS_GROK_HOME` 或现有会话运行时配置传入。
+- 配置：命令通过 `CODINGNS_GROK_COMMAND`，运行目录通过 `CODINGNS_GROK_HOME` 或现有会话运行时配置传入；自定义 xAI 兼容接口通过 `CODINGNS_GROK_BASE_URL` 传入，并由 Runtime 显式追加 `--xai-api-base-url`，不依赖 Grok CLI 是否自动读取同名环境变量。
 - 后台任务：不新增私有 timer、inflight Map 或重试队列；只使用现有 `ProviderRuntimeService` 和 `TaskManager` 规则。
 - 安全：未实现权限桥接前，首版使用 `--always-approve` 仅作为受控本机 MVP，并在能力矩阵中关闭 CodingNS 权限能力。
 
@@ -136,8 +136,14 @@ Grok 在 CodingNS 中以 `grok` Provider 路由出现。这个名称表示外部
 | `provider` | `"grok"` | 是 | 固定 Provider ID | 不允许写成模型名 |
 | `providerSessionId` | `string` | 是 | Grok ACP session id | 来自 `session/new/load` |
 | `workspaceId` | `string` | 是 | CodingNS 工作区 | 每次请求校验 |
-| `rawStoreRef` | `string` | 是 | `grok://session/<cwd>/<id>` | 不暴露认证文件路径 |
+| `rawStoreRef` | `string` | 是 | `grok://session/<provider-session-id>` | 不包含 cwd、认证文件路径或任意用户输入路径 |
 | `runtimeHomeDir` | `string \| null` | 否 | 受控 `GROK_HOME` | 必须为用户私有目录 |
+
+这里复用现有 `SessionBinding` 和 `session_bindings` 表中的
+`sessionId`、`provider`、`providerSessionId`、`workspaceId`、`rawStoreRef`、
+`runtimeHomeDir`、`userId` 字段，不新增 Grok 专用会话主表，也不新增重复的
+`runtime_home_dir` 列。`rawStoreRef` 只用于标识外部会话；工作区路径和用户边界
+始终从 CodingNS binding/runtime request 取得，不能从 URI 反推权限。
 
 #### 3.2.2 `GrokAcpRequestState`
 
@@ -157,17 +163,21 @@ Grok 在 CodingNS 中以 `grok` Provider 路由出现。这个名称表示外部
 | `canSendMessage` | `true` | `session/prompt` 可用 |
 | `inRunInputMode` | `none` | 首版不承诺运行中追加消息 |
 | `supportsInterrupt` | 按实测 | ACP 取消请求和进程回收测试通过后开启 |
-| `supportsStructuredToolCalls` | `true` | ACP `tool_call`/`tool_call_update` 可映射 |
+| `supportsStructuredToolCalls` | 按握手和契约测试 | 只有稳定配对 `tool_call`/`tool_call_update` 后才开启 |
 | `supportsTokenUsage` | `false` | 未完成稳定字段和累计语义验证前关闭 |
 | `supportsAttachments` | `false` | 首版不实现 prompt file/image parts |
 | `supportsPermissionPrompt` | `false` | always-approve 不是 CodingNS 权限桥接 |
 | `supportsPermissionRequests` | `false` | 完成 ACP 权限映射后再开启 |
 | `supportsSessionFork` | `false` | 先验证 `x.ai/session/fork` 的稳定契约 |
-| `supportsSessionDelete` | `false` | 不直接删除 Grok 本地目录 |
+| `supportsSessionDelete` | `true` | 删除 Grok 本地单个会话目录，再由宿主清理绑定和索引 |
 | `supportsSessionShare` | `false` | 无 CodingNS 对应能力 |
 | `supportsAsyncPrompt` | `true` | prompt 结果由 update 流返回 |
 
-`runtimeVersion` 仅用于诊断；`protocolVersion`、初始化结果中的能力和已验证方法集合才是能力判断依据。未知协议保留 Provider，但写操作进入 `degraded` 或 `read-only`。
+`runtimeVersion` 仅用于诊断；`protocolVersion`、初始化结果中的能力和已验证方法集合才是能力判断依据。`ProviderCapabilities.runtimeStatus` 只允许
+`ready`、`degraded`、`read-only`。命令未安装、认证失败、版本读取失败属于
+Provider runtime/install 诊断状态，不能伪装成 `runtimeStatus` 的新枚举；它们通过
+Host 的安装状态、错误码和 `limitations` 返回。未知协议保留 Provider，但写操作
+进入 `degraded` 或 `read-only`。
 
 ### 3.3 接口契约
 
@@ -201,6 +211,12 @@ Grok 在 CodingNS 中以 `grok` Provider 路由出现。这个名称表示外部
 - 输出：`HistoryPage`，消息带稳定 raw ref 和序号。
 - 校验：只允许访问已绑定且 workspace 匹配的会话；无可靠历史时返回明确空/失败，不伪造消息。
 - 错误：会话不存在、GROK_HOME 不可读、updates 格式未知、历史解析失败。
+
+`GrokProviderAdapter` 必须实现 `ProviderAdapter` 要求的全部方法：发现只返回
+CodingNS 已绑定且 workspace 匹配的会话；历史读取、订阅、恢复、启动、发送消息、
+标题读取、标题重命名、归档和能力查询都要有明确行为。首版不支持的 Fork、
+分享、附件、Token Usage 或权限桥接必须返回明确的 `GROK_CAPABILITY_UNSUPPORTED`
+或对应错误，不能留空或伪造成功。
 
 #### 3.3.5 能力配置选项
 
@@ -375,3 +391,7 @@ Grok 官方文档记录会话位于 `$GROK_HOME/sessions/<encoded-cwd>/<session-
 - 首版是否需要把已绑定 Grok session 的历史纳入工作区发现，还是只支持从 CodingNS 新建的绑定。
 - Grok ACP 取消请求的最终方法名、权限请求字段和 fs/terminal server-request 具体契约。
 - Grok 二进制由安装脚本管理，还是由用户手工安装后仅做路径探测。
+
+### 本地会话删除实现
+
+宿主将 Grok 删除请求交给已注册的 GrokAdapter，复用现有运行状态检查和数据库清理流程。适配器沿用历史读取的目录定位方式，校验真实路径位于 sessions 根目录之下且不是根目录本身，再异步删除整个会话目录。目录未找到统一返回 PROVIDER_SESSION_NOT_FOUND，让宿主清理残留索引；其他错误继续上抛。
