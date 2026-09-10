@@ -77,6 +77,13 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
     let settled = false;
     let resolveCompleted!: () => void;
     const completed = new Promise<void>((resolve) => { resolveCompleted = resolve; });
+    // 事件桥的监听器本身是同步回调；这里串行化 sink，避免终止事件抢在工具结果落库之前完成。
+    let pendingSinkEvents: Promise<void> = Promise.resolve();
+    const enqueueSinkEvent = (event: Parameters<ProviderRuntimeEventSink["emit"]>[0]): Promise<void> => {
+      const next = pendingSinkEvents.then(() => sink.emit(event)).then(() => undefined);
+      pendingSinkEvents = next.catch(() => undefined);
+      return next;
+    };
     const settle = () => {
       if (settled) return;
       settled = true;
@@ -86,10 +93,10 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
 
     const onEvent = (event: DeepSeekHarnessBridgeEvent) => {
       if (event.type === "message" && event.message) {
-        void sink.emit({ type: "message", message: event.message, providerSessionId, rawStoreRef, rawEventRef: event.message.rawRef });
+        void enqueueSinkEvent({ type: "message", message: event.message, providerSessionId, rawStoreRef, rawEventRef: event.message.rawRef });
       } else if (event.type === "status") {
         if (event.running) {
-          void sink.emit({ type: "status", status: "running", providerSessionId, rawStoreRef, detail: "Harness 正在运行" });
+          void enqueueSinkEvent({ type: "status", status: "running", providerSessionId, rawStoreRef, detail: "Harness 正在运行" });
         }
       } else if (event.type === "terminal") {
         const terminalEvent = event.runningState === "completed"
@@ -107,14 +114,14 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
                 detail: event.detail ?? "Harness turn failed",
                 errorCode: event.errorCode ?? "HARNESS_TURN_FAILED"
               };
-        void sink.emit({ ...terminalEvent, providerSessionId, rawStoreRef })
+        void enqueueSinkEvent({ ...terminalEvent, providerSessionId, rawStoreRef })
           .catch(() => undefined)
           .finally(() => {
             if (promptStarted) settle();
           });
       } else if (event.type === "error") {
-        void sink.emit({ type: "error", status: "failed", errorCode: "HARNESS_RUNTIME_ERROR", detail: event.detail, providerSessionId, rawStoreRef });
-        settle();
+        void enqueueSinkEvent({ type: "error", status: "failed", errorCode: "HARNESS_RUNTIME_ERROR", detail: event.detail, providerSessionId, rawStoreRef })
+          .finally(settle);
       } else if ((event.type === "approval" || event.type === "question") && this.permissionRequestHandler) {
         void this.permissionRequestHandler({
           sessionId: request.sessionId,
@@ -194,7 +201,11 @@ async function buildPromptContent(
   workspacePath: string,
   attachmentRootDir: string | null
 ): Promise<Array<Record<string, string>>> {
-  const content: Array<Record<string, string>> = [{ type: "text", text: options.content }];
+  // providerPrompt 可能包含附件落盘后的完整提示；没有它时才退回原始用户文本。
+  const content: Array<Record<string, string>> = [{
+    type: "text",
+    text: options.providerPrompt?.trim() || options.content
+  }];
   for (const attachment of options.attachments) {
     const absolutePath = path.resolve(attachment.filePath);
     if (!isAllowedAttachmentPath(absolutePath, workspacePath, attachmentRootDir)) {

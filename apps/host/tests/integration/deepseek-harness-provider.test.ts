@@ -610,6 +610,85 @@ describe("DeepSeek Harness Web API", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "complete", status: "completed" }));
   });
 
+  it("会等待异步工具消息写入完成后再结束本轮", async () => {
+    fake = await createDeepSeekHarnessFakeServer();
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager());
+    const events: string[] = [];
+    const sink: ProviderRuntimeEventSink = {
+      emit: async (event) => {
+        if (event.type === "message") {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          events.push(event.message.kind);
+          return;
+        }
+        events.push(event.type);
+      },
+      updateSessionBinding: vi.fn()
+    };
+    const request: ProviderRuntimeRunRequest = {
+      sessionId: "codingns-tool-order",
+      workspaceId: "workspace-1",
+      workspacePath: "C:\\workspace",
+      provider: "deepseek-harness",
+      providerSessionId: null,
+      rawStoreRef: null,
+      options: {
+        content: "搜索最新信息",
+        clientRequestId: null,
+        model: null,
+        reasoningLevel: null,
+        permissionMode: "ask",
+        providerPrompt: null,
+        attachments: []
+      }
+    };
+    fake.setPromptHandler((sessionId) => {
+      fake?.emitMux({
+        type: "session/event",
+        sessionId,
+        event: {
+          type: "tool/call",
+          seq: 1,
+          data: { callId: "web-search-1", name: "web_search", arguments: '{"query":"最新信息"}' }
+        }
+      });
+      fake?.emitMux({
+        type: "session/event",
+        sessionId,
+        event: {
+          type: "tool/result",
+          seq: 2,
+          data: {
+            message: {
+              source: { kind: "tool", callId: "web-search-1" },
+              content: [{ type: "text", text: "搜索结果" }],
+              isError: false
+            }
+          }
+        }
+      });
+      fake?.emitMux({
+        type: "session/event",
+        sessionId,
+        event: { type: "assistant/message", seq: 3, data: { text: "已完成搜索" } }
+      });
+      fake?.emitMux({
+        type: "session/event",
+        sessionId,
+        event: { type: "turn/end", seq: 4, data: { turn: 1, reason: { kind: "completed" } } }
+      });
+      fake?.emitHost({ type: "host/session-status", sessionId, running: false });
+    });
+
+    const launch = await adapter.startSession(request, sink);
+    await expect(launch.completed).resolves.toBeUndefined();
+
+    expect(events.indexOf("tool_result")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("tool_result")).toBeLessThan(events.indexOf("complete"));
+    expect(events.indexOf("text")).toBeLessThan(events.indexOf("complete"));
+  });
+
   it("上一轮已结束时不会沿用旧句柄提交下一轮，避免漏建下行订阅", async () => {
     fake = await createDeepSeekHarnessFakeServer();
     const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
