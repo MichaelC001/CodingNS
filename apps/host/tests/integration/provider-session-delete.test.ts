@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { GeminiAdapter, KimiAdapter } from "@codingns/session-sync-core";
+import { GeminiAdapter, GrokAdapter, KimiAdapter } from "@codingns/session-sync-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveHostConfig } from "../../src/config/env.js";
@@ -37,6 +37,47 @@ describe("provider session delete", () => {
     }
 
     vi.restoreAllMocks();
+  });
+
+  it.each([false, true])("Grok 删除本地记录并清理宿主索引，目录缺失=%s", async (missing) => {
+    const fixture = createEmptyFixture();
+    cleanupTargets.push(fixture.rootDir);
+    const homeDir = path.join(fixture.rootDir, "grok");
+    const sessionDir = path.join(homeDir, "sessions", "workspace", "grok-1");
+    const siblingDir = path.join(homeDir, "sessions", "workspace", "grok-2");
+    mkdirSync(siblingDir, { recursive: true });
+    writeFileSync(path.join(siblingDir, "summary.json"), JSON.stringify({ sessionId: "grok-2" }));
+    if (!missing) {
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(path.join(sessionDir, "summary.json"), JSON.stringify({ sessionId: "grok-1" }));
+      writeFileSync(path.join(sessionDir, "updates.jsonl"), "历史内容");
+    }
+    const adapter = new GrokAdapter({ homeDir });
+    const cliDelete = { deleteSession: vi.fn(async () => {}) };
+    const context = createServiceContext(fixture, cliDelete, [adapter]);
+    seedSession(context, {
+      sessionId: "session-grok", provider: "grok", providerSessionId: "grok-1",
+      rawStoreRef: "grok://session/grok-1", runningState: "idle"
+    });
+
+    await context.service.deleteSession("session-grok", "user-1");
+
+    expect(existsSync(sessionDir)).toBe(false);
+    expect(existsSync(path.join(siblingDir, "summary.json"))).toBe(true);
+    expect(cliDelete.deleteSession).not.toHaveBeenCalled();
+    expect(context.sessionBindingRepository.findBySessionId("session-grok")).toBeNull();
+    expect(context.sessionIndexRepository.findIndexRecordBySessionId("session-grok")).toBeNull();
+    expect(adapter.getProviderCapabilities().supportsSessionDelete).toBe(true);
+  });
+
+  it("Grok 不允许将 sessions 根目录当作单个会话删除", async () => {
+    const homeDir = createTempDir("codingns-grok-delete-root-");
+    const root = path.join(homeDir, "sessions");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(path.join(root, "summary.json"), JSON.stringify({ sessionId: "root-session" }));
+    const adapter = new GrokAdapter({ homeDir });
+    await expect(adapter.deleteSession("root-session", "")).rejects.toThrow("GROK_SESSION_PATH_FORBIDDEN");
+    expect(existsSync(root)).toBe(true);
   });
 
   it("Gemini adapter 会删除本地 chat 文件并暴露删除能力", async () => {
@@ -494,7 +535,8 @@ function createServiceContext(
   fixture: ReturnType<typeof createEmptyFixture>,
   providerSessionDeleteCli: {
     deleteSession: ReturnType<typeof vi.fn>;
-  }
+  },
+  additionalAdapters: GrokAdapter[] = []
 ) {
   const config = resolveHostConfig({
     databasePath: ":memory:",
@@ -530,7 +572,8 @@ function createServiceContext(
     null,
     null,
     {
-      providerSessionDeleteCli
+      providerSessionDeleteCli,
+      additionalAdapters
     }
   );
 

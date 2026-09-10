@@ -610,6 +610,37 @@ describe("DeepSeek Harness Web API", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "complete", status: "completed" }));
   });
 
+  it("草稿默认模型使用 Harness 默认值，不发送 provider-default 的非法选择", async () => {
+    fake = await createDeepSeekHarnessFakeServer();
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager());
+    const sink: ProviderRuntimeEventSink = {
+      emit: async () => undefined,
+      updateSessionBinding: vi.fn()
+    };
+
+    await adapter.startSession({
+      sessionId: "codingns-default-model",
+      workspaceId: "workspace-1",
+      workspacePath: "C:\\workspace",
+      provider: "deepseek-harness",
+      providerSessionId: null,
+      rawStoreRef: null,
+      sequenceBase: 1,
+      options: {
+        content: "默认模型测试",
+        clientRequestId: null,
+        model: "provider-default",
+        reasoningLevel: null,
+        permissionMode: "ask",
+        providerPrompt: null,
+        attachments: []
+      }
+    }, sink);
+
+    expect(fake.calls.some((call) => call.method === "session.selectModel")).toBe(false);
+  });
+
   it("会等待异步工具消息写入完成后再结束本轮", async () => {
     fake = await createDeepSeekHarnessFakeServer();
     const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });

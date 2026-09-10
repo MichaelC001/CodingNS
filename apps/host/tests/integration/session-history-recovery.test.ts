@@ -947,6 +947,53 @@ describe("SessionHistoryService 恢复缺失索引", () => {
     });
   });
 
+  it.each(["Grok 01a08a7b", "Grok 会话 01a08a7b"])(
+    "syncSessionTitle 会把 Grok 回退标题 %s 替换为首条用户消息标题",
+    async (fallbackTitle) => {
+      const { service, sessionBindingRepository, sessionIndexRepository } = createHarness();
+      const providerTitle = "对话测试";
+
+      sessionBindingRepository.upsert({
+        sessionId: "session-grok-title-sync",
+        userId: "user-1",
+        workspaceId: "workspace-1",
+        provider: "grok",
+        providerSessionId: "01a08a7b-ee18-74c1-b6ee-0dcd71d4f9d3",
+        rawStoreRef: "grok://session/01a08a7b-ee18-74c1-b6ee-0dcd71d4f9d3",
+        providerConfigMode: "global-default",
+        providerPresetId: null,
+        runtimeHomeDir: null,
+        selectedModel: null,
+        createdAt: "2026-09-10T08:42:52.000Z",
+        updatedAt: "2026-09-10T08:42:53.000Z"
+      });
+      sessionIndexRepository.upsert({
+        sessionId: "session-grok-title-sync",
+        workspaceId: "workspace-1",
+        provider: "grok",
+        title: fallbackTitle,
+        messageCount: 1,
+        isArchived: false,
+        lastMessageAt: "2026-09-10T08:42:53.000Z",
+        createdAt: "2026-09-10T08:42:52.000Z",
+        updatedAt: "2026-09-10T08:42:53.000Z"
+      });
+
+      const readSessionTitle = vi.fn(async () => providerTitle);
+      Object.defineProperty(service, "providerDiscoveryHelperClient", {
+        value: { readSessionTitle },
+        configurable: true
+      });
+
+      await service.syncSessionTitle("session-grok-title-sync");
+
+      expect(readSessionTitle).toHaveBeenCalledTimes(1);
+      expect(sessionIndexRepository.findIndexRecordBySessionId("session-grok-title-sync")).toMatchObject({
+        title: providerTitle
+      });
+    }
+  );
+
   it("syncSessionTitle 不会用 provider 标题覆盖手动改过的标题", async () => {
     const { service, sessionBindingRepository, sessionIndexRepository } = createHarness();
     const manualTitle = "我手动改过的标题";

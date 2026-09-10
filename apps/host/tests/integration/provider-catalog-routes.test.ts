@@ -103,7 +103,8 @@ describe("provider catalog routes", () => {
       "gemini",
       "kimi",
       "opencode",
-      "deepseek-harness"
+      "deepseek-harness",
+      "grok"
     ]);
 
     const priceBookResponse = await hosted.app.inject({
