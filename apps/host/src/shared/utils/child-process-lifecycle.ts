@@ -91,15 +91,22 @@ export function waitForChildProcessExit(
 
     const eventTarget = child as ChildProcess & {
       once?: ChildProcess["once"];
+      on?: ChildProcess["on"];
     };
     if (typeof eventTarget.once === "function") {
       eventTarget.once("exit", onExit);
       eventTarget.once("close", onExit);
       eventTarget.once("error", onError);
+    } else if (typeof eventTarget.on === "function") {
+      eventTarget.on("exit", onExit);
+      eventTarget.on("close", onExit);
+      eventTarget.on("error", onError);
     } else {
-      child.on("exit", onExit);
-      child.on("close", onExit);
-      child.on("error", onError);
+      // 测试替身或极简子进程包装可能没有事件接口。此时只能依赖后续
+      // 的 kill 调用，立即返回“尚未确认退出”，让 terminateChildProcess
+      // 继续执行强制回收分支，而不是抛出 child.on is not a function。
+      resolve(false);
+      return;
     }
     timer = setTimeout(() => finish(false), normalizedTimeoutMs);
     // 被调用方即使忘记 await，也不能因为回收计时器阻塞 Host 退出。
