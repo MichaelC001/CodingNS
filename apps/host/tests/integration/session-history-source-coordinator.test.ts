@@ -7,6 +7,24 @@ afterEach(() => {
 });
 
 describe("SessionHistorySourceCoordinator", () => {
+  it("没有订阅者时不启动 watcher，也不检查来源文件", async () => {
+    vi.useFakeTimers();
+    const watchFile = vi.fn(() => ({ close: vi.fn() }));
+    const readVersion = vi.fn(() => "v1");
+    const coordinator = new SessionHistorySourceCoordinator({
+      onRefreshRequested: vi.fn(),
+      fallbackIntervalMs: 1_000,
+      readVersion,
+      watchFile
+    });
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(watchFile).not.toHaveBeenCalled();
+    expect(readVersion).not.toHaveBeenCalled();
+    expect(coordinator.getSourceCount()).toBe(0);
+  });
+
   it("同一来源共享 watcher，并把连续文件事件合并成一次刷新", () => {
     vi.useFakeTimers();
     const onRefreshRequested = vi.fn();

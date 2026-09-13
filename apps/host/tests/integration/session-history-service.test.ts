@@ -121,7 +121,9 @@ describe("SessionHistoryService", () => {
     service.requestWorkspaceDiscovery("workspace-1", "user-1");
 
     expect(taskManager.peek(HOST_TASK_TYPES.workspaceDiscovery, "workspace-1")).toBeNull();
-    expect([...statuses.get("workspace-1")!.dirtyReasons]).toContain("session_history.request_workspace_discovery");
+    expect([...statuses.get("workspace-1")!.dirtyReasons]).toContain(
+      "session_history.automatic_discovery_blocked"
+    );
   });
 
   it("knownSessions 会合并 source index 里的来源摘要", () => {
@@ -281,7 +283,8 @@ describe("SessionHistoryService", () => {
     expect(repository.listByWorkspaceId("workspace-1").map((item) => item.provider)).toEqual(["claude-code"]);
     expect(requestWorkspaceDiscovery).toHaveBeenCalledWith("workspace-1", "user-1", {
       force: true,
-      refreshStateMode: "deferred"
+      refreshStateMode: "deferred",
+      trigger: "explicit"
     });
   });
 
