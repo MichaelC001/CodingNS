@@ -222,6 +222,24 @@ function createService(options: {
   );
 }
 
+describe("AffairsLibraryService disabled tasks", () => {
+  it("任务停用时不会向 TaskManager 入队，目录提示也明确返回未调度", () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-disabled-"));
+    const enqueue = vi.fn();
+    const service = createService({ rootDir, enqueue });
+
+    const refresh = service.requestRefresh("workspace-1", "user-1", "manual_refresh");
+    const hint = service.requestRefreshHint("workspace-1", "user-1", "directory_hint", "notes");
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(refresh.taskId).toBe("disabled");
+    expect(hint.scheduled).toBe(false);
+
+    service.dispose();
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  });
+});
+
 describe("AffairsLibraryService auto tasks", () => {
   afterEach(() => {
     vi.clearAllTimers();
@@ -230,7 +248,7 @@ describe("AffairsLibraryService auto tasks", () => {
     delete (globalThis as Record<string, unknown>).__codingnsTaskHelperPool__;
   });
 
-  it("启动时会为已启用文档库排队一次自动刷新", async () => {
+  it("启动时不会为已启用文档库排队后台刷新", async () => {
     vi.useFakeTimers();
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-"));
 
@@ -254,18 +272,7 @@ describe("AffairsLibraryService auto tasks", () => {
 
     await vi.advanceTimersByTimeAsync(810);
 
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        key: "workspace-1",
-        source: "affairs_library.auto_refresh",
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: expect.stringContaining("startup_resume")
-        })
-      })
-    );
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
@@ -323,7 +330,7 @@ describe("AffairsLibraryService auto tasks", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("发现索引产物缺失时会强制走全量重建，不再沿用 targeted refresh", async () => {
+  it("发现索引产物缺失时也不会触发后台重建", async () => {
     vi.useFakeTimers();
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-missing-artifact-"));
     const enqueue = vi.fn(() => ({
@@ -341,24 +348,13 @@ describe("AffairsLibraryService auto tasks", () => {
 
     await vi.advanceTimersByTimeAsync(810);
 
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir
-        })
-      })
-    );
-    const indexCall = enqueue.mock.calls.find((call) => call[0] === HOST_TASK_TYPES.affairsLibraryIndex);
-    expect(indexCall?.[1]?.input).not.toHaveProperty("targetPath");
-    expect(String(indexCall?.[1]?.input?.reason ?? "")).toContain("missing_index_artifact");
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("10 分钟巡检发现漂移时会走全库增量刷新，不直接全量重建", async () => {
+  it("10 分钟巡检发现漂移时不会触发后台刷新", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-03T10:00:00.000Z"));
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-periodic-"));
@@ -387,18 +383,7 @@ describe("AffairsLibraryService auto tasks", () => {
 
     await vi.advanceTimersByTimeAsync(810);
 
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: expect.stringContaining("periodic_audit:"),
-          commandMode: "incremental"
-        })
-      })
-    );
-    expect(enqueue.mock.calls[0]?.[1]?.input).not.toHaveProperty("targetPath");
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
@@ -456,7 +441,7 @@ describe("AffairsLibraryService auto tasks", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("45 秒轻量对账发现最近目录 mtime 比导出新时，会补跑一次增量刷新", async () => {
+  it("45 秒轻量对账发现最近目录 mtime 比导出新时也不会触发刷新", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-03T10:00:00.000Z"));
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-lightweight-reconcile-"));
@@ -518,21 +503,7 @@ describe("AffairsLibraryService auto tasks", () => {
 
     await vi.advanceTimersByTimeAsync(46_000);
 
-    const indexCall = enqueue.mock.calls.find((call) => call[0] === HOST_TASK_TYPES.affairsLibraryIndex);
-    expect(indexCall).toBeTruthy();
-    expect(indexCall?.[1]).toEqual(
-      expect.objectContaining({
-        key: "workspace-1",
-        source: "affairs_library.auto_refresh",
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          commandMode: "incremental",
-          reason: expect.stringContaining("lightweight_reconcile:recent_directory_mtime")
-        })
-      })
-    );
-    expect(indexCall?.[1]?.input).not.toHaveProperty("targetPath");
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
@@ -593,7 +564,7 @@ describe("AffairsLibraryService auto tasks", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("config 变更会先排 apply-config，再补跑文件增量索引", async () => {
+  it("config 变更不会触发 apply-config 或索引任务", async () => {
     vi.useFakeTimers();
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-"));
     seedExistingArtifacts(rootDir);
@@ -620,35 +591,14 @@ describe("AffairsLibraryService auto tasks", () => {
     service.scheduleAutoApplyConfig("workspace-1", "watch:config_changed");
 
     await vi.advanceTimersByTimeAsync(810);
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryApplyConfig,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: "watch:config_changed"
-        })
-      })
-    );
-
     await vi.advanceTimersByTimeAsync(60);
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: "watch:index_changed:notes/a.md",
-          targetPath: "notes/a.md"
-        })
-      })
-    );
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("自动刷新遇到 orphan running 时，会先主动取消旧任务，再继续排新任务", async () => {
+  it("任务停用时自动刷新不会处理 orphan running，也不会重新入队", async () => {
     vi.useFakeTimers();
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-orphan-reconcile-auto-"));
     seedExistingArtifacts(rootDir);
@@ -718,22 +668,8 @@ describe("AffairsLibraryService auto tasks", () => {
     service.scheduleAutoRefresh("workspace-1", "watch:index_changed:notes/demo.md", "notes/demo.md");
     await vi.advanceTimersByTimeAsync(810);
 
-    expect(cancel).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      "workspace-1",
-      expect.stringContaining("orphaned_helper_process:command_lock_owner_dead")
-    );
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: "watch:index_changed:notes/demo.md",
-          targetPath: "notes/demo.md"
-        })
-      })
-    );
+    expect(cancel).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
@@ -812,18 +748,8 @@ describe("AffairsLibraryService auto tasks", () => {
       "workspace-1",
       expect.stringContaining("orphaned_helper_process:command_lock_owner_dead")
     );
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: "manual_refresh"
-        })
-      })
-    );
-    expect(cancel.mock.invocationCallOrder[0]).toBeLessThan(enqueue.mock.invocationCallOrder[0]);
-    expect(refresh.taskId).toBe("task-manual-new");
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(refresh.taskId).toBe("disabled");
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
@@ -875,7 +801,7 @@ describe("AffairsLibraryService auto tasks", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("应用内文件写入会把文档库内的文件改动收口成 targeted refresh", async () => {
+  it("应用内文件写入不会触发已停用的后台刷新", async () => {
     vi.useFakeTimers();
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-touch-"));
     fs.mkdirSync(path.join(rootDir, "notes"), { recursive: true });
@@ -898,23 +824,13 @@ describe("AffairsLibraryService auto tasks", () => {
 
     await vi.advanceTimersByTimeAsync(810);
 
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: "app_upsert:notes/demo.md",
-          targetPath: "notes/demo.md"
-        })
-      })
-    );
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("应用内删除文件会刷新父目录，避免当前目录继续显示旧文件", async () => {
+  it("应用内删除文件不会触发索引或目录提示任务", async () => {
     vi.useFakeTimers();
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-delete-touch-"));
     fs.mkdirSync(path.join(rootDir, "notes"), { recursive: true });
@@ -937,32 +853,13 @@ describe("AffairsLibraryService auto tasks", () => {
 
     await vi.advanceTimersByTimeAsync(810);
 
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: "app_delete:notes",
-          targetPath: "notes"
-        })
-      })
-    );
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryDirectoryHint,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          directoryPath: "notes",
-          reason: "watch_hint:notes"
-        })
-      })
-    );
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("应用内改到配置文件时会改走 apply-config，而不是普通索引刷新", async () => {
+  it("应用内改到配置文件时不会触发后台任务", async () => {
     vi.useFakeTimers();
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-config-touch-"));
     fs.mkdirSync(path.join(rootDir, ".ai-index"), { recursive: true });
@@ -984,17 +881,7 @@ describe("AffairsLibraryService auto tasks", () => {
 
     await vi.advanceTimersByTimeAsync(810);
 
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryApplyConfig,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          reason: "app_write:.ai-index/doc-semantic-index.config.json"
-        })
-      })
-    );
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
@@ -1439,7 +1326,7 @@ describe("AffairsLibraryService auto tasks", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("导出刷新后会丢掉旧快照缓存并读到新的根目录文档", async () => {
+  it("后台刷新停用时仍能直接读取新的根目录文档", async () => {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-refresh-cache-"));
     const exportDir = path.join(rootDir, ".ai-index", "exports");
     fs.mkdirSync(exportDir, { recursive: true });
@@ -1590,8 +1477,8 @@ describe("AffairsLibraryService auto tasks", () => {
     syncLiveFiles(secondFiles);
 
     const refresh = service.requestRefresh("workspace-1", "user-1", "manual_refresh");
-    await enqueue.mock.results[0]?.value.promise;
-    expect(refresh.taskId).toBe("task-1");
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(refresh.taskId).toBe("disabled");
 
     const secondList = service.listDocuments("workspace-1", "user-1", {
       browseMode: "folder",
@@ -1896,7 +1783,7 @@ describe("AffairsLibraryService auto tasks", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("大目录列表会先返回 stale_fallback，并把 live scan 下沉到 helper 目录 hint", () => {
+  it("大目录列表会先返回 stale_fallback，但不会触发目录 hint 任务", () => {
     const writeDebugLog = vi.spyOn(affairsLibraryDebugLogModule, "writeAffairsLibraryDebugLog").mockImplementation(() => {});
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-large-folder-"));
     const exportDir = path.join(rootDir, ".ai-index", "exports");
@@ -1987,15 +1874,7 @@ describe("AffairsLibraryService auto tasks", () => {
     expect(documentList.directoryStatus?.source).toBe("stale_fallback");
     expect(documentList.directoryStatus?.staleReason).toBe("large_directory:250");
     expect(documentList.directoryStatus?.generatedAt).toBe("2026-06-03T10:00:00.000Z");
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryDirectoryHint,
-      expect.objectContaining({
-        input: expect.objectContaining({
-          directoryPath: "临时文件",
-          reason: "large_directory_live_scan"
-        })
-      })
-    );
+    expect(enqueue).not.toHaveBeenCalled();
 
     const deferredPayloads = writeDebugLog.mock.calls
       .map(([payload]) => payload)
@@ -2158,7 +2037,7 @@ describe("AffairsLibraryService auto tasks", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("别的工作区的 queued 索引任务，不会把当前工作区的自动刷新卡死", async () => {
+  it("任务停用时不会因为别的工作区任务而触发当前工作区刷新", async () => {
     vi.useFakeTimers();
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-other-workspace-queued-"));
     seedExistingArtifacts(rootDir);
@@ -2198,17 +2077,7 @@ describe("AffairsLibraryService auto tasks", () => {
     service.scheduleAutoRefresh("workspace-1", "watch:index_changed:notes/demo.md", "notes/demo.md");
     await vi.advanceTimersByTimeAsync(810);
 
-    expect(enqueue).toHaveBeenCalledWith(
-      HOST_TASK_TYPES.affairsLibraryIndex,
-      expect.objectContaining({
-        key: "workspace-1",
-        input: expect.objectContaining({
-          workspaceId: "workspace-1",
-          rootDir,
-          targetPath: "notes/demo.md"
-        })
-      })
-    );
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
@@ -2562,7 +2431,7 @@ describe("AffairsLibraryService global binding", () => {
     });
 
     expect(service.getBinding("workspace-1", "workspace-session-user")).toMatchObject({
-      workspaceId: "workspace-1",
+      workspaceId: "affairs-global",
       rootDir,
       enabled: true
     });
@@ -2830,7 +2699,7 @@ describe("AffairsLibraryService global binding", () => {
     });
 
     expect(service.getGlobalBinding("workspace-session-user")).toMatchObject({
-      workspaceId: "workspace-1",
+      workspaceId: "affairs-global",
       rootDir,
       enabled: true
     });
@@ -2904,7 +2773,7 @@ describe("AffairsLibraryService global binding", () => {
       rootDir,
       enabled: true,
       favoritesJson: "[]",
-      lastWorkspaceId: "workspace-1",
+      lastWorkspaceId: "affairs-global",
       dashboardStateJson: expect.stringContaining("\"activeTabId\":\"tab-1\"")
     }));
 
@@ -3055,7 +2924,7 @@ describe("AffairsLibraryService global binding", () => {
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
       userId: "workspace-session-user",
       favoritesJson: JSON.stringify(favorites),
-      lastWorkspaceId: "workspace-1",
+      lastWorkspaceId: "affairs-global",
       dashboardStateJson
     }));
     expect(legacyUpsert).not.toHaveBeenCalled();
@@ -3145,11 +3014,7 @@ describe("AffairsLibraryService write editing", () => {
       selectedFolderPath: "notes"
     }).items).toEqual([]);
 
-    const directoryHintCall = enqueue.mock.calls.find((call) => call[0] === HOST_TASK_TYPES.affairsLibraryDirectoryHint);
-    expect(directoryHintCall?.[1]?.input).toMatchObject({
-      directoryPath: "notes",
-      reason: "watch_hint:notes"
-    });
+    expect(enqueue).not.toHaveBeenCalled();
 
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });

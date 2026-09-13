@@ -20,7 +20,7 @@ import {
 import { normalizeRelativePath } from "../file/path-normalizer.js";
 import { hashContent } from "../../shared/utils/hash.js";
 import type { TaskManager } from "../tasks/task-manager.js";
-import { HOST_TASK_TYPES, type TaskSnapshot } from "../tasks/task-types.js";
+import { HOST_TASK_TYPES, type TaskHandle, type TaskSnapshot } from "../tasks/task-types.js";
 import type { WorkspaceService } from "./workspace-service.js";
 import {
   runAffairsIndexerCommand,
@@ -786,7 +786,7 @@ export class AffairsLibraryService {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, `${JSON.stringify(nextPayload, null, 2)}\n`, "utf8");
 
-    const handle = this.taskManager.enqueue<{ workspaceId: string; rootDir: string }, AffairsIndexerCommandResult>(
+    const handle = this.enqueueLibraryTask<{ workspaceId: string; rootDir: string }, AffairsIndexerCommandResult>(
       HOST_TASK_TYPES.affairsLibraryApplyConfig,
       {
         key: workspaceId,
@@ -1818,7 +1818,7 @@ export class AffairsLibraryService {
       triggerReason: normalizedReason
     });
 
-    const handle = this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason: string; targetPath?: string }, AffairsIndexerCommandResult>(
+    const handle = this.enqueueLibraryTask<{ workspaceId: string; rootDir: string; reason: string; targetPath?: string }, AffairsIndexerCommandResult>(
       HOST_TASK_TYPES.affairsLibraryIndex,
       {
         key: workspaceId,
@@ -1840,9 +1840,12 @@ export class AffairsLibraryService {
       source: "affairs_library.refresh",
       reason: normalizedReason,
       deduped: handle.deduped,
-      status: "queued"
+      status: handle.taskId === "disabled" ? "skipped" : "queued"
     });
     void handle.promise.then((result) => {
+      if (!result) {
+        return;
+      }
       this.invalidateExportCache(binding.rootDir);
       writeAffairsLibraryDebugLog({
         event: "manual_refresh_finished",
@@ -1890,11 +1893,14 @@ export class AffairsLibraryService {
     const normalizedTargetPath = normalizeHintTargetPath(targetPath);
     const directoryPath = normalizeFolderPath(normalizedTargetPath) || ".";
 
-    this.scheduleDirectoryHintRefresh(
-      workspaceId,
-      directoryPath,
-      reason.trim() || "directory_hint"
-    );
+    const scheduled = !AFFAIRS_LIBRARY_TASKS_DISABLED;
+    if (scheduled) {
+      this.scheduleDirectoryHintRefresh(
+        workspaceId,
+        directoryPath,
+        reason.trim() || "directory_hint"
+      );
+    }
     writeAffairsLibraryDebugLog({
       event: "directory_hint_received",
       processRole: "host",
@@ -1903,11 +1909,11 @@ export class AffairsLibraryService {
       source: "affairs_library.directory_hint",
       reason: reason.trim() || "directory_hint",
       targetPath: directoryPath,
-      status: "scheduled"
+      status: scheduled ? "scheduled" : "skipped"
     });
 
     return {
-      scheduled: true,
+      scheduled,
       status: this.readIndexStatus(workspaceId, binding),
       directoryStatus: this.readDirectoryStatus(workspaceId, binding.rootDir, directoryPath, "mixed")
     };
@@ -2078,6 +2084,11 @@ export class AffairsLibraryService {
   }
 
   private scheduleLightweightReconcile(workspaceId: string, triggerReason: string): void {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      this.clearLightweightReconcileTimer(workspaceId);
+      return;
+    }
+
     const binding = this.findEnabledBindingByWorkspaceId(workspaceId);
     const rootDir = binding?.rootDir?.trim() ?? "";
     if (!rootDir || binding?.enabled !== true) {
@@ -2697,6 +2708,10 @@ export class AffairsLibraryService {
   }
 
   private scheduleDirectoryHintRefresh(workspaceId: string, directoryPath: string, reason: string): void {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      return;
+    }
+
     const binding = this.findEnabledBindingByWorkspaceId(workspaceId);
     const rootDir = binding?.rootDir?.trim() ?? "";
     if (!rootDir) {
@@ -2737,7 +2752,7 @@ export class AffairsLibraryService {
       return;
     }
 
-    const handle = this.taskManager.enqueue<{
+    const handle = this.enqueueLibraryTask<{
       workspaceId: string;
       rootDir: string;
       directoryPath: string;
@@ -2810,6 +2825,10 @@ export class AffairsLibraryService {
       reason: string;
     }
   ): void {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED || handle.taskId === "disabled") {
+      return;
+    }
+
     writeAffairsLibraryDebugLog({
       event: "task_enqueued",
       processRole: "host",
@@ -3113,6 +3132,45 @@ export class AffairsLibraryService {
     // 文档库后台解析已永久下线，保留方法名仅避免旧调用方崩溃。
   }
 
+  /**
+   * 统一处理文档库任务入口。
+   *
+   * 任务注册已经下线，但配置保存、手动刷新和旧的自动刷新状态仍可能
+   * 走到这些调用点。停用时必须返回一个已完成的句柄，不能再访问
+   * TaskRegistry，否则旧接口会因为“任务类型未注册”直接返回 500。
+   */
+  private enqueueLibraryTask<TInput, TResult>(
+    taskType: string,
+    options: { key: string; source: string; input: TInput }
+  ): TaskHandle<TResult> {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      writeAffairsLibraryDebugLog({
+        event: "library_task_skipped_disabled",
+        processRole: "host",
+        workspaceId: extractWorkspaceIdFromTaskInput(options.input),
+        source: options.source,
+        reason: "library_tasks_disabled",
+        status: "skipped",
+        details: {
+          taskType,
+          key: options.key
+        },
+        message: "事务文档库后台任务已停用，跳过任务入队"
+      });
+      return {
+        taskId: "disabled",
+        taskType,
+        key: options.key,
+        executionLane: "host_background",
+        deduped: true,
+        promise: Promise.resolve(undefined as TResult),
+        cancel() {}
+      };
+    }
+
+    return this.taskManager.enqueue<TInput, TResult>(taskType, options);
+  }
+
   private async runInternalCommand(
     rootDir: string,
     commandName: "apply-config" | "index" | "export" | "watch-touch",
@@ -3162,6 +3220,11 @@ export class AffairsLibraryService {
   }
 
   private async flushAutoTasks(workspaceId: string): Promise<void> {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      this.autoTaskStateByWorkspace.delete(workspaceId);
+      return;
+    }
+
     const state = this.autoTaskStateByWorkspace.get(workspaceId);
     if (!state) {
       return;
@@ -3280,7 +3343,7 @@ export class AffairsLibraryService {
         }
       });
       state.applyConfigReasons.clear();
-      const handle = this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason?: string }, AffairsIndexerCommandResult>(
+      const handle = this.enqueueLibraryTask<{ workspaceId: string; rootDir: string; reason?: string }, AffairsIndexerCommandResult>(
         HOST_TASK_TYPES.affairsLibraryApplyConfig,
         {
           key: workspaceId,
@@ -3324,7 +3387,7 @@ export class AffairsLibraryService {
       });
       state.indexReasons.clear();
       state.indexTargets.clear();
-      const handle = this.taskManager.enqueue<{
+      const handle = this.enqueueLibraryTask<{
         workspaceId: string;
         rootDir: string;
         reason: string;
@@ -3636,6 +3699,10 @@ export class AffairsLibraryService {
       targetPath?: string | null;
     }
   ): void {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED || handle.taskId === "disabled") {
+      return;
+    }
+
     this.logger.info(
       {
         workspaceId,
@@ -4283,6 +4350,16 @@ function buildOfficeDocumentVersion(fileSize: number, updatedAt: string | null):
   }
 
   return `${updatedAt}:${fileSize}`;
+}
+
+function extractWorkspaceIdFromTaskInput(input: unknown): string {
+  if (!input || typeof input !== "object") {
+    return AFFAIRS_GLOBAL_WORKSPACE_ID;
+  }
+  const workspaceId = (input as { workspaceId?: unknown }).workspaceId;
+  return typeof workspaceId === "string" && workspaceId.trim()
+    ? workspaceId.trim()
+    : AFFAIRS_GLOBAL_WORKSPACE_ID;
 }
 
 function shouldEnableAffairsLibraryInlineEditing(
