@@ -64,6 +64,8 @@ const INDEX_TASK_COOLDOWN_MS = 15_000;
 const AUTO_TASK_QUIET_WINDOW_MS = 800;
 const AUTO_TASK_RETRY_WINDOW_MS = 1_000;
 const LIGHTWEIGHT_RECONCILE_INTERVAL_MS = 45_000;
+// 文档库解析任务已下线：保留只读数据接口，但不再启动扫描、解析或导出后台链路。
+const AFFAIRS_LIBRARY_TASKS_DISABLED = true;
 const LIGHTWEIGHT_RECONCILE_DRIFT_TOLERANCE_MS = 1_500;
 const COMMAND_LOCK_STALE_HEARTBEAT_MS = 3 * 60 * 1000;
 const ORPHAN_TASK_RECONCILE_GRACE_MS = 15_000;
@@ -505,9 +507,11 @@ export class AffairsLibraryService {
     private readonly taskManager: TaskManager,
     private readonly logger: AffairsLibraryLogger
   ) {
-    this.registerBackgroundTasks();
-    this.resumeEnabledBindings();
-    this.syncLightweightReconcileTimers();
+    if (!AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      this.registerBackgroundTasks();
+      this.resumeEnabledBindings();
+      this.syncLightweightReconcileTimers();
+    }
   }
 
   getGlobalBinding(userId: string): AffairsLibraryBindingDto | null {
@@ -1959,6 +1963,9 @@ export class AffairsLibraryService {
   }
 
   scheduleAutoRefresh(workspaceId: string, reason: string, targetPath?: string): void {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      return;
+    }
     const normalizedWorkspaceId = workspaceId.trim();
     if (!normalizedWorkspaceId) {
       return;
@@ -1998,6 +2005,9 @@ export class AffairsLibraryService {
   }
 
   scheduleAutoApplyConfig(workspaceId: string, reason: string): void {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      return;
+    }
     const normalizedWorkspaceId = workspaceId.trim();
     if (!normalizedWorkspaceId) {
       return;
@@ -2019,6 +2029,12 @@ export class AffairsLibraryService {
   }
 
   private syncLightweightReconcileTimers(): void {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      for (const workspaceId of [...this.lightweightReconcileTimers.keys()]) {
+        this.clearLightweightReconcileTimer(workspaceId);
+      }
+      return;
+    }
     const enabledSettings = this.listEnabledSettingsWithWorkspace();
     const activeWorkspaceIds = new Set<string>();
 
@@ -2152,6 +2168,9 @@ export class AffairsLibraryService {
   }
 
   schedulePeriodicAudit(workspaceId: string, triggerReason: string): void {
+    if (AFFAIRS_LIBRARY_TASKS_DISABLED) {
+      return;
+    }
     const binding = this.findEnabledBindingByWorkspaceId(workspaceId);
     const rootDir = binding?.rootDir?.trim() ?? "";
     if (!rootDir || binding?.enabled !== true) {
@@ -3091,71 +3110,7 @@ export class AffairsLibraryService {
   }
 
   private registerBackgroundTasks(): void {
-    if (!this.taskManager.has(HOST_TASK_TYPES.affairsLibraryApplyConfig)) {
-      this.taskManager.register<{ workspaceId: string; rootDir: string; reason?: string }, AffairsIndexerCommandResult>({
-        taskType: HOST_TASK_TYPES.affairsLibraryApplyConfig,
-        executionLane: "helper_process",
-        helperProcessHandler: "affairs.library_apply_config",
-        timeoutMs: INDEX_TASK_TIMEOUT_MS,
-        queueWaitTimeoutMs: INDEX_TASK_QUEUE_WAIT_TIMEOUT_MS,
-        run: async (input) =>
-          await this.runInternalCommand(input.rootDir, "apply-config", {
-            reason: input.reason
-          })
-      });
-    }
-
-    if (!this.taskManager.has(HOST_TASK_TYPES.affairsLibraryDirectoryHint)) {
-      this.taskManager.register<{
-        workspaceId: string;
-        rootDir: string;
-        directoryPath: string;
-        reason: string;
-      }, AffairsLibraryDirectoryHintTaskResult>({
-        taskType: HOST_TASK_TYPES.affairsLibraryDirectoryHint,
-        executionLane: "helper_process",
-        helperProcessHandler: "affairs.library_directory_hint",
-        timeoutMs: DIRECTORY_HINT_TASK_TIMEOUT_MS,
-        queueWaitTimeoutMs: DIRECTORY_HINT_QUEUE_WAIT_TIMEOUT_MS,
-        run: async (input) => await this.runDirectoryHintTask(input)
-      });
-    }
-
-    if (!this.taskManager.has(HOST_TASK_TYPES.affairsLibraryIndex)) {
-      this.taskManager.register<{
-        workspaceId: string;
-        rootDir: string;
-        reason: string;
-        targetPath?: string;
-        commandMode?: "incremental" | "full";
-      }, AffairsIndexerCommandResult>({
-        taskType: HOST_TASK_TYPES.affairsLibraryIndex,
-        executionLane: "helper_process",
-        helperProcessHandler: "affairs.library_index",
-        timeoutMs: INDEX_TASK_TIMEOUT_MS,
-        queueWaitTimeoutMs: INDEX_TASK_QUEUE_WAIT_TIMEOUT_MS,
-        run: async (input) =>
-          await this.runInternalCommand(
-            input.rootDir,
-            input.commandMode === "incremental" || input.targetPath ? "watch-touch" : "index",
-            {
-              targetPath: input.targetPath,
-              reason: input.reason
-            }
-          )
-      });
-    }
-
-    if (!this.taskManager.has(HOST_TASK_TYPES.affairsLibraryExport)) {
-      this.taskManager.register<{ workspaceId: string; rootDir: string }, AffairsIndexerCommandResult>({
-        taskType: HOST_TASK_TYPES.affairsLibraryExport,
-        executionLane: "helper_process",
-        helperProcessHandler: "affairs.library_export",
-        timeoutMs: INDEX_TASK_TIMEOUT_MS,
-        queueWaitTimeoutMs: INDEX_TASK_QUEUE_WAIT_TIMEOUT_MS,
-        run: async (input) => await this.runInternalCommand(input.rootDir, "export")
-      });
-    }
+    // 文档库后台解析已永久下线，保留方法名仅避免旧调用方崩溃。
   }
 
   private async runInternalCommand(

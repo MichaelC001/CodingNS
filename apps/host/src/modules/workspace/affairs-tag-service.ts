@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AppError } from "../../shared/errors/app-error.js";
 import type { TaskManager } from "../tasks/task-manager.js";
-import { HOST_TASK_TYPES, type TaskSnapshot } from "../tasks/task-types.js";
+import { HOST_TASK_TYPES, type TaskHandle, type TaskSnapshot } from "../tasks/task-types.js";
 import type { WorkspaceService } from "./workspace-service.js";
 import { AFFAIRS_GLOBAL_WORKSPACE_ID, type AffairsLibraryService } from "./affairs-library-service.js";
 import {
@@ -27,6 +27,7 @@ import { initCatalog } from "../affairs-indexer/core/src/sqlite/init-catalog.js"
 
 const TAG_EXPORT_REFRESH_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const TAG_RECOMPUTE_TASK_TIMEOUT_MS = 30 * 60 * 1000;
+const AFFAIRS_TAG_TASKS_DISABLED = true;
 
 export interface AffairsTagNodeDto {
   id: string;
@@ -131,7 +132,9 @@ export class AffairsTagService {
     private readonly affairsLibraryService: AffairsLibraryService,
     private readonly taskManager: TaskManager,
   ) {
-    this.registerBackgroundTasks();
+    if (!AFFAIRS_TAG_TASKS_DISABLED) {
+      this.registerBackgroundTasks();
+    }
   }
 
   configureTeableMirrorSyncNotifier(notifier: (userId: string, reason: string) => void): void {
@@ -286,7 +289,7 @@ export class AffairsTagService {
       });
     }
 
-    this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason: string }, { ok: true }>(
+    this.enqueueTagTask<{ workspaceId: string; rootDir: string; reason: string }, { ok: true }>(
       HOST_TASK_TYPES.affairsLibraryTagExportRefresh,
       {
         key: `${workspaceId}:full`,
@@ -405,7 +408,7 @@ export class AffairsTagService {
     }
     const detail = this.getTagDetail(workspaceId, userId, result.id);
     if (Array.isArray(input.smartRules)) {
-      this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>(
+      this.enqueueTagTask<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>(
         HOST_TASK_TYPES.affairsLibraryTagApplyBindings,
         {
           key: `${workspaceId}:full`,
@@ -419,7 +422,7 @@ export class AffairsTagService {
         },
       );
     } else {
-      this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason: string }, { ok: true }>(
+      this.enqueueTagTask<{ workspaceId: string; rootDir: string; reason: string }, { ok: true }>(
         HOST_TASK_TYPES.affairsLibraryTagExportRefresh,
         {
           key: `${workspaceId}:full`,
@@ -454,7 +457,7 @@ export class AffairsTagService {
     const deletedTagIds = deleteRows.map(item => item.id);
     const deletedPaths = deleteRows.map(item => item.path);
     writer.deleteTagDefinitions([...descendants].reverse().map(item => item.id).concat(current.id));
-    const handle = this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason: string }, { ok: true }>(
+    const handle = this.enqueueTagTask<{ workspaceId: string; rootDir: string; reason: string }, { ok: true }>(
       HOST_TASK_TYPES.affairsLibraryTagExportRefresh,
       {
         key: `${workspaceId}:full`,
@@ -553,7 +556,7 @@ export class AffairsTagService {
       size: context.size,
       extension: context.extension,
     }, tagIds);
-    const handle = this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>(
+    const handle = this.enqueueTagTask<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>(
       HOST_TASK_TYPES.affairsLibraryTagApplyBindings,
       {
         key: `${workspaceId}:doc:${documentId}`,
@@ -651,7 +654,7 @@ export class AffairsTagService {
 
   requestFullTagRecompute(workspaceId: string, userId: string): AffairsTagRecomputeRequestResultDto {
     const { rootDir } = this.requireBinding(workspaceId, userId);
-    const handle = this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>(
+    const handle = this.enqueueTagTask<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>(
       HOST_TASK_TYPES.affairsLibraryTagRecompute,
       {
         key: `${workspaceId}:full`,
@@ -681,7 +684,7 @@ export class AffairsTagService {
     const normalizedFolderPath = normalizeFolderPath(folderPath);
     const writer = new CatalogWriteRepository(dbPath);
     writer.replaceFolderTagBindings(normalizedFolderPath, tagIds);
-    const handle = this.taskManager.enqueue<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>(
+    const handle = this.enqueueTagTask<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>(
       HOST_TASK_TYPES.affairsLibraryTagApplyBindings,
       {
         key: `${workspaceId}:folder:${normalizedFolderPath}`,
@@ -754,53 +757,27 @@ export class AffairsTagService {
   }
 
   private registerBackgroundTasks(): void {
-    if (!this.taskManager.has(HOST_TASK_TYPES.affairsLibraryTagRecompute)) {
-      this.taskManager.register<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>({
-        taskType: HOST_TASK_TYPES.affairsLibraryTagRecompute,
-        executionLane: "helper_process",
-        // 事务文档库全量标签恢复可能要扫几千到上万文档，30s 很容易误杀。
-        timeoutMs: TAG_RECOMPUTE_TASK_TIMEOUT_MS,
-        run: async (input, context) => {
-          await new TagRecomputeService(createAffairsIndexerRuntimeConfig(input.rootDir)).run({
-            scope: input.scope,
-            signal: context.signal,
-            onProgress: context.reportProgress,
-          });
-          return { ok: true };
-        },
-      });
+    // 标签重算和导出任务随文档库解析一起下线。
+  }
+
+  /** 文档库任务已下线，标签变更只保留数据库写入，不再触发重算或静态导出。 */
+  private enqueueTagTask<TInput, TResult>(
+    _taskType: string,
+    _options: { key: string; source: string; input: TInput }
+  ): TaskHandle<TResult> {
+    if (AFFAIRS_TAG_TASKS_DISABLED) {
+      return {
+        taskId: "disabled",
+        taskType: _taskType,
+        key: _options.key,
+        executionLane: "host_background",
+        deduped: true,
+        promise: Promise.resolve(undefined as TResult),
+        cancel() {}
+      };
     }
-    if (!this.taskManager.has(HOST_TASK_TYPES.affairsLibraryTagApplyBindings)) {
-      this.taskManager.register<{ workspaceId: string; rootDir: string; reason: string; scope?: RecomputeScope }, { ok: true }>({
-        taskType: HOST_TASK_TYPES.affairsLibraryTagApplyBindings,
-        executionLane: "helper_process",
-        timeoutMs: TAG_RECOMPUTE_TASK_TIMEOUT_MS,
-        run: async (input, context) => {
-          await new TagRecomputeService(createAffairsIndexerRuntimeConfig(input.rootDir)).run({
-            scope: input.scope,
-            signal: context.signal,
-            onProgress: context.reportProgress,
-          });
-          return { ok: true };
-        },
-      });
-    }
-    if (!this.taskManager.has(HOST_TASK_TYPES.affairsLibraryTagExportRefresh)) {
-      this.taskManager.register<{ workspaceId: string; rootDir: string; reason: string }, { ok: true }>({
-        taskType: HOST_TASK_TYPES.affairsLibraryTagExportRefresh,
-        executionLane: "helper_process",
-        helperProcessHandler: "affairs.library_export",
-        // 这里跑的不是轻量标签刷新，而是整套静态导出。
-        // 大库下 20s 很容易误判超时，直接对齐文档库索引任务的分钟级超时。
-        timeoutMs: TAG_EXPORT_REFRESH_TASK_TIMEOUT_MS,
-        run: async (input, context) => {
-          await new ExportBuilder(createAffairsIndexerRuntimeConfig(input.rootDir)).build({
-            signal: context.signal,
-          });
-          return { ok: true };
-        },
-      });
-    }
+
+    return this.taskManager.enqueue<TInput, TResult>(_taskType, _options);
   }
 
   private toTagNodeDto(

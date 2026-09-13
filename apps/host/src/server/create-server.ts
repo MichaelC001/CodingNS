@@ -170,7 +170,6 @@ import { WorktreeSyncService } from "../modules/worktree/worktree-sync-service.j
 import { WorkspaceController } from "../modules/workspace/workspace-controller.js";
 import { AffairsLibraryController } from "../modules/workspace/affairs-library-controller.js";
 import { getAffairsLibraryDebugLogPath } from "../modules/workspace/affairs-library-debug-log.js";
-import { AffairsLibraryDirtyWatchService } from "../modules/workspace/affairs-library-dirty-watch-service.js";
 import { AffairsLightweightSessionController } from "../modules/workspace/affairs-lightweight-session-controller.js";
 import { AffairsLightweightSessionService } from "../modules/workspace/affairs-lightweight-session-service.js";
 import { AffairsLibraryPreviewLinkService } from "../modules/workspace/affairs-library-preview-link-service.js";
@@ -1501,23 +1500,6 @@ export function createServer(config: HostConfig) {
       kind: event.kind
     });
   });
-  const affairsLibraryDirtyWatchService = new AffairsLibraryDirtyWatchService(
-    () => affairsLibraryService.listEnabledBindingsForWatch(),
-    (workspaceId) => affairsLibraryService.getBindingForWatch(workspaceId),
-    (workspaceId, event) => {
-      if (event.kind === "config") {
-        affairsLibraryService.scheduleAutoApplyConfig(workspaceId, event.reason);
-        return;
-      }
-      if (event.kind === "audit") {
-        affairsLibraryService.schedulePeriodicAudit(workspaceId, event.reason);
-        return;
-      }
-      affairsLibraryService.scheduleAutoRefresh(workspaceId, event.reason, event.targetPath);
-    },
-    app.log
-  );
-  affairsLibraryDirtyWatchService.syncAll();
   const affairsLibraryPreviewLinkService = new AffairsLibraryPreviewLinkService(
     affairsLibraryService,
     config.filePreviewTokenSecret
@@ -1600,7 +1582,6 @@ export function createServer(config: HostConfig) {
       if (!normalizedWorkspaceId) {
         return;
       }
-      affairsLibraryDirtyWatchService.syncWorkspace(normalizedWorkspaceId);
       if (normalizedWorkspaceId === AFFAIRS_GLOBAL_WORKSPACE_ID) {
         return;
       }
@@ -2012,7 +1993,6 @@ export function createServer(config: HostConfig) {
     await sessionLiveRuntimeService.dispose();
     await deepSeekHarnessSidecarManager.shutdown();
     workspaceSessionInstructionWatchService.dispose();
-    affairsLibraryDirtyWatchService.dispose();
     affairsLibraryService.dispose();
     sessionTitleChangedWorkbenchSync.close();
     workbenchRuntimeTerminalSync.close();

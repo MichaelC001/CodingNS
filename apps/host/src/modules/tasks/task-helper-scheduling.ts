@@ -6,11 +6,6 @@ const TASK_HELPER_HANDLER_CONCURRENCY: Partial<Record<TaskHelperProcessHandlerNa
   "session.stats_snapshot_read": 2
 };
 
-const SERIAL_AFFAIRS_HANDLERS = new Set<TaskHelperProcessHandlerName>([
-  "affairs.library_apply_config",
-  "affairs.library_index",
-  "affairs.library_export"
-]);
 
 export interface TaskHelperSchedulingDecision {
   bucket: string;
@@ -26,16 +21,6 @@ export function resolveTaskHelperScheduling(
   handler: TaskHelperProcessHandlerName,
   input: unknown
 ): TaskHelperSchedulingDecision {
-  if (SERIAL_AFFAIRS_HANDLERS.has(handler)) {
-    const rootDir = readRootDir(input);
-    if (rootDir) {
-      return {
-        bucket: `affairs-root:${rootDir}`,
-        concurrency: 1
-      };
-    }
-  }
-
   const configuredConcurrency = TASK_HELPER_HANDLER_CONCURRENCY[handler];
   return {
     bucket: `handler:${handler}`,
@@ -43,18 +28,4 @@ export function resolveTaskHelperScheduling(
       ? Number.POSITIVE_INFINITY
       : Math.max(1, Math.floor(configuredConcurrency))
   };
-}
-
-function readRootDir(input: unknown): string | null {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return null;
-  }
-
-  const candidate = "rootDir" in input ? input.rootDir : null;
-  if (typeof candidate !== "string") {
-    return null;
-  }
-
-  const normalized = candidate.trim();
-  return normalized || null;
 }
