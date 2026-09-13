@@ -1456,6 +1456,47 @@ describe("ComposerPanel", () => {
     expect(costValue).not.toHaveTextContent("US$");
   });
 
+  it("并发轮次费用显示估算值，并在详情中说明估算依据", () => {
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        sessionStats={{
+          provider: "codex",
+          capturedAt: "2026-08-16T00:00:02.000Z",
+          metrics: {
+            costUsd: {
+              value: 0.1259,
+              source: "derived-provider-metrics",
+              semantic: "latest-snapshot",
+              pricing: {
+                kind: "catalog-estimate",
+                coverage: "complete",
+                estimated: true,
+                estimationReason: "concurrent-turns"
+              },
+              watermark: { kind: "source-timestamp", value: "2026-08-16T00:00:02.000Z" }
+            }
+          }
+        }}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(container.querySelector(".composer-context-ring")!);
+
+    const costValue = screen.getByRole("tooltip").querySelector('[data-metric="costUsd"] strong');
+    expect(costValue).toHaveTextContent(
+      `${t("conversation.sessionStatsCostEstimatedPrefix")} $0.126`
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.sessionStatsCostDetailsAction") }));
+
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      t("conversation.sessionStatsCostEstimatedDescription")
+    );
+  });
+
   it("费用信息按钮会打开模型明细、人民币换算和价格表", () => {
     const { container } = render(
       <ComposerPanel

@@ -3577,6 +3577,16 @@ function formatSessionStatValue(metric: SessionStatsDisplayMetric, value: number
   return formatTokenCount(value);
 }
 
+function formatSessionCostValue(
+  value: number,
+  estimated = false
+): string {
+  const amount = formatUsdAmount(value);
+  return estimated
+    ? `${t("conversation.sessionStatsCostEstimatedPrefix")} ${amount}`
+    : amount;
+}
+
 function formatSessionDuration(valueMs: number): string {
   const totalSeconds = Math.max(0, valueMs / 1000);
 
@@ -4029,7 +4039,7 @@ function SessionStatsIndicators({
                             <span className="composer-session-cost-value">
                               <strong>
                                 {isSessionCostAvailable(item.value)
-                                  ? formatSessionStatValue(item.metric, item.value.value)
+                                  ? formatSessionCostValue(item.value.value, item.value.pricing?.estimated)
                                   : t("conversation.sessionStatsCostUnavailableValue")}
                               </strong>
                               <button
@@ -4159,16 +4169,18 @@ function SessionCostDetailsModal({
     />
   );
 
+  const descriptionKey = costUnavailable
+    ? "conversation.sessionStatsCostUnavailableDescription"
+    : pricing?.estimated
+      ? "conversation.sessionStatsCostEstimatedDescription"
+      : "conversation.sessionStatsCostDetailsDescription";
+
   if (isMobile) {
     return (
       <MobileSheet
         open={open}
         title={t("conversation.sessionStatsCostDetailsTitle")}
-        description={t(
-          costUnavailable
-            ? "conversation.sessionStatsCostUnavailableDescription"
-            : "conversation.sessionStatsCostDetailsDescription"
-        )}
+        description={t(descriptionKey)}
         height="three-quarter"
         kind="form"
         showHandle
@@ -4186,11 +4198,7 @@ function SessionCostDetailsModal({
     <DesktopModal
       open={open}
       title={t("conversation.sessionStatsCostDetailsTitle")}
-      description={t(
-        costUnavailable
-          ? "conversation.sessionStatsCostUnavailableDescription"
-          : "conversation.sessionStatsCostDetailsDescription"
-      )}
+      description={t(descriptionKey)}
       size="regular"
       layout="form"
       bodyClassName="composer-session-cost-modal-body"
@@ -4251,7 +4259,7 @@ function SessionCostDetailsBody({
                     key={`${item.provider}:${item.model}`}
                     label={`${getProviderDisplayName(item.provider)} · ${item.model}`}
                     description={formatSessionCostTokenBreakdown(item)}
-                    trailing={<strong>{formatUsdAmount(item.costUsd)}</strong>}
+                    trailing={<strong>{formatSessionCostValue(item.costUsd, pricing?.estimated)}</strong>}
                   />
                 ))}
               </ModalList>
@@ -4271,7 +4279,7 @@ function SessionCostDetailsBody({
             <div className="composer-session-cost-conversion">
               <div>
                 <span>{t("conversation.sessionStatsCostUsdLabel")}</span>
-                <strong>{formatUsdAmount(metric.value)}</strong>
+                <strong>{formatSessionCostValue(metric.value, pricing?.estimated)}</strong>
               </div>
               <div>
                 <span>{t("conversation.sessionStatsCostCnyLabel")}</span>

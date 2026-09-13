@@ -4328,19 +4328,16 @@ function buildCodexUsageLines(
   // 更早的快照。此时把累计计数视为本会话从零开始，仍然可以可靠计算首轮差值。
   const baselineTotal = baseline?.total ?? {};
 
-  // 累计快照在并发 turn 之间无法可靠拆分。任何一条这样的会话都必须隐藏
-  // 目录费用，不能把差值硬塞给最后看到的 turn。
+  // 并发 turn 之间不能可靠拆分累计快照。此时退化为“计费起点到最新快照”
+  // 的会话总量，并用最近快照的模型价格估算。总 Token 差值仍然只计算一次，
+  // 不会因为多个 turn 重复累加；不确定的只是模型归因，因此必须打上估算标记。
   if (hasConcurrentTurns) {
-    return [{
-      key: `${providerSessionId}:concurrent-turns`,
-      provider: "codex",
-      model: "",
-      inputTokens: 0,
-      outputTokens: 0,
-      completed: false,
-      timestamp: "",
-      unavailableReason: "concurrent-turns"
-    }];
+    return buildCodexConcurrentUsageEstimate(
+      providerSessionId,
+      baselineTotal,
+      active,
+      turnModels
+    );
   }
 
   const lines: VerifiedUsageLine[] = [];
@@ -4422,6 +4419,72 @@ function buildCodexUsageLines(
 
   flush();
   return lines;
+}
+
+function buildCodexConcurrentUsageEstimate(
+  providerSessionId: string,
+  baselineTotal: Record<string, unknown>,
+  active: readonly CodexTokenUsageSnapshot[],
+  turnModels: ReadonlyMap<string, string>
+): VerifiedUsageLine[] {
+  const latest = active.at(-1);
+
+  if (!latest) {
+    return [];
+  }
+
+  const delta = diffCodexUsage(baselineTotal, latest.total);
+
+  if (!delta) {
+    return [{
+      key: `${providerSessionId}:estimated-concurrent-invalid:${latest.timestamp}`,
+      provider: "codex",
+      model: latest.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      completed: false,
+      timestamp: latest.timestamp,
+      estimated: true,
+      estimationReason: "concurrent-turns",
+      unavailableReason: "cost-calculation-invalid"
+    }];
+  }
+
+  const model = resolveCodexEstimatedModel(active, turnModels);
+
+  return [{
+    key: `${providerSessionId}:estimated-concurrent`,
+    turnKey: latest.turnId || undefined,
+    provider: "codex",
+    model,
+    inputTokens: delta.input_tokens ?? 0,
+    outputTokens: delta.output_tokens ?? 0,
+    reasoningTokens: delta.reasoning_output_tokens ?? delta.reasoning_tokens ?? 0,
+    cacheReadTokens: delta.cached_input_tokens ?? 0,
+    cacheWriteTokens: delta.cache_write_tokens ?? 0,
+    inputIncludesCacheRead: true,
+    // 累计快照在当前 turn 尚未结束时仍可计算“截至目前”的费用估算。
+    completed: Boolean(model),
+    timestamp: latest.timestamp,
+    estimated: true,
+    estimationReason: "concurrent-turns"
+  }];
+}
+
+function resolveCodexEstimatedModel(
+  active: readonly CodexTokenUsageSnapshot[],
+  turnModels: ReadonlyMap<string, string>
+): string {
+  for (let index = active.length - 1; index >= 0; index -= 1) {
+    const snapshot = active[index];
+    const model = snapshot.model || turnModels.get(snapshot.turnId) || "";
+
+    if (model) {
+      return model;
+    }
+  }
+
+  return [...turnModels.values()].at(-1) ?? "";
 }
 
 function diffCodexUsage(

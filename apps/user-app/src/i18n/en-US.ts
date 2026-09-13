@@ -1939,6 +1939,8 @@ export const enUS = {
     sessionStatsCostDetailsAction: "View cost details",
     sessionStatsCostDetailsTitle: "Cost Details",
     sessionStatsCostDetailsDescription: "Cost is calculated from verified usage in this session.",
+    sessionStatsCostEstimatedDescription: "Concurrent turns were detected. Cost is estimated from cumulative session tokens and the most recently used model for reference only.",
+    sessionStatsCostEstimatedPrefix: "Approx.",
     sessionStatsCostUnavailableValue: "--",
     sessionStatsCostUnavailableTitle: "Cost unavailable",
     sessionStatsCostUnavailableDescription: "The session does not have complete, verifiable cost data.",

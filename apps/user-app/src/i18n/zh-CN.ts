@@ -1770,6 +1770,8 @@ export const zhCN = {
     sessionStatsCostDetailsAction: "查看费用详情",
     sessionStatsCostDetailsTitle: "费用详情",
     sessionStatsCostDetailsDescription: "费用按本次会话统计中的已核验用量计算。",
+    sessionStatsCostEstimatedDescription: "检测到并发轮次，费用按会话累计 Token 和最近使用的模型估算，仅供参考。",
+    sessionStatsCostEstimatedPrefix: "约",
     sessionStatsCostUnavailableValue: "--",
     sessionStatsCostUnavailableTitle: "费用暂不可用",
     sessionStatsCostUnavailableDescription: "当前没有满足核验条件的完整费用数据。",

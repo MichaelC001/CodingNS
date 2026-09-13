@@ -102,6 +102,9 @@ export interface VerifiedUsageLine {
   inputIncludesCacheRead?: boolean;
   completed: boolean;
   timestamp: string;
+  /** 费用来自累计快照的近似归因，而不是可逐轮核验的最终 usage。 */
+  estimated?: boolean;
+  estimationReason?: "concurrent-turns";
   unavailableReason?: ProviderSessionCostUnavailableReason;
 }
 
@@ -258,6 +261,7 @@ export function addCatalogCostMetric(
   }
 
   let total = 0;
+  const estimatedLine = lines.find((line) => line.estimated);
 
   for (const line of lines) {
     if (line.unavailableReason) {
@@ -306,11 +310,17 @@ export function addCatalogCostMetric(
   metrics.costUsd = {
     value: total,
     source: "derived-provider-metrics",
-    semantic: "priced-final-events",
+    semantic: estimatedLine ? "latest-snapshot" : "priced-final-events",
     watermark,
     pricing: {
       kind: "catalog-estimate",
       coverage: "complete",
+      ...(estimatedLine
+        ? {
+            estimated: true,
+            estimationReason: estimatedLine.estimationReason ?? ("concurrent-turns" as const)
+          }
+        : {}),
       pricingProfileId: billing.pricingProfileId,
       priceBookVersion: billing.priceBookVersion,
       breakdown: buildCostBreakdown(lines, effectivePriceBook),

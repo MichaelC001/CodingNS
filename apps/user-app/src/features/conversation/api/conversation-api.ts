@@ -1688,6 +1688,8 @@ export interface ProviderSessionStatValueDto {
   pricing?: {
     kind: "provider-native" | "catalog-estimate";
     coverage: "complete" | "unavailable";
+    estimated?: boolean;
+    estimationReason?: "concurrent-turns";
     unavailableReason?:
       | "billing-context-missing"
       | "pricing-profile-unsupported"

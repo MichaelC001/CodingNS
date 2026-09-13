@@ -239,7 +239,7 @@ describe("各 Provider 的模型归因和费用", () => {
     }
   });
 
-  it("Codex 的并发 turn 无法可靠拆分累计快照时隐藏费用", async () => {
+  it("Codex 的并发 turn 按累计快照总量估算费用，不重复累加 Token", async () => {
     const root = mkdtempSync(join(tmpdir(), "codingns-codex-concurrent-cost-"));
     const file = join(root, "session.jsonl");
     const record = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
@@ -298,10 +298,22 @@ describe("各 Provider 的模型归因和费用", () => {
         billing
       );
 
-      expect(stats?.metrics.costUsd?.pricing).toMatchObject({
-        coverage: "unavailable",
-        unavailableReason: "concurrent-turns"
+      expect(stats?.metrics.costUsd).toMatchObject({
+        semantic: "latest-snapshot",
+        pricing: {
+          coverage: "complete",
+          estimated: true,
+          estimationReason: "concurrent-turns",
+          breakdown: [{
+            provider: "codex",
+            model: "gpt-5.3-codex",
+            inputTokens: 200,
+            outputTokens: 40,
+            costUsd: 0.00091
+          }]
+        }
       });
+      expect(stats?.metrics.costUsd?.value).toBeCloseTo(0.00091, 12);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

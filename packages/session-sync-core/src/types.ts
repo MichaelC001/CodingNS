@@ -233,6 +233,9 @@ export interface ProviderSessionPriceBook {
 export interface ProviderSessionCostProvenance {
   kind: "provider-native" | "catalog-estimate";
   coverage: "complete" | "unavailable";
+  /** 金额可计算，但模型/轮次归因只能通过会话累计快照近似推断。 */
+  estimated?: boolean;
+  estimationReason?: "concurrent-turns";
   unavailableReason?: ProviderSessionCostUnavailableReason;
   pricingProfileId?: string;
   priceBookVersion?: string;
