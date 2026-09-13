@@ -3431,6 +3431,58 @@ describe("SessionRuntimeStore", () => {
     store.destroy();
   });
 
+  it("终态到达时保留尚未回放到历史的 runtime 输出", async () => {
+    const store = new SessionRuntimeStore("session-1", {
+      bootstrapMessages: [
+        createHistoryMessage({
+          messageId: "user-current-turn",
+          provider: "claude-code",
+          providerSessionId: "kimi-session-1",
+          role: "user",
+          kind: "text",
+          content: "请继续处理",
+          timestamp: "2026-03-28T10:00:00.000Z",
+          sequence: 100,
+          rawRef: "kimi://session/kimi-session-1/message/1"
+        })
+      ]
+    });
+    await store.initialize();
+    emitRealtimeSubscribed();
+
+    emitRealtimeRuntimeMessage({
+      type: "session.runtime_message",
+      sessionId: "session-1",
+      source: "runtime",
+      message: {
+        messageId: "assistant-runtime-final-tail",
+        provider: "kimi",
+        providerSessionId: "kimi-session-1",
+        role: "assistant",
+        kind: "text",
+        content: "历史文件还没来得及落盘的最后一段输出",
+        timestamp: "2026-03-28T10:00:01.000Z",
+        sequence: 2,
+        rawRef: "kimi://session/kimi-session-1/message/2",
+        toolCall: null
+      }
+    });
+
+    const client = getRealtimeClient();
+    (client.options.onRuntimeStatus as ((event: Record<string, unknown>) => void))({
+      type: "session.runtime_status",
+      sessionId: "session-1",
+      status: "completed",
+      detail: "run completed",
+      timestamp: "2026-03-28T10:00:02.000Z"
+    });
+
+    expect(store.getState().session?.runningState).toBe("completed");
+    expect(store.getState().messages.at(-1)?.content).toBe("历史文件还没来得及落盘的最后一段输出");
+
+    store.destroy();
+  });
+
   it("runtime 覆盖层不会被写进快照，重新进入时只用权威历史重建时间线", async () => {
     const store = new SessionRuntimeStore("session-1");
     await store.initialize();

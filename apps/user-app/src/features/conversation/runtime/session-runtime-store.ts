@@ -1110,16 +1110,6 @@ export class SessionRuntimeStore {
     );
   }
 
-  private clearActiveRuntimeTail(reason: string): void {
-    if (this.activeRuntimeOverlayKeys.length === 0) {
-      return;
-    }
-
-    this.activeRuntimeOverlayKeys = [];
-    const messages = this.buildTimelineMessages(reason);
-    this.patch({ messages });
-  }
-
   private resolvePendingMessage(
     message: HistoryMessageDto,
     clientRequestId: string
@@ -1779,7 +1769,8 @@ export class SessionRuntimeStore {
     });
 
     if (isTerminalRuntimeState(nextRunningState)) {
-      this.clearActiveRuntimeTail("runtime_status_terminal");
+      // 终态可能先于 Provider 历史落盘到达。保留 runtime 尾项并继续贴底，
+      // 等 session.delta/backfill 吸收后再由时间线归并逻辑自动退场。
       this.completePendingReplyDebugTraceWithoutAssistant("session_send.client_terminal_before_message", {
         status: event.status,
         detail: event.detail
@@ -1811,7 +1802,7 @@ export class SessionRuntimeStore {
     });
 
     if (isTerminalRuntimeState(event.runningState)) {
-      this.clearActiveRuntimeTail("activity_terminal");
+      // activity 终态同样不能抢先清掉尚未回放到权威历史的最后输出。
       this.clearRuntimeRefreshTimer();
       void this.refreshQueue();
       return;
