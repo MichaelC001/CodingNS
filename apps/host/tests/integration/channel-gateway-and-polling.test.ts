@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createTaskManager } from "../../src/modules/tasks/task-manager.js";
+import { HOST_TASK_TYPES } from "../../src/modules/tasks/task-types.js";
 
 import { ChannelGatewayService } from "../../src/modules/channels/channel-gateway-service.js";
 import { ChannelPollingService } from "../../src/modules/channels/channel-polling-service.js";
@@ -100,6 +102,36 @@ describe("ChannelGatewayService", () => {
 });
 
 describe("ChannelPollingService", () => {
+  it("重复轮询失败不重复写库，三十秒心跳及成功游标仍能落库", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const account: ChannelAccount = {
+      id: "poll-account", userId: "user-1", platformCode: "telegram", displayName: "测试",
+      providerId: "codex", connectionMode: "polling", status: "active", config: {}, runtimeState: {},
+      lastInboundAt: null, lastOutboundAt: null, lastError: null, createdAt: "", updatedAt: ""
+    };
+    const update = vi.fn((next: ChannelAccount) => Object.assign(account, next));
+    const poll = vi.fn().mockRejectedValue(new Error("连接失败"));
+    const manager = createTaskManager();
+    new ChannelPollingService({ findById: () => account, listActiveByConnectionModes: () => [account], update },
+      { require: () => ({ poll }) } as any, {} as any, {} as any, manager);
+    const run = () => manager.enqueue(HOST_TASK_TYPES.channelAccountPoll, {
+      key: account.id, source: "test", input: { accountId: account.id, requestedAt: new Date().toISOString() }
+    }).promise;
+    try {
+      await expect(run()).rejects.toThrow("连接失败");
+      await expect(run()).rejects.toThrow("连接失败");
+      expect(update).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + 31_000);
+      await expect(run()).rejects.toThrow("连接失败");
+      expect(update).toHaveBeenCalledTimes(2);
+      poll.mockResolvedValue({ inboundMessages: [], runtimeStatePatch: { cursor: "new-cursor" } });
+      await run();
+      expect(account).toMatchObject({ status: "active", lastError: null, runtimeState: { cursor: "new-cursor" } });
+      expect(update).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("手动 poll 会进入 TaskManager，并把拉到的消息桥接给 Butler", async () => {
     const account: ChannelAccount = {
       id: "account-2",

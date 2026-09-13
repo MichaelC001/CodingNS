@@ -175,6 +175,12 @@ export class PluginRegistryService {
           updatedAt: timestamp
         };
 
+        // 调度器会读取列表；相同清单不能每次都写定义和注册审计记录。
+        if (previousDefinition?.manifestJson === definition.manifestJson
+          && previousDefinition.installRoot === definition.installRoot) {
+          this.getOrCreateEnablement(definition.id);
+          continue;
+        }
         this.pluginDefinitionRepository.upsert(definition);
         this.getOrCreateEnablement(definition.id);
         this.recordAuditEvent(definition.id, "plugin.registered", null, {

@@ -133,12 +133,19 @@ describe("session.history_delta_read helper handler", () => {
     expect(deltaResult.delta.messages.map((message) => message.content)).toEqual(["新增消息"]);
   });
 
-  it("来源协调器会把 Codex 脏标记变成一次 helper delta 并在关闭时释放来源", async () => {
+  it.each(["codex", "grok"] as const)("%s 来源变化通过 helper 读取，关闭时释放监听", async (provider) => {
     const rootDir = mkdtempSync(join(tmpdir(), "codingns-session-history-subscription-"));
     tempDirs.push(rootDir);
     const workspacePath = join(rootDir, "workspace");
     const codexHomeDir = join(rootDir, "codex");
-    const sessionFile = join(codexHomeDir, "sessions", "2026", "08", "15", "session.jsonl");
+    const grokHomeDir = join(rootDir, "grok");
+    const grokSessionDir = join(grokHomeDir, "sessions", "workspace", "provider-session-1");
+    mkdirSync(grokSessionDir, { recursive: true });
+    writeFileSync(join(grokSessionDir, "summary.json"), JSON.stringify({ sessionId: "provider-session-1" }));
+    const sessionFile = provider === "grok"
+      ? join(grokSessionDir, "updates.jsonl")
+      : join(codexHomeDir, "sessions", "2026", "08", "15", "session.jsonl");
+    const rawStoreRef = provider === "grok" ? "grok://session/provider-session-1" : sessionFile;
     mkdirSync(workspacePath, { recursive: true });
     mkdirSync(join(codexHomeDir, "sessions", "2026", "08", "15"), { recursive: true });
 
@@ -146,6 +153,7 @@ describe("session.history_delta_read helper handler", () => {
       databasePath: ":memory:",
       claudeCodeHomeDir: join(rootDir, "claude"),
       codexHomeDir,
+      grokHomeDir,
       legnaCodeHomeDir: join(rootDir, "legna"),
       geminiHomeDir: join(rootDir, "gemini"),
       kimiHomeDir: join(rootDir, "kimi"),
@@ -162,7 +170,9 @@ describe("session.history_delta_read helper handler", () => {
         content: [{ type: "input_text", text: "初始消息" }]
       }
     });
-    writeFileSync(sessionFile, `${initial}\n`, "utf8");
+    writeFileSync(sessionFile, provider === "grok"
+      ? `${JSON.stringify({ type: "agent_message_chunk", text: "初始消息" })}\n${JSON.stringify({ type: "complete" })}\n`
+      : `${initial}\n`, "utf8");
 
     const database = createDatabaseClient(":memory:");
     const workspaceRepository = new WorkspaceRepository(database.db);
@@ -228,9 +238,9 @@ describe("session.history_delta_read helper handler", () => {
       sessionId: "session-1",
       userId: "user-1",
       workspaceId: "workspace-1",
-      provider: "codex",
+      provider,
       providerSessionId: "provider-session-1",
-      rawStoreRef: sessionFile,
+      rawStoreRef,
       providerConfigMode: "global-default",
       providerPresetId: null,
       runtimeHomeDir: null,
@@ -240,7 +250,7 @@ describe("session.history_delta_read helper handler", () => {
     sessionIndexRepository.upsert({
       sessionId: "session-1",
       workspaceId: "workspace-1",
-      provider: "codex",
+      provider,
       title: "会话",
       messageCount: 1,
       isArchived: false,
@@ -269,8 +279,10 @@ describe("session.history_delta_read helper handler", () => {
         content: [{ type: "output_text", text: "新增消息" }]
       }
     }).concat("\n");
-    appendFileSync(sessionFile, appended, "utf8");
-    const sourceKey = `codex:raw:${sessionFile}`;
+    appendFileSync(sessionFile, provider === "grok"
+      ? `${JSON.stringify({ type: "agent_message_chunk", text: "新增消息" })}\n`
+      : appended, "utf8");
+    const sourceKey = `${provider}:raw:${rawStoreRef}`;
     (service as unknown as {
       sessionHistorySourceCoordinator: { markDirty(source: string): void; getSourceCount(): number };
     }).sessionHistorySourceCoordinator.markDirty(sourceKey);
@@ -300,6 +312,21 @@ describe("session.history_delta_read helper handler", () => {
       expect.any(Object),
       expect.any(Object)
     );
+
+    if (provider === "grok") {
+      appendFileSync(sessionFile, `${JSON.stringify({ type: "complete" })}\n` + Array.from({ length: 25 }, (_, index) =>
+        `${JSON.stringify({ type: "agent_message_chunk", text: `批量-${index}` })}\n${JSON.stringify({ type: "complete" })}\n`
+      ).join(""));
+      await vi.waitFor(() => {
+        const received = envelopes.flatMap(envelope => envelope.messages).filter(message => message.content.startsWith("批量-"));
+        expect(new Set(received.map(message => message.content)).size).toBe(25);
+      }, { timeout: 3_000, interval: 25 });
+      // 无新文件变化时不再通过 300ms 轮询触发 helper。
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const calls = helperLaneExecute.mock.calls.length;
+      await new Promise(resolve => setTimeout(resolve, 700));
+      expect(helperLaneExecute).toHaveBeenCalledTimes(calls);
+    }
 
     subscription.close();
     expect((service as unknown as {

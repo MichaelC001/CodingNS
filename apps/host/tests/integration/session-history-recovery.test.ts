@@ -994,6 +994,50 @@ describe("SessionHistoryService 恢复缺失索引", () => {
     }
   );
 
+  it("syncSessionTitle 会识别 OpenCode 默认标题并重新读取 provider 标题", async () => {
+    const { service, sessionBindingRepository, sessionIndexRepository } = createHarness();
+    const defaultTitle = "New session - 2026-09-12T13:48:50.204Z";
+    const providerTitle = "检查 OpenCode 会话标题生成状态";
+
+    sessionBindingRepository.upsert({
+      sessionId: "session-opencode-title-sync",
+      userId: "user-1",
+      workspaceId: "workspace-1",
+      provider: "opencode",
+      providerSessionId: "provider-session-opencode-title-sync",
+      rawStoreRef: "opencode://session/provider-session-opencode-title-sync",
+      providerConfigMode: "global-default",
+      providerPresetId: null,
+      runtimeHomeDir: null,
+      createdAt: "2026-04-16T08:00:30.000Z",
+      updatedAt: "2026-04-16T08:00:30.000Z"
+    });
+    sessionIndexRepository.upsert({
+      sessionId: "session-opencode-title-sync",
+      workspaceId: "workspace-1",
+      provider: "opencode",
+      title: defaultTitle,
+      messageCount: 2,
+      isArchived: false,
+      lastMessageAt: "2026-04-16T08:01:30.000Z",
+      createdAt: "2026-04-16T08:00:30.000Z",
+      updatedAt: "2026-04-16T08:01:30.000Z"
+    });
+
+    const readSessionTitle = vi.fn(async () => providerTitle);
+    Object.defineProperty(service, "providerDiscoveryHelperClient", {
+      value: { readSessionTitle },
+      configurable: true
+    });
+
+    await service.syncSessionTitle("session-opencode-title-sync");
+
+    expect(readSessionTitle).toHaveBeenCalledTimes(1);
+    expect(sessionIndexRepository.findIndexRecordBySessionId("session-opencode-title-sync")).toMatchObject({
+      title: providerTitle
+    });
+  });
+
   it("syncSessionTitle 不会用 provider 标题覆盖手动改过的标题", async () => {
     const { service, sessionBindingRepository, sessionIndexRepository } = createHarness();
     const manualTitle = "我手动改过的标题";

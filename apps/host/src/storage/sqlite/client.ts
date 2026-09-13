@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { BetterSqliteDatabase } from "../../shared/runtime/better-sqlite3.js";
 import Database from "../../shared/runtime/better-sqlite3.js";
+import { installSlowQueryDiagnostics } from "./slow-query-diagnostics.js";
 
 export interface DatabaseClient {
   db: BetterSqliteDatabase;
@@ -85,6 +86,8 @@ export function createDatabaseClient(databasePath: string): DatabaseClient {
   ensureButlerInboxSchema(db);
   ensureButlerFollowUpTaskSchema(db);
   ensureVerificationRunSchema(db);
+  // 迁移完成后才观测业务查询，避免把建库/升级误报成运行时阻塞。
+  installSlowQueryDiagnostics(db);
 
   return {
     db,

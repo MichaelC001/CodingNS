@@ -89,7 +89,9 @@ export function mapSessionProviderError(error: unknown): AppError {
     });
   }
 
-  if (error instanceof Error && error.message === "PROVIDER_SESSION_NOT_FOUND") {
+  if (error instanceof Error && (
+    error.message === "PROVIDER_SESSION_NOT_FOUND" || error.message === "GROK_SESSION_NOT_FOUND"
+  )) {
     return new AppError({
       statusCode: 404,
       errorCode: "PROVIDER_SESSION_NOT_FOUND",

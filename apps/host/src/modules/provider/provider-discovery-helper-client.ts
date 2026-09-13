@@ -71,6 +71,32 @@ export class ProviderDiscoveryHelperClient {
     };
   }
 
+  async consumeCodexRateLimitResetCredit(input: {
+    commandPath: string;
+    timeoutMs: number;
+    homeDir?: string | null;
+    runtimeEnv?: Record<string, string> | null;
+    idempotencyKey: string;
+    creditId?: string | null;
+  }, signal?: AbortSignal): Promise<{ outcome: string }> {
+    const result = await this.sendRequest({
+      type: "codex_rate_limit_reset_consume",
+      ...input
+    }, signal);
+
+    return result as { outcome: string };
+  }
+
+  async readCodexRateLimits(input: {
+    commandPath: string;
+    timeoutMs: number;
+    homeDir?: string | null;
+    runtimeEnv?: Record<string, string> | null;
+  }, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+    const result = await this.sendRequest({ type: "codex_rate_limits", ...input }, signal);
+    return result as Record<string, unknown> | null;
+  }
+
   async readOpenCodeCliModels(input: {
     commandPath: string;
     workspacePath: string | null;

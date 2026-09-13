@@ -21,6 +21,27 @@ afterEach(() => {
 });
 
 describe("公共隧道实例存储", () => {
+  it("相同失败状态限频落库，状态变化与恢复立即持久化", () => {
+    const client = createDatabaseClient(":memory:");
+    const repository = new InstanceRelayTunnelRepository(client.db);
+    const status = {
+      phase: "error" as const, connected: false, bindingId: null, tunnelDomain: null,
+      hostFingerprint: null, trafficUsedBytes: null, trafficRemainingBytes: null,
+      quotaResetAt: null, lastError: "连接失败", observedAt: "2026-09-10T00:00:00.000Z"
+    };
+    try {
+      repository.upsertStatus(status);
+      const before = client.db.prepare("SELECT total_changes() AS count").get();
+      repository.upsertStatus({ ...status, observedAt: "2026-09-10T00:00:02.000Z" });
+      expect(client.db.prepare("SELECT total_changes() AS count").get()).toEqual(before);
+      repository.upsertStatus({ ...status, observedAt: "2026-09-10T00:00:31.000Z" });
+      expect(repository.findStatus()?.observedAt).toBe("2026-09-10T00:00:31.000Z");
+      repository.upsertStatus({ ...status, phase: "connecting", lastError: null, observedAt: "2026-09-10T00:00:32.000Z" });
+      expect(repository.findStatus()).toMatchObject({ phase: "connecting", lastError: null });
+    } finally {
+      client.close();
+    }
+  });
   it("会创建实例级公共隧道配置表和状态表", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-relay-tunnel-schema-"));
     tempDirs.push(tempDir);

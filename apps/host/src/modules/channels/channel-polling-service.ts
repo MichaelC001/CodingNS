@@ -139,18 +139,24 @@ export class ChannelPollingService {
           ? error.message
           : "通讯平台轮询失败";
 
-      this.channelAccountRepository.update({
-        ...account,
-        status: account.status === "disabled" ? "disabled" : "degraded",
-        runtimeState: {
-          ...account.runtimeState,
-          lastPollAt: failedAt,
-          lastPollFailedAt: failedAt,
-          lastPollDetail: detail
-        },
-        lastError: detail,
-        updatedAt: failedAt
-      });
+      // 同一个轮询错误只更新一次状态，随后最多每 30 秒落一次失败心跳。
+      // 不影响真实轮询，也不丢弃成功结果中的游标或消息。
+      const lastFailureAt = Date.parse(String(account.runtimeState.lastPollFailedAt ?? ""));
+      if (account.status !== "degraded" || account.lastError !== detail
+        || !Number.isFinite(lastFailureAt) || Date.parse(failedAt) - lastFailureAt >= 30_000) {
+        this.channelAccountRepository.update({
+          ...account,
+          status: account.status === "disabled" ? "disabled" : "degraded",
+          runtimeState: {
+            ...account.runtimeState,
+            lastPollAt: failedAt,
+            lastPollFailedAt: failedAt,
+            lastPollDetail: detail
+          },
+          lastError: detail,
+          updatedAt: failedAt
+        });
+      }
 
       throw error;
     }

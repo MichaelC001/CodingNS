@@ -30,7 +30,13 @@ export class SessionStatusSnapshotRepository {
          last_error_code = excluded.last_error_code,
          last_error_detail = excluded.last_error_detail,
          resumed_at = excluded.resumed_at,
-         updated_at = excluded.updated_at`
+         updated_at = excluded.updated_at
+       WHERE sync_status IS NOT excluded.sync_status
+          OR sync_cursor IS NOT excluded.sync_cursor
+          OR last_sync_at IS NOT excluded.last_sync_at
+          OR last_error_code IS NOT excluded.last_error_code
+          OR last_error_detail IS NOT excluded.last_error_detail
+          OR resumed_at IS NOT excluded.resumed_at`
     );
   }
 

@@ -29,6 +29,24 @@ type HelperRequest =
     }
   | {
       id: string;
+      type: "codex_rate_limit_reset_consume";
+      commandPath: string;
+      timeoutMs: number;
+      homeDir?: string | null;
+      runtimeEnv?: Record<string, string> | null;
+      idempotencyKey: string;
+      creditId?: string | null;
+    }
+  | {
+      id: string;
+      type: "codex_rate_limits";
+      commandPath: string;
+      timeoutMs: number;
+      homeDir?: string | null;
+      runtimeEnv?: Record<string, string> | null;
+    }
+  | {
+      id: string;
       type: "opencode_cli_models";
       commandPath: string;
       workspacePath: string | null;
@@ -101,6 +119,30 @@ async function handleLine(line: string): Promise<void> {
     switch (payload.type) {
       case "codex_app_server_state": {
         const result = await readCodexAppServerState(
+          payload.commandPath,
+          payload.timeoutMs,
+          payload.homeDir,
+          payload.runtimeEnv,
+          controller.signal
+        );
+        emitResult(payload.id, result);
+        return;
+      }
+      case "codex_rate_limit_reset_consume": {
+        const result = await consumeCodexRateLimitResetCredit(
+          payload.commandPath,
+          payload.timeoutMs,
+          payload.homeDir,
+          payload.runtimeEnv,
+          payload.idempotencyKey,
+          payload.creditId,
+          controller.signal
+        );
+        emitResult(payload.id, result);
+        return;
+      }
+      case "codex_rate_limits": {
+        const result = await readCodexRateLimits(
           payload.commandPath,
           payload.timeoutMs,
           payload.homeDir,
@@ -572,6 +614,202 @@ function normalizeCodexModelListResult(input: unknown): Array<Record<string, unk
 
   return data.filter((entry): entry is Record<string, unknown> => {
     return !!entry && typeof entry === "object";
+  });
+}
+
+function normalizeCodexRateLimitsResult(input: unknown): Record<string, unknown> | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const result = input as Record<string, unknown>;
+  const rateLimits = result.rateLimits ?? result.rate_limits;
+  const resetCredits = result.rateLimitResetCredits ?? result.rate_limit_reset_credits;
+
+  if (!rateLimits || typeof rateLimits !== "object") {
+    return null;
+  }
+
+  return {
+    rateLimits,
+    rateLimitResetCredits: resetCredits ?? null
+  };
+}
+
+async function readCodexRateLimits(
+  commandPath: string,
+  timeoutMs: number,
+  homeDir?: string | null,
+  runtimeEnv?: Record<string, string> | null,
+  signal?: AbortSignal
+): Promise<Record<string, unknown> | null> {
+  return await new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("provider discovery helper aborted"));
+      return;
+    }
+    const launchEnv = buildCodexAppServerRuntimeEnv({ baseEnv: runtimeEnv, commandPath, homeDir: homeDir?.trim() ?? "" });
+    const launch = resolveCommandLaunch(commandPath, buildCodexAppServerArgs(buildCodexAppServerNodeReplConfigOverrides(launchEnv)));
+    const child = spawn(launch.command, launch.args, { env: launchEnv, stdio: ["pipe", "pipe", "pipe"], shell: launch.shell, windowsHide: true });
+    const stdout = createInterface({ input: child.stdout });
+    const stderrChunks: string[] = [];
+    let settled = false;
+    let onAbort: (() => void) | null = null;
+    const timeout = setTimeout(() => finishWithError(new Error("CODEX_APP_SERVER_TIMEOUT")), timeoutMs);
+
+    function cleanup(): void {
+      clearTimeout(timeout);
+      stdout.close();
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      if (!child.killed) child.kill("SIGTERM");
+    }
+    function finishWithError(error: Error): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+    function finishWithValue(value: Record<string, unknown> | null): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    }
+    child.on("error", finishWithError);
+    child.stderr.on("data", (chunk) => stderrChunks.push(chunk.toString("utf8")));
+    child.on("exit", (code) => {
+      if (!settled) finishWithError(new Error(stderrChunks.join("").trim() || `codex app-server exited with code ${code ?? "unknown"}`));
+    });
+    if (signal) {
+      onAbort = () => finishWithError(signal.reason instanceof Error ? signal.reason : new Error("provider discovery helper aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    stdout.on("line", (line) => {
+      if (!line.trim()) return;
+      let parsed: Record<string, unknown>;
+      try { parsed = JSON.parse(line) as Record<string, unknown>; } catch { return; }
+      if (String(parsed.id ?? "") !== "rate-limits.read") return;
+      if (parsed.error && typeof parsed.error === "object") {
+        finishWithValue(null);
+        return;
+      }
+      finishWithValue(normalizeCodexRateLimitsResult(parsed.result));
+    });
+    for (const request of [
+      { jsonrpc: "2.0", id: "initialize", method: "initialize", params: buildCodexAppServerInitializeParams(launchEnv) },
+      { jsonrpc: "2.0", method: "initialized", params: {} },
+      { jsonrpc: "2.0", id: "rate-limits.read", method: "account/rateLimits/read", params: {} }
+    ]) {
+      child.stdin.write(`${JSON.stringify(request)}\n`);
+    }
+  });
+}
+
+async function consumeCodexRateLimitResetCredit(
+  commandPath: string,
+  timeoutMs: number,
+  homeDir?: string | null,
+  runtimeEnv?: Record<string, string> | null,
+  idempotencyKey?: string,
+  creditId?: string | null,
+  signal?: AbortSignal
+): Promise<{ outcome: string }> {
+  return await new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("provider discovery helper aborted"));
+      return;
+    }
+
+    const launchEnv = buildCodexAppServerRuntimeEnv({
+      baseEnv: runtimeEnv,
+      commandPath,
+      homeDir: homeDir?.trim() ?? ""
+    });
+    const launch = resolveCommandLaunch(
+      commandPath,
+      buildCodexAppServerArgs(buildCodexAppServerNodeReplConfigOverrides(launchEnv))
+    );
+    const child = spawn(launch.command, launch.args, {
+      env: launchEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: launch.shell,
+      windowsHide: true
+    });
+    const stdout = createInterface({ input: child.stdout });
+    const stderrChunks: string[] = [];
+    let settled = false;
+    let onAbort: (() => void) | null = null;
+    const timeout = setTimeout(() => finishWithError(new Error("CODEX_APP_SERVER_TIMEOUT")), timeoutMs);
+
+    function cleanup(): void {
+      clearTimeout(timeout);
+      stdout.close();
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      if (!child.killed) {
+        child.kill("SIGTERM");
+      }
+    }
+
+    function finishWithError(error: Error): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+
+    function finishWithValue(value: { outcome: string }): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    }
+
+    child.on("error", finishWithError);
+    child.stderr.on("data", (chunk) => stderrChunks.push(chunk.toString("utf8")));
+    child.on("exit", (code) => {
+      if (!settled) {
+        finishWithError(new Error(stderrChunks.join("").trim() || `codex app-server exited with code ${code ?? "unknown"}`));
+      }
+    });
+    if (signal) {
+      onAbort = () => finishWithError(signal.reason instanceof Error ? signal.reason : new Error("provider discovery helper aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    stdout.on("line", (line) => {
+      if (!line.trim()) return;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (String(parsed.id ?? "") !== "rate-limits.consume") return;
+      if (parsed.error && typeof parsed.error === "object") {
+        finishWithError(new Error(normalizeText((parsed.error as Record<string, unknown>).message) ?? "CODEX_RATE_LIMIT_RESET_FAILED"));
+        return;
+      }
+      const result = parsed.result && typeof parsed.result === "object" ? parsed.result as Record<string, unknown> : {};
+      finishWithValue({ outcome: normalizeText(result.outcome) ?? "unknown" });
+    });
+
+    const requests = [
+      { jsonrpc: "2.0", id: "initialize", method: "initialize", params: buildCodexAppServerInitializeParams(launchEnv) },
+      { jsonrpc: "2.0", method: "initialized", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: "rate-limits.consume",
+        method: "account/rateLimitResetCredit/consume",
+        params: {
+          idempotencyKey: idempotencyKey ?? "",
+          ...(creditId?.trim() ? { creditId: creditId.trim() } : {})
+        }
+      }
+    ];
+    for (const request of requests) {
+      child.stdin.write(`${JSON.stringify(request)}\n`);
+    }
   });
 }
 

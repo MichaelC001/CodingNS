@@ -333,7 +333,7 @@ interface DeliveredHistoryMessageState {
   lastMutableTailRefreshAtMs: number;
 }
 
-interface CodexHistorySourceSubscriber {
+interface HelperHistorySourceSubscriber {
   sessionId: string;
   userId: string | null;
   limit: number;
@@ -341,11 +341,12 @@ interface CodexHistorySourceSubscriber {
   onEnvelope: (envelope: SessionHistoryEnvelope) => Promise<void> | void;
 }
 
-interface CodexHistorySourceState {
+interface HelperHistorySourceState {
   sessionId: string;
   binding: SessionBinding;
-  subscribers: Map<string, CodexHistorySourceSubscriber>;
+  subscribers: Map<string, HelperHistorySourceSubscriber>;
   refreshRequestedDuringRun: boolean;
+  cursor: string | null;
 }
 
 interface PendingSessionAliasDescriptor {
@@ -463,7 +464,7 @@ export class SessionHistoryService {
   private readonly providerCapabilityCache = new Map<string, ProviderCapabilityCacheEntry>();
   private readonly codexDirtyBindingRepairStates = new Map<string, CodexDirtyBindingRepairState>();
   private readonly streamingDeltaSuppressionDebugState = new Map<string, string>();
-  private readonly codexHistorySourceStates = new Map<string, CodexHistorySourceState>();
+  private readonly helperHistorySourceStates = new Map<string, HelperHistorySourceState>();
   private readonly sessionHistorySourceCoordinator: SessionHistorySourceCoordinator;
   private readonly liveActivityObservationResolvers = new Set<LiveActivityObservationResolver>();
   private readonly sessionTitleChangedObservers = new Set<SessionTitleChangedObserver>();
@@ -520,7 +521,7 @@ export class SessionHistoryService {
     this.taskManager = taskManager;
     this.sessionHistorySourceCoordinator = new SessionHistorySourceCoordinator({
       onRefreshRequested: (sourceKey) => {
-        this.requestCodexHistorySourceRefresh(sourceKey);
+        this.requestHelperHistorySourceRefresh(sourceKey);
       }
     });
     this.parallelSessionGroupRepository = parallelSessionGroupRepository;
@@ -2649,12 +2650,26 @@ export class SessionHistoryService {
 
     const binding = this.getBindingOrThrow(sessionId);
 
-    if (binding.provider === "codex") {
-      return this.subscribeCodexHistorySource({
+    if (binding.provider === "codex" || binding.provider === "grok") {
+      const source = binding.provider === "grok"
+        ? await this.enqueueHistoryRead({
+            sessionId,
+            provider: binding.provider,
+            providerSessionId: binding.providerSessionId,
+            rawStoreRef: binding.rawStoreRef,
+            cursor: null,
+            limit: 1,
+            direction: "backward",
+            readMode: "page"
+          }).catch((error) => { throw mapSessionProviderError(error); })
+        : null;
+      return this.subscribeHelperHistorySource({
         sessionId,
         userId,
         limit: safeLimit,
         binding,
+        historySourcePath: source?.historySourcePath,
+        cursor: currentCursor,
         deliveredMessages,
         onEnvelope
       });
@@ -3666,9 +3681,10 @@ export class SessionHistoryService {
     }
 
     const historyTask: Promise<HistoryPage> =
-      provider === "codex"
-        ? this.readCodexHistoryPageInHelper(
+      provider === "codex" || provider === "grok"
+        ? this.readHistoryPageInHelper(
             sessionId,
+            provider,
             providerSessionId,
             rawStoreRef,
             cursor,
@@ -3739,17 +3755,18 @@ export class SessionHistoryService {
       });
   }
 
-  private async readCodexHistoryPageInHelper(
+  private async readHistoryPageInHelper(
     sessionId: string,
+    provider: string,
     providerSessionId: string,
     rawStoreRef: string,
     cursor: string | null,
     limit: number,
     direction: HistoryDirection
   ): Promise<HistoryPage> {
-    const result = await this.enqueueCodexHistoryRead({
+    const result = await this.enqueueHistoryRead({
       sessionId,
-      provider: "codex",
+      provider,
       providerSessionId,
       rawStoreRef,
       cursor,
@@ -3765,12 +3782,12 @@ export class SessionHistoryService {
     return result.page;
   }
 
-  private async readCodexHistoryDeltaInHelper(
+  private async readHistoryDeltaInHelper(
     sessionId: string,
     binding: Pick<SessionBinding, "provider" | "providerSessionId" | "rawStoreRef">,
     limit: number
   ): Promise<SessionHistoryDeltaReadResult> {
-    const result = await this.enqueueCodexHistoryRead({
+    const result = await this.enqueueHistoryRead({
       sessionId,
       provider: binding.provider,
       providerSessionId: binding.providerSessionId,
@@ -3789,11 +3806,13 @@ export class SessionHistoryService {
     return result.delta;
   }
 
-  private subscribeCodexHistorySource(input: {
+  private subscribeHelperHistorySource(input: {
     sessionId: string;
     userId: string | null;
     limit: number;
     binding: SessionBinding;
+    historySourcePath?: string;
+    cursor?: string | null;
     deliveredMessages: DeliveredHistoryMessageState;
     onEnvelope: (envelope: SessionHistoryEnvelope) => Promise<void> | void;
   }): ProviderSubscription {
@@ -3802,16 +3821,17 @@ export class SessionHistoryService {
       input.binding.providerSessionId,
       input.binding.rawStoreRef
     );
-    let source = this.codexHistorySourceStates.get(sourceKey);
+    let source = this.helperHistorySourceStates.get(sourceKey);
 
     if (!source) {
       source = {
         sessionId: input.sessionId,
         binding: input.binding,
         subscribers: new Map(),
+        cursor: input.cursor ?? null,
         refreshRequestedDuringRun: false
       };
-      this.codexHistorySourceStates.set(sourceKey, source);
+      this.helperHistorySourceStates.set(sourceKey, source);
     }
 
     const subscriberId = createId();
@@ -3824,7 +3844,7 @@ export class SessionHistoryService {
     });
     const coordinatorSubscription = this.sessionHistorySourceCoordinator.subscribe({
       sourceKey,
-      rawStoreRef: input.binding.rawStoreRef
+      rawStoreRef: input.historySourcePath ?? input.binding.rawStoreRef
     });
     this.sessionHistorySourceCoordinator.markDirty(sourceKey);
 
@@ -3837,7 +3857,7 @@ export class SessionHistoryService {
 
         closed = true;
         coordinatorSubscription.close();
-        const current = this.codexHistorySourceStates.get(sourceKey);
+        const current = this.helperHistorySourceStates.get(sourceKey);
 
         if (!current) {
           return;
@@ -3846,7 +3866,7 @@ export class SessionHistoryService {
         current.subscribers.delete(subscriberId);
 
         if (current.subscribers.size === 0) {
-          this.codexHistorySourceStates.delete(sourceKey);
+          this.helperHistorySourceStates.delete(sourceKey);
           this.taskManager.cancel(
             HOST_TASK_TYPES.sessionHistoryDeltaRead,
             buildSessionHistoryTaskKey(sourceKey, "delta")
@@ -3857,8 +3877,8 @@ export class SessionHistoryService {
     };
   }
 
-  private requestCodexHistorySourceRefresh(sourceKey: string): void {
-    const source = this.codexHistorySourceStates.get(sourceKey);
+  private requestHelperHistorySourceRefresh(sourceKey: string): void {
+    const source = this.helperHistorySourceStates.get(sourceKey);
 
     if (!source || source.subscribers.size === 0) {
       return;
@@ -3882,14 +3902,14 @@ export class SessionHistoryService {
 
     source.refreshRequestedDuringRun = false;
     const startedAt = Date.now();
-    const handle = this.enqueueCodexHistoryReadTask({
+    const handle = this.enqueueHistoryReadTask({
       sessionId: source.sessionId,
       provider: source.binding.provider,
       providerSessionId: source.binding.providerSessionId,
       rawStoreRef: source.binding.rawStoreRef,
-      cursor: null,
+      cursor: source.binding.provider === "grok" ? source.cursor : null,
       limit: Math.max(...activeSubscribers.map((subscriber) => subscriber.limit)),
-      direction: "backward",
+      direction: source.binding.provider === "grok" ? "forward" : "backward",
       readMode: "delta"
     });
 
@@ -3911,7 +3931,7 @@ export class SessionHistoryService {
           nextCursor: null,
           total: delta.total
         };
-        const current = this.codexHistorySourceStates.get(sourceKey);
+        const current = this.helperHistorySourceStates.get(sourceKey);
 
         if (!current) {
           return;
@@ -3933,6 +3953,11 @@ export class SessionHistoryService {
         }
 
         this.sessionHistorySourceCoordinator.markClean(sourceKey);
+        if (current.binding.provider === "grok") {
+          current.cursor = delta.cursor;
+          // 一个变化窗口可能追加多页，逐页补齐，不把突发消息截成最后一页。
+          if (delta.nextCursor) current.refreshRequestedDuringRun = true;
+        }
         logPerformance(
           "session.history.source_refresh",
           Date.now() - startedAt,
@@ -3952,7 +3977,7 @@ export class SessionHistoryService {
         this.markSessionError(source.sessionId, "SUBSCRIBE_FAILED", error);
       })
       .finally(() => {
-        const current = this.codexHistorySourceStates.get(sourceKey);
+        const current = this.helperHistorySourceStates.get(sourceKey);
 
         if (current?.refreshRequestedDuringRun) {
           current.refreshRequestedDuringRun = false;
@@ -3961,13 +3986,13 @@ export class SessionHistoryService {
       });
   }
 
-  private async enqueueCodexHistoryRead(input: Omit<SessionHistoryReadTaskInput, "rootDir" | "config"> & {
+  private async enqueueHistoryRead(input: Omit<SessionHistoryReadTaskInput, "rootDir" | "config"> & {
     sessionId: string;
   }): Promise<SessionHistoryReadInRuntimeResult> {
-    return await this.enqueueCodexHistoryReadTask(input).promise;
+    return await this.enqueueHistoryReadTask(input).promise;
   }
 
-  private enqueueCodexHistoryReadTask(input: Omit<SessionHistoryReadTaskInput, "rootDir" | "config"> & {
+  private enqueueHistoryReadTask(input: Omit<SessionHistoryReadTaskInput, "rootDir" | "config"> & {
     sessionId: string;
   }): TaskHandle<SessionHistoryReadInRuntimeResult> {
     const rootDir = this.resolveSessionHistoryTaskRootDir(input.sessionId, input.rawStoreRef);
@@ -4584,7 +4609,7 @@ export class SessionHistoryService {
     const initialBinding = this.getBindingOrThrow(sessionId);
 
     if (initialBinding.provider === "codex") {
-      return await this.pullCodexSessionHistoryDelta(
+      return await this.pullHelperSessionHistoryDelta(
         sessionId,
         cursor,
         limit,
@@ -4645,7 +4670,7 @@ export class SessionHistoryService {
     return currentCursor;
   }
 
-  private async pullCodexSessionHistoryDelta(
+  private async pullHelperSessionHistoryDelta(
     sessionId: string,
     cursor: string | null,
     limit: number,
@@ -4660,7 +4685,7 @@ export class SessionHistoryService {
     }
 
     const startedAt = Date.now();
-    const delta = await this.readCodexHistoryDeltaInHelper(sessionId, binding, limit);
+    const delta = await this.readHistoryDeltaInHelper(sessionId, binding, limit);
 
     if (isClosed()) {
       return cursor;
@@ -7377,6 +7402,10 @@ function pickPreferredSessionTitle(target: string | null, source: string | null)
     return normalizedSource;
   }
 
+  if (isSyntheticOpenCodeSessionTitle(normalizedTarget) && !isSyntheticOpenCodeSessionTitle(normalizedSource)) {
+    return normalizedSource;
+  }
+
   return normalizedTarget;
 }
 
@@ -8389,6 +8418,7 @@ function resolveSessionListTitle(
   if (
     normalizedExistingTitle.length > 0 &&
     !isSyntheticCodexSessionTitle(normalizedExistingTitle) &&
+    !isSyntheticOpenCodeSessionTitle(normalizedExistingTitle) &&
     (
       normalizedParentTitle.length === 0 ||
       normalizedExistingTitle !== normalizedParentTitle
@@ -8459,6 +8489,10 @@ function resolvePersistedSessionTitle(
     return currentTitle;
   }
 
+  if (provider === "opencode" && isSyntheticOpenCodeSessionTitle(nextTitle)) {
+    return currentTitle;
+  }
+
   if (provider === "codex" && isSyntheticCodexSessionTitle(nextTitle)) {
     return currentTitle;
   }
@@ -8475,6 +8509,10 @@ function isSyntheticCodexSessionTitle(title: string): boolean {
     /^rollout-\d{4}-\d{2}-\d{2}t/i.test(title) ||
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(title)
   );
+}
+
+function isSyntheticOpenCodeSessionTitle(title: string): boolean {
+  return /^New session\s+-\s+\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/i.test(title);
 }
 
 function isSyntheticGeminiSessionTitle(title: string): boolean {
@@ -8497,6 +8535,10 @@ function shouldSyncSessionTitleFromProvider(
   }
 
   if (provider === "codex" && isSyntheticCodexSessionTitle(normalizedTitle)) {
+    return true;
+  }
+
+  if (provider === "opencode" && isSyntheticOpenCodeSessionTitle(normalizedTitle)) {
     return true;
   }
 

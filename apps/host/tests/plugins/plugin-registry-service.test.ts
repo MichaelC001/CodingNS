@@ -71,6 +71,12 @@ describe("plugin-registry-service", () => {
     const listed = service.listPlugins();
     expect(listed).toHaveLength(1);
     expect(listed[0]?.enabled).toBe(false);
+    const changesBefore = database.db.prepare("SELECT total_changes() AS count").get();
+    service.listPlugins();
+    service.getPlugin("demo.plugin");
+    expect(database.db.prepare("SELECT total_changes() AS count").get()).toEqual(changesBefore);
+    expect(new PluginAuditEventRepository(database.db).listByPluginId("demo.plugin", 50)
+      .filter(event => event.eventType === "plugin.registered")).toHaveLength(1);
 
     const enabled = service.enablePlugin("demo.plugin", userId);
     expect(enabled.enabled).toBe(true);

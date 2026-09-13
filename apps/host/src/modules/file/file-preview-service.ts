@@ -81,29 +81,25 @@ export class FilePreviewService {
       });
     }
 
-    const buffer = readFileSync(resolved.absolutePath);
-
-    if (isBinaryBuffer(buffer)) {
-      return this.buildResult({
-        workspaceId,
-        path: resolved.relativePath,
-        supported: false,
-        kind: "binary",
-        reason: "二进制文件暂不支持直接预览",
-        content: null,
-        version: null,
-        size: resolved.stats?.size ?? 0,
-        updatedAt: resolved.stats?.mtime.toISOString() ?? null
-      });
+    let textPreview: ReturnType<FilePreviewService["readTextPreview"]>;
+    try {
+      textPreview = this.readTextPreview(workspaceId, requestedPath, userId, previewKind, fileSize);
+    } catch (error) {
+      if (error instanceof AppError && error.errorCode === "BINARY_FILE_NOT_SUPPORTED") {
+        return this.buildResult({
+          workspaceId,
+          path: resolved.relativePath,
+          supported: false,
+          kind: "binary",
+          reason: "二进制文件暂不支持直接预览",
+          content: null,
+          version: null,
+          size: fileSize,
+          updatedAt: resolved.stats?.mtime.toISOString() ?? null
+        });
+      }
+      throw error;
     }
-
-    const textPreview = this.readTextPreview(
-      workspaceId,
-      requestedPath,
-      userId,
-      previewKind,
-      fileSize || buffer.byteLength
-    );
 
     return this.buildResult({
       workspaceId,
@@ -113,7 +109,7 @@ export class FilePreviewService {
       reason: null,
       content: textPreview.content,
       version: textPreview.version,
-      size: fileSize || buffer.byteLength,
+      size: fileSize,
       updatedAt: textPreview.updatedAt ?? resolved.stats?.mtime.toISOString() ?? null
     });
   }

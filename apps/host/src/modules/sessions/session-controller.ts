@@ -299,12 +299,12 @@ export class SessionController {
       "查询会话必须提供 workspaceId"
     );
 
+    const userId = requireUserId(request);
+    // 列表请求只读本地索引；发现扫描由后台任务按脏标记触发，避免每次刷新都重扫所有会话。
+    this.sessionHistoryService.requestWorkspaceDiscovery(workspaceId, userId);
     reply.send({
       items: filterButlerControlSessions(
-        await this.sessionHistoryService.discoverWorkspaceSessions(
-          workspaceId,
-          requireUserId(request)
-        ),
+        this.sessionHistoryService.listWorkspaceSessions(workspaceId, userId),
         this.butlerControlSessionRepository
       )
     });

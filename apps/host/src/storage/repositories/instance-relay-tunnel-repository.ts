@@ -147,7 +147,19 @@ export class InstanceRelayTunnelRepository {
           traffic_remaining_bytes = excluded.traffic_remaining_bytes,
           quota_reset_at = excluded.quota_reset_at,
           last_error = excluded.last_error,
-          observed_at = excluded.observed_at`
+          observed_at = excluded.observed_at
+        WHERE excluded.last_error IS NULL
+           OR phase IS NOT excluded.phase
+           OR connected IS NOT excluded.connected
+           OR binding_id IS NOT excluded.binding_id
+           OR tunnel_domain IS NOT excluded.tunnel_domain
+           OR host_fingerprint IS NOT excluded.host_fingerprint
+           OR traffic_used_bytes IS NOT excluded.traffic_used_bytes
+           OR traffic_remaining_bytes IS NOT excluded.traffic_remaining_bytes
+           OR quota_reset_at IS NOT excluded.quota_reset_at
+           OR last_error IS NOT excluded.last_error
+           OR observed_at IS NULL
+           OR julianday(excluded.observed_at) - julianday(observed_at) >= 30.0 / 86400`
       )
       .run(
         status.phase,

@@ -8,6 +8,7 @@ import {
   OpenCodeAdapter,
   ProviderRegistry,
   SessionSyncService,
+  type ProviderAdapter,
   type HistoryDirection,
   type HistoryPage,
   type SessionHistoryDeltaReadResult,
@@ -22,13 +23,28 @@ import type { ProviderSessionDiscoveryHelperConfig } from "./provider-discovery-
 
 const WORKSPACE_DISCOVERY_CACHE_MAX_AGE_MS = 5_000;
 const SESSION_TITLE_CACHE_MAX_AGE_MS = 15_000;
+const WORKSPACE_DISCOVERY_CACHE_LIMIT = 8;
+const SESSION_TITLE_CACHE_LIMIT = 256;
 
-let workspaceDiscoveryRuntime:
-  | {
-      cacheKey: string;
-      service: SessionSyncService;
-    }
-  | null = null;
+// 扫描、标题和历史共用 adapter 的文件指纹/checkpoint，不能因为调用入口切换就重建。
+// 按 provider 自己的配置分桶，Claude 的额外目录变化也不会清掉 Kimi/Codex 缓存。
+const runtimeAdapters = new Map<string, ProviderAdapter>();
+const RUNTIME_ADAPTER_CACHE_LIMIT = 32;
+
+function getRuntimeAdapter<T extends ProviderAdapter>(
+  provider: string,
+  options: unknown,
+  create: () => T
+): T {
+  const key = `${provider}:${JSON.stringify(options)}`;
+  const adapter = (runtimeAdapters.get(key) as T | undefined) ?? create();
+  runtimeAdapters.delete(key);
+  runtimeAdapters.set(key, adapter);
+  while (runtimeAdapters.size > RUNTIME_ADAPTER_CACHE_LIMIT) {
+    runtimeAdapters.delete(runtimeAdapters.keys().next().value!);
+  }
+  return adapter;
+}
 
 const workspaceDiscoveryCache = new Map<string, {
   knownSessionsSignature: string;
@@ -49,10 +65,12 @@ export type SessionHistoryReadInRuntimeResult =
   | {
       readMode: "page";
       page: HistoryPage;
+      historySourcePath?: string;
     }
   | {
       readMode: "delta";
       delta: SessionHistoryDeltaReadResult;
+      historySourcePath?: string;
     };
 
 export async function discoverWorkspaceSessionsInRuntime(
@@ -72,7 +90,19 @@ export async function discoverWorkspaceSessionsInRuntime(
     cached.knownSessionsSignature === knownSessionsSignature &&
     Date.now() - cached.cachedAt <= WORKSPACE_DISCOVERY_CACHE_MAX_AGE_MS
   ) {
-    return cached.result;
+    touchWorkspaceDiscoveryCache(runtimeKey, cached);
+    // 结果可复用，扫描成本不能重放；否则每次缓存命中都会再次累计旧耗时/旧字节数。
+    return {
+      ...cached.result,
+      providerDiagnostics: cached.result.providerDiagnostics?.map((diagnostic) => ({
+        ...diagnostic,
+        durationMs: 0,
+        scannedFiles: 0,
+        skippedByMtimeSize: 0,
+        parsedFiles: 0,
+        bytesRead: 0
+      }))
+    };
   }
 
   const inflight = workspaceDiscoveryInflight.get(runtimeKey);
@@ -84,7 +114,7 @@ export async function discoverWorkspaceSessionsInRuntime(
   const promise = service.discoverWorkspaceSessions(workspacePath, {
     knownSessions
   }).then((result) => {
-    workspaceDiscoveryCache.set(runtimeKey, {
+    touchWorkspaceDiscoveryCache(runtimeKey, {
       knownSessionsSignature,
       cachedAt: Date.now(),
       result
@@ -113,7 +143,7 @@ export async function readSessionTitleInRuntime(
   rawStoreRef: string,
   signal?: AbortSignal
 ): Promise<string> {
-  const service = getWorkspaceDiscoveryService(config);
+  const service = getWorkspaceDiscoveryService(config, [provider]);
   const runtimeKey = buildSessionTitleRuntimeKey(
     config,
     provider,
@@ -123,6 +153,7 @@ export async function readSessionTitleInRuntime(
   const cached = sessionTitleCache.get(runtimeKey);
 
   if (cached && Date.now() - cached.cachedAt <= SESSION_TITLE_CACHE_MAX_AGE_MS) {
+    touchSessionTitleCache(runtimeKey, cached);
     return cached.title;
   }
 
@@ -134,7 +165,7 @@ export async function readSessionTitleInRuntime(
 
   const promise = service.readSessionTitle(provider, providerSessionId, rawStoreRef)
     .then((title) => {
-      sessionTitleCache.set(runtimeKey, {
+      touchSessionTitleCache(runtimeKey, {
         cachedAt: Date.now(),
         title
       });
@@ -148,6 +179,40 @@ export async function readSessionTitleInRuntime(
 
   sessionTitleInflight.set(runtimeKey, promise);
   return await raceWithAbortSignal(promise, signal);
+}
+
+function touchWorkspaceDiscoveryCache(
+  key: string,
+  entry: { knownSessionsSignature: string; cachedAt: number; result: ProviderSessionDiscovery }
+): void {
+  workspaceDiscoveryCache.delete(key);
+  workspaceDiscoveryCache.set(key, entry);
+  const cutoff = Date.now() - WORKSPACE_DISCOVERY_CACHE_MAX_AGE_MS;
+  for (const [cacheKey, cached] of workspaceDiscoveryCache) {
+    if (cached.cachedAt < cutoff) {
+      workspaceDiscoveryCache.delete(cacheKey);
+    }
+  }
+  while (workspaceDiscoveryCache.size > WORKSPACE_DISCOVERY_CACHE_LIMIT) {
+    workspaceDiscoveryCache.delete(workspaceDiscoveryCache.keys().next().value!);
+  }
+}
+
+function touchSessionTitleCache(
+  key: string,
+  entry: { cachedAt: number; title: string }
+): void {
+  sessionTitleCache.delete(key);
+  sessionTitleCache.set(key, entry);
+  const cutoff = Date.now() - SESSION_TITLE_CACHE_MAX_AGE_MS;
+  for (const [cacheKey, cached] of sessionTitleCache) {
+    if (cached.cachedAt < cutoff) {
+      sessionTitleCache.delete(cacheKey);
+    }
+  }
+  while (sessionTitleCache.size > SESSION_TITLE_CACHE_LIMIT) {
+    sessionTitleCache.delete(sessionTitleCache.keys().next().value!);
+  }
 }
 
 /**
@@ -169,6 +234,11 @@ export async function readSessionHistoryInRuntime(input: {
   }
 
   const service = getWorkspaceDiscoveryService(input.config, [input.provider]);
+  const historySourcePath = input.provider === "grok"
+    ? getRuntimeAdapter("grok", [input.config.grokHomeDir], () => new GrokAdapter({
+        homeDir: input.config.grokHomeDir
+      })).resolveHistoryFile(input.providerSessionId, input.rawStoreRef)
+    : undefined;
 
   if (input.readMode === "delta") {
     const delta = await service.readHistoryDelta(
@@ -181,6 +251,7 @@ export async function readSessionHistoryInRuntime(input: {
     );
     return {
       readMode: "delta",
+      historySourcePath,
       delta
     };
   }
@@ -195,6 +266,7 @@ export async function readSessionHistoryInRuntime(input: {
   );
   return {
     readMode: "page",
+    historySourcePath,
     page
   };
 }
@@ -224,54 +296,44 @@ function getWorkspaceDiscoveryService(
   config: ProviderSessionDiscoveryHelperConfig,
   enabledProviders: string[] | null = null
 ): SessionSyncService {
-  const cacheKey = buildRuntimeConfigCacheKey(config, enabledProviders);
-
-  if (workspaceDiscoveryRuntime?.cacheKey === cacheKey) {
-    return workspaceDiscoveryRuntime.service;
-  }
-
   const enabledProviderSet = enabledProviders ? new Set(enabledProviders) : null;
-  const registry = new ProviderRegistry([
-    new ClaudeCodeAdapter({
+  const factories: Array<[string, unknown, () => ProviderAdapter]> = [
+    ["claude-code", [config.claudeCodeHomeDir, config.claudeExtraProjectRoots], () => new ClaudeCodeAdapter({
       homeDir: config.claudeCodeHomeDir,
       extraProjectRoots: config.claudeExtraProjectRoots
-    }),
-    new LegnaCodeAdapter({
+    })],
+    ["legna-code", [config.legnaCodeHomeDir, config.claudeCodeHomeDir], () => new LegnaCodeAdapter({
       homeDir: config.legnaCodeHomeDir,
       legacyClaudeHomeDir: config.claudeCodeHomeDir
-    }),
-    new CodexAdapter({
+    })],
+    ["codex", [config.codexHomeDir, config.codexCliPath], () => new CodexAdapter({
       homeDir: config.codexHomeDir,
       threadControlTransportFactory: createCodexThreadControlTransportFactory(
         config.codexCliPath,
         config.codexHomeDir
       )
-    }),
-    new GeminiAdapter({
+    })],
+    ["gemini", [config.geminiHomeDir, config.geminiCliPath], () => new GeminiAdapter({
       homeDir: config.geminiHomeDir,
       commandPath: config.geminiCliPath
-    }),
-    new KimiAdapter({
+    })],
+    ["kimi", [config.kimiHomeDir, config.kimiDefaultModel], () => new KimiAdapter({
       homeDir: config.kimiHomeDir,
       defaultModel: config.kimiDefaultModel
-    }),
-    new OpenCodeAdapter({
+    })],
+    ["opencode", [config.opencodeBaseUrl, config.opencodeDataDir, config.opencodeDbPath], () => new OpenCodeAdapter({
       baseUrl: config.opencodeBaseUrl,
       dataDir: config.opencodeDataDir,
       dbPath: config.opencodeDbPath
-    }),
-    new GrokAdapter({
+    })],
+    ["grok", [config.grokHomeDir], () => new GrokAdapter({
       homeDir: config.grokHomeDir
-    })
-  ].filter((adapter) => !enabledProviderSet || enabledProviderSet.has(adapter.providerId)));
-  const service = new SessionSyncService(registry);
-
-  workspaceDiscoveryRuntime = {
-    cacheKey,
-    service
-  };
-
-  return service;
+    })]
+  ];
+  const registry = new ProviderRegistry(factories
+    .filter(([provider]) => !enabledProviderSet || enabledProviderSet.has(provider))
+    .map(([provider, options, create]) => getRuntimeAdapter(provider, options, create)));
+  return new SessionSyncService(registry);
 }
 
 function createCodexThreadControlTransportFactory(

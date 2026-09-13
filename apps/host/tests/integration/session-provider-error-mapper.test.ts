@@ -3,6 +3,12 @@ import { describe, expect, it } from "vitest";
 import { mapSessionProviderError } from "../../src/modules/sessions/session-provider-error-mapper.js";
 
 describe("mapSessionProviderError", () => {
+  it("Grok 缺失会话返回 404，不伪装成可重试的 provider I/O 故障", () => {
+    expect(mapSessionProviderError(new Error("GROK_SESSION_NOT_FOUND"))).toMatchObject({
+      statusCode: 404,
+      errorCode: "PROVIDER_SESSION_NOT_FOUND"
+    });
+  });
   it("会把 ACTIVE_RUN_EXISTS 映射成明确的并发错误", () => {
     const mapped = mapSessionProviderError(new Error("ACTIVE_RUN_EXISTS"));
 
