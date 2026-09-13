@@ -16,7 +16,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react";
-import { createPortal, flushSync } from "react-dom";
+import { createPortal } from "react-dom";
 import { pinyin } from "pinyin-pro";
 import {
   UNSAFE_NavigationContext,
@@ -1499,6 +1499,7 @@ function resolveHtmlSourceScopeOption(
 
 const AFFAIRS_LIGHTWEIGHT_PROVIDER_IDS: ProviderId[] = ["codex", "claude-code", "deepseek-harness"];
 const AFFAIRS_ASSISTANT_PROVIDER_IDS: ProviderId[] = ["codex", "claude-code"];
+const EMPTY_AFFAIRS_WORKSPACE_SESSIONS: SessionSummaryDto[] = [];
 const affairsLightweightRuntimeMemory = new Map<string, AffairsLightweightRuntimeSnapshot>();
 
 const AffairsWorkbenchContext = createContext<AffairsWorkbenchContextValue | null>(null);
@@ -1528,7 +1529,7 @@ export function AffairsWorkbenchProvider({
     () => navigationGroups.find((item) => item.workspace.id === workspaceId) ?? null,
     [navigationGroups, workspaceId]
   );
-  const workspaceSessions = workspaceGroup?.sessions ?? [];
+  const workspaceSessions = workspaceGroup?.sessions ?? EMPTY_AFFAIRS_WORKSPACE_SESSIONS;
   const workspaceSessionIdSet = useMemo(
     () => new Set(workspaceSessions.map((session) => session.sessionId)),
     [workspaceSessions]
@@ -2572,7 +2573,7 @@ export function AffairsWorkbenchProvider({
     return () => {
       disposed = true;
     };
-  }, [butlerInitialized, workspaceId, workspaceSessionIdSet, workspaceSessionIdSignature]);
+  }, [butlerInitialized, workspaceId, workspaceSessionIdSignature]);
 
   const libraryDocumentItems = libraryDocumentPage?.items ?? [];
   const documentRecords = useMemo(
@@ -4207,14 +4208,12 @@ export function AffairsWorkbenchProvider({
           return;
         }
 
-        flushSync(() => {
-          setConversationExportRenderJob({
-            session,
-            items: buildConversationTimelineSourceItems({
-              messages: snapshot.messages
-            }),
-            shellWidthPx: exportLayout.shellWidthPx
-          });
+        setConversationExportRenderJob({
+          session,
+          items: buildConversationTimelineSourceItems({
+            messages: snapshot.messages
+          }),
+          shellWidthPx: exportLayout.shellWidthPx
         });
 
         await waitForAffairsSessionExportRender(conversationExportRenderRootRef.current);
@@ -4256,9 +4255,7 @@ ${AFFAIRS_STANDALONE_SESSION_EXPORT_OVERRIDES}`;
           "application/pdf"
         );
       } finally {
-        flushSync(() => {
-          setConversationExportRenderJob(null);
-        });
+        setConversationExportRenderJob(null);
         setConversationExportingSessionId(null);
       }
     },

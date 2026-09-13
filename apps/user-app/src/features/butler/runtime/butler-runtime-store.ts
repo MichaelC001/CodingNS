@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 import type {
   SessionActivityEvent,
@@ -1518,16 +1518,12 @@ export function useButlerRuntimeStore<T>(
   store: ButlerRuntimeStore,
   selector: (state: ButlerRuntimeState) => T
 ): T {
-  const [value, setValue] = useState(() => selector(store.getState()));
-
-  useEffect(() => {
-    setValue(selector(store.getState()));
-    return store.subscribe(() => {
-      setValue(selector(store.getState()));
-    });
-  }, [selector, store]);
-
-  return value;
+  // 订阅外部 store 必须交给 React 管理。旧实现把调用方每次渲染新建的
+  // selector 放进 effect 依赖，并在 effect 内 setState，导致“重订阅 ->
+  // setState -> 重渲染”的循环，工作台刷新时会直接触发 Maximum update depth。
+  // 先订阅稳定的完整快照，再在渲染阶段选择字段，避免生命周期内写 React 状态。
+  const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+  return selector(state);
 }
 
 function createButlerFallbackCapabilities(provider: ButlerProviderId): ProviderCapabilitiesDto {
