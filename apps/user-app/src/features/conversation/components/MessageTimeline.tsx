@@ -59,10 +59,6 @@ import {
   CopyActionIcon,
   ForkActionIcon
 } from "./ConversationActionIcons";
-import {
-  persistConversationScrollState,
-  readPersistedConversationScrollState
-} from "./conversation-scroll-persistence";
 import { useTransientScrollbarVisibility } from "./useTransientScrollbarVisibility";
 import {
   extractConversationTimelineMessages,
@@ -346,10 +342,7 @@ type FoldedPromptKind = "rules" | "system_prompt" | "skill_context";
 const OLDER_HISTORY_PREFETCH_THRESHOLD_PX = 480;
 const STICK_TO_BOTTOM_DISTANCE_PX = 80;
 const SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_PX = 240;
-const SCROLL_STATE_PERSIST_DELAY_MS = 120;
 const OLDER_HISTORY_TOUCH_DRAG_THRESHOLD_PX = 18;
-const MANUAL_RESTORE_INTERVAL_MS = 50;
-const MANUAL_RESTORE_DURATION_MS = 3500;
 const MESSAGE_TIMELINE_VIRTUAL_ESTIMATED_ITEM_HEIGHT = 180;
 const MESSAGE_TIMELINE_VIRTUAL_OVERSCAN = 8;
 const MESSAGE_TIMELINE_LOADING_OLDER_HEIGHT = 44;
@@ -6222,13 +6215,8 @@ export function MessageTimeline({
   replyingPermissionRequestId = null
 }: MessageTimelineProps) {
   const { showToast } = useToast();
-  const platform = usePlatform();
   const shouldVirtualizeTimeline =
     typeof window !== "undefined" && typeof ResizeObserver !== "undefined";
-  const persistScrollState = !followTailUpdates;
-  const initialScrollState = followTailUpdates
-    ? null
-    : readPersistedConversationScrollState(sessionId);
   const listRef = useRef<HTMLDivElement | null>(null);
   useTransientScrollbarVisibility(listRef);
   const previousSessionIdRef = useRef(sessionId);
@@ -6236,25 +6224,13 @@ export function MessageTimeline({
   const previousLastMessageSignatureRef = useRef<string | null>(null);
   const previousLastUserMessageIdRef = useRef<string | null>(null);
   const stickToBottomRef = useRef(true);
-  const followInitialTailRef = useRef(
-    followTailUpdates
-    || initialScrollState === null
-    || initialScrollState.stickToBottom
-  );
+  // 首次加载和切换会话时，DOM 容器可能暂时沿用上一个会话的 scrollTop。
+  // 用一次性标记确保新会话先落到尾部，不保存或恢复跨会话的历史位置。
+  const followInitialTailRef = useRef(true);
   const pendingOlderLoadOffsetRef = useRef<number | null>(null);
   const pendingOlderLoadHeadSignatureRef = useRef<string | null>(null);
   const olderLoadLockRef = useRef(false);
-  const pendingRestoreStateRef = useRef(initialScrollState);
-  const restoredTailSignatureRef = useRef<string | null>(
-    initialScrollState?.lastMessageSignature ?? null
-  );
-  const currentScrollStateRef = useRef(initialScrollState);
-  const scrollPersistTimerRef = useRef<number | null>(null);
-  const manualRestoreTimerRef = useRef<number | null>(null);
-  const manualRestoreTargetRef = useRef<number | null>(null);
-  const manualRestoreDeadlineRef = useRef(0);
-  const manualRestoreInProgressRef = useRef(false);
-  const lastProgrammaticRestoreScrollTopRef = useRef<number | null>(null);
+  const seenTailSignatureRef = useRef<string | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   const previousRuntimeThinkingPlaceholderRef = useRef<string | null>(null);
   const renderCycleIdRef = useRef(0);
@@ -6263,10 +6239,6 @@ export function MessageTimeline({
   const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
   const hasNewMessagesBelowRef = useRef(false);
   const previousRenderMessageIdsRef = useRef<string[] | null>(null);
-  // 虚拟列表会在测量行高时主动更新 DOM；此时持续写回旧 scrollTop 会和用户滚动互相争抢。
-  const manualRestoreDurationMs = platform.isMobile || shouldVirtualizeTimeline
-    ? 0
-    : MANUAL_RESTORE_DURATION_MS;
   const messages = useMemo(
     () => extractConversationTimelineMessages(items),
     [items]
@@ -6533,8 +6505,6 @@ export function MessageTimeline({
     const firstMessage = visibleMessages[0] ?? null;
     const lastMessage = visibleMessages.at(-1) ?? null;
     const tailItem = renderItems.at(-1) ?? null;
-    const pendingRestoreState = pendingRestoreStateRef.current;
-    const currentScrollState = currentScrollStateRef.current;
     const distanceToBottom =
       list ? list.scrollHeight - list.clientHeight - list.scrollTop : null;
 
@@ -6571,23 +6541,7 @@ export function MessageTimeline({
       tailMessages: visibleMessages.slice(-5).map(summarizeTimelineMessage),
       tailRenderItems: renderItems.slice(-5).map(summarizeTimelineRenderItem),
       dom: summarizeTimelineDom(list),
-      pendingRestoreState:
-        pendingRestoreState === null
-          ? null
-          : {
-              scrollTop: pendingRestoreState.scrollTop,
-              stickToBottom: pendingRestoreState.stickToBottom,
-              lastMessage: summarizeMessageSignature(pendingRestoreState.lastMessageSignature)
-            },
-      currentScrollState:
-        currentScrollState === null
-          ? null
-          : {
-              scrollTop: currentScrollState.scrollTop,
-              stickToBottom: currentScrollState.stickToBottom,
-              lastMessage: summarizeMessageSignature(currentScrollState.lastMessageSignature)
-            },
-      restoredTailMessage: summarizeMessageSignature(restoredTailSignatureRef.current),
+      seenTailMessage: summarizeMessageSignature(seenTailSignatureRef.current),
       ...extra
     };
   }
@@ -6604,27 +6558,8 @@ export function MessageTimeline({
     logTimelineScrollDebug(scope, buildTimelineScrollDebugDetail(list, extra));
   }
 
-  function buildPersistedTailMessageSignature(): string | null {
+  function buildTailMessageSignature(): string | null {
     return buildMessageSignature(visibleMessages.at(-1) ?? null);
-  }
-
-  function buildCurrentScrollState(list: HTMLDivElement) {
-    const distanceToBottom = list.scrollHeight - list.clientHeight - list.scrollTop;
-    const stickToBottom = distanceToBottom <= STICK_TO_BOTTOM_DISTANCE_PX;
-
-    return {
-      scrollTop: list.scrollTop,
-      stickToBottom,
-      lastMessageSignature:
-        hasNewMessagesBelowRef.current && !stickToBottom
-          ? restoredTailSignatureRef.current
-          : buildPersistedTailMessageSignature()
-    };
-  }
-
-  function rememberCurrentScrollState(list: HTMLDivElement) {
-    currentScrollStateRef.current = buildCurrentScrollState(list);
-    return currentScrollStateRef.current;
   }
 
   function syncScrollAffordance(list: HTMLDivElement) {
@@ -6634,16 +6569,15 @@ export function MessageTimeline({
     stickToBottomRef.current = nextStickToBottom;
     if (nextStickToBottom) {
       if (hasNewMessagesBelowRef.current) {
-        finishManualRestore();
         hasNewMessagesBelowRef.current = false;
         setHasNewMessagesBelow(false);
       }
 
-      // 用户在底部时，记录当前已经看到的尾部消息。
-      restoredTailSignatureRef.current = buildPersistedTailMessageSignature();
-    } else if (!hasNewMessagesBelowRef.current && restoredTailSignatureRef.current === null) {
+      // 用户在底部时，记录当前已经看到的尾部消息，用于后续 NEW 提示。
+      seenTailSignatureRef.current = buildTailMessageSignature();
+    } else if (!hasNewMessagesBelowRef.current && seenTailSignatureRef.current === null) {
       // 用户第一次上滑时建立已读基线，后续新消息才能显示 NEW 而不强行跳转。
-      restoredTailSignatureRef.current = buildPersistedTailMessageSignature();
+      seenTailSignatureRef.current = buildTailMessageSignature();
     }
     setShowScrollToBottomButton(
       renderItems.length > 0
@@ -6652,60 +6586,10 @@ export function MessageTimeline({
         || hasNewMessagesBelowRef.current
       )
     );
-    rememberCurrentScrollState(list);
     emitTimelineScrollDebug("affordance.sync", list, {
       distanceToBottom,
       nextStickToBottom
     });
-  }
-
-  function persistCurrentScrollState(list: HTMLDivElement | null = listRef.current) {
-    if (!persistScrollState) {
-      return;
-    }
-
-    if (list) {
-      rememberCurrentScrollState(list);
-    }
-
-    if (!currentScrollStateRef.current) {
-      return;
-    }
-
-    persistConversationScrollState(sessionId, currentScrollStateRef.current);
-  }
-
-  function persistCachedScrollState(targetSessionId: string) {
-    if (!persistScrollState) {
-      return;
-    }
-
-    if (!currentScrollStateRef.current) {
-      return;
-    }
-
-    persistConversationScrollState(targetSessionId, currentScrollStateRef.current);
-  }
-
-  function clearPersistScrollTimer() {
-    if (scrollPersistTimerRef.current === null) {
-      return;
-    }
-
-    window.clearTimeout(scrollPersistTimerRef.current);
-    scrollPersistTimerRef.current = null;
-  }
-
-  function schedulePersistCurrentScrollState() {
-    if (!persistScrollState) {
-      return;
-    }
-
-    clearPersistScrollTimer();
-    scrollPersistTimerRef.current = window.setTimeout(() => {
-      scrollPersistTimerRef.current = null;
-      persistCurrentScrollState();
-    }, SCROLL_STATE_PERSIST_DELAY_MS);
   }
 
   function jumpToBottom(
@@ -6729,98 +6613,6 @@ export function MessageTimeline({
       reason,
       ...extra
     });
-  }
-
-  function clearManualRestoreTimer() {
-    if (manualRestoreTimerRef.current === null) {
-      return;
-    }
-
-    window.clearTimeout(manualRestoreTimerRef.current);
-    manualRestoreTimerRef.current = null;
-  }
-
-  function finishManualRestore() {
-    clearManualRestoreTimer();
-    manualRestoreInProgressRef.current = false;
-    manualRestoreTargetRef.current = null;
-    manualRestoreDeadlineRef.current = 0;
-    lastProgrammaticRestoreScrollTopRef.current = null;
-  }
-
-  function applyManualRestorePosition(list: HTMLDivElement, targetScrollTop: number) {
-    const maxScrollableTop = Math.max(0, list.scrollHeight - list.clientHeight);
-    const nextScrollTop = Math.max(0, Math.min(targetScrollTop, maxScrollableTop));
-
-    lastProgrammaticRestoreScrollTopRef.current = nextScrollTop;
-    // 历史位置只恢复一次，不启动虚拟器的持续滚动协调，避免用户接管滚动后
-    // 又被恢复目标拉回去。底部跟随则统一走 jumpToBottom/scrollToEnd。
-    list.scrollTop = nextScrollTop;
-    stickToBottomRef.current = false;
-    emitTimelineScrollDebug("manual_restore.apply", list, {
-      targetScrollTop,
-      maxScrollableTop,
-      nextScrollTop
-    });
-    setShowScrollToBottomButton(
-      renderItems.length > 0
-      && (
-        maxScrollableTop - nextScrollTop > SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_PX
-        || hasNewMessagesBelowRef.current
-      )
-    );
-  }
-
-  function scheduleManualRestoreFrame() {
-    clearManualRestoreTimer();
-
-    if (!manualRestoreInProgressRef.current) {
-      return;
-    }
-
-    manualRestoreTimerRef.current = window.setTimeout(() => {
-      manualRestoreTimerRef.current = null;
-      const list = listRef.current;
-      const targetScrollTop = manualRestoreTargetRef.current;
-
-      if (!list || targetScrollTop === null) {
-        finishManualRestore();
-        return;
-      }
-
-      applyManualRestorePosition(list, targetScrollTop);
-
-      if (Date.now() < manualRestoreDeadlineRef.current) {
-        scheduleManualRestoreFrame();
-        return;
-      }
-
-      finishManualRestore();
-      syncScrollAffordance(list);
-    }, MANUAL_RESTORE_INTERVAL_MS);
-  }
-
-  function startManualRestore(targetScrollTop: number, list: HTMLDivElement) {
-    if (manualRestoreDurationMs <= 0) {
-      applyManualRestorePosition(list, targetScrollTop);
-      finishManualRestore();
-      return;
-    }
-
-    manualRestoreInProgressRef.current = true;
-    manualRestoreTargetRef.current = targetScrollTop;
-    manualRestoreDeadlineRef.current = Date.now() + manualRestoreDurationMs;
-    applyManualRestorePosition(list, targetScrollTop);
-    scheduleManualRestoreFrame();
-  }
-
-  function interruptManualRestore() {
-    if (!manualRestoreInProgressRef.current) {
-      return;
-    }
-
-    emitTimelineScrollDebug("manual_restore.interrupt", listRef.current);
-    finishManualRestore();
   }
 
   function triggerOlderMessagesPrefetch(list: HTMLDivElement): boolean {
@@ -6859,26 +6651,16 @@ export function MessageTimeline({
   useLayoutEffect(() => {
     if (previousSessionIdRef.current !== sessionId) {
       const previousSessionId = previousSessionIdRef.current;
-      const nextScrollState = followTailUpdates
-        ? null
-        : readPersistedConversationScrollState(sessionId);
-
-      persistCachedScrollState(previousSessionId);
       previousSessionIdRef.current = sessionId;
       previousMessageCountRef.current = 0;
       previousLastMessageSignatureRef.current = null;
       previousLastUserMessageIdRef.current = null;
-      pendingRestoreStateRef.current = nextScrollState;
-      restoredTailSignatureRef.current = nextScrollState?.lastMessageSignature ?? null;
-      currentScrollStateRef.current = nextScrollState;
-      followInitialTailRef.current =
-        followTailUpdates
-        || nextScrollState === null
-        || nextScrollState.stickToBottom;
-      stickToBottomRef.current = nextScrollState?.stickToBottom ?? true;
+      // 不再跨会话恢复滚动位置；新会话始终从最新消息开始。
+      followInitialTailRef.current = true;
+      seenTailSignatureRef.current = null;
+      stickToBottomRef.current = true;
       pendingOlderLoadOffsetRef.current = null;
       pendingOlderLoadHeadSignatureRef.current = null;
-      finishManualRestore();
       hasNewMessagesBelowRef.current = false;
       setHasNewMessagesBelow(false);
       setShowScrollToBottomButton(false);
@@ -6887,20 +6669,12 @@ export function MessageTimeline({
         nextSessionId: sessionId
       });
     }
-  }, [followTailUpdates, persistScrollState, sessionId]);
-
-  useLayoutEffect(() => {
-    return () => {
-      clearPersistScrollTimer();
-      finishManualRestore();
-      persistCachedScrollState(previousSessionIdRef.current);
-    };
-  }, [persistScrollState, sessionId]);
+  }, [sessionId]);
 
   useLayoutEffect(() => {
     const list = listRef.current;
     const currentTailRenderSignature = buildMessageSignature(renderItems.at(-1) ?? null);
-    const currentPersistedTailSignature = buildPersistedTailMessageSignature();
+    const currentTailSignature = buildTailMessageSignature();
     const currentLastUserMessageId = findLastUserMessageId(visibleMessages);
 
     if (!list) {
@@ -6913,7 +6687,6 @@ export function MessageTimeline({
     const previousCount = previousMessageCountRef.current;
     const previousLastSignature = previousLastMessageSignatureRef.current;
     const previousLastUserMessageId = previousLastUserMessageIdRef.current;
-    const pendingRestoreState = pendingRestoreStateRef.current;
     const hasTailUpdate =
       previousCount === 0 ||
       renderItems.length !== previousCount ||
@@ -6926,76 +6699,12 @@ export function MessageTimeline({
       previousCount,
       previousLastMessage: summarizeMessageSignature(previousLastSignature),
       currentLastMessage: summarizeMessageSignature(currentTailRenderSignature),
-      currentPersistedTailMessage: summarizeMessageSignature(currentPersistedTailSignature),
+      currentTailMessage: summarizeMessageSignature(currentTailSignature),
       hasTailUpdate,
       previousLastUserMessageId,
       currentLastUserMessageId,
       hasNewUserMessage
     });
-
-    // 会话切回来时先恢复阅读位置；是否有新消息是另一件事，用 NEW 提示，不要强行把用户踢到底部。
-    if (pendingRestoreState && historyState === "ready") {
-      const hasTailUpdates =
-        !pendingRestoreState.stickToBottom
-        && pendingRestoreState.lastMessageSignature !== null
-        && currentPersistedTailSignature !== null
-        && pendingRestoreState.lastMessageSignature !== currentPersistedTailSignature;
-
-      if (pendingRestoreState.stickToBottom) {
-        finishManualRestore();
-        jumpToBottom(list, "restore_ready_stick_to_bottom", {
-          hasTailUpdates
-        });
-      } else {
-        startManualRestore(pendingRestoreState.scrollTop, list);
-        emitTimelineScrollDebug("restore_ready.manual", list, {
-          hasTailUpdates,
-          targetScrollTop: pendingRestoreState.scrollTop
-        });
-      }
-
-      hasNewMessagesBelowRef.current = hasTailUpdates;
-      restoredTailSignatureRef.current = pendingRestoreState.lastMessageSignature;
-      followInitialTailRef.current = false;
-      setHasNewMessagesBelow(hasTailUpdates);
-      pendingRestoreStateRef.current = null;
-      syncScrollAffordance(list);
-      previousMessageCountRef.current = renderItems.length;
-      previousLastMessageSignatureRef.current = currentTailRenderSignature;
-      previousLastUserMessageIdRef.current = currentLastUserMessageId;
-      rememberCurrentScrollState(list);
-      return;
-    }
-
-    if (pendingRestoreState && historyState === "error") {
-      if (pendingRestoreState.stickToBottom) {
-        finishManualRestore();
-        jumpToBottom(list, "restore_error_stick_to_bottom");
-      } else {
-        startManualRestore(pendingRestoreState.scrollTop, list);
-        emitTimelineScrollDebug("restore_error.manual", list, {
-          targetScrollTop: pendingRestoreState.scrollTop
-        });
-      }
-
-      followInitialTailRef.current = false;
-      pendingRestoreStateRef.current = null;
-      syncScrollAffordance(list);
-      previousMessageCountRef.current = renderItems.length;
-      previousLastMessageSignatureRef.current = currentTailRenderSignature;
-      previousLastUserMessageIdRef.current = currentLastUserMessageId;
-      rememberCurrentScrollState(list);
-      return;
-    }
-
-    if (manualRestoreInProgressRef.current) {
-      applyManualRestorePosition(list, manualRestoreTargetRef.current ?? list.scrollTop);
-      previousMessageCountRef.current = renderItems.length;
-      previousLastMessageSignatureRef.current = currentTailRenderSignature;
-      previousLastUserMessageIdRef.current = currentLastUserMessageId;
-      rememberCurrentScrollState(list);
-      return;
-    }
 
     const currentHeadSignature = buildMessageSignature(renderItems[0] ?? null);
     const pendingOlderLoadOffset = pendingOlderLoadOffsetRef.current;
@@ -7015,9 +6724,9 @@ export function MessageTimeline({
       && hasTailUpdate
       && !hasNewUserMessage
       && !shouldTreatAsFollowingTail
-      && restoredTailSignatureRef.current !== null
-      && currentPersistedTailSignature !== null
-      && restoredTailSignatureRef.current !== currentPersistedTailSignature;
+      && seenTailSignatureRef.current !== null
+      && currentTailSignature !== null
+      && seenTailSignatureRef.current !== currentTailSignature;
 
     if (hasUnreadTailUpdate) {
       hasNewMessagesBelowRef.current = true;
@@ -7026,8 +6735,7 @@ export function MessageTimeline({
 
     const shouldFollowTailUpdate =
       hasTailUpdate
-      // 首次加载或切换到没有历史阅读位置的会话时，列表还会暂时沿用上一个会话的 scrollTop。
-      // 这不是用户正在查看历史，必须先把当前会话贴到最新消息；后续更新再按真实滚动位置判断。
+      // 首次加载或切换会话时，列表可能暂时沿用上一个会话的 scrollTop，先贴到当前尾部。
       && (followTailUpdates || followInitialTailRef.current || shouldTreatAsFollowingTail || hasNewUserMessage);
 
     emitTimelineScrollDebug("messages.effect.decision", list, {
@@ -7171,22 +6879,7 @@ export function MessageTimeline({
       return;
     }
 
-    if (manualRestoreInProgressRef.current) {
-      const lastProgrammaticScrollTop = lastProgrammaticRestoreScrollTopRef.current;
-
-      if (
-        lastProgrammaticScrollTop !== null
-        && Math.abs(list.scrollTop - lastProgrammaticScrollTop) <= 1
-      ) {
-        lastProgrammaticRestoreScrollTopRef.current = null;
-      } else {
-        // 只要用户滚出了程序最后一次写入的位置，就说明用户已经接管，不再继续强制恢复。
-        interruptManualRestore();
-      }
-    }
-
     syncScrollAffordance(list);
-    schedulePersistCurrentScrollState();
     emitTimelineScrollDebug("scroll", list);
 
     if (
@@ -7197,11 +6890,6 @@ export function MessageTimeline({
   }
 
   function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
-    if (event.deltaY !== 0) {
-      // 用户已经主动接管滚动，不要再把列表强拉回记忆位置。
-      interruptManualRestore();
-    }
-
     if (event.deltaY >= 0) {
       return;
     }
@@ -7216,7 +6904,6 @@ export function MessageTimeline({
   }
 
   function handleTouchStart(event: ReactTouchEvent<HTMLDivElement>) {
-    interruptManualRestore();
     touchStartYRef.current = event.touches[0]?.clientY ?? null;
   }
 
@@ -7231,8 +6918,6 @@ export function MessageTimeline({
     if (currentY - startY < OLDER_HISTORY_TOUCH_DRAG_THRESHOLD_PX) {
       return;
     }
-
-    interruptManualRestore();
 
     const list = listRef.current;
 
@@ -7314,7 +6999,6 @@ export function MessageTimeline({
         className="message-list"
         data-scrollbar-autohide="true"
         onScroll={handleScroll}
-        onPointerDown={interruptManualRestore}
         onWheel={handleWheel}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
@@ -7394,13 +7078,11 @@ export function MessageTimeline({
               return;
             }
 
-            finishManualRestore();
             jumpToBottom(list, "scroll_button_click");
             hasNewMessagesBelowRef.current = false;
-            restoredTailSignatureRef.current = buildPersistedTailMessageSignature();
+            seenTailSignatureRef.current = buildTailMessageSignature();
             setHasNewMessagesBelow(false);
             syncScrollAffordance(list);
-            persistCurrentScrollState(list);
           }}
         >
           {hasNewMessagesBelow ? (
