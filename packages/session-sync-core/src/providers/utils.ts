@@ -32,6 +32,11 @@ export interface JsonLinesReadResult {
   endsWithNewline: boolean;
 }
 
+export interface RawTextLine {
+  lineNumber: number;
+  raw: string;
+}
+
 export function normalizeWorkspacePath(value: string): string {
   const trimmed = value.trim();
 
@@ -92,11 +97,12 @@ export function walkJsonlFiles(rootDir: string): string[] {
   return results;
 }
 
-export function readJsonLines(filePath: string): RawJsonLine[] {
+export function readJsonLines(
+  filePath: string,
+  options: ParseJsonLinesOptions = {}
+): RawJsonLine[] {
   const content = readFileSync(filePath, "utf8");
-  return parseJsonLines(filePath, content.split(/\r?\n/), 1, {
-    skipIncompleteTail: !content.endsWith("\n")
-  });
+  return parseJsonLines(filePath, content.split(/\r?\n/), 1, options);
 }
 
 /**
@@ -128,7 +134,7 @@ function readJsonLinesForDiscoveryOnce(
 ): RawJsonLine[] {
   const stats = statSync(filePath);
   if (stats.size <= maxWindowBytes * 2) {
-    return readJsonLines(filePath);
+    return readJsonLines(filePath, { skipIncompleteTail: true });
   }
 
   const fd = openSync(filePath, "r");
@@ -140,7 +146,7 @@ function readJsonLinesForDiscoveryOnce(
   } finally {
     closeSync(fd);
   }
-  const tail = readTrailingJsonLines(filePath, maxWindowBytes);
+  const tail = readTrailingJsonLines(filePath, maxWindowBytes, { skipIncompleteTail: true });
   const headRecords = parseJsonLines(filePath, head.split(/\r?\n/), 1, {
     // 头窗口可能正好截断一条正在写入的物理行，不能把它当成损坏记录。
     skipIncompleteTail: true
@@ -172,12 +178,82 @@ export function readJsonLinesTail(filePath: string, maxBytes = 8 * 1024 * 1024):
       text = firstBreak >= 0 ? text.slice(firstBreak + (text[firstBreak] === "\r" && text[firstBreak + 1] === "\n" ? 2 : 1)) : "";
     }
     const firstLineNumber = start > 0 ? -1 : 1;
-    return parseJsonLines(filePath, text.split(/\r?\n/), firstLineNumber, {
-      skipIncompleteTail: !text.endsWith("\n")
-    });
+    return parseJsonLines(filePath, text.split(/\r?\n/), firstLineNumber);
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * 读取尾部原始物理行，供需要区分“坏行”和“半行”的严格历史解析器使用。
+ * 发现扫描应继续使用 readJsonLinesForDiscovery，避免把临时半行当成错误。
+ */
+export function readTextLinesTail(filePath: string, maxBytes = 8 * 1024 * 1024): RawTextLine[] {
+  const stats = statSync(filePath);
+  const windowBytes = Math.max(1, Math.trunc(maxBytes));
+  const start = Math.max(0, stats.size - windowBytes);
+  const length = stats.size - start;
+  if (length <= 0) {
+    return [];
+  }
+
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buffer, 0, length, start);
+    if (bytesRead <= 0) {
+      return [];
+    }
+
+    let text = buffer.toString("utf8", 0, bytesRead);
+    let alignedStartOffset = start;
+    if (start > 0) {
+      const firstBreak = text.search(/\r?\n/);
+      if (firstBreak < 0) {
+        return [];
+      }
+      const breakLength = text[firstBreak] === "\r" && text[firstBreak + 1] === "\n" ? 2 : 1;
+      alignedStartOffset += firstBreak + breakLength;
+      text = text.slice(firstBreak + breakLength);
+    }
+
+    const firstLineNumber = countLinesBeforeOffset(fd, alignedStartOffset) + 1;
+    const lines = text.split(/\r?\n/);
+    if (text.endsWith("\n")) {
+      lines.pop();
+    }
+    return lines.map((raw, index) => ({
+      lineNumber: firstLineNumber + index,
+      raw
+    }));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * 读取 discovery 所需的尾部物理行，并在文件仍被追加时短暂重读。
+ *
+ * Kimi 的 context/wire 文件不是统一的 JSONL 结构，不能复用 JSON 记录
+ * 解析器，但同样需要避免把写入中的半行当成稳定结果。
+ */
+export function readTextLinesTailForDiscovery(
+  filePath: string,
+  maxBytes = 8 * 1024 * 1024
+): RawTextLine[] {
+  let latest: RawTextLine[] = [];
+
+  for (let attempt = 0; attempt < JSONL_DISCOVERY_READ_RETRY_LIMIT; attempt += 1) {
+    const before = readJsonFileFingerprint(filePath);
+    latest = readTextLinesTail(filePath, maxBytes);
+    const after = readJsonFileFingerprint(filePath);
+
+    if (before === after) {
+      return latest;
+    }
+  }
+
+  return latest;
 }
 
 /**
@@ -259,7 +335,11 @@ export function readFirstNonEmptyLine(filePath: string, maxBytes = 256 * 1024): 
   return null;
 }
 
-export function readTrailingJsonLines(filePath: string, maxBytes: number): RawJsonLine[] {
+export function readTrailingJsonLines(
+  filePath: string,
+  maxBytes: number,
+  options: ParseJsonLinesOptions = {}
+): RawJsonLine[] {
   const stats = statSync(filePath);
 
   if (stats.size <= 0 || maxBytes <= 0) {
@@ -298,9 +378,7 @@ export function readTrailingJsonLines(filePath: string, maxBytes: number): RawJs
 
     const firstLineNumber = countLinesBeforeOffset(fd, alignedStartOffset) + 1;
     const text = content.toString("utf8");
-    return parseJsonLines(filePath, text.split(/\r?\n/), firstLineNumber, {
-      skipIncompleteTail: !text.endsWith("\n")
-    });
+    return parseJsonLines(filePath, text.split(/\r?\n/), firstLineNumber, options);
   } finally {
     closeSync(fd);
   }

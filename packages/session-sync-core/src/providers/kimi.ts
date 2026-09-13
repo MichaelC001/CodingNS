@@ -25,7 +25,8 @@ import {
   messageIdFromRawRef,
   nextTimestamp,
   normalizeWorkspacePath,
-  readJsonLinesTail,
+  readTextLinesTail,
+  readTextLinesTailForDiscovery,
   safeDate,
   sliceHistory
 } from "./utils.js";
@@ -995,20 +996,22 @@ function readJsonLinesSafely(
     return [];
   }
 
-  const lines = readJsonLinesTail(filePath, 8 * 1024 * 1024).map((record) => JSON.stringify(record.data));
+  const lines = strict
+    ? readTextLinesTail(filePath, 8 * 1024 * 1024)
+    : readTextLinesTailForDiscovery(filePath, 8 * 1024 * 1024);
   const records: KimiRawLineRecord[] = [];
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
+  for (const line of lines) {
+    const rawLine = line.raw;
 
-    if (!line.trim()) {
+    if (!rawLine.trim()) {
       continue;
     }
 
     try {
-      const data = JSON.parse(line) as Record<string, unknown>;
+      const data = JSON.parse(rawLine) as Record<string, unknown>;
       records.push({
-        lineNumber: index + 1,
+        lineNumber: line.lineNumber,
         data
       });
     } catch (error) {
@@ -1019,7 +1022,7 @@ function readJsonLinesSafely(
       throw createKimiHistoryParseError({
         sessionId,
         fileName,
-        lineNumber: index + 1,
+        lineNumber: line.lineNumber,
         detail: error instanceof Error ? error.message : "INVALID_JSON_LINE"
       });
     }

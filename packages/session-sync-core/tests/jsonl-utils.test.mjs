@@ -4,7 +4,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { readJsonLines, readTrailingJsonLines } from "../dist/providers/utils.js";
+import {
+  readJsonLines,
+  readJsonLinesForDiscovery,
+  readTrailingJsonLines
+} from "../dist/providers/utils.js";
 
 test("readJsonLines 能拆开同一行里粘连的多个 JSON 对象", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "session-sync-jsonl-"));
@@ -54,7 +58,7 @@ test("readTrailingJsonLines 遇到坏行时会跳过，不会把整个文件读�
   }
 });
 
-test("JSONL 末尾正在追加的半行不会被当成损坏记录，补齐后可重试读到", () => {
+test("发现扫描遇到 JSONL 末尾正在追加的半行不会误报，补齐后可重试读到", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "session-sync-jsonl-"));
 
   try {
@@ -65,7 +69,7 @@ test("JSONL 末尾正在追加的半行不会被当成损坏记录，补齐后�
     const originalWarn = console.warn;
     console.warn = (...args) => warnings.push(args.join(" "));
     try {
-      assert.deepEqual(readJsonLines(filePath), []);
+      assert.deepEqual(readJsonLinesForDiscovery(filePath), []);
     } finally {
       console.warn = originalWarn;
     }
@@ -73,7 +77,7 @@ test("JSONL 末尾正在追加的半行不会被当成损坏记录，补齐后�
     assert.equal(warnings.length, 0);
 
     writeFileSync(filePath, '{"type":"assistant"}\n', "utf8");
-    const records = readJsonLines(filePath);
+    const records = readJsonLinesForDiscovery(filePath);
     assert.equal(records.length, 1);
     assert.equal(records[0]?.data.type, "assistant");
   } finally {
