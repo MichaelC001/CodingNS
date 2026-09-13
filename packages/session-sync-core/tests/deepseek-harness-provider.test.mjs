@@ -295,12 +295,14 @@ describe("DeepSeekHarnessAdapter", () => {
         {
           id: "deepseek-official:deepseek-v4-flash",
           name: "DeepSeek-V4-Flash",
+          providerName: "DeepSeek",
           supportedReasoningEfforts: ["off", "high", "max"],
           defaultReasoningEffort: "high"
         },
         {
           id: "deepseek-official:deepseek-v4-pro",
           name: "DeepSeek-V4-Pro",
+          providerName: "DeepSeek",
           supportedReasoningEfforts: ["off", "high", "max"],
           defaultReasoningEffort: "high"
         }
@@ -313,6 +315,28 @@ describe("DeepSeekHarnessAdapter", () => {
       expect.objectContaining({ id: "deepseek-official:deepseek-v4-flash" })
     );
     expect(t.calls.at(-1)).toEqual({ method: "llm.models", payload: {} });
+  });
+
+  it("保留自定义模型供应商名称，避免同名模型在选择器中混淆", async () => {
+    const t = transport();
+    const baseCall = t.call;
+    t.call = async (method, payload) => {
+      if (method === "llm.models") {
+        return {
+          groups: [
+            { id: "deepseek-official", name: "DeepSeek", models: [{ id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" }] },
+            { id: "custom-gateway", name: "自定义供应商", models: [{ id: "deepseek-v4-flash", name: "deepseek-v4-flash" }] }
+          ]
+        };
+      }
+      return baseCall(method, payload);
+    };
+
+    const capabilities = await new DeepSeekHarnessAdapter({ transport: t, harnessVersion: "0.1.2-rc.1" }).getSessionCapabilities("");
+    expect(capabilities.modelOptions).toEqual([
+      expect.objectContaining({ id: "deepseek-official:deepseek-v4-flash", providerName: "DeepSeek" }),
+      expect.objectContaining({ id: "custom-gateway:deepseek-v4-flash", providerName: "自定义供应商" })
+    ]);
   });
 
   it("按 turn/end 的真实原因恢复成功、失败和中断状态", async () => {

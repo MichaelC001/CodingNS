@@ -1391,6 +1391,7 @@ function parseHarnessModelOptions(input: unknown): ProviderModelOption[] {
   for (const groupInput of groups) {
     const group = asRecord(groupInput);
     const provider = ensureText(group.id).trim();
+    const providerName = ensureText(group.name).trim() || provider;
     const models = group.models;
 
     if (!provider || !Array.isArray(models)) {
@@ -1420,6 +1421,7 @@ function parseHarnessModelOptions(input: unknown): ProviderModelOption[] {
         options.set(id, {
           id,
           name: ensureText(model.name).trim() || modelId,
+          providerName,
           ...(supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {}),
           ...(defaultReasoningEffort ? { defaultReasoningEffort } : {})
         });
