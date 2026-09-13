@@ -2580,6 +2580,57 @@ export function listWorkspaceSessions(workspaceId: string, options?: ScopedReque
   );
 }
 
+export interface WorkspaceDiscoveryScanResponseDto {
+  workspaceId: string;
+  taskId: string;
+  deduped: boolean;
+  taskType: string;
+  executionLane: "helper_process";
+}
+
+export interface WorkspaceDiscoveryScanStatusDto {
+  workspaceId: string;
+  taskId: string | null;
+  status: "idle" | "queued" | "running" | "queue_timeout" | "succeeded" | "failed" | "cancelled" | "timeout";
+  progress: {
+    phase: string;
+    label?: string | null;
+    detail?: string | null;
+    current?: number | null;
+    total?: number | null;
+    percent?: number | null;
+    updatedAt: number;
+  } | null;
+  resultCount: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+export function requestWorkspaceSessionScan(workspaceId: string, options?: ScopedRequestOptions) {
+  return httpClient.request<WorkspaceDiscoveryScanResponseDto>("/api/sessions/discovery/scan", {
+    method: "POST",
+    targetHostId: options?.targetHostId ?? undefined,
+    body: JSON.stringify({ workspaceId })
+  });
+}
+
+export function getWorkspaceSessionScanStatus(workspaceId: string, options?: ScopedRequestOptions) {
+  return httpClient.request<WorkspaceDiscoveryScanStatusDto>(
+    `/api/sessions/discovery/status?workspaceId=${encodeURIComponent(workspaceId)}`,
+    { targetHostId: options?.targetHostId ?? undefined }
+  );
+}
+
+export function cancelWorkspaceSessionScan(workspaceId: string, options?: ScopedRequestOptions) {
+  return httpClient.request<WorkspaceDiscoveryScanStatusDto>(
+    `/api/sessions/discovery/scan?workspaceId=${encodeURIComponent(workspaceId)}`,
+    {
+      method: "DELETE",
+      targetHostId: options?.targetHostId ?? undefined
+    }
+  );
+}
+
 export function startSession(payload: StartSessionPayload, options?: ScopedRequestOptions) {
   return httpClient.request<SessionSummaryDto>("/api/sessions/start", {
     method: "POST",
@@ -2942,11 +2993,30 @@ export function getSessionMessages(
   search.set("limit", String(limit));
   search.set("direction", direction);
 
-  return httpClient.request<HistoryPageDto>(
-    `/api/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`,
-    { targetHostId: options?.targetHostId ?? undefined, signal: options?.signal }
-  );
+  const targetHostId = options?.targetHostId ?? undefined;
+  const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`;
+  // 同一会话首屏可能同时被实时控制器和详情组件请求；无 AbortSignal 时共享同一个 HTTP 请求。
+  if (options?.signal) {
+    return httpClient.request<HistoryPageDto>(url, { targetHostId, signal: options.signal });
+  }
+
+  const requestKey = `${targetHostId ?? "current"}:${url}`;
+  const existing = sessionMessageRequestCache.get(requestKey);
+  if (existing) {
+    return existing;
+  }
+
+  const request = httpClient.request<HistoryPageDto>(url, { targetHostId });
+  sessionMessageRequestCache.set(requestKey, request);
+  void request.finally(() => {
+    if (sessionMessageRequestCache.get(requestKey) === request) {
+      sessionMessageRequestCache.delete(requestKey);
+    }
+  });
+  return request;
 }
+
+const sessionMessageRequestCache = new Map<string, Promise<HistoryPageDto>>();
 
 export function getSessionAttachmentBlob(sessionId: string, attachmentId: string, options?: ScopedRequestOptions) {
   return httpClient.requestBlob(

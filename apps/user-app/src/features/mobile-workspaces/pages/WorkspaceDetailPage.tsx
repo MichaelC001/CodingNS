@@ -62,6 +62,7 @@ export function WorkspaceDetailPage() {
     navigationGroups,
     currentWorkspaceId,
     currentWorkspaceRef,
+    resolveNavigationWorkspaceRef,
     favoriteSessionIds,
     workspaceManagementStateById,
     selectWorkspace,
@@ -555,6 +556,10 @@ export function WorkspaceDetailPage() {
         workspaces={navigationGroups.map((group) => group.workspace)}
         workspaceOptions={workspaceOptions}
         initialWorkspaceId={currentWorkspaceId ?? workspace.id}
+        resolveTargetHostId={(workspaceId) => resolveNavigationWorkspaceRef(workspaceId, {
+          preferredTargetHostId: currentWorkspaceRef?.hostId,
+          fallbackToCurrent: true
+        })?.hostId ?? null}
         onClose={() => setCreateSessionOpen(false)}
         onSelect={handleSelectSessionProvider}
       />

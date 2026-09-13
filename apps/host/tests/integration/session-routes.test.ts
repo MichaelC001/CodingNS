@@ -50,6 +50,52 @@ describe("session routes", () => {
     });
   }
 
+  it("普通会话列表只读 SQLite 索引，不触发 provider discovery", async () => {
+    const listWorkspaceSessions = vi.fn(() => []);
+    const requestWorkspaceDiscovery = vi.fn();
+    const app = await createSessionApp({
+      sessionHistoryService: {
+        listWorkspaceSessions,
+        requestWorkspaceDiscovery
+      }
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/sessions?workspaceId=workspace-1"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(listWorkspaceSessions).toHaveBeenCalledWith("workspace-1", "user-1");
+    expect(requestWorkspaceDiscovery).not.toHaveBeenCalled();
+  });
+
+  it("显式扫描入口返回按工作区去重的 TaskManager 任务", async () => {
+    const requestExplicitWorkspaceScan = vi.fn(() => ({
+      workspaceId: "workspace-1",
+      taskId: "task-1",
+      deduped: false,
+      taskType: "workspace.discovery.explicit_scan",
+      executionLane: "helper_process" as const
+    }));
+    const app = await createSessionApp({
+      sessionHistoryService: { requestExplicitWorkspaceScan }
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sessions/discovery/scan",
+      payload: { workspaceId: "workspace-1" }
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({
+      taskType: "workspace.discovery.explicit_scan",
+      executionLane: "helper_process"
+    });
+    expect(requestExplicitWorkspaceScan).toHaveBeenCalledWith("workspace-1", "user-1");
+  });
+
   afterEach(async () => {
     while (apps.length > 0) {
       const app = apps.pop();

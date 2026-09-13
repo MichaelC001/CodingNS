@@ -43,6 +43,7 @@ export function SessionIndexPage() {
     pendingUserInputSessionIds = new Set(),
     favoriteSessionIds,
     currentWorkspaceRef,
+    resolveNavigationWorkspaceRef,
     currentWorkspaceId,
     currentSessionId,
     navigationLoading,
@@ -425,6 +426,10 @@ export function SessionIndexPage() {
         workspaces={navigationGroups.map((group) => group.workspace)}
         workspaceOptions={workspaceOptions}
         initialWorkspaceId={currentWorkspaceId ?? fallbackWorkspaceId}
+        resolveTargetHostId={(workspaceId) => resolveNavigationWorkspaceRef(workspaceId, {
+          preferredTargetHostId: currentWorkspaceRef?.hostId,
+          fallbackToCurrent: true
+        })?.hostId ?? null}
         onClose={() => setCreateSessionOpen(false)}
         onSelect={handleSelectSessionProvider}
       />

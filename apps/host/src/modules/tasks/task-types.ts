@@ -4,6 +4,7 @@ export const HOST_TASK_TYPES = {
   relayTunnelConnect: "relay_tunnel.connect",
   workspaceDiscovery: "workspace.discovery",
   workspaceDiscoveryScan: "workspace.discovery_scan",
+  workspaceDiscoveryExplicitScan: "workspace.discovery.explicit_scan",
   providerCapabilityRefresh: "provider.capability_refresh",
   providerPriceBookRefresh: "provider.price_book_refresh",
   sessionStatsSnapshotRefresh: "session.stats_snapshot_refresh",

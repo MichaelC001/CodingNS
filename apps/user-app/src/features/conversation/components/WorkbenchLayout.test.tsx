@@ -1148,7 +1148,7 @@ describe("WorkbenchLayout", () => {
     });
   });
 
-  it("会把并行会话入口放进加号弹窗头部，并排在新增子工作区左侧", async () => {
+  it("会把扫描和并行会话入口放进加号弹窗头部", async () => {
     const snapshot = createWorkbenchSnapshot([
       {
         workspace: createWorkspace("workspace-1", "项目一"),
@@ -1190,8 +1190,9 @@ describe("WorkbenchLayout", () => {
     }
 
     const actionButtons = within(headerActions).getAllByRole("button");
-    expect(actionButtons[0]).toHaveTextContent(t("shell.parallelCreateAction"));
-    expect(actionButtons[1]).toHaveTextContent(t("shell.createWorktreeAction"));
+    expect(actionButtons[0]).toHaveTextContent(t("shell.workspaceSessionScanAction"));
+    expect(actionButtons[1]).toHaveTextContent(t("shell.parallelCreateAction"));
+    expect(actionButtons[2]).toHaveTextContent(t("shell.createWorktreeAction"));
 
     await userEvent.click(within(headerActions).getByRole("button", { name: t("shell.parallelCreateAction") }));
 
@@ -6903,6 +6904,13 @@ describe("WorkbenchLayout", () => {
             workspaceId: "workspace-1",
             runningState: "running",
             activityState: "running"
+          }),
+          createSessionSummary({
+            sessionId: "session-3",
+            title: "历史会话",
+            workspaceId: "workspace-1",
+            runningState: "idle",
+            activityState: "idle"
           })
         ]
       }
@@ -6947,6 +6955,16 @@ describe("WorkbenchLayout", () => {
                 activityState: "completed_unread"
               }),
               completedAt: "2026-04-01T08:10:00.000Z"
+            },
+            {
+              ...createSessionSummary({
+                sessionId: "session-3",
+                title: "历史会话",
+                workspaceId: "workspace-1",
+                runningState: "completed",
+                activityState: "completed_unread"
+              }),
+              completedAt: "2026-03-01T08:10:00.000Z"
             }
           ]
         }
@@ -6968,6 +6986,7 @@ describe("WorkbenchLayout", () => {
           })
         );
       });
+      expect(invokeSpy.mock.calls.filter(([command]) => command === "show_notification")).toHaveLength(1);
 
       await clickOpenSessionToastActionByTitle(t("conversation.backgroundCompletionToastTitle"));
       await waitFor(() => {

@@ -8,6 +8,9 @@ export async function registerSessionRoutes(
   sessionController: SessionController
 ): Promise<void> {
   app.get("/api/sessions", sessionController.list);
+  app.post("/api/sessions/discovery/scan", sessionController.startWorkspaceDiscoveryScan);
+  app.get("/api/sessions/discovery/status", sessionController.getWorkspaceDiscoveryScanStatus);
+  app.delete("/api/sessions/discovery/scan", sessionController.cancelWorkspaceDiscoveryScan);
   app.get("/api/sessions/:sessionId", sessionController.getDetail);
   app.get("/api/sessions/:sessionId/changed-files", sessionController.getChangedFiles);
   app.get("/api/sessions/:sessionId/messages", sessionController.readMessages);

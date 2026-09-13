@@ -166,15 +166,15 @@ export class WorkbenchService {
     workspaceId: string,
     userId: string
   ): void {
-    if (typeof this.sessionHistoryService.requestWorkspaceDiscovery !== "function") {
+    if (typeof this.sessionHistoryService.markWorkspaceDiscoveryDirty !== "function") {
       return;
     }
 
-    this.sessionHistoryService.requestWorkspaceDiscovery(workspaceId, userId, {
-      maxAgeMs: WORKBENCH_DISCOVERY_VISIBLE_MAX_AGE_MS,
-      force: false,
-      refreshStateMode: "deferred"
-    });
+    this.sessionHistoryService.markWorkspaceDiscoveryDirty(
+      workspaceId,
+      userId,
+      "workbench.peer_workspace_summary_refresh"
+    );
   }
 
   getAffairsAssistantSessionsSnapshot(
@@ -364,13 +364,13 @@ export class WorkbenchService {
       force?: boolean;
     }
   ): void {
-    if (typeof this.sessionHistoryService.requestWorkspaceDiscovery === "function") {
+    if (typeof this.sessionHistoryService.markWorkspaceDiscoveryDirty === "function") {
       for (const candidate of this.selectDiscoveryCandidates(userId, options?.force ?? false)) {
-        this.sessionHistoryService.requestWorkspaceDiscovery(candidate.workspace.id, userId, {
-          maxAgeMs: candidate.maxAgeMs,
-          force: options?.force ?? false,
-          refreshStateMode: "deferred"
-        });
+        this.sessionHistoryService.markWorkspaceDiscoveryDirty(
+          candidate.workspace.id,
+          userId,
+          "workbench.snapshot_refresh"
+        );
       }
     }
   }

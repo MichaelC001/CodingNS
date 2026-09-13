@@ -26,6 +26,7 @@ import { Outlet, matchPath, useLocation, useNavigate } from "react-router-dom";
 import {
   ModalEmptyState,
   ModalField,
+  ModalActions,
   ModalList,
   ModalListItem
 } from "../../../components/ModalAtoms";
@@ -102,6 +103,8 @@ import {
   importWorkspace,
   listWorkspaces,
   listScopedWorkspaces,
+  requestWorkspaceSessionScan,
+  getWorkspaceSessionScanStatus,
   listAffairsLibraryDocuments,
   listAffairsLightweightSessions,
   markAffairsLightweightSessionSeen,
@@ -6325,6 +6328,11 @@ function SidebarContent({
   const [removingWorkspaceId, setRemovingWorkspaceId] = useState<string | null>(null);
   const [actionWorkspaceId, setActionWorkspaceId] = useState<string | null>(null);
   const [actionProvider, setActionProvider] = useState<ProviderId | null>(null);
+  const [workspaceScanStates, setWorkspaceScanStates] = useState<Record<string, {
+    status: "idle" | "scanning" | "success" | "error";
+    resultCount: number | null;
+    error: string | null;
+  }>>({});
   const [createSessionWorkspaceId, setCreateSessionWorkspaceId] = useState<string | null>(null);
   const [parallelCreateSource, setParallelCreateSource] = useState<ParallelSessionCreateSource | null>(null);
   const [createSessionWorkspaceDraft, setCreateSessionWorkspaceDraft] = useState<WorkspaceDto | null>(null);
@@ -8847,6 +8855,53 @@ function SidebarContent({
     }
   }
 
+  async function handleScanWorkspaceSessions(workspace: WorkspaceDto) {
+    const workspaceId = workspace.id;
+    const current = workspaceScanStates[workspaceId];
+    if (current?.status === "scanning") {
+      return;
+    }
+
+    const targetHostId = resolveRemoteSelectedHostId(resolveWorkspaceHostId(workspace));
+    setWorkspaceScanStates((states) => ({
+      ...states,
+      [workspaceId]: { status: "scanning", resultCount: null, error: null }
+    }));
+
+    try {
+      const started = await requestWorkspaceSessionScan(workspaceId, { targetHostId });
+      let status = await getWorkspaceSessionScanStatus(workspaceId, { targetHostId });
+      for (let attempt = 0; attempt < 120 && (status.status === "queued" || status.status === "running"); attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        status = await getWorkspaceSessionScanStatus(workspaceId, { targetHostId });
+      }
+      if (status.status === "succeeded") {
+        setWorkspaceScanStates((states) => ({
+          ...states,
+          [workspaceId]: { status: "success", resultCount: status.resultCount, error: null }
+        }));
+        return;
+      }
+      if (status.status === "queued" || status.status === "running") {
+        setWorkspaceScanStates((states) => ({
+          ...states,
+          [workspaceId]: { status: "scanning", resultCount: null, error: null }
+        }));
+        return;
+      }
+      throw new Error(status.errorMessage ?? `扫描任务 ${started.taskId} 未完成`);
+    } catch (error) {
+      setWorkspaceScanStates((states) => ({
+        ...states,
+        [workspaceId]: {
+          status: "error",
+          resultCount: null,
+          error: error instanceof Error ? error.message : t("shell.workspaceSessionScanFailed")
+        }
+      }));
+    }
+  }
+
   async function handleCreateChildWorktree(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -10362,6 +10417,37 @@ function SidebarContent({
         }
         headerActions={
           <>
+            <ModalActions align="start" className="create-session-modal-scan-action">
+              {(() => {
+                const scanState = createSessionWorkspace
+                  ? workspaceScanStates[createSessionWorkspace.id]
+                  : null;
+                const scanLabel = scanState?.status === "scanning"
+                  ? t("shell.workspaceSessionScanScanning")
+                  : scanState?.status === "success"
+                    ? t("shell.workspaceSessionScanSucceeded", { count: scanState.resultCount ?? 0 })
+                    : t("shell.workspaceSessionScanAction");
+                return (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={!createSessionWorkspace || scanState?.status === "scanning"}
+                    onClick={() => {
+                      if (createSessionWorkspace) {
+                        void handleScanWorkspaceSessions(createSessionWorkspace);
+                      }
+                    }}
+                  >
+                    {scanLabel}
+                  </button>
+                );
+              })()}
+              {createSessionWorkspace && workspaceScanStates[createSessionWorkspace.id]?.status === "error" ? (
+                <span className="create-session-modal-scan-error">
+                  {workspaceScanStates[createSessionWorkspace.id]?.error}
+                </span>
+              ) : null}
+            </ModalActions>
             <button
               type="button"
               className="primary-button create-session-parallel-trigger"
@@ -13825,7 +13911,17 @@ export function WorkbenchLayout({
       }
 
       const becameUnreadCompleted =
-        previousState.activityState !== "completed_unread" && session.activityState === "completed_unread";
+        previousState.activityState !== "completed_unread"
+        && session.activityState === "completed_unread"
+        // 只有先观察到会话处于运行态，再进入 completed，才算一次新的完成。
+        // 历史会话在扫描/回填后从 idle 变成 completed_unread 不能弹提醒。
+        && previousState.runningState !== "failed"
+        && previousState.runningState !== "interrupted"
+        && (
+          previousState.runningState === "starting"
+          || previousState.runningState === "running"
+        )
+        && session.runningState === "completed";
 
       const sessionTitle = session.title?.trim() || t("common.unknown");
       if (notifyOnSessionCompleted && becameUnreadCompleted) {

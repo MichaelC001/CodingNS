@@ -114,6 +114,14 @@ interface RepairSourceIndexBody {
   awaitDiscovery?: boolean;
 }
 
+interface WorkspaceDiscoveryScanBody {
+  workspaceId?: string;
+}
+
+interface WorkspaceDiscoveryStatusQuery {
+  workspaceId?: string;
+}
+
 interface ForkSessionBody {
   sourceType?: "session" | "message";
   sourceMessageId?: string | null;
@@ -300,14 +308,55 @@ export class SessionController {
     );
 
     const userId = requireUserId(request);
-    // 列表请求只读本地索引；发现扫描由后台任务按脏标记触发，避免每次刷新都重扫所有会话。
-    this.sessionHistoryService.requestWorkspaceDiscovery(workspaceId, userId);
+    // 列表请求只读本地索引。全量发现只能由显式扫描入口触发。
     reply.send({
       items: filterButlerControlSessions(
         this.sessionHistoryService.listWorkspaceSessions(workspaceId, userId),
         this.butlerControlSessionRepository
       )
     });
+  };
+
+  readonly startWorkspaceDiscoveryScan = async (
+    request: FastifyRequest<{ Body: WorkspaceDiscoveryScanBody }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    const workspaceId = requireNonEmptyText(
+      request.body.workspaceId,
+      "workspaceId",
+      "扫描当前工作目录必须提供 workspaceId"
+    );
+    reply.status(202).send(
+      this.sessionHistoryService.requestExplicitWorkspaceScan(workspaceId, requireUserId(request))
+    );
+  };
+
+  readonly getWorkspaceDiscoveryScanStatus = async (
+    request: FastifyRequest<{ Querystring: WorkspaceDiscoveryStatusQuery }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    const workspaceId = requireNonEmptyText(
+      request.query.workspaceId,
+      "workspaceId",
+      "查询扫描状态必须提供 workspaceId"
+    );
+    reply.send(
+      this.sessionHistoryService.getExplicitWorkspaceScanStatus(workspaceId, requireUserId(request))
+    );
+  };
+
+  readonly cancelWorkspaceDiscoveryScan = async (
+    request: FastifyRequest<{ Querystring: WorkspaceDiscoveryStatusQuery }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    const workspaceId = requireNonEmptyText(
+      request.query.workspaceId,
+      "workspaceId",
+      "取消扫描必须提供 workspaceId"
+    );
+    reply.send(
+      this.sessionHistoryService.cancelExplicitWorkspaceScan(workspaceId, requireUserId(request))
+    );
   };
 
   readonly readMessages = async (

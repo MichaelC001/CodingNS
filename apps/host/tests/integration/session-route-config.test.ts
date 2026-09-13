@@ -15,6 +15,9 @@ function createRouteAppMock() {
 function createSessionControllerMock() {
   return {
     list: vi.fn(),
+    startWorkspaceDiscoveryScan: vi.fn(),
+    getWorkspaceDiscoveryScanStatus: vi.fn(),
+    cancelWorkspaceDiscoveryScan: vi.fn(),
     getDetail: vi.fn(),
     getChangedFiles: vi.fn(),
     readMessages: vi.fn(),

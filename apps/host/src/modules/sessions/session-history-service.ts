@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
@@ -249,6 +249,24 @@ export interface WorkspaceDiscoveryStatusSummary {
   lastCompletedAt: number | null;
   lastFailedAt: number | null;
   nextAllowedAt: number | null;
+}
+
+export interface ExplicitWorkspaceScanHandle {
+  workspaceId: string;
+  taskId: string;
+  deduped: boolean;
+  taskType: string;
+  executionLane: "helper_process";
+}
+
+export interface ExplicitWorkspaceScanStatus {
+  workspaceId: string;
+  taskId: string | null;
+  status: import("../tasks/task-types.js").TaskStatus | "idle";
+  progress: import("../tasks/task-types.js").TaskProgressSnapshot | null;
+  resultCount: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
 }
 
 interface SessionSourceIndexRepairScope {
@@ -640,6 +658,78 @@ export class SessionHistoryService {
     };
   }
 
+  requestExplicitWorkspaceScan(workspaceId: string, userId: string): ExplicitWorkspaceScanHandle {
+    const workspace = this.getDiscoverableWorkspaceForUserOrThrow(workspaceId, userId);
+    const enabledProviders = this.providerRegistry
+      .list()
+      .map((adapter) => adapter.providerId)
+      .filter((providerId) => this.isProviderEnabled(providerId));
+    const handle = this.taskManager.enqueue<{
+      workspaceId: string;
+      userId: string;
+      workspacePath: string;
+      enabledProviders: string[];
+      refreshStateMode: "deferred";
+    }, SessionListItem[]>(HOST_TASK_TYPES.workspaceDiscoveryExplicitScan, {
+      key: workspaceId,
+      source: "session_history.explicit_workspace_scan",
+      input: {
+        workspaceId,
+        userId,
+        workspacePath: workspace.path,
+        enabledProviders,
+        refreshStateMode: "deferred"
+      }
+    });
+
+    const status = this.getOrCreateWorkspaceDiscoveryStatus(workspaceId);
+    status.runningTaskId = handle.taskId;
+    status.phase = "running";
+    status.lastRequestedAt = Date.now();
+
+    if (!handle.deduped) {
+      void handle.promise.catch(() => undefined);
+    }
+
+    return {
+      workspaceId,
+      taskId: handle.taskId,
+      deduped: handle.deduped,
+      taskType: HOST_TASK_TYPES.workspaceDiscoveryExplicitScan,
+      executionLane: "helper_process"
+    };
+  }
+
+  getExplicitWorkspaceScanStatus(
+    workspaceId: string,
+    userId: string
+  ): ExplicitWorkspaceScanStatus {
+    this.getDiscoverableWorkspaceForUserOrThrow(workspaceId, userId);
+    const snapshot = this.taskManager.peek<SessionListItem[]>(
+      HOST_TASK_TYPES.workspaceDiscoveryExplicitScan,
+      workspaceId
+    );
+    return {
+      workspaceId,
+      taskId: snapshot?.taskId ?? null,
+      status: snapshot?.status ?? "idle",
+      progress: snapshot?.progress ?? null,
+      resultCount: Array.isArray(snapshot?.result) ? snapshot.result.length : null,
+      errorCode: snapshot?.errorCode ?? null,
+      errorMessage: snapshot?.errorMessage ?? null
+    };
+  }
+
+  cancelExplicitWorkspaceScan(workspaceId: string, userId: string): ExplicitWorkspaceScanStatus {
+    this.getDiscoverableWorkspaceForUserOrThrow(workspaceId, userId);
+    this.taskManager.cancel(
+      HOST_TASK_TYPES.workspaceDiscoveryExplicitScan,
+      workspaceId,
+      "用户取消显式工作区扫描"
+    );
+    return this.getExplicitWorkspaceScanStatus(workspaceId, userId);
+  }
+
   async repairSessionSourceIndex(
     input: SessionSourceIndexRepairRequest
   ): Promise<SessionSourceIndexRepairResult> {
@@ -780,6 +870,29 @@ export class SessionHistoryService {
             knownSessions,
             enabledProviders,
             context.signal
+          )
+      });
+    }
+
+    if (!this.taskManager.has(HOST_TASK_TYPES.workspaceDiscoveryExplicitScan)) {
+      this.taskManager.register<{
+        workspaceId: string;
+        userId: string;
+        workspacePath: string;
+        enabledProviders: string[];
+        refreshStateMode: "deferred";
+      }, SessionListItem[]>({
+        taskType: HOST_TASK_TYPES.workspaceDiscoveryExplicitScan,
+        executionLane: "helper_process",
+        timeoutMs: 30_000,
+        run: async ({ workspaceId, userId, refreshStateMode }, context) =>
+          await this.runDiscoverWorkspaceSessions(
+            workspaceId,
+            userId,
+            refreshStateMode,
+            context.signal,
+            context.taskId,
+            false
           )
       });
     }
@@ -1226,6 +1339,14 @@ export class SessionHistoryService {
       });
   }
 
+  /** 只记录资源可能变化，不启动扫描；真正扫描必须由显式入口入队。 */
+  markWorkspaceDiscoveryDirty(workspaceId: string, userId: string, reason = "session_history.workspace_dirty"): void {
+    if (!this.isWorkspaceDiscoverableForUser(workspaceId, userId)) {
+      return;
+    }
+    this.markWorkspaceDiscoveryRequested(workspaceId, reason);
+  }
+
   needsWorkspaceDiscovery(workspaceId: string, maxAgeMs: number): boolean {
     const discoveryStatus = this.workspaceDiscoveryStatuses.get(workspaceId);
 
@@ -1341,7 +1462,7 @@ export class SessionHistoryService {
         resumedAt: current?.resumedAt ?? null
       });
       snapshotIdleMs = Date.now() - snapshotIdleStartedAt;
-      this.requestSessionStatsRefresh(resolvedSessionId, "session_history.read_complete");
+      // 统计刷新必须由显式入口触发；历史读取不能隐式再启动一次全量统计解析。
 
       logPerformance(
         "session.read_history",
@@ -1993,6 +2114,7 @@ export class SessionHistoryService {
       providerPresetId: input.providerPresetId ?? null
     });
 
+    let providerSessionCreated = false;
     try {
       const result = await this.startProviderSessionWithBinding(
         input.provider,
@@ -2002,6 +2124,7 @@ export class SessionHistoryService {
           initialPrompt: input.initialPrompt
         }
       );
+      providerSessionCreated = true;
       const timestamp = nowIso();
 
       const persist = this.db.transaction(() => {
@@ -2064,6 +2187,17 @@ export class SessionHistoryService {
       persist();
       return this.getSessionListItemOrThrow(sessionId, input.userId);
     } catch (error) {
+      if (providerSessionCreated && !(error instanceof AppError)) {
+        throw new AppError({
+          statusCode: 500,
+          errorCode: "SESSION_INDEX_PERSIST_FAILED",
+          detail: "provider 会话已创建，但 Host 索引写入失败，请稍后重试恢复",
+          data: {
+            recoverable: true,
+            provider: input.provider
+          }
+        });
+      }
       throw mapSessionProviderError(error);
     }
   }
@@ -3177,7 +3311,8 @@ export class SessionHistoryService {
     userId: string,
     refreshStateMode: "inline" | "deferred" = "inline",
     signal?: AbortSignal,
-    taskId?: string
+    taskId?: string,
+    allowCleanup = true
   ): Promise<SessionListItem[]> {
     const startedAt = Date.now();
     const debugStartedAtMs = terminalDebugNowMs();
@@ -3494,7 +3629,7 @@ export class SessionHistoryService {
         timestamp
       );
       persistDurationMs = persistPass1DurationMs + relationMapDurationMs + persistPass2DurationMs;
-      if (discovery.isComplete) {
+      if (discovery.isComplete && allowCleanup) {
         const cleanupStartedAt = Date.now();
         await this.cleanupStaleHiddenSessions(workspaceId, userId, sessions);
         cleanupDurationMs = Date.now() - cleanupStartedAt;
@@ -8158,6 +8293,18 @@ function safeStat(filePath: string): { mtimeMs: number; size: number } | null {
   }
 }
 
+function readFirstLineBounded(filePath: string, maxBytes = 256 * 1024): string | null {
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes);
+    const bytesRead = readSync(fd, buffer, 0, maxBytes, 0);
+    const text = buffer.toString("utf8", 0, bytesRead);
+    return text.split(/\r?\n/, 1)[0]?.trim() || null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function shouldTreatMissingSyntheticHistoryAsEmpty(
   provider: string,
   rawStoreRef: string,
@@ -8267,10 +8414,7 @@ function isLegacyCodingNsRolloutSession(providerSessionId: string, rawStoreRef: 
   }
 
   try {
-    const firstLine = readFileSync(rawStoreRef, "utf8")
-      .split(/\r?\n/, 1)
-      .at(0)
-      ?.trim();
+    const firstLine = readFirstLineBounded(rawStoreRef);
 
     if (!firstLine) {
       return false;
@@ -8295,10 +8439,7 @@ function isCodexGuardianRawStore(rawStoreRef: string): boolean {
   }
 
   try {
-    const firstLine = readFileSync(rawStoreRef, "utf8")
-      .split(/\r?\n/, 1)
-      .at(0)
-      ?.trim();
+    const firstLine = readFirstLineBounded(rawStoreRef);
 
     if (!firstLine) {
       return false;

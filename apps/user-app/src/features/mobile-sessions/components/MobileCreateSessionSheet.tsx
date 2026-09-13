@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import {
   ModalField,
+  ModalActions,
   ModalList,
   ModalListItem,
   ModalSection,
@@ -10,7 +11,12 @@ import {
 import { MobileSheet } from "../../../components/MobileSheet";
 import { useHaptics } from "../../../shared/haptics";
 import { t } from "../../../shared/i18n";
-import type { ProviderId, WorkspaceDto } from "../../conversation/api/conversation-api";
+import {
+  getWorkspaceSessionScanStatus,
+  requestWorkspaceSessionScan,
+  type ProviderId,
+  type WorkspaceDto
+} from "../../conversation/api/conversation-api";
 import { SessionProviderPicker } from "../../conversation/components/SessionProviderPicker";
 import type { MobileWorkspaceOption } from "../../workbench/utils/mobile-workspace-tree";
 
@@ -19,6 +25,7 @@ interface MobileCreateSessionSheetProps {
   readonly workspaces: readonly WorkspaceDto[];
   readonly workspaceOptions?: readonly MobileWorkspaceOption[];
   readonly initialWorkspaceId: string | null;
+  readonly resolveTargetHostId?: (workspaceId: string) => string | null;
   readonly onClose: () => void;
   readonly onSelect: (workspaceId: string, provider: ProviderId) => void;
 }
@@ -28,11 +35,14 @@ export function MobileCreateSessionSheet({
   workspaces,
   workspaceOptions,
   initialWorkspaceId,
+  resolveTargetHostId,
   onClose,
   onSelect
 }: MobileCreateSessionSheetProps) {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>("");
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
+  const [scanStatus, setScanStatus] = useState<"idle" | "scanning" | "success" | "error">("idle");
+  const [scanResultCount, setScanResultCount] = useState<number | null>(null);
   const haptics = useHaptics();
   const selectionOptions = useMemo(
     () =>
@@ -58,6 +68,8 @@ export function MobileCreateSessionSheet({
 
     setSelectedWorkspaceId(resolveInitialWorkspaceId(selectionOptions, initialWorkspaceId));
     setWorkspacePickerOpen(false);
+    setScanStatus("idle");
+    setScanResultCount(null);
   }, [initialWorkspaceId, open, selectionOptionKey]);
 
   if (!open) {
@@ -68,6 +80,30 @@ export function MobileCreateSessionSheet({
     selectionOptions.find((item) => item.workspace.id === selectedWorkspaceId) ??
     selectionOptions[0] ??
     null;
+
+  async function handleScanWorkspace() {
+    if (!selectedWorkspaceId || scanStatus === "scanning") {
+      return;
+    }
+    setScanStatus("scanning");
+    setScanResultCount(null);
+    try {
+      const targetHostId = resolveTargetHostId?.(selectedWorkspaceId) ?? null;
+      await requestWorkspaceSessionScan(selectedWorkspaceId, { targetHostId });
+      let status = await getWorkspaceSessionScanStatus(selectedWorkspaceId, { targetHostId });
+      for (let attempt = 0; attempt < 120 && (status.status === "queued" || status.status === "running"); attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        status = await getWorkspaceSessionScanStatus(selectedWorkspaceId, { targetHostId });
+      }
+      if (status.status !== "succeeded") {
+        throw new Error(status.errorMessage ?? t("shell.workspaceSessionScanFailed"));
+      }
+      setScanResultCount(status.resultCount);
+      setScanStatus("success");
+    } catch {
+      setScanStatus("error");
+    }
+  }
 
   return (
     <MobileSheet
@@ -145,6 +181,29 @@ export function MobileCreateSessionSheet({
             </ModalList>
           ) : null}
         </ModalField>
+      </ModalSection>
+
+      <ModalSection className="mobile-create-session-scan-section">
+        <ModalActions align="start">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!selectedWorkspaceId || scanStatus === "scanning"}
+            onClick={() => {
+              void haptics.trigger("selection");
+              void handleScanWorkspace();
+            }}
+          >
+            {scanStatus === "scanning"
+              ? t("shell.workspaceSessionScanScanning")
+              : scanStatus === "success"
+                ? t("shell.workspaceSessionScanSucceeded", { count: scanResultCount ?? 0 })
+                : t("shell.workspaceSessionScanAction")}
+          </button>
+        </ModalActions>
+        {scanStatus === "error" ? (
+          <span className="mobile-create-session-scan-error">{t("shell.workspaceSessionScanFailed")}</span>
+        ) : null}
       </ModalSection>
 
       <ModalSection
