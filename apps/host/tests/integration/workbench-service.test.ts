@@ -593,6 +593,7 @@ describe("WorkbenchService", () => {
 
   it("workbench 刷新只调度活动工作区，并限制单轮 discovery 数量", async () => {
     const requestWorkspaceDiscovery = vi.fn();
+    const markWorkspaceDiscoveryDirty = vi.fn();
     const workspaces = Array.from({ length: 8 }, (_, index) => ({
       id: `workspace-${index + 1}`,
       path: `/repo/workspace-${index + 1}`,
@@ -612,6 +613,7 @@ describe("WorkbenchService", () => {
             : [];
         }),
         requestWorkspaceDiscovery,
+        markWorkspaceDiscoveryDirty,
         needsWorkspaceDiscovery: vi.fn(() => true),
         getWorkspaceDiscoveryStatusSummary: vi.fn(() => null)
       } as never,
@@ -627,16 +629,18 @@ describe("WorkbenchService", () => {
       force: true
     });
 
-    expect(requestWorkspaceDiscovery).toHaveBeenCalledTimes(3);
-    expect(requestWorkspaceDiscovery.mock.calls.map((call) => call[0])).toEqual([
+    expect(requestWorkspaceDiscovery).not.toHaveBeenCalled();
+    expect(markWorkspaceDiscoveryDirty.mock.calls.map((call) => call[0])).toEqual([
       "workspace-1",
       "workspace-2",
       "workspace-3"
     ]);
+    expect(markWorkspaceDiscoveryDirty.mock.calls.every((call) => call[2] === "workbench.snapshot_refresh")).toBe(true);
   });
 
   it("冷工作区不会被 workbench 自动刷新，运行中的工作树会优先刷新", async () => {
     const requestWorkspaceDiscovery = vi.fn();
+    const markWorkspaceDiscoveryDirty = vi.fn();
     const service = new WorkbenchService(
       createWorkspaceRepositoryStub([
         {
@@ -672,6 +676,7 @@ describe("WorkbenchService", () => {
           return [];
         }),
         requestWorkspaceDiscovery,
+        markWorkspaceDiscoveryDirty,
         needsWorkspaceDiscovery: vi.fn(() => true),
         getWorkspaceDiscoveryStatusSummary: vi.fn(() => null)
       } as never,
@@ -691,15 +696,12 @@ describe("WorkbenchService", () => {
       force: false
     });
 
-    expect(requestWorkspaceDiscovery.mock.calls).toEqual([
+    expect(requestWorkspaceDiscovery).not.toHaveBeenCalled();
+    expect(markWorkspaceDiscoveryDirty.mock.calls).toEqual([
       [
         "workspace-child-hot",
         "user-1",
-        {
-          maxAgeMs: 15_000,
-          force: false,
-          refreshStateMode: "deferred"
-        }
+        "workbench.snapshot_refresh"
       ]
     ]);
   });
