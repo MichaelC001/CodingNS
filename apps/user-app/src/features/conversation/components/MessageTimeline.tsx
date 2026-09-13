@@ -6282,8 +6282,9 @@ export function MessageTimeline({
     enabled: shouldVirtualizeTimeline,
     directDomUpdates: shouldVirtualizeTimeline,
     directDomUpdatesMode: "transform",
-    // 行高补偿会同时写 scrollTop 和行 transform，必须在同一帧提交，避免出现跳位闪烁。
-    useFlushSync: true
+    // 虚拟器可能在布局生命周期内触发同步提交，React 18 会因此报警。
+    // 这里关闭内部 flushSync；行高补偿仍由 direct DOM updates 和现有滚动协调逻辑完成。
+    useFlushSync: false
   });
   // 用户仍在滚动时不做行高补偿；滚动停止后由虚拟列表完成增量补偿。
   // 贴底时也必须保留补偿，否则尾部流式内容变高后 scrollHeight 变化会滞后一帧，

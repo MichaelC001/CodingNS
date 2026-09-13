@@ -136,7 +136,7 @@ describe("MessageTimeline 虚拟列表", () => {
         { isScrolling: false }
       )
     ).toBe(true);
-    expect(options.useFlushSync).toBe(true);
+    expect(options.useFlushSync).toBe(false);
   });
 
   it("缺少 ResizeObserver 时回退完整列表", () => {
