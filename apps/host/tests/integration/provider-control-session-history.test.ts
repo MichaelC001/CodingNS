@@ -385,6 +385,61 @@ describe("provider control in SessionHistoryService", { timeout: 30_000 }, () =>
 
     service.dispose();
   });
+
+  it("禁用 provider 后不会读取历史或入队统计刷新任务", async () => {
+    let helperCalls = 0;
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async () => {
+          helperCalls += 1;
+          return {
+            readMode: "page",
+            page: {
+              messages: [],
+              cursor: null,
+              nextCursor: null,
+              total: 0
+            }
+          };
+        }
+      }
+    });
+    const service = createSessionHistoryHarness({}, taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "session-disabled-history",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "codex-session-history",
+      rawStoreRef: "codex://session-history",
+      title: "停用的历史会话",
+      messageCount: 1,
+      lastMessageAt: "2026-04-26T09:00:00.000Z",
+      createdAt: "2026-04-26T09:00:00.000Z",
+      updatedAt: "2026-04-26T09:00:00.000Z"
+    });
+    service.providerControlRepository.upsert({
+      providerId: "codex",
+      enabled: false,
+      updatedAt: "2026-04-26T10:00:00.000Z"
+    });
+
+    await expect(
+      service.instance.readSessionHistory(
+        "session-disabled-history",
+        null,
+        20,
+        "forward",
+        "user-1"
+      )
+    ).rejects.toMatchObject({
+      errorCode: "PROVIDER_DISABLED"
+    });
+    expect(service.instance.requestSessionStatsRefresh("session-disabled-history")).toBeNull();
+    expect(helperCalls).toBe(0);
+
+    service.dispose();
+  });
 });
 
 function createSessionHistoryHarness(
@@ -480,6 +535,7 @@ function seedWorkspace(
 
   workspaceRepository.create({
     id: "workspace-1",
+    ownerUserId: "user-1",
     name: "Workspace 1",
     path: workspacePath,
     repoRoot: workspacePath,

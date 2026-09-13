@@ -125,6 +125,31 @@ export class SessionSourceIndexRepository {
   }
 
   upsert(record: SessionSourceIndexRecord): void {
+    this.runUpsert(record);
+  }
+
+  /**
+   * 在一个短事务内批量写入来源索引。
+   *
+   * 单条 upsert 会让 SQLite 为每条记录单独提交一次事务；工作区扫描
+   * 返回几十到几百条来源时，这会把同步提交成本放大成慢调用。事务边界
+   * 由调用方按小批次控制，避免一次事务持有写锁过久。
+   */
+  upsertMany(records: readonly SessionSourceIndexRecord[]): void {
+    if (records.length === 0) {
+      return;
+    }
+
+    const persist = this.db.transaction((items: readonly SessionSourceIndexRecord[]) => {
+      for (const record of items) {
+        this.runUpsert(record);
+      }
+    });
+
+    persist(records);
+  }
+
+  private runUpsert(record: SessionSourceIndexRecord): void {
     this.upsertStatement.run(
       record.sourceKey,
       record.provider,

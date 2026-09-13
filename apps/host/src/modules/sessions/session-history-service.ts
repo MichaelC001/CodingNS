@@ -118,7 +118,8 @@ import {
 } from "../provider/provider-discovery-runtime.js";
 import {
   applyProviderDisabledState,
-  createProviderCapabilityBlockedError
+  createProviderCapabilityBlockedError,
+  createProviderDisabledError
 } from "../provider/provider-disabled.js";
 import { ProviderRuntimeStateService } from "../provider/provider-runtime-state-service.js";
 import type { ProviderPriceBookService } from "../provider/provider-price-book-service.js";
@@ -861,16 +862,20 @@ export class SessionHistoryService {
         workspaceId: string;
         userId: string;
         refreshStateMode: "inline" | "deferred";
+        triggerSource?: string;
       }, SessionListItem[]>({
         taskType: HOST_TASK_TYPES.workspaceDiscovery,
         executionLane: "host_background",
-        run: async ({ workspaceId, userId, refreshStateMode }, context) =>
+        run: async ({ workspaceId, userId, refreshStateMode, triggerSource }, context) =>
           this.runDiscoverWorkspaceSessions(
             workspaceId,
             userId,
             refreshStateMode,
             context.signal,
-            context.taskId
+            context.taskId,
+            true,
+            undefined,
+            triggerSource ?? SESSION_DISCOVERY_TRIGGER_SOURCES.background
           )
       });
     }
@@ -1034,6 +1039,12 @@ export class SessionHistoryService {
       return null;
     }
 
+    // provider 已停用时不应再为统计刷新入队，避免后台任务绕过普通入口读取旧历史。
+    const binding = this.sessionBindingRepository.findBySessionId(normalizedSessionId);
+    if (!binding || !this.isProviderEnabled(binding.provider)) {
+      return null;
+    }
+
     const handle = this.taskManager.enqueue<{ sessionId: string }, void>(
       HOST_TASK_TYPES.sessionStatsSnapshotRefresh,
       {
@@ -1065,7 +1076,7 @@ export class SessionHistoryService {
 
   private async refreshSessionStatsSnapshot(sessionId: string, signal: AbortSignal): Promise<void> {
     const binding = this.sessionBindingRepository.findBySessionId(sessionId);
-    if (!binding || signal.aborted) {
+    if (!binding || signal.aborted || !this.isProviderEnabled(binding.provider)) {
       return;
     }
 
@@ -1295,13 +1306,17 @@ export class SessionHistoryService {
       workspaceId: string;
       userId: string;
       refreshStateMode: "inline" | "deferred";
+      triggerSource: string;
     }, SessionListItem[]>(HOST_TASK_TYPES.workspaceDiscovery, {
       key: workspaceId,
       source: "session_history.discover_workspace_sessions",
       input: {
         workspaceId,
         userId,
-        refreshStateMode: options?.refreshStateMode ?? "inline"
+        refreshStateMode: options?.refreshStateMode ?? "inline",
+        triggerSource: options?.trigger === "explicit"
+          ? SESSION_DISCOVERY_TRIGGER_SOURCES.explicit
+          : SESSION_DISCOVERY_TRIGGER_SOURCES.background
       }
     });
 
@@ -1351,13 +1366,17 @@ export class SessionHistoryService {
       workspaceId: string;
       userId: string;
       refreshStateMode: "inline" | "deferred";
+      triggerSource: string;
     }, SessionListItem[]>(HOST_TASK_TYPES.workspaceDiscovery, {
       key: workspaceId,
       source: "session_history.request_workspace_discovery",
       input: {
         workspaceId,
         userId,
-        refreshStateMode: options?.refreshStateMode ?? "deferred"
+        refreshStateMode: options?.refreshStateMode ?? "deferred",
+        triggerSource: options?.trigger === "explicit"
+          ? SESSION_DISCOVERY_TRIGGER_SOURCES.explicit
+          : SESSION_DISCOVERY_TRIGGER_SOURCES.background
       }
     });
 
@@ -1447,6 +1466,7 @@ export class SessionHistoryService {
     const bindingLookupStartedAt = Date.now();
     let binding = this.getBindingOrThrow(resolvedSessionId);
     const bindingLookupMs = Date.now() - bindingLookupStartedAt;
+    this.assertProviderEnabledForHistory(binding.provider);
     let repairBindingMs = 0;
 
     if (userId) {
@@ -2010,6 +2030,14 @@ export class SessionHistoryService {
     return this.providerControlRepository.get(provider.trim()).enabled;
   }
 
+  private assertProviderEnabledForHistory(provider: string): void {
+    if (this.isProviderEnabled(provider)) {
+      return;
+    }
+
+    throw createProviderDisabledError(provider, "provider");
+  }
+
   private filterDisabledProviderSessions(items: SessionListItem[]): SessionListItem[] {
     return items.filter((item) => this.isProviderEnabled(item.provider));
   }
@@ -2044,6 +2072,7 @@ export class SessionHistoryService {
 
   async getSessionContextUsage(sessionId: string): Promise<ContextUsageSnapshot | null> {
     const binding = this.getBindingOrThrow(sessionId);
+    this.assertProviderEnabledForHistory(binding.provider);
 
     try {
       return await this.sessionSyncService.readContextUsage(
@@ -2239,14 +2268,15 @@ export class SessionHistoryService {
       persist();
       return this.getSessionListItemOrThrow(sessionId, input.userId);
     } catch (error) {
-      if (providerSessionCreated && !(error instanceof AppError)) {
+      if (providerSessionCreated) {
         throw new AppError({
           statusCode: 500,
           errorCode: "SESSION_INDEX_PERSIST_FAILED",
           detail: "provider 会话已创建，但 Host 索引写入失败，请稍后重试恢复",
           data: {
             recoverable: true,
-            provider: input.provider
+            provider: input.provider,
+            cause: error instanceof Error ? error.message : String(error)
           }
         });
       }
@@ -2787,6 +2817,8 @@ export class SessionHistoryService {
     onEnvelope: (envelope: SessionHistoryEnvelope) => Promise<void> | void,
     userId: string | null = null
   ): Promise<ProviderSubscription> {
+    const initialBinding = this.getBindingOrThrow(sessionId);
+    this.assertProviderEnabledForHistory(initialBinding.provider);
     const deliveredMessages = createDeliveredHistoryMessageState();
     const safeLimit = clampLimit(limit);
     let currentCursor = cursor;
@@ -2912,6 +2944,7 @@ export class SessionHistoryService {
     limit = 20
   ): Promise<SessionHistoryEnvelope | null> {
     const binding = this.getBindingOrThrow(sessionId);
+    this.assertProviderEnabledForHistory(binding.provider);
 
     if (shouldSkipClaudePendingBinding(binding)) {
       return null;
@@ -2960,6 +2993,7 @@ export class SessionHistoryService {
     limit = FORK_RECONSTRUCTION_PAGE_SIZE
   ): Promise<HistoryPage["messages"]> {
     const binding = this.getBindingOrThrow(sessionId);
+    this.assertProviderEnabledForHistory(binding.provider);
     const messages: HistoryPage["messages"] = [];
     let cursor: string | null = null;
     let remaining = Math.max(limit, 0);
@@ -3384,6 +3418,7 @@ export class SessionHistoryService {
     let persistPass2DurationMs = 0;
     let persistPass2BatchCount = 0;
     let persistPass2MaxBatchMs = 0;
+    let sourceIndexDurationMs = 0;
     let cleanupDurationMs = 0;
     let listItemsDurationMs = 0;
     let refreshStateDurationMs = 0;
@@ -3391,6 +3426,7 @@ export class SessionHistoryService {
     const activeRepairScope = this.sessionSourceIndexRepairScopes.get(workspaceId) ?? null;
 
     try {
+      throwIfAborted(signal);
       const discoverStartedAt = Date.now();
       const existingWorkspaceSessions = this.sessionIndexRepository.listByWorkspace(workspaceId, userId);
       const existingWorkspaceSourceIndexes = this.sessionSourceIndexRepository.listByWorkspaceId(workspaceId);
@@ -3408,7 +3444,7 @@ export class SessionHistoryService {
         workspaceId,
         existingWorkspaceSessions
       );
-      const discovery = precomputedDiscovery ?? await (async () => {
+      const rawDiscovery = precomputedDiscovery ?? await (async () => {
         const discoveryHandle = this.taskManager.enqueue<{
           config: ProviderSessionDiscoveryHelperConfig;
           workspacePath: string;
@@ -3430,6 +3466,16 @@ export class SessionHistoryService {
           throw mapSessionProviderError(error);
         });
       })();
+      // helper 只负责执行扫描，Host 仍必须以当前启用列表为最终边界，
+      // 防止旧缓存、测试替身或异常 helper 把已停用 provider 的结果写回索引。
+      const enabledProviderSet = new Set(enabledProviders);
+      const discovery: ProviderSessionDiscovery = {
+        ...rawDiscovery,
+        sessions: rawDiscovery.sessions.filter((session) => enabledProviderSet.has(session.provider)),
+        providerDiagnostics: rawDiscovery.providerDiagnostics?.filter((entry) =>
+          enabledProviderSet.has(entry.provider)
+        )
+      };
       const sessions = discovery.sessions;
       discoverDurationMs = Date.now() - discoverStartedAt;
       const timestamp = nowIso();
@@ -3439,6 +3485,7 @@ export class SessionHistoryService {
         discovery,
         timestamp
       );
+      throwIfAborted(signal);
       const discoveredSessionIds = new Map<string, string>();
       const persistedSessions: PersistedSessionDescriptor[] = [];
       const claimedPendingSessionIds = new Set<string>();
@@ -3575,6 +3622,7 @@ export class SessionHistoryService {
       });
 
       const persistPass1StartedAt = Date.now();
+      throwIfAborted(signal);
       const persistPass1Stats = await runBatchedTransactions(
         sessions,
         WORKSPACE_DISCOVERY_PERSIST_BATCH_SIZE,
@@ -3660,6 +3708,7 @@ export class SessionHistoryService {
       });
 
       const persistPass2StartedAt = Date.now();
+      throwIfAborted(signal);
       const persistPass2Stats = await runBatchedTransactions(
         persistedSessions,
         WORKSPACE_DISCOVERY_PERSIST_BATCH_SIZE,
@@ -3677,15 +3726,23 @@ export class SessionHistoryService {
       persistPass2DurationMs = Date.now() - persistPass2StartedAt;
       persistPass2BatchCount = persistPass2Stats.batchCount;
       persistPass2MaxBatchMs = persistPass2Stats.maxBatchMs;
-      this.persistSessionSourceIndexRecords(
+      throwIfAborted(signal);
+      const sourceIndexStartedAt = Date.now();
+      await this.persistSessionSourceIndexRecords(
         workspaceId,
         workspace.path,
         sessions,
         existingWorkspaceSourceIndexes,
         timestamp
       );
-      persistDurationMs = persistPass1DurationMs + relationMapDurationMs + persistPass2DurationMs;
+      sourceIndexDurationMs = Date.now() - sourceIndexStartedAt;
+      persistDurationMs =
+        persistPass1DurationMs
+        + relationMapDurationMs
+        + persistPass2DurationMs
+        + sourceIndexDurationMs;
       if (discovery.isComplete && allowCleanup) {
+        throwIfAborted(signal);
         const cleanupStartedAt = Date.now();
         await this.cleanupStaleHiddenSessions(workspaceId, userId, sessions);
         cleanupDurationMs = Date.now() - cleanupStartedAt;
@@ -3722,6 +3779,7 @@ export class SessionHistoryService {
       });
 
       const refreshStateStartedAt = Date.now();
+      throwIfAborted(signal);
       if (refreshStateMode === "inline") {
         await this.refreshRecentSessionStates(refreshCandidates, userId);
       } else {
@@ -3745,6 +3803,7 @@ export class SessionHistoryService {
           persistPass2Ms: persistPass2DurationMs,
           persistPass2BatchCount,
           persistPass2MaxBatchMs,
+          sourceIndexMs: sourceIndexDurationMs,
           cleanupMs: cleanupDurationMs,
           listItemsMs: listItemsDurationMs,
           refreshStateMs: refreshStateDurationMs,
@@ -3790,6 +3849,7 @@ export class SessionHistoryService {
           persistPass2Ms: persistPass2DurationMs,
           persistPass2BatchCount,
           persistPass2MaxBatchMs,
+          sourceIndexMs: sourceIndexDurationMs,
           cleanupMs: cleanupDurationMs,
           listItemsMs: listItemsDurationMs,
           refreshStateMs: refreshStateDurationMs,
@@ -3824,6 +3884,7 @@ export class SessionHistoryService {
           persistPass2Ms: persistPass2DurationMs,
           persistPass2BatchCount,
           persistPass2MaxBatchMs,
+          sourceIndexMs: sourceIndexDurationMs,
           cleanupMs: cleanupDurationMs,
           listItemsMs: listItemsDurationMs,
           refreshStateMs: refreshStateDurationMs,
@@ -3853,6 +3914,8 @@ export class SessionHistoryService {
     direction: HistoryDirection = "forward",
     knownTotalMessageCount: number | null = null
   ): Promise<HistoryPage> {
+    this.assertProviderEnabledForHistory(provider);
+
     if (shouldShortCircuitClaudePendingHistory(provider, providerSessionId, rawStoreRef)) {
       return {
         messages: [],
@@ -4798,6 +4861,7 @@ export class SessionHistoryService {
     isClosed: () => boolean = () => false
   ): Promise<string | null> {
     const initialBinding = this.getBindingOrThrow(sessionId);
+    this.assertProviderEnabledForHistory(initialBinding.provider);
 
     if (initialBinding.provider === "codex") {
       return await this.pullHelperSessionHistoryDelta(
@@ -5059,6 +5123,10 @@ export class SessionHistoryService {
     binding: SessionBinding,
     signal?: AbortSignal
   ): Promise<void> {
+    if (!this.isProviderEnabled(binding.provider)) {
+      return;
+    }
+
     const currentIndex = this.sessionIndexRepository.findIndexRecordBySessionId(sessionId);
 
     if (!currentIndex) {
@@ -5261,6 +5329,10 @@ export class SessionHistoryService {
   private async readFirstUserMessageTitleForSync(
     binding: Pick<SessionBinding, "provider" | "providerSessionId" | "rawStoreRef">
   ): Promise<string | null> {
+    if (!this.isProviderEnabled(binding.provider)) {
+      return null;
+    }
+
     const pageSize = 20;
     const maxPages = 3;
     let cursor: string | null = null;
@@ -6654,6 +6726,10 @@ export class SessionHistoryService {
     workspaceId: string,
     sessions: SessionListItem[]
   ): string[] {
+    if (!this.isProviderEnabled("claude-code")) {
+      return [];
+    }
+
     const roots = new Set<string>();
 
     for (const session of sessions) {
@@ -6675,14 +6751,15 @@ export class SessionHistoryService {
     return Array.from(roots);
   }
 
-  private persistSessionSourceIndexRecords(
+  private async persistSessionSourceIndexRecords(
     workspaceId: string,
     workspacePath: string,
     sessions: ProviderSessionDiscovery["sessions"],
     existingSourceIndexes: SessionSourceIndexRecord[],
     timestamp: string
-  ): void {
+  ): Promise<void> {
     const existingByKey = new Map(existingSourceIndexes.map((record) => [record.sourceKey, record]));
+    const records: SessionSourceIndexRecord[] = [];
 
     for (const session of sessions) {
       const sourceKind = inferSessionSourceKind(session.rawStoreRef);
@@ -6690,7 +6767,7 @@ export class SessionHistoryService {
       const stats = safeStat(session.rawStoreRef);
       const existing = existingByKey.get(sourceKey);
 
-      this.sessionSourceIndexRepository.upsert({
+      records.push({
         sourceKey,
         provider: session.provider,
         sourceKind,
@@ -6714,6 +6791,21 @@ export class SessionHistoryService {
         updatedAt: timestamp
       });
     }
+
+    await runBatchedTransactions(
+      records,
+      WORKSPACE_DISCOVERY_PERSIST_BATCH_SIZE,
+      (batch) => this.sessionSourceIndexRepository.upsertMany(batch),
+      {
+        scope: "workspace.discover_sessions.persist_source_index.batch",
+        thresholdMs: SESSION_TRANSACTION_HOTSPOT_THRESHOLD_MS,
+        detail: {
+          workspaceId,
+          workspacePath,
+          phase: "source_index"
+        }
+      }
+    );
   }
 
   private async persistDiscoveryDiagnostics(
@@ -6790,6 +6882,12 @@ export class SessionHistoryService {
   ): Promise<SessionStateRecord | null> {
     const binding = this.getBindingOrThrow(sessionId);
     const current = this.sessionStateRepository.findBySessionAndUser(sessionId, userId);
+
+    // 停用 provider 后只返回 Host 已有状态，不再读取 provider 活动文件或历史。
+    if (!this.isProviderEnabled(binding.provider)) {
+      return current;
+    }
+
     const timestamp = nowIso();
     const liveObservation = this.resolveLiveActivityObservation(sessionId);
     const providerActivityObservation = liveObservation

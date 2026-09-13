@@ -12,6 +12,7 @@ import { SessionChangedFileService } from "../../src/modules/sessions/session-ch
 import { SessionHistoryService } from "../../src/modules/sessions/session-history-service.js";
 import { SessionMessageAttachmentService } from "../../src/modules/sessions/session-message-attachment-service.js";
 import type { ProviderPriceBookService } from "../../src/modules/provider/provider-price-book-service.js";
+import type { ProviderControlRepository } from "../../src/storage/repositories/provider-control-repository.js";
 import { SessionBindingRepository } from "../../src/storage/repositories/session-binding-repository.js";
 import { SessionChangedFileRepository } from "../../src/storage/repositories/session-changed-file-repository.js";
 import { SessionIndexRepository } from "../../src/storage/repositories/session-index-repository.js";
@@ -136,6 +137,65 @@ describe("SessionHistoryService background tasks", () => {
         provider: "codex",
         triggerSource: "session_history.explicit_workspace_scan"
       });
+
+    service.dispose();
+  });
+
+  it("Host 收尾会再次过滤未启用 provider 的扫描结果和诊断", async () => {
+    let helperInput: { enabledProviders?: string[] } | null = null;
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.workspaceDiscoveryExplicitScan) {
+            helperInput = input as { enabledProviders?: string[] };
+            const discovery = {
+              sessions: [{
+                provider: "grok",
+                providerSessionId: "grok-disabled-1",
+                rawStoreRef: "/tmp/grok-disabled-1.jsonl",
+                title: "不应写入",
+                messageCount: 1,
+                lastMessageAt: null,
+                isArchived: false
+              }],
+              isComplete: true,
+              providerDiagnostics: [{
+                provider: "grok",
+                status: "success",
+                durationMs: 1,
+                sessionCount: 1,
+                isComplete: true,
+                scannedFiles: 1,
+                skippedByMtimeSize: 0,
+                parsedFiles: 1,
+                bytesRead: 10
+              }]
+            };
+            return definition.postProcess
+              ? await definition.postProcess(input, discovery, context)
+              : discovery;
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const providerControlRepository: Pick<ProviderControlRepository, "get"> = {
+      get: vi.fn((providerId: string) => ({
+        providerId,
+        enabled: providerId !== "grok",
+        updatedAt: ""
+      }))
+    };
+    const service = createSessionHistoryService(taskManager, null, providerControlRepository);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+
+    service.instance.requestExplicitWorkspaceScan("workspace-1", "user-1");
+    await flushMicrotasks();
+
+    expect(helperInput?.enabledProviders).not.toContain("grok");
+    expect(service.instance.listWorkspaceSessions("workspace-1", "user-1")).toEqual([]);
+    expect(service.instance.listWorkspaceDiscoveryDiagnostics("workspace-1", "user-1", 10)).toEqual([]);
 
     service.dispose();
   });
@@ -1404,7 +1464,8 @@ describe("SessionHistoryService background tasks", () => {
     providerPriceBookService: Pick<
       ProviderPriceBookService,
       "getCurrentPriceBook" | "getPriceBook"
-    > | null = null
+    > | null = null,
+    providerControlRepository: Pick<ProviderControlRepository, "get"> | null = null
   ) {
     const rootDir = createTempRoot();
     const workspacePath = join(rootDir, "workspace");
@@ -1456,7 +1517,7 @@ describe("SessionHistoryService background tasks", () => {
       null,
       null,
       null,
-      null,
+      providerControlRepository,
       null,
       null,
       providerPriceBookService

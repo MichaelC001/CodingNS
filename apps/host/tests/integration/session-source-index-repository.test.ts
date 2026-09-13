@@ -97,6 +97,49 @@ describe("SessionSourceIndexRepository", () => {
     database.close();
   });
 
+  it("会在一个事务内批量写入来源索引，并支持冲突更新", () => {
+    const database = createDatabaseClient(":memory:");
+    seedWorkspace(database.db);
+
+    const sourceRepository = new SessionSourceIndexRepository(database.db);
+    const createRecord = (sourceKey: string, title: string) => ({
+      sourceKey,
+      provider: "codex" as const,
+      sourceKind: "jsonl" as const,
+      workspaceId: "workspace-1",
+      providerSessionId: sourceKey,
+      rawStoreRef: `/tmp/workspace/${sourceKey}.jsonl`,
+      workspacePath: "/tmp/workspace",
+      fingerprintMtimeMs: 1718000000000,
+      fingerprintSizeBytes: 4096,
+      fingerprintInode: null,
+      fingerprintVersion: null,
+      title,
+      messageCount: 1,
+      lastMessageAt: "2026-06-10T10:00:00.000Z",
+      isArchivedHint: false,
+      lastParsedAt: "2026-06-10T10:01:00.000Z",
+      lastVerifiedAt: "2026-06-10T10:02:00.000Z",
+      sampleDueAt: null,
+      deletedAt: null,
+      createdAt: "2026-06-10T10:00:00.000Z",
+      updatedAt: "2026-06-10T10:02:00.000Z"
+    });
+
+    sourceRepository.upsertMany([
+      createRecord("session-1", "会话 1"),
+      createRecord("session-2", "会话 2")
+    ]);
+    sourceRepository.upsertMany([
+      createRecord("session-1", "会话 1（已更新）")
+    ]);
+
+    expect(sourceRepository.listByWorkspaceId("workspace-1")).toHaveLength(2);
+    expect(sourceRepository.findBySourceKey("session-1")?.title).toBe("会话 1（已更新）");
+
+    database.close();
+  });
+
   it("会按保留时间和工作区数量清理 discovery diagnostics", () => {
     const database = createDatabaseClient(":memory:");
     seedWorkspace(database.db);

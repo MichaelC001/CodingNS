@@ -8,10 +8,14 @@ export const DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS = 30 * 24 * 60 *
 /** 单个工作区最多保留 500 条诊断，避免 provider 数量放大表大小。 */
 export const DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE = 500;
 
+/** 每次清理最多删除的旧记录数，避免首次清理膨胀表时长时间占用写锁。 */
+export const DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_PRUNE_BATCH_SIZE = 1_000;
+
 export interface SessionDiscoveryDiagnosticsPruneOptions {
   now?: string | Date;
   retentionMs?: number;
   maxRowsPerWorkspace?: number;
+  maxDeletesPerPass?: number;
 }
 
 export class SessionDiscoveryDiagnosticsRepository {
@@ -60,19 +64,31 @@ export class SessionDiscoveryDiagnosticsRepository {
     );
     this.deleteExpiredStatement = this.db.prepare(
       `DELETE FROM session_discovery_diagnostics
-       WHERE workspace_id = ?
-         AND created_at < ?`
+       WHERE rowid IN (
+         SELECT rowid
+         FROM session_discovery_diagnostics
+         WHERE workspace_id = ?
+           AND created_at < ?
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?
+       )`
     );
     this.deleteOverflowStatement = this.db.prepare(
       `DELETE FROM session_discovery_diagnostics
-       WHERE workspace_id = ?
-         AND id NOT IN (
-           SELECT id
-           FROM session_discovery_diagnostics
-           WHERE workspace_id = ?
-           ORDER BY created_at DESC, id DESC
-           LIMIT ?
-         )`
+       WHERE rowid IN (
+         SELECT rowid
+         FROM session_discovery_diagnostics
+         WHERE workspace_id = ?
+           AND id NOT IN (
+             SELECT id
+             FROM session_discovery_diagnostics
+             WHERE workspace_id = ?
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?
+           )
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?
+       )`
     );
   }
 
@@ -136,12 +152,14 @@ export class SessionDiscoveryDiagnosticsRepository {
     const nowMs = resolveNowMs(options.now);
     const retentionMs = normalizeRetentionMs(options.retentionMs);
     const maxRows = normalizeMaxRows(options.maxRowsPerWorkspace);
+    const maxDeletes = normalizeMaxDeletes(options.maxDeletesPerPass);
     const prune = this.db.transaction(() => {
       return this.pruneWithinTransaction(normalizedWorkspaceId, {
         ...options,
         now: new Date(nowMs),
         retentionMs,
-        maxRowsPerWorkspace: maxRows
+        maxRowsPerWorkspace: maxRows,
+        maxDeletesPerPass: maxDeletes
       });
     });
 
@@ -173,12 +191,14 @@ export class SessionDiscoveryDiagnosticsRepository {
     const nowMs = resolveNowMs(options.now);
     const retentionMs = normalizeRetentionMs(options.retentionMs);
     const maxRows = normalizeMaxRows(options.maxRowsPerWorkspace);
+    const maxDeletes = normalizeMaxDeletes(options.maxDeletesPerPass);
     const cutoff = new Date(nowMs - retentionMs).toISOString();
-    const expired = this.deleteExpiredStatement.run(workspaceId, cutoff);
+    const expired = this.deleteExpiredStatement.run(workspaceId, cutoff, maxDeletes);
     const overflow = this.deleteOverflowStatement.run(
       workspaceId,
       workspaceId,
-      maxRows
+      maxRows,
+      maxDeletes
     );
     return Number(expired.changes ?? 0) + Number(overflow.changes ?? 0);
   }
@@ -238,4 +258,10 @@ function normalizeMaxRows(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.max(1, Math.floor(value))
     : DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE;
+}
+
+function normalizeMaxDeletes(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.floor(value))
+    : DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_PRUNE_BATCH_SIZE;
 }
