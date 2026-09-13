@@ -11,6 +11,7 @@ import type {
   RuntimeSendOptions
 } from "@codingns/session-sync-core";
 import { buildCodexAppServerRuntimeEnv } from "@codingns/session-sync-core";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 
 type HelperToParentMessage =
   | {
@@ -109,6 +110,8 @@ interface CodexAppServerHelperClientOptions {
   requestTimeoutMs?: number;
 }
 
+const activeCodexAppServerHelpers = new Set<CodexAppServerHelperClient>();
+
 export class CodexAppServerHelperClient {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly stdoutReader: readline.Interface;
@@ -117,6 +120,8 @@ export class CodexAppServerHelperClient {
   private nextTransportId = 1;
   private nextRequestId = 1;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
+
 
   constructor(commandPath: string, options: CodexAppServerHelperClientOptions = {}) {
     const launch = resolveHelperLaunch(commandPath);
@@ -130,8 +135,10 @@ export class CodexAppServerHelperClient {
     this.child = spawn(launch.command, launch.args, {
       cwd: process.cwd(),
       env: helperEnv,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
+    activeCodexAppServerHelpers.add(this);
     this.stdoutReader = readline.createInterface({
       input: this.child.stdout
     });
@@ -150,6 +157,10 @@ export class CodexAppServerHelperClient {
     });
     this.child.on("error", (error) => {
       this.failAll(error);
+      void terminateChildProcess(this.child, {
+        termGraceMs: 250,
+        killWaitMs: 250
+      });
     });
     this.child.on("exit", (code, signal) => {
       if (this.disposed && (code === 0 || signal === "SIGTERM")) {
@@ -497,15 +508,13 @@ export class CodexAppServerHelperClient {
     };
   }
 
-  dispose(): void {
-    if (this.disposed) {
-      return;
+  async dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return await this.disposePromise;
     }
 
-    this.disposed = true;
-    this.stdoutReader.close();
-    this.child.kill("SIGTERM");
-    this.failAll(new Error("Codex app-server helper 已关闭"));
+    this.disposePromise = this.disposeInternal();
+    return await this.disposePromise;
   }
 
   private async handleMessageLine(line: string): Promise<void> {
@@ -607,21 +616,22 @@ export class CodexAppServerHelperClient {
     transportId: string,
     state: LogicalTransportState,
     error: Error | null
-  ): void {
+  ): Promise<void> {
     if (state.closed) {
-      return;
+      return Promise.resolve();
     }
 
     state.closed = true;
-    void this.sendMessage({
+    const closePromise = this.sendMessage({
       type: "transport_request",
       transportId,
       requestId: String(this.nextRequestId++),
       method: "close"
-    });
+    }).catch(() => undefined);
     this.rejectTransportPending(state, error ?? new Error("CODEX_APP_SERVER_CLOSED"));
     this.notifyTransportClosed(state, error);
     this.transports.delete(transportId);
+    return closePromise;
   }
 
   private notifyTransportClosed(state: LogicalTransportState, error: Error | null): void {
@@ -645,6 +655,45 @@ export class CodexAppServerHelperClient {
       this.notifyTransportClosed(state, normalizedError);
     }
     this.transports.clear();
+  }
+
+  private async disposeInternal(): Promise<void> {
+    this.disposed = true;
+    const closePromises = [...this.transports.entries()].map(([transportId, state]) =>
+      this.closeLogicalTransport(transportId, state, new Error("Codex app-server helper 已关闭"))
+    );
+    await Promise.allSettled(closePromises.map((promise) => withTimeout(promise, 250)));
+    this.failAll(new Error("Codex app-server helper 已关闭"));
+    this.stdoutReader.close();
+    await terminateChildProcess(this.child, {
+      termGraceMs: 750,
+      killWaitMs: 500
+    });
+    activeCodexAppServerHelpers.delete(this);
+  }
+}
+
+/** 等待所有运行中的 Codex app-server helper 完成进程组回收。 */
+export async function disposeAllCodexAppServerHelpers(): Promise<void> {
+  const clients = [...activeCodexAppServerHelpers];
+  await Promise.allSettled(clients.map((client) => client.dispose()));
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Codex helper close timeout")), timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }
 

@@ -339,6 +339,13 @@ function getTmuxHelperClient(): TmuxHelperClient {
   return tmuxHelperClient;
 }
 
+/** Host 关闭时等待 tmux 控制 helper 及其子进程退出。 */
+export async function disposeTmuxHelperClient(): Promise<void> {
+  const client = tmuxHelperClient;
+  tmuxHelperClient = null;
+  await client?.dispose();
+}
+
 async function runTmuxCommandDirect(args: string[]): Promise<{
   status: number | null;
   stdout: string;

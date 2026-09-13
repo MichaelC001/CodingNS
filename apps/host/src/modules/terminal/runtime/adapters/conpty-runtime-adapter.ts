@@ -178,3 +178,10 @@ function getConptyControlHelperClient(): ConptyControlHelperClient {
 
   return conptyControlHelperClient;
 }
+
+/** Host 关闭时等待控制 helper 及其子进程退出。 */
+export async function disposeConptyControlHelperClient(): Promise<void> {
+  const client = conptyControlHelperClient;
+  conptyControlHelperClient = null;
+  await client?.dispose();
+}

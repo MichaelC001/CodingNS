@@ -59,8 +59,8 @@ export class GitCommandRunner {
     return this.runDirect(repoRoot, args, options, 0);
   }
 
-  dispose(): void {
-    this.helperClient?.dispose();
+  async dispose(): Promise<void> {
+    await this.helperClient?.dispose();
   }
 
   private async runDirect(

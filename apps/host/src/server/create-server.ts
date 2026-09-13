@@ -133,6 +133,7 @@ import { TailscaleController } from "../modules/tailscale/tailscale-controller.j
 import { TailscaleHelperClient } from "../modules/tailscale/tailscale-helper-client.js";
 import { TailscaleService } from "../modules/tailscale/tailscale-service.js";
 import { SessionController } from "../modules/sessions/session-controller.js";
+import { disposeAllCodexAppServerHelpers } from "../modules/sessions/codex-app-server-helper-client.js";
 import { SessionChangedFileService } from "../modules/sessions/session-changed-file-service.js";
 import { SessionActivityAuthorityService } from "../modules/sessions/session-activity-authority-service.js";
 import { SessionHistoryService } from "../modules/sessions/session-history-service.js";
@@ -156,6 +157,8 @@ import { CommandTemplateService } from "../modules/terminal/command-template-ser
 import { TerminalController } from "../modules/terminal/terminal-controller.js";
 import { TemplateReverseProxyService } from "../modules/terminal/template-reverse-proxy-service.js";
 import { TerminalService } from "../modules/terminal/terminal-service.js";
+import { disposeConptyControlHelperClient } from "../modules/terminal/runtime/adapters/conpty-runtime-adapter.js";
+import { disposeTmuxHelperClient } from "../modules/terminal/runtime/adapters/tmux-runtime-adapter.js";
 import { CodexArchiveWatcher } from "../modules/workbench/codex-archive-watcher.js";
 import { AffairsAssistantSessionSnapshotService } from "../modules/workbench/affairs-assistant-session-snapshot-service.js";
 import { WorkbenchController } from "../modules/workbench/workbench-controller.js";
@@ -2001,12 +2004,19 @@ export function createServer(config: HostConfig) {
     fileWatcher.dispose();
     workspaceFileBridgeWatchService.dispose();
     config.opencodeBaseUrlResolver?.dispose?.();
-    gitCommandRunner.dispose();
-    tailscaleHelperClient.dispose();
-    wechatClawRuntimeManager?.dispose();
-    disposeSharedTaskHelperPool();
-    disposeSharedProviderDiscoveryHelperClient();
-    disposeSharedOpenCodeSystemProbeHelperClient();
+    // 这些 helper 彼此独立，必须并行等待，避免多个 750ms 关闭宽限期
+    // 串行叠加后再次超过 tsx 的 5 秒退出窗口。
+    await Promise.allSettled([
+      disposeAllCodexAppServerHelpers(),
+      gitCommandRunner.dispose(),
+      tailscaleHelperClient.dispose(),
+      disposeConptyControlHelperClient(),
+      disposeTmuxHelperClient(),
+      wechatClawRuntimeManager?.dispose(),
+      disposeSharedTaskHelperPool(),
+      disposeSharedProviderDiscoveryHelperClient(),
+      disposeSharedOpenCodeSystemProbeHelperClient()
+    ]);
     database.close();
   });
 

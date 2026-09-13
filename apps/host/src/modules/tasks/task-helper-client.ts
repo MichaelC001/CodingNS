@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 
 import type { TaskHelperProcessHandlerName } from "./task-helper-process-handlers.js";
 import { TaskQueueWaitTimeoutError, TaskTimeoutError } from "./task-types.js";
+import {
+  signalChildProcessGroup,
+  terminateChildProcess
+} from "../../shared/utils/child-process-lifecycle.js";
 
 interface PendingRequest<TResult> {
   resolve: (value: TResult) => void;
@@ -33,7 +37,7 @@ export interface TaskHelperWorkerClientLike {
     signal?: AbortSignal,
     options?: TaskHelperExecuteOptions
   ): Promise<TResult>;
-  dispose(): void;
+  dispose(): void | Promise<void>;
   hasInflightRemoteWork(): boolean;
   terminateCurrentChild(reason: string): void;
   getHealthSnapshot(): TaskHelperProcessClientHealthSnapshot;
@@ -76,6 +80,7 @@ export class TaskHelperProcessClient {
   private lastExitAtMs: number | null = null;
   private lastTerminationReason: string | null = null;
   private idleRecycleTimer: NodeJS.Timeout | null = null;
+  private disposePromise: Promise<void> | null = null;
 
   async execute<TResult>(
     handler: TaskHelperProcessHandlerName,
@@ -212,23 +217,13 @@ export class TaskHelperProcessClient {
     });
   }
 
-  dispose(): void {
-    if (this.disposed) {
-      return;
+  async dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return await this.disposePromise;
     }
 
-    this.disposed = true;
-    this.clearIdleRecycleTimer();
-    this.stdoutReader?.close();
-
-    if (this.child && !this.child.killed) {
-      this.child.kill("SIGTERM");
-    }
-
-    this.rejectAll(new Error("task helper 已关闭"));
-    this.child = null;
-    this.stdoutReader = null;
-    this.stdoutReaderChild = null;
+    this.disposePromise = this.disposeInternal();
+    return await this.disposePromise;
   }
 
   hasInflightRemoteWork(): boolean {
@@ -304,9 +299,9 @@ export class TaskHelperProcessClient {
     this.clearIdleRecycleTimer();
   }
 
-  private async sendCancel(targetId: string): Promise<void> {
+  private async sendCancel(targetId: string, allowDuringDispose = false): Promise<void> {
     if (
-      this.disposed ||
+      (this.disposed && !allowDuringDispose) ||
       !this.child ||
       this.child.killed ||
       this.child.stdin.destroyed
@@ -343,7 +338,8 @@ export class TaskHelperProcessClient {
     const child = spawn(launch.command, launch.args, {
       cwd: process.cwd(),
       env: process.env,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     const stdoutReader = readline.createInterface({
       input: child.stdout
@@ -435,11 +431,7 @@ export class TaskHelperProcessClient {
     }
 
     if (!child.killed && typeof child.kill === "function") {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // 强制回收失败也不能阻塞后续 reject。
-      }
+      signalChildProcessGroup(child, "SIGKILL");
     }
 
     this.rejectPendingForChild(child, new TaskTimeoutError(reason));
@@ -477,9 +469,11 @@ export class TaskHelperProcessClient {
       this.stdoutReaderChild = null;
     }
 
-    if (!child.killed && typeof child.kill === "function") {
-      child.kill("SIGTERM");
-    }
+    // 传输异常也要在短宽限期后强杀整个进程组，避免 helper/CLI 变成孤儿。
+    void terminateChildProcess(child, {
+      termGraceMs: 250,
+      killWaitMs: 250
+    });
 
     this.rejectPendingForChild(child, error);
   }
@@ -557,12 +551,44 @@ export class TaskHelperProcessClient {
       this.stdoutReader = null;
       this.stdoutReaderChild = null;
     }
-    if (!child.killed && typeof child.kill === "function") {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // 空闲回收失败不能影响主链路。
-      }
+    signalChildProcessGroup(child, "SIGTERM");
+  }
+
+  private async disposeInternal(): Promise<void> {
+    if (this.disposed && !this.child) {
+      return;
+    }
+
+    const child = this.child;
+    const pendingRequestIds = [...this.inflightRemoteRequestIds];
+    this.disposed = true;
+    this.clearIdleRecycleTimer();
+
+    // 先通知 helper 取消正在执行的请求，再进入进程组终止流程；即使
+    // helper 不响应，后面的超时强杀也会兜底。
+    await Promise.allSettled(
+      pendingRequestIds.map((requestId) => this.sendCancel(requestId, true))
+    );
+    this.rejectAll(new Error("task helper 已关闭"));
+
+    if (!child) {
+      this.stdoutReader?.close();
+      this.stdoutReader = null;
+      this.stdoutReaderChild = null;
+      return;
+    }
+
+    await terminateChildProcess(child, {
+      termGraceMs: 750,
+      killWaitMs: 500
+    });
+    if (this.child === child) {
+      this.child = null;
+    }
+    if (this.stdoutReaderChild === child) {
+      this.stdoutReader?.close();
+      this.stdoutReader = null;
+      this.stdoutReaderChild = null;
     }
   }
 }
@@ -640,7 +666,7 @@ export function getSharedTaskHelperProcessClient(): TaskHelperProcessClient {
   return sharedTaskHelperProcessClient;
 }
 
-export function disposeSharedTaskHelperProcessClient(): void {
+export async function disposeSharedTaskHelperProcessClient(): Promise<void> {
   const scope = globalThis as typeof globalThis & {
     [GLOBAL_TASK_HELPER_PROCESS_CLIENT_KEY]?: TaskHelperProcessClient | null;
   };
@@ -651,7 +677,7 @@ export function disposeSharedTaskHelperProcessClient(): void {
     return;
   }
 
-  sharedClient.dispose();
+  await sharedClient.dispose();
   scope[GLOBAL_TASK_HELPER_PROCESS_CLIENT_KEY] = null;
   sharedTaskHelperProcessClient = null;
 }

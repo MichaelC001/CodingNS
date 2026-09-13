@@ -13,6 +13,7 @@ import type {
   RuntimeSessionBinding
 } from "@codingns/session-sync-core";
 import { ClaudeRuntimeAdapter as NativeClaudeRuntimeAdapter } from "@codingns/session-sync-core";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 
 interface ClaudeRuntimeHelperClientOptions {
   homeDir: string;
@@ -96,6 +97,7 @@ export class ClaudeRuntimeHelperAdapter implements ProviderRuntimeAdapter {
   private readonly activeRuns = new Map<string, ActiveRunRecord>();
   private nextRequestId = 1;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
   constructor(options: ClaudeRuntimeHelperClientOptions) {
     this.options = options;
@@ -110,7 +112,8 @@ export class ClaudeRuntimeHelperAdapter implements ProviderRuntimeAdapter {
     this.child = spawn(launch.command, launch.args, {
       cwd: process.cwd(),
       env: helperEnv,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     this.stdoutReader = readline.createInterface({
       input: this.child.stdout
@@ -130,6 +133,10 @@ export class ClaudeRuntimeHelperAdapter implements ProviderRuntimeAdapter {
     });
     this.child.on("error", (error) => {
       this.failAll(error);
+      void terminateChildProcess(this.child, {
+        termGraceMs: 250,
+        killWaitMs: 250
+      });
     });
     this.child.on("exit", (code, signal) => {
       if (this.disposed && (code === 0 || signal === "SIGTERM")) {
@@ -154,15 +161,13 @@ export class ClaudeRuntimeHelperAdapter implements ProviderRuntimeAdapter {
     return this.launch("continue", request, sink);
   }
 
-  dispose(): void {
-    if (this.disposed) {
-      return;
+  async dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return await this.disposePromise;
     }
 
-    this.disposed = true;
-    this.stdoutReader.close();
-    this.child.kill("SIGTERM");
-    this.failAll(new Error("Claude runtime helper 已关闭"));
+    this.disposePromise = this.disposeInternal();
+    return await this.disposePromise;
   }
 
   private launch(
@@ -349,6 +354,42 @@ export class ClaudeRuntimeHelperAdapter implements ProviderRuntimeAdapter {
       run.rejectCompleted(error);
     }
     this.activeRuns.clear();
+  }
+
+  private async disposeInternal(): Promise<void> {
+    this.disposed = true;
+    const interruptPromises = [...this.activeRuns.values()].map((run) => {
+      if (!run.interrupt) {
+        return Promise.resolve();
+      }
+
+      return run.interrupt();
+    });
+    await Promise.allSettled(interruptPromises.map((promise) => withTimeout(promise, 250)));
+    this.failAll(new Error("Claude runtime helper 已关闭"));
+    this.stdoutReader.close();
+    await terminateChildProcess(this.child, {
+      termGraceMs: 750,
+      killWaitMs: 500
+    });
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Claude helper interrupt timeout")), timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }
 

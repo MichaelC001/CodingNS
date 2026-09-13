@@ -403,7 +403,7 @@ export class SessionLiveRuntimeService {
   private readonly providerRuntimeService: ProviderRuntimeService;
   private readonly sessionActivityAuthorityService: SessionActivityAuthorityService;
   private readonly sessionPermissionRequestService: SessionPermissionRequestService;
-  private readonly runtimeAdapterDisposables: Array<{ dispose(): void }>;
+  private readonly runtimeAdapterDisposables: Array<{ dispose(): void | Promise<void> }>;
   private readonly externalRuntimeSnapshots = new Map<string, ExternalRuntimeSnapshot>();
   private readonly externalRuntimeInterruptSuppressions = new Map<string, number>();
   private readonly runtimeListeners = new Map<
@@ -1510,7 +1510,7 @@ export class SessionLiveRuntimeService {
     await this.sessionPermissionRequestService.dispose();
     await this.providerRuntimeService.dispose();
     for (const disposable of this.runtimeAdapterDisposables) {
-      disposable.dispose();
+      await disposable.dispose();
     }
     this.externalRuntimeSnapshots.clear();
     this.runtimeListeners.clear();
@@ -4913,7 +4913,7 @@ function createProviderRuntimeAdapters(
   } = {}
 ): {
   adapters: ProviderRuntimeAdapter[];
-  disposables: Array<{ dispose(): void }>;
+  disposables: Array<{ dispose(): void | Promise<void> }>;
 } {
   const claudeHookBridgeConfig = buildClaudeHookBridgeConfig(config, "claude-code");
   const legnaHookBridgeConfig = buildClaudeHookBridgeConfig(config, "legna-code");
@@ -4935,7 +4935,7 @@ function createProviderRuntimeAdapters(
           scriptPath: claudeHookBridgeConfig.scriptPath
         }
       });
-  const disposables: Array<{ dispose(): void }> = [];
+  const disposables: Array<{ dispose(): void | Promise<void> }> = [];
 
   if ("dispose" in claudeAdapter && typeof claudeAdapter.dispose === "function") {
     disposables.push(claudeAdapter);
@@ -4970,7 +4970,7 @@ function createProviderRuntimeAdapters(
               ...transport,
               close() {
                 transport.close();
-                client.dispose();
+                void client.dispose();
               }
             };
           },

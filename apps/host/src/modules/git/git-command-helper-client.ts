@@ -4,6 +4,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import { AppError } from "../../shared/errors/app-error.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 
 interface GitCommandOptions {
   allowNonZeroExit?: boolean;
@@ -63,15 +64,18 @@ export class GitCommandHelperClient {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly stdoutReader: readline.Interface;
   private readonly pendingRequests = new Map<string, PendingRequest>();
+  private readonly inflightRequestIds = new Set<string>();
   private nextRequestId = 1;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
   constructor() {
     const launch = resolveHelperLaunch();
     this.child = spawn(launch.command, launch.args, {
       cwd: process.cwd(),
       env: process.env,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     this.stdoutReader = readline.createInterface({
       input: this.child.stdout
@@ -129,6 +133,7 @@ export class GitCommandHelperClient {
         onAbort = () => {
           aborted = true;
           this.pendingRequests.delete(id);
+          this.inflightRequestIds.delete(id);
           void this.sendCancel(id);
           reject(signal.reason ?? new Error("git helper aborted"));
         };
@@ -143,6 +148,7 @@ export class GitCommandHelperClient {
 
       this.pendingRequests.set(id, {
         resolve: (value) => {
+          this.inflightRequestIds.delete(id);
           if (onAbort && signal) {
             signal.removeEventListener("abort", onAbort);
           }
@@ -152,6 +158,7 @@ export class GitCommandHelperClient {
           }
         },
         reject: (error) => {
+          this.inflightRequestIds.delete(id);
           if (onAbort && signal) {
             signal.removeEventListener("abort", onAbort);
           }
@@ -161,6 +168,7 @@ export class GitCommandHelperClient {
           }
         }
       });
+      this.inflightRequestIds.add(id);
 
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
         if (!error) {
@@ -172,6 +180,7 @@ export class GitCommandHelperClient {
         }
 
         this.pendingRequests.delete(id);
+        this.inflightRequestIds.delete(id);
         reject(
           createHelperUnavailableError(`写入 Git helper 失败：${error.message}`)
         );
@@ -179,15 +188,15 @@ export class GitCommandHelperClient {
     });
   }
 
-  dispose(): void {
-    if (this.disposed) {
-      return;
+  async dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return await this.disposePromise;
     }
 
     this.disposed = true;
-    this.stdoutReader.close();
-    this.child.kill("SIGTERM");
-    this.rejectAllPending(createHelperUnavailableError("Git helper 已关闭"));
+    const pendingRequestIds = [...this.inflightRequestIds];
+    this.disposePromise = this.disposeInternal(pendingRequestIds);
+    return await this.disposePromise;
   }
 
   private handleResponseLine(line: string): void {
@@ -228,10 +237,11 @@ export class GitCommandHelperClient {
     }
 
     this.pendingRequests.clear();
+    this.inflightRequestIds.clear();
   }
 
-  private async sendCancel(targetId: string): Promise<void> {
-    if (this.disposed || this.child.killed || this.child.stdin.destroyed) {
+  private async sendCancel(targetId: string, allowDuringDispose = false): Promise<void> {
+    if ((this.disposed && !allowDuringDispose) || this.child.killed || this.child.stdin.destroyed) {
       return;
     }
 
@@ -245,6 +255,18 @@ export class GitCommandHelperClient {
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, () => {
         resolve();
       });
+    });
+  }
+
+  private async disposeInternal(pendingRequestIds: string[]): Promise<void> {
+    await Promise.allSettled(
+      pendingRequestIds.map((requestId) => this.sendCancel(requestId, true))
+    );
+    this.stdoutReader.close();
+    this.rejectAllPending(createHelperUnavailableError("Git helper 已关闭"));
+    await terminateChildProcess(this.child, {
+      termGraceMs: 750,
+      killWaitMs: 500
     });
   }
 

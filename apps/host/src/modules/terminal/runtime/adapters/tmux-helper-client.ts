@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { terminateChildProcess } from "../../../../shared/utils/child-process-lifecycle.js";
 
 interface PendingRequest {
   resolve: (value: { status: number | null; stdout: string; stderr: string }) => void;
@@ -29,13 +30,16 @@ export class TmuxHelperClient {
   private readonly stdoutReader: readline.Interface;
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private nextRequestId = 1;
+  private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
   constructor() {
     const launch = resolveHelperLaunch();
     this.child = spawn(launch.command, launch.args, {
       cwd: process.cwd(),
       env: process.env,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     this.stdoutReader = readline.createInterface({
       input: this.child.stdout
@@ -59,6 +63,10 @@ export class TmuxHelperClient {
   }
 
   async run(args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
+    if (this.disposed) {
+      return Promise.reject(new Error("tmux helper 已关闭"));
+    }
+
     const id = String(this.nextRequestId++);
 
     return await new Promise((resolve, reject) => {
@@ -125,6 +133,21 @@ export class TmuxHelperClient {
       pending.reject(error);
     }
     this.pendingRequests.clear();
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return await this.disposePromise;
+    }
+
+    this.disposed = true;
+    this.rejectAll(new Error("tmux helper 已关闭"));
+    this.stdoutReader.close();
+    this.disposePromise = terminateChildProcess(this.child, {
+      termGraceMs: 750,
+      killWaitMs: 500
+    });
+    return await this.disposePromise;
   }
 }
 

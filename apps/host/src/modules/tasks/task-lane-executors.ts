@@ -11,7 +11,7 @@ export function createHostTaskLaneExecutors(): Partial<Record<TaskExecutionLane,
           return await definition.run(input, context);
         }
 
-        return await helperPool.execute(
+        const result = await helperPool.execute(
           definition.helperProcessHandler as never,
           attachHelperTaskMeta(input, context),
           context.signal,
@@ -19,6 +19,12 @@ export function createHostTaskLaneExecutors(): Partial<Record<TaskExecutionLane,
             queueWaitTimeoutMs: definition.queueWaitTimeoutMs
           }
         );
+
+        if (definition.postProcess) {
+          return await definition.postProcess(input, result, context);
+        }
+
+        return result as never;
       }
     },
     external_process: {

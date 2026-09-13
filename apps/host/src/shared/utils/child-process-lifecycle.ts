@@ -1,0 +1,148 @@
+import type { ChildProcess } from "node:child_process";
+
+/** helper 子进程优雅退出后最多等待的时间。 */
+export const HELPER_PROCESS_TERM_GRACE_MS = 1_500;
+
+/** 优雅退出失败后，发送 SIGKILL 后再等待的时间。 */
+export const HELPER_PROCESS_KILL_WAIT_MS = 750;
+
+interface TerminateChildProcessOptions {
+  termGraceMs?: number;
+  killWaitMs?: number;
+}
+
+/**
+ * 向子进程组发送信号。
+ *
+ * helper 往往还会启动 CLI 子进程。macOS/Linux 上使用负 PID 发送到整个
+ * 进程组，避免 Host 只杀掉 helper 外壳而把 CLI 留成孤儿；Windows 回退到
+ * ChildProcess.kill，由各 helper 自己负责子进程回收。
+ */
+export function signalChildProcessGroup(
+  child: ChildProcess,
+  signal: NodeJS.Signals
+): boolean {
+  const pid = child.pid;
+
+  if (process.platform !== "win32" && typeof pid === "number" && pid > 0) {
+    try {
+      process.kill(-pid, signal);
+      return true;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "";
+
+      // 进程已经退出时无需再回退，其他错误继续尝试单进程信号。
+      if (code === "ESRCH") {
+        return false;
+      }
+    }
+  }
+
+  if (child.killed) {
+    return false;
+  }
+
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
+/** 等待子进程真正发出 exit/close，而不是只看 child.killed。 */
+export function waitForChildProcessExit(
+  child: ChildProcess,
+  timeoutMs: number
+): Promise<boolean> {
+  if (hasChildProcessExited(child)) {
+    return Promise.resolve(true);
+  }
+
+  const normalizedTimeoutMs = Number.isFinite(timeoutMs)
+    ? Math.max(1, Math.floor(timeoutMs))
+    : HELPER_PROCESS_TERM_GRACE_MS;
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const finish = (exited: boolean) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      child.removeListener?.("exit", onExit);
+      child.removeListener?.("close", onExit);
+      child.removeListener?.("error", onError);
+      resolve(exited);
+    };
+
+    const onExit = () => finish(true);
+    const onError = () => {
+      // error 事件通常紧跟 close/exit，继续等待，避免把短暂的 pipe
+      // 错误误判成已经完成回收。
+    };
+
+    const eventTarget = child as ChildProcess & {
+      once?: ChildProcess["once"];
+    };
+    if (typeof eventTarget.once === "function") {
+      eventTarget.once("exit", onExit);
+      eventTarget.once("close", onExit);
+      eventTarget.once("error", onError);
+    } else {
+      child.on("exit", onExit);
+      child.on("close", onExit);
+      child.on("error", onError);
+    }
+    timer = setTimeout(() => finish(false), normalizedTimeoutMs);
+    // 被调用方即使忘记 await，也不能因为回收计时器阻塞 Host 退出。
+    timer.unref?.();
+  });
+}
+
+/** 先优雅终止整个进程组，超时后再强制终止，并等待退出事件。 */
+export async function terminateChildProcess(
+  child: ChildProcess,
+  options: TerminateChildProcessOptions = {}
+): Promise<void> {
+  if (hasChildProcessExited(child)) {
+    return;
+  }
+
+  const termGraceMs = normalizeTimeout(
+    options.termGraceMs,
+    HELPER_PROCESS_TERM_GRACE_MS
+  );
+  const killWaitMs = normalizeTimeout(
+    options.killWaitMs,
+    HELPER_PROCESS_KILL_WAIT_MS
+  );
+  const gracefulExit = waitForChildProcessExit(child, termGraceMs);
+
+  signalChildProcessGroup(child, "SIGTERM");
+  if (await gracefulExit) {
+    return;
+  }
+
+  const forcedExit = waitForChildProcessExit(child, killWaitMs);
+  signalChildProcessGroup(child, "SIGKILL");
+  await forcedExit;
+}
+
+function hasChildProcessExited(child: ChildProcess): boolean {
+  return child.exitCode !== null && child.exitCode !== undefined
+    || child.signalCode !== null && child.signalCode !== undefined;
+}
+
+function normalizeTimeout(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.floor(value))
+    : fallback;
+}

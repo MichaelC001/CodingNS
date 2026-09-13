@@ -130,12 +130,14 @@ export class TaskHelperPool {
       .filter((snapshot): snapshot is TaskHelperWorkerHealthSnapshot => Boolean(snapshot));
   }
 
-  dispose(): void {
-    for (const entry of this.workers.values()) {
-      entry.client.dispose();
-      entry.state = "recycled";
-    }
+  async dispose(): Promise<void> {
+    const entries = [...this.workers.values()];
     this.workers.clear();
+
+    await Promise.allSettled(entries.map(async (entry) => {
+      await entry.client.dispose();
+      entry.state = "recycled";
+    }));
   }
 
   private getOrCreateWorker(workerKey: string, rootDir: string | null): TaskHelperWorkerEntry {
@@ -186,7 +188,7 @@ export function getSharedTaskHelperPool(): TaskHelperPool {
   return pool;
 }
 
-export function disposeSharedTaskHelperPool(): void {
+export async function disposeSharedTaskHelperPool(): Promise<void> {
   const scope = globalThis as typeof globalThis & {
     [GLOBAL_TASK_HELPER_POOL_KEY]?: TaskHelperPool | null;
   };
@@ -195,7 +197,7 @@ export function disposeSharedTaskHelperPool(): void {
     return;
   }
 
-  pool.dispose();
+  await pool.dispose();
   scope[GLOBAL_TASK_HELPER_POOL_KEY] = null;
 }
 

@@ -3,6 +3,8 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { terminateChildProcess } from "../../../shared/utils/child-process-lifecycle.js";
+
 interface PersistTerminalLogBatchInput {
   terminalId: string;
   startSeq: number;
@@ -54,13 +56,16 @@ export class TerminalLogWriterClient {
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private nextRequestId = 1;
   private closed = false;
+  private closing = false;
+  private closePromise: Promise<void> | null = null;
 
   constructor(databasePath: string, logRootDir: string) {
     const launch = resolveWriterLaunch(databasePath, logRootDir);
     this.child = spawn(launch.command, launch.args, {
       cwd: launch.cwd,
       env: process.env,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     this.stdoutReader = readline.createInterface({
       input: this.child.stdout
@@ -102,25 +107,19 @@ export class TerminalLogWriterClient {
   }
 
   async close(): Promise<void> {
-    if (this.closed) {
-      return;
+    if (this.closePromise) {
+      return await this.closePromise;
     }
 
-    try {
-      await this.sendRequest({
-        type: "shutdown"
-      });
-    } finally {
-      this.closed = true;
-      this.stdoutReader.close();
-      this.child.kill();
-    }
+    this.closePromise = this.closeInternal();
+    return await this.closePromise;
   }
 
   private async sendRequest(
-    input: WriterRequestInput
+    input: WriterRequestInput,
+    allowClosing = false
   ): Promise<void> {
-    if (this.closed) {
+    if (this.closed || (this.closing && !allowClosing)) {
       throw new Error("terminal log writer 已关闭");
     }
 
@@ -184,6 +183,47 @@ export class TerminalLogWriterClient {
     }
 
     this.pendingRequests.clear();
+  }
+
+  private async closeInternal(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
+    this.closing = true;
+
+    try {
+      // 正常 shutdown 只作为减少脏退出的机会，不能让 Host 关闭链路无限等待。
+      await withTimeout(this.sendRequest({ type: "shutdown" }, true), 750);
+    } catch {
+      // 下面的进程组终止是最终兜底，关闭阶段不再向上抛出 writer 错误。
+    } finally {
+      this.closed = true;
+      this.stdoutReader.close();
+      this.rejectAll(new Error("terminal log writer 已关闭"));
+      await terminateChildProcess(this.child, {
+        termGraceMs: 750,
+        killWaitMs: 500
+      });
+    }
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("terminal log writer shutdown timeout")), timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }
 

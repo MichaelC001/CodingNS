@@ -3,6 +3,8 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { terminateChildProcess } from "../shared/utils/child-process-lifecycle.js";
+
 interface OpenCodeListeningSocket {
   hostname: string;
   port: number;
@@ -35,13 +37,15 @@ export class OpenCodeSystemProbeHelperClient {
   private readonly pendingRequests = new Map<string, PendingRequest<unknown>>();
   private nextRequestId = 1;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
   constructor() {
     const launch = resolveHelperLaunch();
     this.child = spawn(launch.command, launch.args, {
       cwd: process.cwd(),
       env: process.env,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     this.stdoutReader = readline.createInterface({
       input: this.child.stdout
@@ -132,19 +136,16 @@ export class OpenCodeSystemProbeHelperClient {
     });
   }
 
-  dispose(): void {
-    if (this.disposed) {
-      return;
+  async dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return await this.disposePromise;
     }
 
     this.disposed = true;
     this.stdoutReader.close();
-
-    if (!this.child.killed) {
-      this.child.kill("SIGTERM");
-    }
-
     this.rejectAll(new Error("opencode system probe helper 已关闭"));
+    this.disposePromise = terminateChildProcess(this.child);
+    return await this.disposePromise;
   }
 
   private handleResponseLine(line: string): void {
@@ -195,12 +196,12 @@ export function getSharedOpenCodeSystemProbeHelperClient(): OpenCodeSystemProbeH
   return sharedOpenCodeSystemProbeHelperClient;
 }
 
-export function disposeSharedOpenCodeSystemProbeHelperClient(): void {
+export async function disposeSharedOpenCodeSystemProbeHelperClient(): Promise<void> {
   if (!sharedOpenCodeSystemProbeHelperClient) {
     return;
   }
 
-  sharedOpenCodeSystemProbeHelperClient.dispose();
+  await sharedOpenCodeSystemProbeHelperClient.dispose();
   sharedOpenCodeSystemProbeHelperClient = null;
 }
 

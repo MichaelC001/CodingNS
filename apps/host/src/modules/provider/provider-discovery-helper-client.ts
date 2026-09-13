@@ -7,6 +7,9 @@ import type {
   ProviderSessionDiscovery,
   ProviderSessionSummary
 } from "@codingns/session-sync-core";
+import {
+  terminateChildProcess
+} from "../../shared/utils/child-process-lifecycle.js";
 
 interface PendingRequest<T> {
   resolve: (value: T) => void;
@@ -42,8 +45,10 @@ export class ProviderDiscoveryHelperClient {
   private child: ChildProcessWithoutNullStreams | null = null;
   private stdoutReader: readline.Interface | null = null;
   private readonly pendingRequests = new Map<string, PendingRequest<unknown>>();
+  private readonly inflightRequestIds = new Set<string>();
   private nextRequestId = 1;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
   async readCodexAppServerState(input: {
     commandPath: string;
@@ -184,6 +189,7 @@ export class ProviderDiscoveryHelperClient {
         onAbort = () => {
           aborted = true;
           this.pendingRequests.delete(id);
+          this.inflightRequestIds.delete(id);
           void this.sendCancel(id);
           reject(signal.reason ?? new Error("provider discovery helper aborted"));
         };
@@ -198,6 +204,7 @@ export class ProviderDiscoveryHelperClient {
 
       this.pendingRequests.set(id, {
         resolve: (value) => {
+          this.inflightRequestIds.delete(id);
           if (onAbort && signal) {
             signal.removeEventListener("abort", onAbort);
           }
@@ -207,6 +214,7 @@ export class ProviderDiscoveryHelperClient {
           }
         },
         reject: (error) => {
+          this.inflightRequestIds.delete(id);
           if (onAbort && signal) {
             signal.removeEventListener("abort", onAbort);
           }
@@ -216,6 +224,7 @@ export class ProviderDiscoveryHelperClient {
           }
         }
       });
+      this.inflightRequestIds.add(id);
 
       try {
         child.stdin.write(
@@ -233,6 +242,7 @@ export class ProviderDiscoveryHelperClient {
             }
 
             this.pendingRequests.delete(id);
+            this.inflightRequestIds.delete(id);
             reject(error);
           }
         );
@@ -242,26 +252,19 @@ export class ProviderDiscoveryHelperClient {
         }
 
         this.pendingRequests.delete(id);
+        this.inflightRequestIds.delete(id);
         reject(error);
       }
     });
   }
 
-  dispose(): void {
-    if (this.disposed) {
-      return;
+  async dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return await this.disposePromise;
     }
 
-    this.disposed = true;
-    this.stdoutReader?.close();
-
-    if (this.child && !this.child.killed) {
-      this.child.kill("SIGTERM");
-    }
-
-    this.rejectAll(new Error("provider discovery helper 已关闭"));
-    this.child = null;
-    this.stdoutReader = null;
+    this.disposePromise = this.disposeInternal();
+    return await this.disposePromise;
   }
 
   private handleResponseLine(line: string): void {
@@ -301,11 +304,12 @@ export class ProviderDiscoveryHelperClient {
     }
 
     this.pendingRequests.clear();
+    this.inflightRequestIds.clear();
   }
 
-  private async sendCancel(targetId: string): Promise<void> {
+  private async sendCancel(targetId: string, allowDuringDispose = false): Promise<void> {
     if (
-      this.disposed ||
+      (this.disposed && !allowDuringDispose) ||
       !this.child ||
       this.child.killed ||
       this.child.stdin.destroyed
@@ -343,7 +347,8 @@ export class ProviderDiscoveryHelperClient {
     const child = spawn(launch.command, launch.args, {
       cwd: process.cwd(),
       env: process.env,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     const stdoutReader = readline.createInterface({
       input: child.stdout
@@ -389,13 +394,44 @@ export class ProviderDiscoveryHelperClient {
       this.stdoutReader.close();
     }
 
-    if (child && !child.killed) {
-      child.kill("SIGTERM");
+    if (child) {
+      // 传输异常时也要回收整组进程；只发一次 SIGTERM 会留下不响应的 CLI。
+      void terminateChildProcess(child, {
+        termGraceMs: 250,
+        killWaitMs: 250
+      });
     }
 
     this.child = null;
     this.stdoutReader = null;
     this.rejectAll(error);
+  }
+
+  private async disposeInternal(): Promise<void> {
+    const child = this.child;
+    const pendingRequestIds = [...this.inflightRequestIds];
+    this.disposed = true;
+    await Promise.allSettled(
+      pendingRequestIds.map((requestId) => this.sendCancel(requestId, true))
+    );
+    const pending = new Error("provider discovery helper 已关闭");
+    this.rejectAll(pending);
+
+    if (!child) {
+      this.stdoutReader?.close();
+      this.stdoutReader = null;
+      return;
+    }
+
+    await terminateChildProcess(child, {
+      termGraceMs: 750,
+      killWaitMs: 500
+    });
+    if (this.child === child) {
+      this.child = null;
+    }
+    this.stdoutReader?.close();
+    this.stdoutReader = null;
   }
 }
 
@@ -433,7 +469,7 @@ export function getSharedProviderDiscoveryHelperClient(): ProviderDiscoveryHelpe
   return sharedProviderDiscoveryHelperClient;
 }
 
-export function disposeSharedProviderDiscoveryHelperClient(): void {
+export async function disposeSharedProviderDiscoveryHelperClient(): Promise<void> {
   const scope = globalThis as typeof globalThis & {
     [GLOBAL_PROVIDER_DISCOVERY_HELPER_CLIENT_KEY]?: ProviderDiscoveryHelperClient | null;
   };
@@ -444,7 +480,7 @@ export function disposeSharedProviderDiscoveryHelperClient(): void {
     return;
   }
 
-  sharedClient.dispose();
+  await sharedClient.dispose();
   scope[GLOBAL_PROVIDER_DISCOVERY_HELPER_CLIENT_KEY] = null;
   sharedProviderDiscoveryHelperClient = null;
 }

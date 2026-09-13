@@ -7090,7 +7090,7 @@ function createCodexForkTransportFactory(
       ...transport,
       close() {
         transport.close();
-        client.dispose();
+        void client.dispose();
       }
     };
   };
@@ -7108,7 +7108,7 @@ function createCodexThreadControlTransportFactory(
       ...transport,
       close() {
         transport.close();
-        client.dispose();
+        void client.dispose();
       }
     };
   };

@@ -6,6 +6,7 @@ import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import type { WechatClawRuntimeReadyMessage } from "../../helpers/wechat-claw-runtime/modules/types.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 
 export class WechatClawRuntimeManager {
   private child: ChildProcessByStdio<null, Readable, Readable> | null = null;
@@ -13,6 +14,7 @@ export class WechatClawRuntimeManager {
   private readyPromise: Promise<{ baseUrl: string; authToken: string }> | null = null;
   private currentRuntime: { baseUrl: string; authToken: string } | null = null;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
   private readonly authToken = crypto.randomUUID();
 
   constructor(private readonly runtimeRootDir: string) {}
@@ -37,13 +39,26 @@ export class WechatClawRuntimeManager {
     }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    if (this.disposePromise) {
+      return await this.disposePromise;
+    }
+
+    this.disposePromise = this.disposeInternal();
+    return await this.disposePromise;
+  }
+
+  private async disposeInternal(): Promise<void> {
     this.disposed = true;
+    const child = this.child;
     this.stdoutReader?.close();
     this.stdoutReader = null;
 
-    if (this.child && !this.child.killed) {
-      this.child.kill("SIGTERM");
+    if (child) {
+      await terminateChildProcess(child, {
+        termGraceMs: 750,
+        killWaitMs: 500
+      });
     }
 
     this.child = null;
@@ -65,7 +80,8 @@ export class WechatClawRuntimeManager {
     ], {
       cwd: process.cwd(),
       env: process.env,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
     const stdoutReader = readline.createInterface({
       input: child.stdout
