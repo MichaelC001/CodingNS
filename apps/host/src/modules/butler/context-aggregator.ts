@@ -193,6 +193,18 @@ export interface ButlerSearchResult {
   items: ButlerSearchHit[];
 }
 
+interface CollectProjectContextsOptions {
+  includeArchived?: boolean;
+  syncMode?: "blocking" | "background";
+  /**
+   * 查询是否允许顺带刷新外部会话状态。
+   *
+   * 默认关闭：overview、snapshot、search 都是读接口，不能因为轮询读数据
+   * 就再次扫描所有工作区。需要新鲜状态的主动流程必须显式打开它。
+   */
+  syncSessions?: boolean;
+}
+
 interface ProjectAggregateResult {
   project: ButlerProject;
   digest: ButlerProjectDigest;
@@ -218,10 +230,14 @@ export class ButlerContextAggregator {
     private readonly sessionCheckpointRepository: Pick<SessionCheckpointRepository, "listByButlerSessionId">
   ) {}
 
-  async getOverview(userId: string): Promise<ButlerOverview> {
+  async getOverview(
+    userId: string,
+    options: Pick<CollectProjectContextsOptions, "syncMode" | "syncSessions"> = {}
+  ): Promise<ButlerOverview> {
     const generatedAt = nowIso();
     const projectContexts = await this.collectProjectContexts(userId, {
-      syncMode: "background"
+      syncMode: options.syncMode ?? "background",
+      syncSessions: options.syncSessions ?? false
     });
     const projects = projectContexts.map((item) => item.digest).slice(0, MAX_OVERVIEW_PROJECTS);
     const sessions = projectContexts
@@ -261,7 +277,8 @@ export class ButlerContextAggregator {
   async getSnapshot(userId: string): Promise<ButlerContextSnapshot> {
     const generatedAt = nowIso();
     const projectContexts = await this.collectProjectContexts(userId, {
-      syncMode: "background"
+      syncMode: "background",
+      syncSessions: false
     });
     const projects = projectContexts.map((item) => item.digest);
     const sessions = projectContexts.flatMap((item) => item.sessions);
@@ -340,7 +357,10 @@ export class ButlerContextAggregator {
       };
     }
 
-    const overview = await this.getOverview(userId);
+    const overview = await this.getOverview(userId, {
+      syncMode: "background",
+      syncSessions: true
+    });
     const searchResult = await this.searchSummaries(userId, userMessage ?? "");
     return {
       version: overview.version,
@@ -376,7 +396,8 @@ export class ButlerContextAggregator {
 
     const projectContexts = await this.collectProjectContexts(userId, {
       includeArchived: options.includeArchived ?? false,
-      syncMode: "background"
+      syncMode: "background",
+      syncSessions: false
     });
     const filteredContexts =
       options.projectId
@@ -400,21 +421,20 @@ export class ButlerContextAggregator {
 
   private async collectProjectContexts(
     userId: string,
-    options?: {
-      includeArchived?: boolean;
-      syncMode?: "blocking" | "background";
-    }
+    options?: CollectProjectContextsOptions
   ): Promise<ProjectAggregateResult[]> {
     const focusProjectIds = new Set(this.butlerProfileService.getProfile(userId)?.focus.projectIds ?? []);
     const projects = this.butlerProjectService.list({ userId });
-    await Promise.all(
-      projects.map((project) =>
-        this.butlerSessionService.ensureProjectSessionsSynced(project.id, userId, {
-          includeArchived: options?.includeArchived ?? false,
-          mode: options?.syncMode ?? "blocking"
-        })
-      )
-    );
+    if (options?.syncSessions) {
+      await Promise.all(
+        projects.map((project) =>
+          this.butlerSessionService.ensureProjectSessionsSynced(project.id, userId, {
+            includeArchived: options.includeArchived ?? false,
+            mode: options.syncMode ?? "blocking"
+          })
+        )
+      );
+    }
     const contexts = projects.map((project) =>
       this.buildProjectContext(project, userId, {
         includeArchived: options?.includeArchived ?? false

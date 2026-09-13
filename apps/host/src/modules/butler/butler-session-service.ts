@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { AppError, isAppError } from "../../shared/errors/app-error.js";
@@ -1125,7 +1125,15 @@ function readClaudeObservedWorkspacePath(rawStoreRef: string): string | null {
 }
 
 function readLimitedJsonLines(rawStoreRef: string, maxLines: number): Array<Record<string, unknown>> {
-  const content = readFileSync(rawStoreRef, "utf8");
+  const fd = openSync(rawStoreRef, "r");
+  let content: string;
+  try {
+    const buffer = Buffer.allocUnsafe(512 * 1024);
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+    content = buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
   const lines = content
     .split(/\r?\n/)
     .map((line) => line.trim())

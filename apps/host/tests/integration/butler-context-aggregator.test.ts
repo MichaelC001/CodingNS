@@ -37,6 +37,7 @@ describe("ButlerContextAggregator", () => {
       riskLevel: "low",
       updatedAt: "2026-04-04T01:00:00.000Z"
     };
+    const ensureProjectSessionsSynced = vi.fn(async () => {});
     const aggregator = new ButlerContextAggregator(
       {
         getProfile: vi.fn(() => ({
@@ -52,7 +53,7 @@ describe("ButlerContextAggregator", () => {
         )
       } as unknown as Pick<ButlerProjectService, "getById" | "list">,
       {
-        ensureProjectSessionsSynced: vi.fn(async () => {}),
+        ensureProjectSessionsSynced,
         listByProject: vi.fn((projectId: string) =>
           projectId === "project-1"
             ? [
@@ -203,10 +204,21 @@ describe("ButlerContextAggregator", () => {
     );
 
     const snapshot = await aggregator.getSnapshot("user-1");
+    const overview = await aggregator.getOverview("user-1");
+    expect(ensureProjectSessionsSynced).not.toHaveBeenCalled();
+
+    await aggregator.getOverview("user-1", {
+      syncMode: "background",
+      syncSessions: true
+    });
+    expect(ensureProjectSessionsSynced).toHaveBeenCalledTimes(2);
+
     const promptContext = await aggregator.resolvePromptContext("user-1", "这个项目现在卡在哪");
     const searchResult = await aggregator.searchSummaries("user-1", "类型错误");
 
     expect(snapshot.global.blockedProjectCount).toBe(1);
+    expect(overview.global.blockedProjectCount).toBe(1);
+    expect(ensureProjectSessionsSynced).toHaveBeenCalledTimes(3);
     expect(snapshot.global.highRiskProjectCount).toBe(1);
     expect(snapshot.projects[0]?.id).toBe("project-1");
     expect(snapshot.projects[0]?.topRisks.join(" ")).toContain("TypeScript 编译失败");
