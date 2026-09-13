@@ -6,11 +6,14 @@ const CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
 const LOCAL_FILE_SIGNATURE = 0x04034b50;
 const ZIP_METHOD_STORED = 0;
 const ZIP_METHOD_DEFLATE = 8;
+const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 32 * 1024 * 1024;
+const MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
 
 interface ZipEntryRecord {
   path: string;
   compressionMethod: number;
   compressedSize: number;
+  uncompressedSize: number;
   localHeaderOffset: number;
 }
 
@@ -75,6 +78,7 @@ function readZipRecords(buffer: Buffer, formatLabel: string): ZipEntryRecord[] {
 
     const compressionMethod = buffer.readUInt16LE(cursor + 10);
     const compressedSize = buffer.readUInt32LE(cursor + 20);
+    const uncompressedSize = buffer.readUInt32LE(cursor + 24);
     const fileNameLength = buffer.readUInt16LE(cursor + 28);
     const extraFieldLength = buffer.readUInt16LE(cursor + 30);
     const commentLength = buffer.readUInt16LE(cursor + 32);
@@ -87,6 +91,7 @@ function readZipRecords(buffer: Buffer, formatLabel: string): ZipEntryRecord[] {
       path: entryPath,
       compressionMethod,
       compressedSize,
+      uncompressedSize,
       localHeaderOffset,
     });
 
@@ -97,6 +102,12 @@ function readZipRecords(buffer: Buffer, formatLabel: string): ZipEntryRecord[] {
 }
 
 function extractZipEntry(buffer: Buffer, record: ZipEntryRecord, formatLabel: string): Buffer {
+  if (record.uncompressedSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+    throw new AppError(
+      `${formatLabel} 条目解压后超过安全上限：${record.path}`,
+      APP_ERROR_CODES.PARSER_COMPLEX_SKIPPED,
+    );
+  }
   const offset = record.localHeaderOffset;
   if (offset + 30 > buffer.length || buffer.readUInt32LE(offset) !== LOCAL_FILE_SIGNATURE) {
     throw new AppError(
@@ -121,7 +132,9 @@ function extractZipEntry(buffer: Buffer, record: ZipEntryRecord, formatLabel: st
     return Buffer.from(compressed);
   }
   if (record.compressionMethod === ZIP_METHOD_DEFLATE) {
-    return inflateRawSync(compressed);
+    return inflateRawSync(compressed, {
+      maxOutputLength: MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES,
+    });
   }
 
   throw new AppError(
@@ -133,7 +146,15 @@ function extractZipEntry(buffer: Buffer, record: ZipEntryRecord, formatLabel: st
 export function readZipEntries(buffer: Buffer, formatLabel: string): Map<string, Buffer> {
   const records = readZipRecords(buffer, formatLabel);
   const entries = new Map<string, Buffer>();
+  let totalUncompressedBytes = 0;
   for (const record of records) {
+    totalUncompressedBytes += record.uncompressedSize;
+    if (totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+      throw new AppError(
+        `${formatLabel} 解压后总大小超过安全上限`,
+        APP_ERROR_CODES.PARSER_COMPLEX_SKIPPED,
+      );
+    }
     entries.set(record.path, extractZipEntry(buffer, record, formatLabel));
   }
   return entries;

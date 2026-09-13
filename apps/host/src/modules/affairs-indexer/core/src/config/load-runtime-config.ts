@@ -21,6 +21,7 @@ interface RuntimeConfigFilePayload {
   exportDir?: string;
   watchDebounceMs?: number;
   parserTimeoutMs?: number;
+  maxParserFileBytes?: number;
   disabledParserExtensions?: string[];
   allowedExtensions?: string[];
   includedHiddenPaths?: string[];
@@ -237,6 +238,17 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
       ?? 30000,
   );
 
+  // 复杂文档解析会同时持有原始 Buffer、解压内容和最终文本；默认 16 MiB
+  // 是为了让最坏情况仍然停留在可控范围。需要处理更大文件时必须显式调高，
+  // 而不是让每种 parser 自己偷偷放大内存峰值。
+  const maxParserFileBytes = readPositiveNumber(
+    args.maxParserFileBytes
+      ?? args["max-parser-file-bytes"]
+      ?? env.DOC_SEMANTIC_INDEX_MAX_PARSER_FILE_BYTES
+      ?? configFile.maxParserFileBytes
+      ?? 16 * 1024 * 1024,
+  );
+
   const disabledParserExtensions = readExtensionList(
     args.disabledParserExtensions
       ?? args["disabled-parser-extensions"]
@@ -284,17 +296,19 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
     !logLevel
     || watchDebounceMs === undefined
     || parserTimeoutMs === undefined
+    || maxParserFileBytes === undefined
     || writeBatchSize === undefined
     || maxIndexConcurrency === undefined
   ) {
     throw new AppError(
-      "运行时配置中存在非法值，请检查 logLevel / watchDebounceMs / parserTimeoutMs / writeBatchSize / maxIndexConcurrency。",
+      "运行时配置中存在非法值，请检查 logLevel / watchDebounceMs / parserTimeoutMs / maxParserFileBytes / writeBatchSize / maxIndexConcurrency。",
       APP_ERROR_CODES.CONFIG_INVALID_VALUE,
       {
         details: {
           logLevel,
           watchDebounceMs,
           parserTimeoutMs,
+          maxParserFileBytes,
           writeBatchSize,
           maxIndexConcurrency,
           configFilePath,
@@ -311,6 +325,7 @@ export function loadRuntimeConfig(cwd: string, options: LoadRuntimeConfigOptions
     configFilePath,
     watchDebounceMs,
     parserTimeoutMs,
+    maxParserFileBytes,
     disabledParserExtensions,
     allowedExtensions,
     includedHiddenPaths,
