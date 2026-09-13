@@ -25,6 +25,7 @@ import {
   messageIdFromRawRef,
   nextTimestamp,
   normalizeWorkspacePath,
+  readJsonLinesTail,
   safeDate,
   sliceHistory
 } from "./utils.js";
@@ -85,6 +86,7 @@ interface KimiSessionSummaryCacheEntry {
 
 const SUBSCRIBE_POLL_INTERVAL_MS = 800;
 const KIMI_SESSION_SUMMARY_CACHE_LIMIT = 512;
+const KIMI_REASONING_EFFORTS = ["off", "low", "medium", "high", "xhigh", "max"];
 
 export class KimiAdapter implements ProviderAdapter {
   readonly providerId: ProviderId = "kimi";
@@ -425,7 +427,8 @@ export class KimiAdapter implements ProviderAdapter {
           name: currentDefaultModel
             ? `跟随 Kimi CLI 默认模型（当前：${currentDefaultModel}）`
             : "跟随 Kimi CLI 默认模型",
-          usesProviderDefault: true
+          usesProviderDefault: true,
+          supportedReasoningEfforts: KIMI_REASONING_EFFORTS
         }
       ],
       limitations: [
@@ -992,9 +995,7 @@ function readJsonLinesSafely(
     return [];
   }
 
-  const lines = readFileSync(filePath, "utf8")
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd());
+  const lines = readJsonLinesTail(filePath, 8 * 1024 * 1024).map((record) => JSON.stringify(record.data));
   const records: KimiRawLineRecord[] = [];
 
   for (let index = 0; index < lines.length; index += 1) {

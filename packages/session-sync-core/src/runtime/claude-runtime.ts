@@ -228,6 +228,12 @@ export class ClaudeRuntimeAdapter implements ProviderRuntimeAdapter {
       args.push("--model", request.options.model);
     }
 
+    const effort = normalizeClaudeEffort(request.options.reasoningLevel);
+
+    if (effort) {
+      args.push("--effort", effort);
+    }
+
     logClaudeRuntimeDebug("launch.begin", {
       sessionId: request.sessionId,
       providerSessionId,
@@ -684,6 +690,14 @@ export function buildClaudePermissionArgs(permissionMode: string | null): string
   }
 
   return [];
+}
+
+function normalizeClaudeEffort(value: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+
+  return normalized && new Set(["low", "medium", "high", "xhigh", "max"]).has(normalized)
+    ? normalized
+    : null;
 }
 
 function buildClaudeRuntimeEnv(homeDir: string): NodeJS.ProcessEnv {

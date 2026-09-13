@@ -74,7 +74,8 @@ describe("OpenCode model capabilities", () => {
       },
       {
         id: "openai/gpt-5",
-        name: "openai/gpt-5"
+        name: "openai/gpt-5",
+        supportedReasoningEfforts: ["off", "low", "medium", "high"]
       },
       {
         id: "openai/gpt-5-mini",
@@ -216,7 +217,8 @@ function handleConfigProvidersRequest(
           models: {
             "gpt-5": {
               id: "gpt-5",
-              name: "gpt-5"
+              name: "gpt-5",
+              variants: ["none", "low", "medium", "high"]
             },
             "gpt-5-mini": {
               id: "gpt-5-mini",

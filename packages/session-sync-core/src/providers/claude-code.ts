@@ -56,6 +56,8 @@ import {
   normalizeWorkspacePath,
   readFirstNonEmptyLine,
   readJsonLines,
+  readJsonLinesForDiscovery,
+  readJsonLinesTail,
   safeDate,
   sliceHistory,
   walkJsonlFiles
@@ -107,23 +109,28 @@ interface ClaudeForkTargetLocation {
 const HISTORY_CACHE_LIMIT = 6;
 const SESSION_SUMMARY_CACHE_LIMIT = 512;
 const DEFAULT_CLAUDE_CONTEXT_WINDOW = 200_000;
+const CLAUDE_COMPAT_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 export const CLAUDE_COMPAT_MODEL_OPTIONS: ProviderModelOption[] = [
   {
     id: "provider-default",
     name: "跟随 CLI 默认模型",
-    usesProviderDefault: true
+    usesProviderDefault: true,
+    supportedReasoningEfforts: CLAUDE_COMPAT_REASONING_EFFORTS
   },
   {
     id: "sonnet",
-    name: "Sonnet"
+    name: "Sonnet",
+    supportedReasoningEfforts: CLAUDE_COMPAT_REASONING_EFFORTS
   },
   {
     id: "opus",
-    name: "Opus"
+    name: "Opus",
+    supportedReasoningEfforts: CLAUDE_COMPAT_REASONING_EFFORTS
   },
   {
     id: "haiku",
-    name: "Haiku"
+    name: "Haiku",
+    supportedReasoningEfforts: CLAUDE_COMPAT_REASONING_EFFORTS
   }
 ];
 
@@ -284,7 +291,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
       parsedFiles += 1;
       bytesRead += stats.size;
-      const records = readJsonLines(filePath);
+      const records = readJsonLinesForDiscovery(filePath);
       const typedRecords = records.map((record) => record.data);
       const detectedWorkspacePath =
         typedRecords
@@ -572,7 +579,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     clientRequestId: string | null,
     _permissionMode?: string | null
   ): Promise<SendMessageResult> {
-    const records = readJsonLines(rawStoreRef).map((record) => record.data);
+    const records = readJsonLinesTail(rawStoreRef).map((record) => record.data);
     const lineNumber = records.length + 1;
     const acceptedAt = nextTimestamp();
     const cwd =
@@ -631,7 +638,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     }
 
     statSync(rawStoreRef);
-    const records = readJsonLines(rawStoreRef).map((record) => record.data);
+    const records = readJsonLinesTail(rawStoreRef).map((record) => record.data);
     const messages = this.parseMessages(rawStoreRef, records, providerSessionId);
 
     return this.resolveDetectedClaudeTitle(records, messages, rawStoreRef);
@@ -719,7 +726,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     rawStoreRef: string
   ): Promise<ContextUsageSnapshot | null> {
     statSync(rawStoreRef);
-    const records = readJsonLines(rawStoreRef).map((record) => record.data);
+    const records = readJsonLinesTail(rawStoreRef).map((record) => record.data);
 
     for (let index = records.length - 1; index >= 0; index -= 1) {
       const snapshot = extractClaudeUsageSnapshot(records[index]);
@@ -761,7 +768,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     options?: ProviderSessionStatsReadOptions
   ): Promise<ProviderSessionStats | null> {
     statSync(rawStoreRef);
-    const records = readJsonLines(rawStoreRef).map((record) => record.data);
+    const records = readJsonLinesTail(rawStoreRef).map((record) => record.data);
     const snapshots = new Map<string, NonNullable<ReturnType<typeof extractClaudeUsageSnapshot>>>();
 
     for (const record of records) {
@@ -1029,7 +1036,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       return cached.messages;
     }
 
-    const records = readJsonLines(filePath).map((record) => record.data);
+    const records = readJsonLinesTail(filePath).map((record) => record.data);
     const messages = this.parseMessages(filePath, records, providerSessionId);
     this.touchHistoryCache(filePath, {
       filePath,
@@ -1498,7 +1505,7 @@ function buildClaudeSubagentMetadataIndex(
   }
 
   for (const filePath of files) {
-    const records = readJsonLines(filePath).map((record) => record.data);
+    const records = readJsonLinesForDiscovery(filePath).map((record) => record.data);
     const taskSpawnMetadata = parseClaudeTaskSpawnMetadata(filePath, records, filePathSet);
 
     for (const [childFilePath, metadata] of taskSpawnMetadata) {

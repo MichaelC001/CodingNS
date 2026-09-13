@@ -715,7 +715,7 @@ export class KimiRuntimeAdapter implements ProviderRuntimeAdapter {
 
     const payload =
       transport === "command"
-        ? buildCommandInputPayloadFromOptions(prompt)
+        ? buildCommandInputPayloadFromOptions(options, prompt)
         : buildPromptPayloadFromOptions(options, prompt);
 
     await this.writeWirePayload(proc, payload);
@@ -761,13 +761,16 @@ function buildPromptPayloadFromOptions(
   options: ProviderRuntimeRunRequest["options"],
   prompt: string
 ): Record<string, unknown> {
+  const reasoningLevel = normalizeKimiReasoningLevel(options.reasoningLevel);
+
   return {
     type: "prompt.submit",
     content: prompt,
     client_request_id: options.clientRequestId,
     permission_mode: options.permissionMode,
     model: options.model,
-    reasoning_level: options.reasoningLevel,
+    reasoning_level: reasoningLevel,
+    ...(reasoningLevel ? { thinking: reasoningLevel } : {}),
     attachments: options.attachments.map((attachment) => ({
       file_path: attachment.filePath,
       file_name: attachment.fileName,
@@ -775,6 +778,18 @@ function buildPromptPayloadFromOptions(
       file_size: attachment.fileSize
     }))
   };
+}
+
+function normalizeKimiReasoningLevel(value: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+
+  if (!normalized || normalized === "off") {
+    return normalized === "off" ? "off" : null;
+  }
+
+  return new Set(["low", "medium", "high", "xhigh", "max"]).has(normalized)
+    ? normalized
+    : null;
 }
 
 function buildKimiRuntimeArgs(
@@ -1190,7 +1205,12 @@ function buildPendingKimiBinding(sessionId: string): { providerSessionId: string
   };
 }
 
-function buildCommandInputPayloadFromOptions(prompt: string): Record<string, unknown> {
+function buildCommandInputPayloadFromOptions(
+  options: ProviderRuntimeRunRequest["options"],
+  prompt: string
+): Record<string, unknown> {
+  const reasoningLevel = normalizeKimiReasoningLevel(options.reasoningLevel);
+
   return {
     role: "user",
     content: [
@@ -1198,7 +1218,8 @@ function buildCommandInputPayloadFromOptions(prompt: string): Record<string, unk
         type: "text",
         text: prompt
       }
-    ]
+    ],
+    ...(reasoningLevel ? { reasoning_level: reasoningLevel, thinking: reasoningLevel } : {})
   };
 }
 
@@ -1311,4 +1332,3 @@ function looksLikeLegacyKimiHelp(output: string): boolean {
   const normalized = output.toLowerCase();
   return normalized.includes("--cwd") || normalized.includes("no such command 'wire'");
 }
-

@@ -5,6 +5,16 @@ import { getSharedProviderDiscoveryHelperClient } from "./provider-discovery-hel
 const PROVIDER_DEFAULT_MODEL_ID = "provider-default";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_CACHE_TTL_MS = 5_000;
+const SUPPORTED_REASONING_EFFORTS = new Set([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra"
+]);
 
 interface OpenCodeModelOptionsServiceOptions {
   baseUrl: string;
@@ -32,6 +42,7 @@ interface OpenCodeProviderEntry {
 interface OpenCodeModelEntry {
   id: string;
   name: string;
+  variants: string[];
 }
 
 export class OpenCodeModelOptionsService {
@@ -243,11 +254,16 @@ function buildServerDiscoverySnapshot(
   snapshot: OpenCodeProviderConfigSnapshot
 ): OpenCodeDiscoverySnapshot | null {
   const currentDefaultModel = resolveServerDefaultModelId(snapshot);
+  const currentDefaultModelEntry = currentDefaultModel
+    ? findServerModelEntry(snapshot, currentDefaultModel)
+    : null;
   const modelOptions = snapshot.providers.flatMap((provider, providerIndex) => {
     const multipleProviders = snapshot.providers.length > 1;
 
     return provider.models.map((model) => {
       const modelId = buildOpenCodeModelId(provider.id, model.id);
+
+      const supportedReasoningEfforts = normalizeOpenCodeReasoningEfforts(model.variants);
 
       return {
         id: modelId,
@@ -257,7 +273,8 @@ function buildServerDiscoverySnapshot(
           modelId,
           multipleProviders,
           providerIndex
-        })
+        }),
+        ...(supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {})
       };
     });
   });
@@ -269,7 +286,10 @@ function buildServerDiscoverySnapshot(
 
   return {
     modelOptions: [
-      ...createFallbackOpenCodeModelOptions(currentDefaultModel),
+      ...createFallbackOpenCodeModelOptions(
+        currentDefaultModel,
+        currentDefaultModelEntry ? normalizeOpenCodeReasoningEfforts(currentDefaultModelEntry.variants) : []
+      ),
       ...dedupedModelOptions
     ]
   };
@@ -287,14 +307,18 @@ function buildCliModelOptions(models: string[]): ProviderModelOption[] {
   ];
 }
 
-export function createFallbackOpenCodeModelOptions(currentModelId: string | null): ProviderModelOption[] {
+export function createFallbackOpenCodeModelOptions(
+  currentModelId: string | null,
+  supportedReasoningEfforts: string[] = []
+): ProviderModelOption[] {
   return [
     {
       id: PROVIDER_DEFAULT_MODEL_ID,
       name: currentModelId
         ? `跟随 OpenCode 默认模型（当前：${currentModelId}）`
         : "跟随 OpenCode 默认模型",
-      usesProviderDefault: true
+      usesProviderDefault: true,
+      ...(supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {})
     }
   ];
 }
@@ -362,8 +386,48 @@ function normalizeModelEntry(input: unknown): OpenCodeModelEntry | null {
 
   return {
     id,
-    name: normalizeText(record.name) ?? id
+    name: normalizeText(record.name) ?? id,
+    variants: normalizeVariantIds(record.variants)
   };
+}
+
+function normalizeVariantIds(input: unknown): string[] {
+  if (Array.isArray(input)) {
+    return input.flatMap((variant) => {
+      if (typeof variant === "string") {
+        return normalizeText(variant) ?? [];
+      }
+
+      if (!variant || typeof variant !== "object") {
+        return [];
+      }
+
+      return normalizeText((variant as Record<string, unknown>).id)
+        ?? normalizeText((variant as Record<string, unknown>).value)
+        ?? normalizeText((variant as Record<string, unknown>).name)
+        ?? [];
+    });
+  }
+
+  if (input && typeof input === "object") {
+    return Object.keys(input as Record<string, unknown>);
+  }
+
+  return [];
+}
+
+function normalizeOpenCodeReasoningEfforts(variants: string[]): string[] {
+  const efforts = variants.flatMap((variant) => {
+    const normalized = variant.trim().toLowerCase();
+
+    if (normalized === "none" || normalized === "off") {
+      return ["off"];
+    }
+
+    return SUPPORTED_REASONING_EFFORTS.has(normalized) ? [normalized] : [];
+  });
+
+  return [...new Set(efforts)];
 }
 
 function normalizeStringRecord(input: unknown): Record<string, string> {
@@ -419,6 +483,21 @@ function resolveServerDefaultModelId(snapshot: OpenCodeProviderConfigSnapshot): 
     .filter((modelId): modelId is string => Boolean(modelId));
 
   return defaults.length === 1 ? defaults[0] : null;
+}
+
+function findServerModelEntry(
+  snapshot: OpenCodeProviderConfigSnapshot,
+  modelId: string
+): OpenCodeModelEntry | null {
+  for (const provider of snapshot.providers) {
+    for (const model of provider.models) {
+      if (buildOpenCodeModelId(provider.id, model.id) === modelId) {
+        return model;
+      }
+    }
+  }
+
+  return null;
 }
 
 function buildServerModelLabel(input: {

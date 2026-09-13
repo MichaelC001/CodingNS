@@ -120,8 +120,8 @@ test("OpenCodeRuntimeAdapter 会创建会话、发送消息并消费 SSE 事件"
       options: {
         content: "请回一句测试成功",
         clientRequestId: null,
-        model: null,
-        reasoningLevel: null,
+        model: "openai/gpt-5",
+        reasoningLevel: "high",
         permissionMode: null,
         providerPrompt: null,
         attachments: []
@@ -152,6 +152,11 @@ test("OpenCodeRuntimeAdapter 会创建会话、发送消息并消费 SSE 事件"
   );
   assert.ok(messageRequest);
   assert.equal(JSON.parse(messageRequest.body).parts[0].text, "请回一句测试成功");
+  assert.deepEqual(JSON.parse(messageRequest.body).model, {
+    providerID: "openai",
+    modelID: "gpt-5"
+  });
+  assert.equal(JSON.parse(messageRequest.body).variant, "high");
 
   const runningEvent = events.find((event) => event.type === "status");
   assert.ok(runningEvent);

@@ -34,6 +34,15 @@ const MAX_CONSECUTIVE_TIMEOUTS = 5;
 const OPENCODE_STALE_EVENT_GRACE_MS = 15_000;
 const OPENCODE_REALISTIC_EPOCH_MS_THRESHOLD = Date.UTC(2000, 0, 1);
 const OPENCODE_SUBMIT_TIMEOUT_AMBIGUOUS = "OPENCODE_SUBMIT_TIMEOUT_AMBIGUOUS";
+const OPENCODE_REASONING_VARIANTS = new Set([
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra"
+]);
 const OPENCODE_ORDER_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
   process.env.CODINGNS_OPENCODE_ORDER_DEBUG?.trim() ?? ""
 );
@@ -785,6 +794,12 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       body.model = model;
     }
 
+    const variant = normalizeOpenCodeReasoningVariant(request.options.reasoningLevel);
+
+    if (variant) {
+      body.variant = variant;
+    }
+
     await this.fetchJson(
       `/session/${encodeURIComponent(providerSessionId)}/message`,
       {
@@ -1338,6 +1353,22 @@ function parseModelSelection(
   }
 
   return null;
+}
+
+function normalizeOpenCodeReasoningVariant(value: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized === "off") {
+    return "none";
+  }
+
+  return OPENCODE_REASONING_VARIANTS.has(normalized)
+    ? normalized
+    : null;
 }
 
 function bindAbortSignals(
