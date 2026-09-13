@@ -329,7 +329,6 @@ function createAssistantCliToolMessage(input: {
 
 describe("MessageTimeline", () => {
   beforeEach(() => {
-    window.localStorage.clear();
     revealWorkspaceFileMock.mockReset();
     revealWorkspaceFileMock.mockReturnValue(false);
     getButlerFollowUpTaskMock.mockReset();
@@ -3379,7 +3378,7 @@ ARGUMENTS: capabilities list`)
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
   });
 
-  it("切换到目标会话后，会恢复目标会话记录的历史位置", () => {
+  it("切换到目标会话后，始终从目标会话尾部开始", () => {
     const sourceMessages = [
       {
         ...createAssistantTextMessage("当前会话消息", "assistant-auto-source-1"),
@@ -3392,21 +3391,6 @@ ARGUMENTS: capabilities list`)
         sessionId: "session-auto-target"
       }
     ];
-
-    window.localStorage.setItem(
-      "codingns.user-app.conversation-scroll",
-      JSON.stringify({
-        schemaVersion: 3,
-        bySessionId: {
-          "session-auto-target": {
-            scrollTop: 420,
-            stickToBottom: false,
-            lastMessageSignature: null,
-            updatedAt: Date.now()
-          }
-        }
-      })
-    );
 
     const { rerender } = render(
       <MessageTimeline
@@ -3467,7 +3451,7 @@ ARGUMENTS: capabilities list`)
       />
     );
 
-    expect(messageList!.scrollTop).toBe(420);
+    expect(messageList!.scrollTop).toBe(2400);
 
     scrollHeight = 2_800;
     rerender(
@@ -3488,10 +3472,10 @@ ARGUMENTS: capabilities list`)
       />
     );
 
-    expect(messageList!.scrollTop).toBe(420);
+    expect(messageList!.scrollTop).toBe(2800);
   });
 
-  it("切到别的会话再回来时会恢复之前的阅读位置", () => {
+  it("切到别的会话再回来时不会恢复旧会话的阅读位置", () => {
     const sessionOneMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-restore-1"),
@@ -3564,10 +3548,10 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(420);
+    expect(restoredMessageList!.scrollTop).toBe(2000);
   });
 
-  it("如果离开后会话尾部已经变化，切回来会恢复位置并提示 NEW", () => {
+  it("切回来时直接展示目标会话最新尾部，不显示旧位置的 NEW", () => {
     const oldMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-stale-1"),
@@ -3646,13 +3630,13 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(420);
+    expect(restoredMessageList!.scrollTop).toBe(2000);
     expect(
-      screen.getByRole("button", { name: t("conversation.scrollToBottomAction") })
-    ).toHaveTextContent("NEW");
+      screen.queryByRole("button", { name: t("conversation.scrollToBottomAction") })
+    ).toBeNull();
   });
 
-  it("runtime_thinking 和 runtime_notice 变化时，切换会话仍恢复历史位置", () => {
+  it("runtime_thinking 和 runtime_notice 变化时，切换会话仍从尾部开始", () => {
     const baseMessages = [
       {
         ...createAssistantTextMessage("第一条消息", "assistant-runtime-anchor-1"),
@@ -3732,17 +3716,14 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(420);
-    const jumpButton = screen.queryByRole("button", {
+    expect(restoredMessageList!.scrollTop).toBe(2000);
+    expect(screen.queryByRole("button", {
       name: t("conversation.scrollToBottomAction")
-    });
-
-    expect(jumpButton).not.toBeNull();
-    expect(jumpButton).not.toHaveTextContent("NEW");
+    })).toBeNull();
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
   });
 
-  it("切换会话后用户继续滚动，不会被旧会话位置拉回去", () => {
+  it("切换会话后用户继续滚动，不会被新会话的自动贴底反复打断", () => {
     vi.useFakeTimers();
 
     try {
@@ -3817,7 +3798,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(420);
+      expect(messageList!.scrollTop).toBe(2000);
 
       fireEvent.wheel(messageList!, {
         deltaY: 120
@@ -3838,7 +3819,7 @@ ARGUMENTS: capabilities list`)
     }
   });
 
-  it("切换会话后用户直接拖动滚动位置，不会被旧会话位置拉回去", () => {
+  it("切换会话后用户直接拖动滚动位置，可以正常接管列表", () => {
     vi.useFakeTimers();
 
     try {
@@ -3913,7 +3894,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(420);
+      expect(messageList!.scrollTop).toBe(2000);
 
       fireEvent.scroll(messageList!, {
         target: {
@@ -3931,7 +3912,7 @@ ARGUMENTS: capabilities list`)
     }
   });
 
-  it("移动端切换会话时不会持续 3.5 秒强制锁定滚动", () => {
+  it("移动端切换会话后从尾部开始且不会锁定滚动", () => {
     vi.useFakeTimers();
     const originalInnerWidth = window.innerWidth;
 
@@ -4013,7 +3994,7 @@ ARGUMENTS: capabilities list`)
         />
       );
 
-      expect(messageList!.scrollTop).toBe(420);
+      expect(messageList!.scrollTop).toBe(2000);
 
       messageList!.scrollTop = 560;
       vi.advanceTimersByTime(4000);
@@ -4081,11 +4062,6 @@ ARGUMENTS: capabilities list`)
       screen.queryByRole("button", { name: t("conversation.scrollToBottomAction") })
     ).not.toBeInTheDocument();
 
-    const persisted = JSON.parse(
-      window.localStorage.getItem("codingns.user-app.conversation-scroll") ?? "{}"
-    ) as { bySessionId?: Record<string, unknown> };
-
-    expect(persisted.bySessionId?.["session-bottom-button"]).toBeUndefined();
   });
 
   it("手动滚动到底部后切换会话不会恢复旧的历史位置", () => {
@@ -4179,11 +4155,6 @@ ARGUMENTS: capabilities list`)
     );
 
     expect(messageList!.scrollTop).toBe(2_400);
-    const persisted = JSON.parse(
-      window.localStorage.getItem("codingns.user-app.conversation-scroll") ?? "{}"
-    ) as { bySessionId?: Record<string, unknown> };
-
-    expect(persisted.bySessionId?.["session-clear-scroll"]).toBeUndefined();
   });
 
   it("有新消息提示时，点击回底按钮会清除 NEW 标记", async () => {
@@ -4445,7 +4416,7 @@ ARGUMENTS: capabilities list`)
     const restoredMessageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
     expect(restoredMessageList).not.toBeNull();
-    expect(restoredMessageList!.scrollTop).toBe(420);
+    expect(restoredMessageList!.scrollTop).toBe(2400);
   });
 
   it("renders image thumbnail preview for pending image attachments", async () => {

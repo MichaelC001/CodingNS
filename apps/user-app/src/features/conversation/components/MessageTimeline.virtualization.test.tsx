@@ -71,7 +71,6 @@ function renderTimeline(items: ConversationTimelineSourceItem[]) {
 describe("MessageTimeline 虚拟列表", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    window.localStorage.clear();
     vi.stubGlobal("ResizeObserver", TimelineResizeObserver);
     Object.defineProperty(window, "ResizeObserver", {
       configurable: true,
@@ -181,9 +180,7 @@ describe("MessageTimeline 虚拟列表", () => {
     });
   });
 
-  it("虚拟列表恢复进度后不会继续覆盖用户的新滚动位置", () => {
-    vi.useFakeTimers();
-
+  it("虚拟列表首次加载到底部后允许用户接管滚动位置", () => {
     const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
     const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
     const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
@@ -229,33 +226,16 @@ describe("MessageTimeline 虚拟列表", () => {
     });
 
     try {
-      window.localStorage.setItem(
-        "codingns.user-app.conversation-scroll",
-        JSON.stringify({
-          schemaVersion: 3,
-          bySessionId: {
-            "session-virtual": {
-              scrollTop: 420,
-              stickToBottom: false,
-              lastMessageSignature: null,
-              updatedAt: Date.now()
-            }
-          }
-        })
-      );
-
       renderTimeline(createItems([createMessage(0), createMessage(1)]));
       const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
 
-      expect(messageList?.scrollTop).toBe(420);
+      expect(messageList?.scrollTop).toBe(2000);
 
       if (!messageList) {
         return;
       }
 
       messageList.scrollTop = 560;
-      vi.advanceTimersByTime(4_000);
-
       expect(messageList.scrollTop).toBe(560);
     } finally {
       if (scrollHeightDescriptor) {
@@ -273,11 +253,10 @@ describe("MessageTimeline 虚拟列表", () => {
       } else {
         delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTop;
       }
-      vi.useRealTimers();
     }
   });
 
-  it("历史位置滚动停止后仍允许行高补偿", () => {
+  it("滚动停止后仍允许虚拟器进行行高补偿", () => {
     const items = createItems([createMessage(0), createMessage(1), createMessage(2)]);
     renderTimeline(items);
 
