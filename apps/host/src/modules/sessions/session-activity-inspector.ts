@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 
 import type { ProviderId } from "@codingns/session-sync-core";
 
@@ -400,7 +400,23 @@ function collectClaudeEnvelopes(record: Record<string, unknown>): ClaudeEnvelope
 }
 
 function readJsonlRecords(filePath: string): Array<Record<string, unknown>> {
-  return readFileSync(filePath, "utf8")
+  const stats = statSync(filePath);
+  const maxBytes = 8 * 1024 * 1024;
+  const start = Math.max(0, stats.size - maxBytes);
+  const fd = openSync(filePath, "r");
+  let content = "";
+  try {
+    const buffer = Buffer.allocUnsafe(stats.size - start);
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, start);
+    content = buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+  if (start > 0) {
+    const firstBreak = content.search(/\r?\n/);
+    content = firstBreak >= 0 ? content.slice(firstBreak + 1) : "";
+  }
+  return content
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0)

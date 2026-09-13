@@ -134,6 +134,8 @@ function startTask(task: QueuedHelperTask): void {
 
 async function runTask(task: QueuedHelperTask): Promise<void> {
   const { payload, controller } = task;
+  const startedAt = Date.now();
+  const startRss = process.memoryUsage.rss();
 
   try {
     const result = await runTaskHelperProcessHandler(payload.handler, payload.input, controller.signal);
@@ -151,6 +153,13 @@ async function runTask(task: QueuedHelperTask): Promise<void> {
       error: error instanceof Error ? error.message : "helper task failed"
     });
   } finally {
+    const endRss = process.memoryUsage.rss();
+    if (endRss >= 256 * 1024 * 1024 || endRss - startRss >= 64 * 1024 * 1024) {
+      process.stderr.write(
+        `[task-helper] handler=${payload.handler} durationMs=${Date.now() - startedAt} `
+        + `rssStart=${startRss} rssEnd=${endRss}\n`
+      );
+    }
     activeRequests.delete(payload.id);
     runningCountByBucket.set(
       task.schedulingBucket,
@@ -279,12 +288,14 @@ function maybeRecycleProcess(): void {
     return;
   }
 
-  if (process.memoryUsage.rss() < TASK_HELPER_RSS_HIGH_WATER_BYTES) {
+  const memory = process.memoryUsage();
+  if (memory.rss < TASK_HELPER_RSS_HIGH_WATER_BYTES) {
     return;
   }
 
   process.stderr.write(
-    `[task-helper] rss 高水位回收，rss=${process.memoryUsage.rss()}\n`
+    `[task-helper] rss 高水位回收，rss=${memory.rss} heapUsed=${memory.heapUsed} `
+    + `external=${memory.external} arrayBuffers=${memory.arrayBuffers}\n`
   );
   setImmediate(() => {
     process.exit(0);

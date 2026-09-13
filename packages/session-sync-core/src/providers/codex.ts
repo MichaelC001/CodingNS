@@ -73,6 +73,7 @@ import {
   readJsonLines,
   readJsonLinesForDiscovery,
   readTrailingJsonLines,
+  readJsonLinesTail,
   type RawJsonLine,
   safeDate,
   sliceHistory,
@@ -1498,7 +1499,7 @@ export class CodexAdapter implements ProviderAdapter {
     rawStoreRef: string
   ): Promise<ContextUsageSnapshot | null> {
     const resolvedStoreRef = this.resolveSessionFilePath(rawStoreRef, providerSessionId);
-    const records = readJsonLines(resolvedStoreRef).map((record) => record.data);
+    const records = readJsonLinesTail(resolvedStoreRef).map((record) => record.data);
 
     for (let index = records.length - 1; index >= 0; index -= 1) {
       const record = records[index];
@@ -1563,7 +1564,7 @@ export class CodexAdapter implements ProviderAdapter {
     options?: ProviderSessionStatsReadOptions
   ): Promise<ProviderSessionStats | null> {
     const resolvedStoreRef = this.resolveSessionFilePath(rawStoreRef, providerSessionId);
-    const records = readJsonLines(resolvedStoreRef);
+    const records = readJsonLinesTail(resolvedStoreRef);
     const capturedAt = nextTimestamp();
     let latestTotal: Record<string, unknown> | null = null;
     let latestTimestamp = capturedAt;
@@ -2689,7 +2690,7 @@ export class CodexAdapter implements ProviderAdapter {
         continue;
       }
 
-      const records = readJsonLines(filePath).map((record) => record.data);
+      const records = readJsonLinesTail(filePath).map((record) => record.data);
       const spawnCallById = new Map<string, CodexSpawnRecord>();
       const fileSpawnRecords: CodexSpawnRecord[] = [];
       const fileDirectRelations: Array<readonly [string, CodexSpawnRelation]> = [];

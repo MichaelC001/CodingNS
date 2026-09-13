@@ -128,6 +128,32 @@ export function readJsonLinesForDiscovery(
   ];
 }
 
+/** 只读取 JSONL 尾部窗口，供统计和活动状态使用，禁止为摘要重新加载整份历史。 */
+export function readJsonLinesTail(filePath: string, maxBytes = 8 * 1024 * 1024): RawJsonLine[] {
+  const stats = statSync(filePath);
+  const windowBytes = Math.max(1, Math.trunc(maxBytes));
+  const start = Math.max(0, stats.size - windowBytes);
+  const length = stats.size - start;
+  if (length <= 0) {
+    return [];
+  }
+
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buffer, 0, length, start);
+    let text = buffer.toString("utf8", 0, bytesRead);
+    if (start > 0) {
+      const firstBreak = text.search(/\r?\n/);
+      text = firstBreak >= 0 ? text.slice(firstBreak + (text[firstBreak] === "\r" && text[firstBreak + 1] === "\n" ? 2 : 1)) : "";
+    }
+    const firstLineNumber = start > 0 ? -1 : 1;
+    return parseJsonLines(filePath, text.split(/\r?\n/), firstLineNumber);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
  * 读取完整 JSONL 时同时保留续读所需的物理行信息。
  *

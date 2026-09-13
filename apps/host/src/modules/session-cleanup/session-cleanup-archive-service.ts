@@ -1,9 +1,10 @@
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createGzip, gunzipSync } from "node:zlib";
+import { createInterface } from "node:readline";
+import { createGzip, createGunzip } from "node:zlib";
 
 import { AppError } from "../../shared/errors/app-error.js";
 import type {
@@ -25,6 +26,11 @@ interface SessionCleanupArchiveManifestRecord {
 }
 
 type SessionCleanupArchiveRecord = SessionCleanupArchiveManifestRecord | SessionCleanupArchiveFileRecord;
+
+const MAX_ARCHIVE_COMPRESSED_BYTES = 256 * 1024 * 1024;
+const MAX_ARCHIVE_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
+const MAX_ARCHIVE_RECORDS = 100_000;
+const MAX_ARCHIVE_LINE_BYTES = 64 * 1024 * 1024;
 
 export interface SessionCleanupArchiveWriteInput {
   archivePath: string;
@@ -106,22 +112,40 @@ export class SessionCleanupArchiveService {
   private async readArchiveRecords(archivePath: string): Promise<SessionCleanupArchiveRecord[]> {
     await assertArchiveReadable(archivePath);
 
-    let content: Buffer;
+    let compressedSize: number;
 
     try {
-      content = await readFile(archivePath);
+      compressedSize = (await stat(archivePath)).size;
     } catch (error) {
       throw createArchiveError("备份文件读取失败", error);
     }
 
-    try {
-      const decompressed = gunzipSync(content).toString("utf8");
-      const lines = decompressed
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
+    if (compressedSize > MAX_ARCHIVE_COMPRESSED_BYTES) {
+      throw createArchiveError("备份文件超过允许的压缩大小", new Error("archive_compressed_size_limit"));
+    }
 
-      const records = lines.map((line) => JSON.parse(line) as SessionCleanupArchiveRecord);
+    try {
+      const records: SessionCleanupArchiveRecord[] = [];
+      let decompressedBytes = 0;
+      const input = createReadStream(archivePath).pipe(createGunzip());
+      const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
+      for await (const line of lines) {
+        const text = String(line).trim();
+        if (!text) continue;
+        const lineBytes = Buffer.byteLength(text, "utf8");
+        decompressedBytes += lineBytes;
+        if (lineBytes > MAX_ARCHIVE_LINE_BYTES || decompressedBytes > MAX_ARCHIVE_DECOMPRESSED_BYTES) {
+          lines.close();
+          input.destroy();
+          throw new Error("archive_decompressed_size_limit");
+        }
+        if (records.length >= MAX_ARCHIVE_RECORDS) {
+          lines.close();
+          input.destroy();
+          throw new Error("archive_record_count_limit");
+        }
+        records.push(JSON.parse(text) as SessionCleanupArchiveRecord);
+      }
 
       if (records.length === 0) {
         throw new Error("archive_bundle_empty");
@@ -145,6 +169,10 @@ export class SessionCleanupArchiveService {
           continue;
         }
 
+        const fileStats = await stat(file.filePath);
+        if (fileStats.size > MAX_ARCHIVE_DECOMPRESSED_BYTES) {
+          throw new Error("archive_entry_file_size_limit");
+        }
         const content = await readFile(file.filePath);
         yield `${serializeArchiveRecord({
           type: "file",

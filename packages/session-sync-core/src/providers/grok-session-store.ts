@@ -2,7 +2,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, s
 import path from "node:path";
 
 import type { HistoryDirection, HistoryPage, NormalizedMessage, ProviderSessionSummary } from "../types.js";
-import { normalizeWorkspacePath, nextTimestamp } from "./utils.js";
+import { normalizeWorkspacePath, nextTimestamp, readJsonLinesTail } from "./utils.js";
 import { GrokMessageAccumulator, unwrapGrokUpdate } from "./grok-message-mapper.js";
 
 export interface GrokSessionStoreOptions {
@@ -154,8 +154,8 @@ export class GrokSessionStoreReader {
       this.updatesCache.set(filePath, cached);
       return cached;
     }
-    const content = readFileSync(filePath, "utf8");
-    this.lastReadMetrics.bytesRead = Buffer.byteLength(content);
+    const records = readJsonLinesTail(filePath, 8 * 1024 * 1024);
+    this.lastReadMetrics.bytesRead = Math.min(stat.size, 8 * 1024 * 1024);
     const messages: NormalizedMessage[] = [];
     const messageIndexes = new Map<string, number>();
     const accumulator = new GrokMessageAccumulator(
@@ -164,10 +164,8 @@ export class GrokSessionStoreReader {
       { includeUserMessages: true }
     );
     let sequence = 0;
-    for (const line of content.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      let parsed: unknown;
-      try { parsed = JSON.parse(line); } catch { continue; }
+    for (const record of records) {
+      const parsed: unknown = record.data;
       this.lastReadMetrics.recordsParsed += 1;
       const update = unwrapGrokUpdate(parsed);
       // 老记录可能没有时间戳；不能每次重读都用当前时间，造成未变消息反复广播。
@@ -188,7 +186,7 @@ export class GrokSessionStoreReader {
     }
     // 工具结果或流式块会更新旧 messageId 的 sequence，分页必须按最新事件序号排序。
     messages.sort((left, right) => left.sequence - right.sequence);
-    const result = { fingerprint, messages, bytes: Buffer.byteLength(content) };
+    const result = { fingerprint, messages, bytes: stat.size };
     this.updatesCache.delete(filePath);
     // 大会话不常驻缓存；小会话同时限制数量和原始文件总字节数。
     if (result.bytes <= 8 * 1024 * 1024) this.updatesCache.set(filePath, result);

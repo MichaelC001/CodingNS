@@ -1071,6 +1071,10 @@ function listGeminiChatFiles(homeDir: string): string[] {
 }
 
 function readGeminiParsedChatSource(filePath: string): GeminiParsedChatSource {
+  const stats = statSync(filePath);
+  if (stats.size > 8 * 1024 * 1024) {
+    throw new Error("GEMINI_CHAT_TOO_LARGE_FOR_IN_MEMORY_PARSER");
+  }
   const raw = readFileSync(filePath, "utf8").trim();
 
   if (!raw) {
