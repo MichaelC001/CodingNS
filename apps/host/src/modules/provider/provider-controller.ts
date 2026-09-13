@@ -9,6 +9,7 @@ import type { SessionProviderConfigMode } from "../../types/domain.js";
 import type { SessionProviderConfigService } from "../sessions/session-provider-config-service.js";
 import type { ProviderCatalogService } from "./provider-catalog-service.js";
 import type { ProviderPriceBookService } from "./provider-price-book-service.js";
+import type { CodexRateLimitService } from "./codex-rate-limit-service.js";
 import {
   isClaudeCompatibleProvider,
   type ClaudeCompatibleProviderId
@@ -49,8 +50,34 @@ export class ProviderController {
       "getClaudeHookBridgeConfig" | "ingestClaudeHookEvent"
     >,
     private readonly providerPriceBookService: Pick<ProviderPriceBookService, "getCurrentCatalogPriceBook">,
+    private readonly codexRateLimitService: Pick<CodexRateLimitService, "read" | "consume">,
     private readonly config: HostConfig
   ) {}
+
+  readonly getCodexRateLimits = async (
+    request: FastifyRequest<{ Params: ProviderParams }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    if (request.params.provider.trim() !== "codex") {
+      throw new AppError({ statusCode: 404, errorCode: "NOT_FOUND", detail: "仅 Codex 支持订阅余量查询" });
+    }
+
+    reply.send({ rateLimits: await this.codexRateLimitService.read() });
+  };
+
+  readonly consumeCodexRateLimitReset = async (
+    request: FastifyRequest<{ Params: ProviderParams; Body: { creditId?: string | null } }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    if (request.params.provider.trim() !== "codex") {
+      throw new AppError({ statusCode: 404, errorCode: "NOT_FOUND", detail: "仅 Codex 支持重置订阅余量" });
+    }
+
+    const result = await this.codexRateLimitService.consume({
+      creditId: request.body?.creditId ?? null
+    });
+    reply.send(result);
+  };
 
   readonly getCapabilities = async (
     request: FastifyRequest<{ Params: ProviderParams; Querystring: ProviderCapabilitiesQuery }>,

@@ -11,6 +11,8 @@ export async function registerProviderRoutes(
   app.post("/api/providers/catalog/refresh", providerController.refreshCatalog);
   app.put("/api/providers/catalog/:provider", providerController.updateCatalogEntry);
   app.get("/api/providers/:provider/capabilities", providerController.getCapabilities);
+  app.get("/api/providers/:provider/rate-limits", providerController.getCodexRateLimits);
+  app.post("/api/providers/:provider/rate-limits/reset", providerController.consumeCodexRateLimitReset);
   app.get("/api/providers/:provider/hook-bridge", providerController.getClaudeHookBridgeConfig);
   app.post("/api/providers/:provider/hook-bridge/events", providerController.receiveClaudeHookEvent);
 }

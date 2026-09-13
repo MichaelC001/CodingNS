@@ -119,6 +119,7 @@ import { ProviderCatalogService } from "../modules/provider/provider-catalog-ser
 import { ProviderController } from "../modules/provider/provider-controller.js";
 import { ClaudeModelOptionsService } from "../modules/provider/claude-model-options.js";
 import { CodexModelOptionsService } from "../modules/provider/codex-model-options.js";
+import { CodexRateLimitService } from "../modules/provider/codex-rate-limit-service.js";
 import { disposeSharedProviderDiscoveryHelperClient } from "../modules/provider/provider-discovery-helper-client.js";
 import { ProviderPriceBookService } from "../modules/provider/provider-price-book-service.js";
 import { ProviderRuntimeStateService } from "../modules/provider/provider-runtime-state-service.js";
@@ -788,6 +789,10 @@ export function createServer(config: HostConfig) {
   const claudeModelOptionsService = new ClaudeModelOptionsService();
   const codexModelOptionsService = new CodexModelOptionsService({
     commandPath: config.codexCliPath
+  });
+  const codexRateLimitService = new CodexRateLimitService({
+    commandPath: config.codexCliPath,
+    homeDir: config.codexHomeDir
   });
   const sessionProviderConfigService = new SessionProviderConfigService(
     config,
@@ -1710,6 +1715,7 @@ export function createServer(config: HostConfig) {
     providerCatalogService,
     routedSessionLiveRuntimeService,
     providerPriceBookService,
+    codexRateLimitService,
     config
   );
   const skillController = new SkillController(skillManagerService);
