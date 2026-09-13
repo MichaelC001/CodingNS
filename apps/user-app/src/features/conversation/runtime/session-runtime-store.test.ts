@@ -22,6 +22,7 @@ const mocked = vi.hoisted(() => {
   const getSessionPermissionRequests = vi.fn();
   const getSessionQueue = vi.fn();
   const getSessionRuntime = vi.fn();
+  const refreshSessionStats = vi.fn();
   const markSessionSeen = vi.fn();
   const enqueueSessionMessage = vi.fn();
   const deleteSessionQueueItem = vi.fn();
@@ -60,6 +61,7 @@ const mocked = vi.hoisted(() => {
     getSessionPermissionRequests,
     getSessionQueue,
     getSessionRuntime,
+    refreshSessionStats,
     markSessionSeen,
     enqueueSessionMessage,
     deleteSessionQueueItem,
@@ -79,6 +81,7 @@ vi.mock("../api/conversation-api", () => ({
   getSessionPermissionRequests: mocked.getSessionPermissionRequests,
   getSessionQueue: mocked.getSessionQueue,
   getSessionRuntime: mocked.getSessionRuntime,
+  refreshSessionStats: mocked.refreshSessionStats,
   sendLiveMessage: mocked.sendLiveMessage,
   markSessionSeen: mocked.markSessionSeen,
   sendSessionMessage: mocked.sendSessionMessage,
@@ -288,6 +291,7 @@ describe("SessionRuntimeStore", () => {
     mocked.getSessionQueue.mockResolvedValue({
       items: []
     });
+    mocked.refreshSessionStats.mockResolvedValue(null);
     mocked.markSessionSeen.mockResolvedValue(undefined);
     mocked.enqueueSessionMessage.mockResolvedValue({
       id: "queue-1",
@@ -1868,6 +1872,33 @@ describe("SessionRuntimeStore", () => {
     store.destroy();
   });
 
+  it("initialize 在缺少统计快照时，会把显式刷新结果写入运行时状态", async () => {
+    const stats = {
+      provider: "codex" as const,
+      capturedAt: "2026-09-13T14:00:00.000Z",
+      metrics: {
+        inputTokens: {
+          value: 120,
+          source: "provider-history-log" as const,
+          semantic: "sum-of-final-events" as const
+        }
+      },
+      modelUsages: []
+    };
+    mocked.refreshSessionStats.mockResolvedValue(stats);
+
+    const store = new SessionRuntimeStore("session-1");
+    await store.initialize();
+    await Promise.resolve();
+
+    expect(mocked.refreshSessionStats).toHaveBeenCalledWith("session-1", {
+      targetHostId: undefined
+    });
+    expect(store.getState().sessionStats).toEqual(stats);
+
+    store.destroy();
+  });
+
   it("skips detail, capabilities and runtime bootstrap requests when snapshot already has them", async () => {
     vi.useFakeTimers();
     writeViewSnapshot(SESSION_RUNTIME_SNAPSHOT_KEY, {
@@ -1934,6 +1965,18 @@ describe("SessionRuntimeStore", () => {
         capturedAt: "2026-03-24T10:00:00.000Z",
         isEstimated: false
       },
+      sessionStats: {
+        provider: "codex",
+        capturedAt: "2026-03-24T10:00:00.000Z",
+        metrics: {
+          inputTokens: {
+            value: 64000,
+            source: "provider-history-log",
+            semantic: "sum-of-final-events"
+          }
+        },
+        modelUsages: []
+      },
       messages: [],
       queuedMessages: []
     });
@@ -1952,6 +1995,7 @@ describe("SessionRuntimeStore", () => {
     expect(mocked.getSessionCapabilities).not.toHaveBeenCalled();
     expect(mocked.getSessionRuntime).not.toHaveBeenCalled();
     expect(mocked.getSessionMessages).not.toHaveBeenCalled();
+    expect(mocked.refreshSessionStats).not.toHaveBeenCalled();
 
     store.destroy();
   });

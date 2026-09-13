@@ -28,6 +28,7 @@ import {
   getSessionMessages,
   getSessionPermissionRequests,
   getSessionQueue,
+  refreshSessionStats,
   type HistoryPageDto,
   type SessionInterruptSource,
   getSessionRuntime,
@@ -342,6 +343,11 @@ export class SessionRuntimeStore {
 
     if (this.shouldRefreshRuntimeSnapshot()) {
       void this.refreshRuntimeSnapshot("bootstrap");
+    }
+
+    // 统计刷新是显式入口；仅在本地没有快照时补一次，避免每次打开会话都重读 Provider。
+    if (this.state.sessionStats === null) {
+      void this.refreshSessionStatsOnInitialize();
     }
 
     void this.refreshPermissionRequests();
@@ -1529,7 +1535,8 @@ export class SessionRuntimeStore {
         runtimeHasActiveRun: resolvedRuntimeHasActiveRun,
         runtimeCanInterrupt: resolvedRuntimeCanInterrupt,
         contextUsage: runtime.contextUsage,
-        sessionStats: runtime.sessionStats ?? null,
+        // 运行时读取和显式统计刷新可能并行；旧的 runtime 响应不能抹掉刚写入的快照。
+        sessionStats: runtime.sessionStats ?? this.state.sessionStats,
         permissionStatus: runtime.permissionStatus,
         ...resolveRuntimeErrorState(runtime, this.state.interruptSource)
       });
@@ -1666,7 +1673,8 @@ export class SessionRuntimeStore {
         runtimeHasActiveRun: resolvedRuntimeHasActiveRun,
         runtimeCanInterrupt: resolvedRuntimeCanInterrupt,
         contextUsage: runtime.contextUsage,
-        sessionStats: runtime.sessionStats ?? null,
+        // 运行时读取和显式统计刷新可能并行；旧的 runtime 响应不能抹掉刚写入的快照。
+        sessionStats: runtime.sessionStats ?? this.state.sessionStats,
         permissionStatus: runtime.permissionStatus,
         ...resolveRuntimeErrorState(runtime, this.state.interruptSource)
       });
@@ -1682,6 +1690,31 @@ export class SessionRuntimeStore {
       logPerfDebug("session_runtime.snapshot.error", {
         sessionId: this.sessionId,
         reason,
+        message: error instanceof Error ? error.message : "unknown"
+      });
+    }
+  }
+
+  private async refreshSessionStatsOnInitialize(): Promise<void> {
+    try {
+      const stats = await refreshSessionStats(this.sessionId, {
+        targetHostId: this.options.targetHostId
+      });
+
+      if (this.destroyed || stats === undefined) {
+        return;
+      }
+
+      if (stats === null && this.state.sessionStats !== null) {
+        return;
+      }
+
+      this.patch({
+        sessionStats: stats
+      });
+    } catch (error) {
+      logPerfDebug("session_runtime.stats_refresh.error", {
+        sessionId: this.sessionId,
         message: error instanceof Error ? error.message : "unknown"
       });
     }
