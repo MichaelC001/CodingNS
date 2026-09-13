@@ -1227,6 +1227,33 @@ export interface ProviderCapabilitiesDto {
   runtimeCapabilities?: string[];
 }
 
+export interface CodexRateLimitWindowDto {
+  usedPercent: number;
+  remainingPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+}
+
+export interface CodexRateLimitResetCreditDto {
+  id: string | null;
+  expiresAt: number | null;
+  title: string | null;
+  description: string | null;
+}
+
+export interface CodexRateLimitsDto {
+  authenticated: boolean;
+  planType: string | null;
+  primary: CodexRateLimitWindowDto | null;
+  secondary: CodexRateLimitWindowDto | null;
+  rateLimitReachedType: string | null;
+  resetCredits: {
+    availableCount: number;
+    credits: CodexRateLimitResetCreditDto[] | null;
+  } | null;
+  capturedAt: string;
+}
+
 export interface ProviderCatalogEntryDto {
   provider: ProviderId;
   displayName: string;
@@ -2800,6 +2827,28 @@ export function getProviderCapabilities(
       search.size > 0 ? `?${search.toString()}` : ""
     }`,
     {
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal
+    }
+  );
+}
+
+export function getCodexRateLimits(options?: ScopedRequestOptions) {
+  return httpClient.request<{ rateLimits: CodexRateLimitsDto | null }>(
+    "/api/providers/codex/rate-limits",
+    {
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal
+    }
+  );
+}
+
+export function resetCodexRateLimits(creditId?: string | null, options?: ScopedRequestOptions) {
+  return httpClient.request<{ outcome: string; rateLimits: CodexRateLimitsDto | null }>(
+    "/api/providers/codex/rate-limits/reset",
+    {
+      method: "POST",
+      body: JSON.stringify({ creditId: creditId ?? null }),
       targetHostId: options?.targetHostId ?? undefined,
       signal: options?.signal
     }

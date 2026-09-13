@@ -7623,6 +7623,26 @@ textarea:focus-visible {
   overflow: visible;
 }
 
+.composer-codex-rate-limit-reset-button {
+  min-height: 23px;
+  padding: 0 7px;
+  border: 1px solid var(--border-primary);
+  border-radius: 7px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.composer-codex-rate-limit-reset-button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.composer-codex-rate-limit-reset-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .composer-quick-phrase-group {
   display: flex;
   flex: 0 0 auto;
@@ -8077,7 +8097,8 @@ textarea:focus-visible {
 }
 
 .composer-context-ring,
-.composer-cache-hit-ring {
+.composer-cache-hit-ring,
+.composer-codex-rate-ring {
   position: relative;
   flex: 0 0 auto;
   width: 28px;
@@ -8125,8 +8146,15 @@ textarea:focus-visible {
   );
 }
 
+.composer-codex-rate-ring {
+  --codex-rate-limit-progress: 0;
+  --codex-rate-limit-tone: color-mix(in srgb, var(--text-primary) 92%, var(--text-secondary) 8%);
+  --codex-rate-limit-track: color-mix(in srgb, var(--text-secondary) 28%, var(--bg-primary) 72%);
+}
+
 .composer-context-ring-visual,
-.composer-cache-hit-ring-visual {
+.composer-cache-hit-ring-visual,
+.composer-codex-rate-ring-visual {
   box-sizing: border-box;
   width: 100%;
   height: 100%;
@@ -8148,6 +8176,13 @@ textarea:focus-visible {
   background: conic-gradient(
     var(--cache-hit-rate-tone) calc(var(--cache-hit-rate-progress) * 1turn),
     var(--cache-hit-rate-track) 0
+  );
+}
+
+.composer-codex-rate-ring-visual {
+  background: conic-gradient(
+    var(--codex-rate-limit-tone) calc(var(--codex-rate-limit-progress) * 1turn),
+    var(--codex-rate-limit-track) 0
   );
 }
 
@@ -8174,7 +8209,9 @@ textarea:focus-visible {
 .composer-context-ring:hover,
 .composer-context-ring:focus-visible,
 .composer-cache-hit-ring:hover,
-.composer-cache-hit-ring:focus-visible {
+.composer-cache-hit-ring:focus-visible,
+.composer-codex-rate-ring:hover,
+.composer-codex-rate-ring:focus-visible {
   z-index: 70;
   transform: translateY(-1px);
   box-shadow:
@@ -8192,7 +8229,8 @@ textarea:focus-visible {
 }
 
 .composer-context-ring-value,
-.composer-cache-hit-ring-value {
+.composer-cache-hit-ring-value,
+.composer-codex-rate-ring-value {
   box-sizing: border-box;
   width: 100%;
   height: 100%;
@@ -8214,8 +8252,13 @@ textarea:focus-visible {
   font-size: 7px;
 }
 
+.composer-codex-rate-ring-value {
+  font-size: 7px;
+}
+
 .composer-context-ring-suffix,
-.composer-cache-hit-ring-suffix {
+.composer-cache-hit-ring-suffix,
+.composer-codex-rate-ring-suffix {
   position: static;
   font-size: 5.5px;
   line-height: 1;
@@ -8494,6 +8537,41 @@ textarea:focus-visible {
   font-size: 10px;
   line-height: 1.35;
   color: var(--text-tertiary);
+}
+
+.composer-codex-rate-limit-tooltip {
+  padding: 8px 0;
+  border-top: 1px solid color-mix(in srgb, var(--border-primary) 56%, transparent);
+}
+
+.composer-codex-rate-limit-tooltip-heading,
+.composer-codex-rate-limit-tooltip-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.composer-codex-rate-limit-tooltip-heading strong {
+  color: var(--text-primary);
+}
+
+.composer-codex-rate-limit-tooltip-plan {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.composer-codex-rate-limit-tooltip-meta {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.composer-codex-rate-limit-tooltip-actions {
+  margin-top: 7px;
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 
 .composer-session-stats-control {

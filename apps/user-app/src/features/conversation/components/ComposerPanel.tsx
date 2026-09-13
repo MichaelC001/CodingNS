@@ -33,6 +33,7 @@ import {
 import { useEnabledProviderCatalog } from "../capability/use-enabled-provider-catalog";
 import type {
   AttachmentPayload,
+  CodexRateLimitsDto,
   ContextUsageDto,
   ForkSourceMessageSnapshotDto,
   MessageAttachmentDto,
@@ -49,6 +50,8 @@ import type { SessionMessageViewModel } from "../runtime/session-runtime-machine
 import type { PreferenceReasoningLevel as ReasoningLevel } from "../../../preferences/types";
 import {
   getProviderCapabilities,
+  getCodexRateLimits,
+  resetCodexRateLimits,
   getProviderPriceBook,
   listProviderCapabilities,
   listQuickPhrases,
@@ -652,6 +655,9 @@ export function ComposerPanel({
   const [deploymentSnapshotLoading, setDeploymentSnapshotLoading] = useState(false);
   const [deploymentCapabilities, setDeploymentCapabilities] = useState<ProviderCapabilitiesDto | null>(null);
   const [deploymentCapabilitiesLoading, setDeploymentCapabilitiesLoading] = useState(false);
+  const [codexRateLimits, setCodexRateLimits] = useState<CodexRateLimitsDto | null>(null);
+  const [codexRateLimitsLoading, setCodexRateLimitsLoading] = useState(false);
+  const [codexRateLimitsResetting, setCodexRateLimitsResetting] = useState(false);
   const initialProviderSelection = useMemo(
     () => normalizeProviderSelection(initialProviderConfigMode, initialProviderPresetId),
     [initialProviderConfigMode, initialProviderPresetId]
@@ -715,6 +721,50 @@ export function ComposerPanel({
 
   const provider = capabilities?.provider ?? taskProvider ?? getProviderFromCapabilities(capabilities);
   const modelSwitchApp = mapProviderToModelSwitchApp(provider);
+
+  useEffect(() => {
+    if (provider !== "codex" || Boolean(forkDraft)) {
+      setCodexRateLimits(null);
+      setCodexRateLimitsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCodexRateLimits(null);
+    setCodexRateLimitsLoading(true);
+    void getCodexRateLimits({ targetHostId: currentTargetHostId })
+      .then((response) => {
+        if (!cancelled) setCodexRateLimits(response.rateLimits);
+      })
+      .catch(() => {
+        if (!cancelled) setCodexRateLimits(null);
+      })
+      .finally(() => {
+        if (!cancelled) setCodexRateLimitsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTargetHostId, forkDraft, provider]);
+
+  const handleCodexRateLimitReset = useCallback(async (creditId?: string | null) => {
+    if (codexRateLimitsResetting) return;
+    try {
+      setCodexRateLimitsResetting(true);
+      const response = await resetCodexRateLimits(creditId, { targetHostId: currentTargetHostId });
+      setCodexRateLimits(response.rateLimits);
+      const successful = response.outcome === "reset" || response.outcome === "alreadyRedeemed";
+      showToast({
+        title: successful ? t("conversation.codexRateLimitResetSuccess") : t("conversation.codexRateLimitResetUnavailable"),
+        tone: successful ? "success" : "error"
+      });
+    } catch (error) {
+      showToast({ title: error instanceof Error ? error.message : t("conversation.codexRateLimitResetFailed"), tone: "error" });
+    } finally {
+      setCodexRateLimitsResetting(false);
+    }
+  }, [codexRateLimitsResetting, currentTargetHostId, showToast]);
   const accountProviderPreferences = usePreferencesSelector((state) =>
     isPreferenceProviderId(provider) ? state.profile.providers[provider] : null
   );
@@ -2954,6 +3004,13 @@ export function ComposerPanel({
                 <SessionStatsIndicators
                   contextUsage={contextUsage}
                   sessionStats={sessionStats}
+                  codexRateLimits={provider === "codex" && !hasForkDraft ? codexRateLimits : null}
+                  codexRateLimitsLoading={provider === "codex" && !hasForkDraft ? codexRateLimitsLoading : false}
+                  codexRateLimitsResetting={codexRateLimitsResetting}
+                  onCodexRateLimitReset={() => {
+                    const creditId = codexRateLimits?.resetCredits?.credits?.[0]?.id;
+                    void handleCodexRateLimitReset(creditId);
+                  }}
                   targetHostId={currentTargetHostId}
                 />
                 <SessionStatsSummary sessionStats={sessionStats} />
@@ -3603,15 +3660,23 @@ function formatSessionStatsWatermark(
   return label.replace("{value}", formatted);
 }
 
-type SessionStatsIndicator = "context" | "cache";
+type SessionStatsIndicator = "context" | "cache" | "codex";
 
 function SessionStatsIndicators({
   contextUsage,
   sessionStats,
+  codexRateLimits,
+  codexRateLimitsLoading,
+  codexRateLimitsResetting,
+  onCodexRateLimitReset,
   targetHostId
 }: {
   contextUsage: ContextUsageDto | null;
   sessionStats: ProviderSessionStatsDto | null;
+  codexRateLimits: CodexRateLimitsDto | null;
+  codexRateLimitsLoading: boolean;
+  codexRateLimitsResetting: boolean;
+  onCodexRateLimitReset: () => void;
   targetHostId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -3619,6 +3684,7 @@ function SessionStatsIndicators({
   const [activeIndicator, setActiveIndicator] = useState<SessionStatsIndicator>("context");
   const contextTriggerRef = useRef<HTMLButtonElement>(null);
   const cacheTriggerRef = useRef<HTMLButtonElement>(null);
+  const codexTriggerRef = useRef<HTMLButtonElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltipStyle, setTooltipStyle] = useState<CSSProperties | null>(null);
   const tooltipId = useId();
@@ -3653,9 +3719,22 @@ function SessionStatsIndicators({
     : hasSessionStats
       ? t("conversation.sessionStatsTitle")
       : t("conversation.contextUsageUnavailable");
+  const codexRemainingPercent = codexRateLimits
+    ? resolveCodexRemainingPercent(codexRateLimits)
+    : null;
+  const codexPlanTypeLabel = codexRateLimits
+    ? formatCodexPlanType(codexRateLimits.planType)
+    : null;
+  const codexRateLimitLabel = codexRemainingPercent === null
+    ? t("conversation.codexRateLimitLoading")
+    : t("conversation.codexRateLimitAriaLabel").replace("{value}", String(codexRemainingPercent));
 
   const updateTooltipStyle = useCallback(() => {
-    const trigger = activeIndicator === "cache" ? cacheTriggerRef.current : contextTriggerRef.current;
+    const trigger = activeIndicator === "cache"
+      ? cacheTriggerRef.current
+      : activeIndicator === "codex"
+        ? codexTriggerRef.current
+        : contextTriggerRef.current;
 
     if (!trigger || typeof window === "undefined") {
       return;
@@ -3701,6 +3780,7 @@ function SessionStatsIndicators({
       if (
         !contextTriggerRef.current?.contains(target)
         && !cacheTriggerRef.current?.contains(target)
+        && !codexTriggerRef.current?.contains(target)
         && !tooltipRef.current?.contains(target)
       ) {
         setOpen(false);
@@ -3786,6 +3866,37 @@ function SessionStatsIndicators({
         </button>
       ) : null}
 
+      {codexRateLimitsLoading && codexRemainingPercent === null ? (
+        <button
+          type="button"
+          className="composer-codex-rate-ring is-loading"
+          aria-label={codexRateLimitLabel}
+          disabled
+        >
+          <span className="composer-codex-rate-ring-visual" aria-hidden="true">
+            <span className="composer-codex-rate-ring-value">…</span>
+          </span>
+        </button>
+      ) : codexRemainingPercent !== null ? (
+        <button
+          ref={codexTriggerRef}
+          type="button"
+          className={`composer-codex-rate-ring ${getCodexRateLimitStateClassName(codexRemainingPercent)}`}
+          style={{ "--codex-rate-limit-progress": `${codexRemainingPercent / 100}` } as CSSProperties}
+          aria-label={codexRateLimitLabel}
+          aria-expanded={open && activeIndicator === "codex"}
+          aria-describedby={open && activeIndicator === "codex" ? tooltipId : undefined}
+          onClick={() => handleIndicatorClick("codex")}
+        >
+          <span className="composer-codex-rate-ring-visual" aria-hidden="true">
+            <span className="composer-codex-rate-ring-value">
+              <span>{formatRingPercentage(codexRemainingPercent)}</span>
+              <span className="composer-codex-rate-ring-suffix">%</span>
+            </span>
+          </span>
+        </button>
+      ) : null}
+
       {open && tooltipStyle && typeof document !== "undefined"
         ? createPortal(
             <div
@@ -3860,6 +3971,43 @@ function SessionStatsIndicators({
                   </div>
                   {cacheHitRateMeta ? (
                     <div className="composer-cache-hit-rate-meta">{cacheHitRateMeta}</div>
+                  ) : null}
+                </section>
+              ) : null}
+              {activeIndicator === "codex" && codexRateLimits && codexRemainingPercent !== null ? (
+                <section className="composer-codex-rate-limit-tooltip">
+                  <div className="composer-codex-rate-limit-tooltip-heading">
+                    <div className="composer-context-tooltip-title">{t("conversation.codexRateLimitTitle")}</div>
+                    <strong>{codexRemainingPercent}%</strong>
+                  </div>
+                  {codexPlanTypeLabel ? (
+                    <div className="composer-codex-rate-limit-tooltip-plan">
+                      {t("conversation.codexRateLimitPlan").replace(
+                        "{type}",
+                        codexPlanTypeLabel
+                      )}
+                    </div>
+                  ) : null}
+                  {resolveCodexNextReset(codexRateLimits) ? (
+                    <div className="composer-codex-rate-limit-tooltip-meta">
+                      {t("conversation.codexRateLimitNextReset").replace("{time}", formatCodexResetTime(resolveCodexNextReset(codexRateLimits)!))}
+                    </div>
+                  ) : null}
+                  {codexRateLimits.resetCredits ? (
+                    <div className="composer-codex-rate-limit-tooltip-actions">
+                      <span>{t("conversation.codexRateLimitCredits").replace("{count}", String(codexRateLimits.resetCredits.availableCount))}</span>
+                      {codexRateLimits.resetCredits.availableCount > 0 ? (
+                        <button
+                          type="button"
+                          className="composer-codex-rate-limit-reset-button"
+                          disabled={codexRateLimitsResetting}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={onCodexRateLimitReset}
+                        >
+                          {codexRateLimitsResetting ? t("conversation.codexRateLimitResetting") : t("conversation.codexRateLimitResetButton")}
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </section>
               ) : null}
@@ -4402,4 +4550,61 @@ function normalizeModelReasoningLevel(value?: string | null): ReasoningLevel | n
 
 function formatTokenCount(value: number): string {
   return new Intl.NumberFormat().format(value);
+}
+
+function resolveCodexRemainingPercent(rateLimits: CodexRateLimitsDto): number | null {
+  const windows = [rateLimits.primary, rateLimits.secondary].filter(
+    (window): window is NonNullable<CodexRateLimitsDto["primary"]> => Boolean(window)
+  );
+  return windows.length > 0
+    ? Math.min(...windows.map((window) => window.remainingPercent))
+    : null;
+}
+
+function resolveCodexNextReset(rateLimits: CodexRateLimitsDto): number | null {
+  return [rateLimits.primary, rateLimits.secondary]
+    .map((window) => window?.resetsAt)
+    .filter((value): value is number => typeof value === "number")
+    .sort((left, right) => left - right)[0] ?? null;
+}
+
+function getCodexRateLimitStateClassName(remainingPercent: number): string {
+  if (remainingPercent <= 20) {
+    return "is-critical";
+  }
+
+  if (remainingPercent <= 50) {
+    return "is-warning";
+  }
+
+  return "is-normal";
+}
+
+function formatCodexResetTime(timestampSeconds: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(timestampSeconds * 1000));
+}
+
+function formatCodexPlanType(planType: string | null): string | null {
+  const normalized = planType?.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  const knownLabelKeys: Record<string, string> = {
+    plus: "conversation.codexRateLimitPlanPlus",
+    pro: "conversation.codexRateLimitPlanPro",
+    team: "conversation.codexRateLimitPlanTeam",
+    business: "conversation.codexRateLimitPlanBusiness",
+    enterprise: "conversation.codexRateLimitPlanEnterprise",
+    free: "conversation.codexRateLimitPlanFree"
+  };
+  const knownLabelKey = knownLabelKeys[normalized];
+  return knownLabelKey
+    ? t(knownLabelKey)
+    : normalized.replace(/(^|[\s_-])\S/g, (character) => character.toUpperCase());
 }

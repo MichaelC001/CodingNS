@@ -135,6 +135,8 @@ const preferenceStoreMock = vi.hoisted(() => ({
 const mockListQuickPhrases = vi.fn();
 const mockReplaceQuickPhrases = vi.fn();
 const mockGetProviderCapabilities = vi.fn();
+const mockGetCodexRateLimits = vi.fn();
+const mockResetCodexRateLimits = vi.fn();
 const mockListProviderCatalog = vi.fn();
 const mockGetProviderPriceBook = vi.fn();
 
@@ -146,6 +148,8 @@ vi.mock("../api/conversation-api", async () => {
   return {
     ...actual,
     getProviderCapabilities: (...args: unknown[]) => mockGetProviderCapabilities(...args),
+    getCodexRateLimits: (...args: unknown[]) => mockGetCodexRateLimits(...args),
+    resetCodexRateLimits: (...args: unknown[]) => mockResetCodexRateLimits(...args),
     listProviderCatalog: (...args: unknown[]) => mockListProviderCatalog(...args),
     getProviderPriceBook: (...args: unknown[]) => mockGetProviderPriceBook(...args),
     listQuickPhrases: (...args: unknown[]) => mockListQuickPhrases(...args),
@@ -343,6 +347,8 @@ describe("ComposerPanel", () => {
     mockListQuickPhrases.mockReset();
     mockReplaceQuickPhrases.mockReset();
     mockGetProviderCapabilities.mockReset();
+    mockGetCodexRateLimits.mockReset();
+    mockResetCodexRateLimits.mockReset();
     mockListProviderCatalog.mockReset();
     mockGetProviderPriceBook.mockReset();
     mockSearchComposerMentionItems.mockReset();
@@ -379,6 +385,8 @@ describe("ComposerPanel", () => {
       { provider: "kimi", displayName: "Kimi", enabled: false }
     ]);
     mockGetProviderCapabilities.mockResolvedValue(createCapabilities());
+    mockGetCodexRateLimits.mockResolvedValue({ rateLimits: null });
+    mockResetCodexRateLimits.mockResolvedValue({ outcome: "reset", rateLimits: null });
     mockFetchModelManagementSnapshot.mockResolvedValue({
       scannedAt: "2026-06-11T00:00:00.000Z",
       items: [
@@ -1005,13 +1013,15 @@ describe("ComposerPanel", () => {
 
     const ring = container.querySelector(".composer-context-ring");
     const cacheRing = container.querySelector(".composer-cache-hit-ring");
+    const codexRing = container.querySelector(".composer-codex-rate-ring");
     const statsControl = container.querySelector(".composer-session-stats-control");
     const summary = container.querySelector(".composer-session-stats-summary");
 
     expect(container.querySelector(".composer-session-stats-trigger")).toBeNull();
     expect(statsControl?.firstElementChild).toBe(ring);
     expect(ring?.nextElementSibling).toBe(cacheRing);
-    expect(cacheRing?.nextElementSibling).toBe(summary);
+    expect(cacheRing?.nextElementSibling).toBe(codexRing);
+    expect(codexRing?.nextElementSibling).toBe(summary);
     expect(ring?.contains(cacheRing)).toBe(false);
     fireEvent.click(ring!);
 
@@ -1035,6 +1045,104 @@ describe("ComposerPanel", () => {
     expect(tooltip.querySelector(".composer-session-stats-group-title")).toBeNull();
     expect(tooltip.querySelectorAll(".composer-session-stats-row")).toHaveLength(5);
     expect(container.querySelector(".composer-session-stats-summary")).not.toHaveTextContent("tok");
+  });
+
+  it("Codex 订阅圆环显示余量、重置时间和可用重置次数", async () => {
+    mockGetCodexRateLimits.mockResolvedValue({
+      rateLimits: {
+        authenticated: true,
+        planType: "pro",
+        primary: {
+          usedPercent: 20,
+          remainingPercent: 80,
+          windowDurationMins: 300,
+          resetsAt: 1_790_000_000
+        },
+        secondary: null,
+        rateLimitReachedType: null,
+        resetCredits: {
+          availableCount: 1,
+          credits: [{
+            id: "credit-1",
+            expiresAt: null,
+            title: "重置额度",
+            description: null
+          }]
+        },
+        capturedAt: "2026-08-15T10:00:00.000Z"
+      }
+    });
+
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    const ring = await waitFor(() => {
+      const element = container.querySelector(".composer-codex-rate-ring");
+      expect(element).not.toHaveClass("is-loading");
+      return element as HTMLElement;
+    });
+
+    expect(ring).toHaveTextContent("80%");
+    fireEvent.click(ring);
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent(t("conversation.codexRateLimitTitle"));
+    expect(tooltip).toHaveTextContent("订阅类型 Pro");
+    expect(tooltip).toHaveTextContent("下次重置");
+    expect(tooltip).toHaveTextContent(t("conversation.codexRateLimitCredits", { count: 1 }));
+
+    fireEvent.click(screen.getByRole("button", {
+      name: t("conversation.codexRateLimitResetButton")
+    }));
+    await waitFor(() => {
+      expect(mockResetCodexRateLimits).toHaveBeenCalledWith("credit-1", { targetHostId: null });
+    });
+  });
+
+  it.each([
+    ["plus", "Plus"],
+    ["pro", "Pro"],
+    ["team", "Team"]
+  ])("显示 Codex %s 订阅类型", async (planType, label) => {
+    mockGetCodexRateLimits.mockResolvedValue({
+      rateLimits: {
+        authenticated: true,
+        planType,
+        primary: {
+          usedPercent: 20,
+          remainingPercent: 80,
+          windowDurationMins: 300,
+          resetsAt: null
+        },
+        secondary: null,
+        rateLimitReachedType: null,
+        resetCredits: null,
+        capturedAt: "2026-08-15T10:00:00.000Z"
+      }
+    });
+
+    const { container, unmount } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    const ring = await waitFor(() => {
+      const element = container.querySelector(".composer-codex-rate-ring");
+      expect(element).not.toHaveClass("is-loading");
+      return element as HTMLElement;
+    });
+    fireEvent.click(ring);
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(`订阅类型 ${label}`);
+    unmount();
   });
 
   it("会话统计弹层会在上方可用空间内向上展开", async () => {
