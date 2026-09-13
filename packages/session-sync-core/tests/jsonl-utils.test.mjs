@@ -53,3 +53,30 @@ test("readTrailingJsonLines 遇到坏行时会跳过，不会把整个文件读�
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("JSONL 末尾正在追加的半行不会被当成损坏记录，补齐后可重试读到", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "session-sync-jsonl-"));
+
+  try {
+    const filePath = join(tempDir, "partial.jsonl");
+    writeFileSync(filePath, '{"type":"assistant"', "utf8");
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+      assert.deepEqual(readJsonLines(filePath), []);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 0);
+
+    writeFileSync(filePath, '{"type":"assistant"}\n', "utf8");
+    const records = readJsonLines(filePath);
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.data.type, "assistant");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

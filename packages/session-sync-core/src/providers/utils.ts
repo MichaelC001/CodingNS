@@ -94,7 +94,9 @@ export function walkJsonlFiles(rootDir: string): string[] {
 
 export function readJsonLines(filePath: string): RawJsonLine[] {
   const content = readFileSync(filePath, "utf8");
-  return parseJsonLines(filePath, content.split(/\r?\n/));
+  return parseJsonLines(filePath, content.split(/\r?\n/), 1, {
+    skipIncompleteTail: !content.endsWith("\n")
+  });
 }
 
 /**
@@ -104,6 +106,25 @@ export function readJsonLines(filePath: string): RawJsonLine[] {
 export function readJsonLinesForDiscovery(
   filePath: string,
   maxWindowBytes = 512 * 1024
+): RawJsonLine[] {
+  let latest: RawJsonLine[] = [];
+
+  for (let attempt = 0; attempt < JSONL_DISCOVERY_READ_RETRY_LIMIT; attempt += 1) {
+    const before = readJsonFileFingerprint(filePath);
+    latest = readJsonLinesForDiscoveryOnce(filePath, maxWindowBytes);
+    const after = readJsonFileFingerprint(filePath);
+
+    if (before === after) {
+      return latest;
+    }
+  }
+
+  return latest;
+}
+
+function readJsonLinesForDiscoveryOnce(
+  filePath: string,
+  maxWindowBytes: number
 ): RawJsonLine[] {
   const stats = statSync(filePath);
   if (stats.size <= maxWindowBytes * 2) {
@@ -120,7 +141,10 @@ export function readJsonLinesForDiscovery(
     closeSync(fd);
   }
   const tail = readTrailingJsonLines(filePath, maxWindowBytes);
-  const headRecords = parseJsonLines(filePath, head.split(/\r?\n/));
+  const headRecords = parseJsonLines(filePath, head.split(/\r?\n/), 1, {
+    // 头窗口可能正好截断一条正在写入的物理行，不能把它当成损坏记录。
+    skipIncompleteTail: true
+  });
   const seen = new Set(headRecords.map((record) => `${record.lineNumber}:${record.partIndex}`));
   return [
     ...headRecords,
@@ -148,7 +172,9 @@ export function readJsonLinesTail(filePath: string, maxBytes = 8 * 1024 * 1024):
       text = firstBreak >= 0 ? text.slice(firstBreak + (text[firstBreak] === "\r" && text[firstBreak + 1] === "\n" ? 2 : 1)) : "";
     }
     const firstLineNumber = start > 0 ? -1 : 1;
-    return parseJsonLines(filePath, text.split(/\r?\n/), firstLineNumber);
+    return parseJsonLines(filePath, text.split(/\r?\n/), firstLineNumber, {
+      skipIncompleteTail: !text.endsWith("\n")
+    });
   } finally {
     closeSync(fd);
   }
@@ -169,7 +195,9 @@ export function readJsonLinesWithMetadata(filePath: string): JsonLinesReadResult
       : lines.length - (endsWithNewline ? 1 : 0);
 
   return {
-    records: parseJsonLines(filePath, lines),
+    records: parseJsonLines(filePath, lines, 1, {
+      skipIncompleteTail: !endsWithNewline
+    }),
     lineCount,
     endsWithNewline
   };
@@ -184,9 +212,10 @@ export function readJsonLinesWithMetadata(filePath: string): JsonLinesReadResult
 export function parseJsonLinesFromText(
   filePath: string,
   content: string,
-  firstLineNumber: number
+  firstLineNumber: number,
+  options: ParseJsonLinesOptions = {}
 ): RawJsonLine[] {
-  return parseJsonLines(filePath, content.split(/\r?\n/), firstLineNumber);
+  return parseJsonLines(filePath, content.split(/\r?\n/), firstLineNumber, options);
 }
 
 export function readFirstNonEmptyLine(filePath: string, maxBytes = 256 * 1024): string | null {
@@ -268,7 +297,10 @@ export function readTrailingJsonLines(filePath: string, maxBytes: number): RawJs
     }
 
     const firstLineNumber = countLinesBeforeOffset(fd, alignedStartOffset) + 1;
-    return parseJsonLines(filePath, content.toString("utf8").split(/\r?\n/), firstLineNumber);
+    const text = content.toString("utf8");
+    return parseJsonLines(filePath, text.split(/\r?\n/), firstLineNumber, {
+      skipIncompleteTail: !text.endsWith("\n")
+    });
   } finally {
     closeSync(fd);
   }
@@ -276,19 +308,31 @@ export function readTrailingJsonLines(filePath: string, maxBytes: number): RawJs
 
 const warnedInvalidJsonLineKeys = new Set<string>();
 const MAX_INVALID_JSON_WARNINGS = 256;
+const JSONL_DISCOVERY_READ_RETRY_LIMIT = 3;
+
+interface ParseJsonLinesOptions {
+  skipIncompleteTail?: boolean;
+}
 
 function parseJsonLines(
   filePath: string,
   lines: string[],
-  firstLineNumber = 1
+  firstLineNumber = 1,
+  options: ParseJsonLinesOptions = {}
 ): RawJsonLine[] {
-  return lines.flatMap((line, index) => parseJsonLine(filePath, line, firstLineNumber + index));
+  return lines.flatMap((line, index) => parseJsonLine(
+    filePath,
+    line,
+    firstLineNumber + index,
+    options.skipIncompleteTail === true && index === lines.length - 1
+  ));
 }
 
 function parseJsonLine(
   filePath: string,
   rawLine: string,
-  lineNumber: number
+  lineNumber: number,
+  skipIncompleteTail = false
 ): RawJsonLine[] {
   const trimmed = rawLine.trim();
 
@@ -330,8 +374,48 @@ function parseJsonLine(
     }
   }
 
+  if (skipIncompleteTail && looksLikeIncompleteJson(rawLine)) {
+    return [];
+  }
+
   warnInvalidJsonLine(filePath, lineNumber, trimmed);
   return [];
+}
+
+/** 识别正在写入的半行，避免在下一次扫描前错误打出“损坏记录”警告。 */
+function looksLikeIncompleteJson(raw: string): boolean {
+  const trimmed = raw.trim();
+
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return false;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (const char of trimmed) {
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (char === "\\") {
+        escaping = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{" || char === "[") {
+      depth += 1;
+    } else if (char === "}" || char === "]") {
+      depth = Math.max(0, depth - 1);
+    }
+  }
+
+  return depth > 0 || inString || escaping;
 }
 
 function parseJsonRecord(raw: string): Record<string, unknown> | null {
@@ -459,6 +543,11 @@ function countLinesBeforeOffset(fd: number, offset: number): number {
   }
 
   return count;
+}
+
+function readJsonFileFingerprint(filePath: string): string {
+  const stats = statSync(filePath);
+  return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}`;
 }
 
 export function encodeCursor(index: number): string {
