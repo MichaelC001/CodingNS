@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 import type { HistoryDirection, HistoryPage, NormalizedMessage, ProviderSessionSummary } from "../types.js";
@@ -10,13 +10,34 @@ export interface GrokSessionStoreOptions {
 }
 
 export class GrokSessionStoreReader {
+  private static readonly TITLE_SCAN_MAX_BYTES = 128 * 1024;
+  private lastReadMetrics = { bytesRead: 0, recordsParsed: 0 };
+  private readonly directories = new Map<string, { path: string | null; checkedAt: number }>();
+  private readonly updatesCache = new Map<string, {
+    fingerprint: string;
+    messages: NormalizedMessage[];
+    bytes: number;
+  }>();
   constructor(private readonly options: GrokSessionStoreOptions) {}
+
+  getReadMetrics(): { bytesRead: number; recordsParsed: number } {
+    return { ...this.lastReadMetrics };
+  }
 
   resolveSessionDir(providerSessionId: string, rawStoreRef: string): string {
     const id = parseGrokSessionId(rawStoreRef) || providerSessionId.trim();
     if (!id) throw new Error("GROK_SESSION_NOT_FOUND");
+    const cached = this.directories.get(id);
+    if (cached?.path && existsSync(cached.path)) return cached.path;
+    // 缺失会话只短暂负缓存，允许运行时稍后创建目录。
+    if (cached && !cached.path && Date.now() - cached.checkedAt < 1_000) {
+      throw new Error("GROK_SESSION_NOT_FOUND");
+    }
     const root = path.resolve(this.options.homeDir, "sessions");
     const found = findSessionDirectory(root, id);
+    this.directories.delete(id);
+    this.directories.set(id, { path: found, checkedAt: Date.now() });
+    if (this.directories.size > 256) this.directories.delete(this.directories.keys().next().value!);
     if (!found) throw new Error("GROK_SESSION_NOT_FOUND");
     return found;
   }
@@ -55,8 +76,37 @@ export class GrokSessionStoreReader {
       return storedTitle;
     }
 
-    const updates = this.readUpdates(providerSessionId, rawStoreRef);
-    return buildGrokTitleFromMessages(updates.messages)
+    // 列表只需要标题，最多读取文件头部，避免触发完整 updates.jsonl 解析。
+    const updatesPath = path.join(dir, "updates.jsonl");
+    let text = "";
+    const fd = openSync(updatesPath, "r");
+    try {
+      const buffer = Buffer.allocUnsafe(GrokSessionStoreReader.TITLE_SCAN_MAX_BYTES);
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, 0);
+      text = buffer.toString("utf8", 0, bytesRead);
+    } finally {
+      closeSync(fd);
+    }
+    const accumulator = new GrokMessageAccumulator(
+      providerSessionId,
+      buildGrokRawStoreRef(providerSessionId),
+      { includeUserMessages: true }
+    );
+    const messages: NormalizedMessage[] = [];
+    let sequence = 0;
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const update = unwrapGrokUpdate(JSON.parse(line) as Record<string, unknown>);
+        const mapped = accumulator.map(update, ++sequence);
+        if (mapped.message?.content) messages.push(mapped.message);
+      } catch {
+        // 忽略截断行和损坏行；标题读取不能阻塞会话列表。
+      }
+      const title = buildGrokTitleFromMessages(messages);
+      if (title) return title;
+    }
+    return buildGrokTitleFromMessages(messages)
       || buildGrokFallbackTitle(providerSessionId);
   }
 
@@ -81,16 +131,31 @@ export class GrokSessionStoreReader {
     return {
       messages: page,
       cursor: last === null ? cursor : String(last),
-      nextCursor: direction === "backward" && first !== null && first > 1 ? String(first - 1) : null,
+      nextCursor: filtered.length > page.length
+        ? direction === "backward" ? String(first) : String(last)
+        : null,
       total: page.length
     };
   }
 
   private readUpdates(providerSessionId: string, rawStoreRef: string): { messages: NormalizedMessage[]; bytes: number } {
+    this.lastReadMetrics = { bytesRead: 0, recordsParsed: 0 };
     const dir = this.resolveSessionDir(providerSessionId, rawStoreRef);
     const filePath = path.join(dir, "updates.jsonl");
-    if (!existsSync(filePath)) return { messages: [], bytes: 0 };
+    if (!existsSync(filePath)) {
+      this.updatesCache.delete(filePath);
+      return { messages: [], bytes: 0 };
+    }
+    const stat = statSync(filePath);
+    const fingerprint = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    const cached = this.updatesCache.get(filePath);
+    if (cached?.fingerprint === fingerprint) {
+      this.updatesCache.delete(filePath);
+      this.updatesCache.set(filePath, cached);
+      return cached;
+    }
     const content = readFileSync(filePath, "utf8");
+    this.lastReadMetrics.bytesRead = Buffer.byteLength(content);
     const messages: NormalizedMessage[] = [];
     const messageIndexes = new Map<string, number>();
     const accumulator = new GrokMessageAccumulator(
@@ -103,7 +168,15 @@ export class GrokSessionStoreReader {
       if (!line.trim()) continue;
       let parsed: unknown;
       try { parsed = JSON.parse(line); } catch { continue; }
-      const mapped = accumulator.map(unwrapGrokUpdate(parsed), ++sequence);
+      this.lastReadMetrics.recordsParsed += 1;
+      const update = unwrapGrokUpdate(parsed);
+      // 老记录可能没有时间戳；不能每次重读都用当前时间，造成未变消息反复广播。
+      const stableUpdate = update && typeof update === "object" && !Array.isArray(update)
+        ? { ...update, timestamp: (update as Record<string, unknown>).timestamp
+            ?? (update as Record<string, unknown>).createdAt
+            ?? new Date(stat.birthtimeMs).toISOString() }
+        : update;
+      const mapped = accumulator.map(stableUpdate, ++sequence);
       if (!mapped.message || mapped.message.content.length === 0) continue;
       const existingIndex = messageIndexes.get(mapped.message.messageId);
       if (existingIndex === undefined) {
@@ -113,7 +186,19 @@ export class GrokSessionStoreReader {
         messages[existingIndex] = mapped.message;
       }
     }
-    return { messages, bytes: Buffer.byteLength(content) };
+    // 工具结果或流式块会更新旧 messageId 的 sequence，分页必须按最新事件序号排序。
+    messages.sort((left, right) => left.sequence - right.sequence);
+    const result = { fingerprint, messages, bytes: Buffer.byteLength(content) };
+    this.updatesCache.delete(filePath);
+    // 大会话不常驻缓存；小会话同时限制数量和原始文件总字节数。
+    if (result.bytes <= 8 * 1024 * 1024) this.updatesCache.set(filePath, result);
+    let cachedBytes = [...this.updatesCache.values()].reduce((sum, entry) => sum + entry.bytes, 0);
+    while (this.updatesCache.size > 8 || cachedBytes > 16 * 1024 * 1024) {
+      const key = this.updatesCache.keys().next().value!;
+      cachedBytes -= this.updatesCache.get(key)!.bytes;
+      this.updatesCache.delete(key);
+    }
+    return result;
   }
 }
 

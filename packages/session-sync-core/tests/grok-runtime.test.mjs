@@ -66,6 +66,31 @@ describe("GrokRuntimeAdapter", () => {
     expect(messages[0].message.messageId).toBe(messages[0].message.messageId);
   });
 
+  it("使用 prompt 响应的 stopReason 作为终态，并识别错误 stopReason", async () => {
+    const success = new GrokRuntimeAdapter({
+      commandPath: process.execPath,
+      baseArgs: [fixture, "response-stop-reason"]
+    });
+    const request = {
+      sessionId: "codingns-session",
+      workspaceId: "workspace",
+      workspacePath: path.dirname(fixture),
+      provider: "grok",
+      providerSessionId: null,
+      rawStoreRef: null,
+      options: { content: "你好", attachments: [] }
+    };
+    const sink = { updateSessionBinding: () => {}, emit: async () => {} };
+    await expect((await success.startSession(request, sink)).completed).resolves.toBeUndefined();
+
+    const failure = new GrokRuntimeAdapter({
+      commandPath: process.execPath,
+      baseArgs: [fixture, "response-error-stop-reason"]
+    });
+    await expect((await failure.startSession(request, sink)).completed)
+      .rejects.toThrow("GROK_PROMPT_STOPPED: error");
+  });
+
   it("把自定义 API Base URL 作为 Grok CLI 参数传递", async () => {
     const events = [];
     let seenArgs = null;

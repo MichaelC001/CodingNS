@@ -186,6 +186,20 @@ export class KimiAdapter implements ProviderAdapter {
         continue;
       }
 
+      // 先用轻量 state/目录映射确定归属；别为其他工作区构造完整消息列表。
+      const state = readJsonFileSafely(files.statePath);
+      const declaredWorkspace = readKimiWorkspaceFromState(state)
+        ?? workspacePathByHash.get(files.workDirHash);
+      if (declaredWorkspace && normalizeWorkspacePath(declaredWorkspace) !== targetWorkspacePath) {
+        this.touchSessionSummaryCache(rawStoreRef, {
+          sourceMtimeMs: files.sourceMtimeMs,
+          sourceSizeBytes: files.sourceSizeBytes,
+          workspacePath: declaredWorkspace,
+          summary: null
+        });
+        continue;
+      }
+
       parsedFiles += 1;
       bytesRead += files.sourceSizeBytes;
       const summary = this.buildSessionSummary(files, workspacePath, false, workspacePathByHash);
@@ -527,18 +541,8 @@ export class KimiAdapter implements ProviderAdapter {
     workspacePathByHash: Map<string, string>
   ): ProviderSessionSummary | null {
     const state = readJsonFileSafely(files.statePath, strict, files.sessionId, "state.json");
-    const messages = this.parseSessionMessages(files, strict);
     const workspacePath =
-      readKimiFirstNonEmptyString(state, [
-        ["cwd"],
-        ["workspacePath"],
-        ["workspace_path"],
-        ["workdir"],
-        ["workingDirectory"],
-        ["workspace", "path"],
-        ["workspace", "cwd"],
-        ["project", "path"]
-      ]) ??
+      readKimiWorkspaceFromState(state) ??
       workspacePathByHash.get(files.workDirHash) ??
       readWorkspacePathFromSessionLogs(files, strict) ??
       fallbackWorkspacePath;
@@ -546,6 +550,8 @@ export class KimiAdapter implements ProviderAdapter {
     if (!workspacePath.trim()) {
       return null;
     }
+
+    const messages = this.parseSessionMessages(files, strict);
 
     const sessionTitle =
       readKimiFirstNonEmptyString(state, [
@@ -1071,4 +1077,11 @@ function resolveKimiSummaryLastMessageAt(
 
 function isSyntheticKimiTimestamp(timestamp: string): boolean {
   return timestamp.startsWith("2020-01-01T00:");
+}
+
+function readKimiWorkspaceFromState(state: Record<string, unknown> | null): string | null {
+  return readKimiFirstNonEmptyString(state, [
+    ["cwd"], ["workspacePath"], ["workspace_path"], ["workdir"],
+    ["workingDirectory"], ["workspace", "path"], ["workspace", "cwd"], ["project", "path"]
+  ]);
 }

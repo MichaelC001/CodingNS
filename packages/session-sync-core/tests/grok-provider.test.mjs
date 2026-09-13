@@ -73,6 +73,7 @@ describe("Grok provider", () => {
     });
     expect(capabilities.runtimeStatus).toBe("degraded");
     expect(capabilities.canStartSession).toBe(false);
+    expect(capabilities.supportsPermissionRequests).toBe(false);
     expect(capabilities.supportsStructuredToolCalls).toBe(false);
     expect(capabilities.limitations.length).toBeGreaterThan(0);
     expect(mapGrokUpdate("s-1", "grok://session/s-1", { type: "complete" }, 1).terminal).toBe("complete");

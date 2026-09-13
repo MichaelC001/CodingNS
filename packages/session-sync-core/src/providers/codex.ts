@@ -12,6 +12,19 @@ import {
 } from "node:fs";
 import crypto from "node:crypto";
 
+const TITLE_SCAN_MAX_BYTES = 128 * 1024;
+
+function readBoundedText(filePath: string, maxBytes: number): string {
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes);
+    const bytesRead = readSync(fd, buffer, 0, maxBytes, 0);
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 import type {
   ContextUsageSnapshot,
   DetectSessionsOptions,
@@ -58,6 +71,7 @@ import {
   parseJsonLinesFromText,
   readFirstNonEmptyLine,
   readJsonLines,
+  readJsonLinesForDiscovery,
   readTrailingJsonLines,
   type RawJsonLine,
   safeDate,
@@ -257,6 +271,10 @@ export class CodexAdapter implements ProviderAdapter {
   private readonly sessionSummaryCache = new Map<string, CodexSessionSummaryCacheEntry>();
   private readonly spawnRelationScanCache = new Map<string, CodexSpawnRelationScanCacheEntry>();
   private threadMetadataIndexCache: CodexThreadMetadataIndexCacheEntry | null = null;
+  private readonly appServerMetadataCache = new Map<string, {
+    expiresAt: number;
+    metadata: Map<string, CodexThreadMetadata>;
+  }>();
 
   constructor(private readonly options: CodexAdapterOptions) {}
 
@@ -499,7 +517,7 @@ export class CodexAdapter implements ProviderAdapter {
       const { filePath, fileSessionId, stats, sessionIdentity } = entry;
       parsedFiles += 1;
       bytesRead += stats.size;
-      const records = readJsonLines(filePath);
+      const records = readJsonLinesForDiscovery(filePath);
       const meta = records.find((record) => record.data.type === "session_meta")?.data;
       const metaPayload = (meta?.payload ?? {}) as Record<string, unknown>;
       const codexSessionId = this.resolveCodexSessionId(metaPayload, fileSessionId);
@@ -1211,7 +1229,12 @@ export class CodexAdapter implements ProviderAdapter {
       }
     }
 
-    const records = readJsonLines(resolvedStoreRef);
+    // 标题只需要会话元数据和最早的一小段消息，不能为了列表标题把整份 JSONL 读入内存。
+    const records = parseJsonLinesFromText(
+      resolvedStoreRef,
+      readBoundedText(resolvedStoreRef, TITLE_SCAN_MAX_BYTES),
+      1
+    );
     const meta = records.find((record) => record.data.type === "session_meta")?.data;
     const metaPayload = (meta?.payload ?? {}) as Record<string, unknown>;
     const codexSessionId = this.resolveCodexSessionId(metaPayload, providerSessionId || fileSessionId);
@@ -1279,6 +1302,7 @@ export class CodexAdapter implements ProviderAdapter {
 
     this.sessionSummaryCache.delete(resolvedStoreRef);
 
+    this.invalidateThreadMetadataIndexCache();
     return nextTitle;
   }
 
@@ -1838,7 +1862,21 @@ export class CodexAdapter implements ProviderAdapter {
     workspacePath: string
   ): Promise<Map<string, CodexThreadMetadata>> {
     const index = new Map(this.readThreadMetadataIndex());
-    await this.mergeAppServerThreadMetadata(index, workspacePath);
+    const cached = this.appServerMetadataCache.get(workspacePath);
+    // app-server 只是增强来源；超时仍使用本地索引，并短暂缓存失败，避免每次扫描重启 CLI。
+    let metadata = cached?.metadata ?? new Map<string, CodexThreadMetadata>();
+    if (!cached || cached.expiresAt <= Date.now()) {
+      metadata = new Map<string, CodexThreadMetadata>();
+      await this.mergeAppServerThreadMetadata(metadata, workspacePath);
+      this.appServerMetadataCache.delete(workspacePath);
+      this.appServerMetadataCache.set(workspacePath, { expiresAt: Date.now() + 5_000, metadata });
+      if (this.appServerMetadataCache.size > 32) {
+        this.appServerMetadataCache.delete(this.appServerMetadataCache.keys().next().value!);
+      }
+    }
+    for (const [id, value] of metadata) {
+      index.set(id, mergeCodexThreadMetadata(index.get(id), value));
+    }
     return index;
   }
 
@@ -1853,59 +1891,46 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     const transport = createTransport();
+    const deadline = Date.now() + 3_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     try {
-      await transport.initialize();
-      const threads = await transport.listThreads?.({ workspacePath });
-
-      if (!threads || threads.length === 0) {
-        return;
-      }
-
-      for (const thread of threads) {
-        const metadata = normalizeCodexAppServerThreadMetadata(thread);
-
-        if (!metadata) {
-          continue;
-        }
-
-        const current = index.get(metadata.threadId);
-        index.set(metadata.threadId, {
-          title: metadata.title ?? current?.title ?? null,
-          cwd: metadata.cwd ?? current?.cwd ?? null,
-          createdAtMs: metadata.createdAtMs ?? current?.createdAtMs ?? null,
-          updatedAtMs: metadata.updatedAtMs ?? current?.updatedAtMs ?? null,
-          firstUserMessage:
-            metadata.firstUserMessage ?? current?.firstUserMessage ?? null,
-          agentNickname: metadata.agentNickname ?? current?.agentNickname ?? null,
-          agentRole: metadata.agentRole ?? current?.agentRole ?? null,
-          isGuardian: metadata.isGuardian || current?.isGuardian === true,
-          parentProviderSessionId:
-            metadata.parentProviderSessionId ?? current?.parentProviderSessionId ?? null,
-          parentRelationKind: metadata.parentRelationKind ?? current?.parentRelationKind ?? null,
-          isArchived: metadata.isArchived ?? current?.isArchived ?? null,
-          rolloutPath: metadata.rolloutPath ?? current?.rolloutPath ?? null,
-          activityObservation:
-            metadata.activityObservation ?? current?.activityObservation ?? null
-        });
-      }
-
-      await this.mergeAppServerSubagentActivityFromParentThreads(
-        index,
-        threads,
-        transport
-      );
+      await Promise.race([
+        this.collectAppServerThreadMetadata(index, workspacePath, transport, deadline),
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("CODEX_DISCOVERY_METADATA_TIMEOUT")), 3_000);
+        })
+      ]);
     } catch {
       // app-server 是增强信息来源，失败时退回 JSONL/state DB，不能拖垮会话列表。
     } finally {
+      clearTimeout(timer);
       transport.close();
     }
+  }
+
+  private async collectAppServerThreadMetadata(
+    index: Map<string, CodexThreadMetadata>,
+    workspacePath: string,
+    transport: CodexThreadControlTransport,
+    deadline: number
+  ): Promise<void> {
+    await transport.initialize();
+    if (Date.now() >= deadline) return;
+    const threads = await transport.listThreads?.({ workspacePath });
+    if (!threads?.length || Date.now() >= deadline) return;
+    for (const thread of threads) {
+      const metadata = normalizeCodexAppServerThreadMetadata(thread);
+      if (metadata) index.set(metadata.threadId, mergeCodexThreadMetadata(index.get(metadata.threadId), metadata));
+    }
+    await this.mergeAppServerSubagentActivityFromParentThreads(index, threads, transport, deadline);
   }
 
   private async mergeAppServerSubagentActivityFromParentThreads(
     index: Map<string, CodexThreadMetadata>,
     threads: Record<string, unknown>[],
-    transport: CodexThreadControlTransport
+    transport: CodexThreadControlTransport,
+    deadline: number
   ): Promise<void> {
     const childrenByParentThreadId = new Map<string, string[]>();
 
@@ -1926,10 +1951,12 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     for (const [parentThreadId, childThreadIds] of childrenByParentThreadId) {
+      if (Date.now() >= deadline) return;
       let parentThread: Record<string, unknown> | null = null;
 
       try {
         const result = await transport.readThread(parentThreadId);
+        if (Date.now() >= deadline) return;
         parentThread = asCodexRecord(result.thread) ?? result;
       } catch {
         continue;
@@ -2478,6 +2505,7 @@ export class CodexAdapter implements ProviderAdapter {
 
   private invalidateThreadMetadataIndexCache(): void {
     this.threadMetadataIndexCache = null;
+    this.appServerMetadataCache.clear();
   }
 
   private touchSpawnRelationScanCache(
@@ -4589,6 +4617,28 @@ function resolveCodexParentThreadRelation(payload: Record<string, unknown>): {
   return {
     parentThreadId: null,
     kind: null
+  };
+}
+
+/** 增强来源缺少字段时保留本地值；不能用缓存里的 null 覆盖 state DB。 */
+function mergeCodexThreadMetadata(
+  current: CodexThreadMetadata | undefined,
+  metadata: CodexThreadMetadata
+): CodexThreadMetadata {
+  return {
+    title: metadata.title ?? current?.title ?? null,
+    cwd: metadata.cwd ?? current?.cwd ?? null,
+    createdAtMs: metadata.createdAtMs ?? current?.createdAtMs ?? null,
+    updatedAtMs: metadata.updatedAtMs ?? current?.updatedAtMs ?? null,
+    firstUserMessage: metadata.firstUserMessage ?? current?.firstUserMessage ?? null,
+    agentNickname: metadata.agentNickname ?? current?.agentNickname ?? null,
+    agentRole: metadata.agentRole ?? current?.agentRole ?? null,
+    isGuardian: metadata.isGuardian || current?.isGuardian === true,
+    parentProviderSessionId: metadata.parentProviderSessionId ?? current?.parentProviderSessionId ?? null,
+    parentRelationKind: metadata.parentRelationKind ?? current?.parentRelationKind ?? null,
+    isArchived: metadata.isArchived ?? current?.isArchived ?? null,
+    rolloutPath: metadata.rolloutPath ?? current?.rolloutPath ?? null,
+    activityObservation: metadata.activityObservation ?? current?.activityObservation ?? null
   };
 }
 

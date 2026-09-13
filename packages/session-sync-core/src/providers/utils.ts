@@ -98,6 +98,37 @@ export function readJsonLines(filePath: string): RawJsonLine[] {
 }
 
 /**
+ * 会话列表发现只需要首部元数据和尾部活动信息，不能为了一行标题把整份历史读入内存。
+ * 大文件取首尾窗口；小文件沿用完整解析以保持现有标题和消息计数行为。
+ */
+export function readJsonLinesForDiscovery(
+  filePath: string,
+  maxWindowBytes = 512 * 1024
+): RawJsonLine[] {
+  const stats = statSync(filePath);
+  if (stats.size <= maxWindowBytes * 2) {
+    return readJsonLines(filePath);
+  }
+
+  const fd = openSync(filePath, "r");
+  let head: string;
+  try {
+    const buffer = Buffer.allocUnsafe(maxWindowBytes);
+    const bytesRead = readSync(fd, buffer, 0, maxWindowBytes, 0);
+    head = buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+  const tail = readTrailingJsonLines(filePath, maxWindowBytes);
+  const headRecords = parseJsonLines(filePath, head.split(/\r?\n/));
+  const seen = new Set(headRecords.map((record) => `${record.lineNumber}:${record.partIndex}`));
+  return [
+    ...headRecords,
+    ...tail.filter((record) => !seen.has(`${record.lineNumber}:${record.partIndex}`))
+  ];
+}
+
+/**
  * 读取完整 JSONL 时同时保留续读所需的物理行信息。
  *
  * 这只用于首次建立或异常重建缓存；普通追加路径不会调用它。

@@ -11,6 +11,7 @@ import type {
   ProviderSessionSummary,
   ProviderSubscription,
   ResumeSessionResult,
+  SessionHistoryDeltaReadResult,
   SendMessageResult,
   StartSessionOptions,
   StartSessionResult
@@ -44,6 +45,11 @@ export class GrokAdapter implements ProviderAdapter {
 
   constructor(private readonly options: GrokProviderOptions) {
     this.store = new GrokSessionStoreReader({ homeDir: options.homeDir });
+  }
+
+  /** 由 helper 返回真实来源路径，Host 只监听文件变化，不在主线程搜索目录。 */
+  resolveHistoryFile(providerSessionId: string, rawStoreRef: string): string {
+    return path.join(this.store.resolveSessionDir(providerSessionId, rawStoreRef), "updates.jsonl");
   }
 
   async detectSessions(
@@ -94,6 +100,28 @@ export class GrokAdapter implements ProviderAdapter {
       }
     }, 800);
     return { close: () => clearInterval(timer) };
+  }
+
+  async readSessionHistoryDelta(
+    providerSessionId: string,
+    rawStoreRef: string,
+    cursor: string | null,
+    limit: number,
+    direction: HistoryDirection = "forward"
+  ): Promise<SessionHistoryDeltaReadResult> {
+    const page = this.store.readHistory(providerSessionId, rawStoreRef, cursor, limit, direction);
+    const metrics = this.store.getReadMetrics();
+    if (direction === "forward" && cursor !== null && page.messages.length === 0) {
+      // 截断、替换或同一条消息更新时核对尾页，Host 按消息签名过滤未变内容。
+      const tail = this.store.readHistory(providerSessionId, rawStoreRef, null, limit, "backward");
+      const tailMetrics = this.store.getReadMetrics();
+      return {
+        ...tail, nextCursor: null, mode: "tail_reconcile", tailWindowBytes: 0,
+        bytesRead: metrics.bytesRead + tailMetrics.bytesRead,
+        recordsParsed: metrics.recordsParsed + tailMetrics.recordsParsed
+      };
+    }
+    return { ...page, mode: "append", ...metrics, tailWindowBytes: 0 };
   }
 
   async resumeSession(providerSessionId: string, rawStoreRef: string): Promise<ResumeSessionResult> {

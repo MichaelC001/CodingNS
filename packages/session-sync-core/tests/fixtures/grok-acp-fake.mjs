@@ -35,6 +35,16 @@ rl.on("line", (line) => {
   }
   if (request.method === "session/prompt") {
     const mode = process.argv[2];
+    if (mode === "response-stop-reason" || mode === "response-error-stop-reason") {
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          stopReason: mode === "response-error-stop-reason" ? "error" : "end_turn"
+        }
+      });
+      return;
+    }
     if (mode === "slow" || mode === "terminal-only" || mode === "terminal-error") {
       setTimeout(() => {
         send({ jsonrpc: "2.0", method: "session/update", params: { update: { type: "agent_message_chunk", text: "完整回复" } } });
