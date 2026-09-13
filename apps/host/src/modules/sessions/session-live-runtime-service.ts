@@ -474,6 +474,19 @@ export class SessionLiveRuntimeService {
     harnessPermissionAdapter?.setPermissionRequestHandler?.((input) =>
       this.sessionPermissionRequestService.handleDeepSeekHarnessServerRequest(input)
     );
+    const grokPermissionAdapter = this.grokRuntimeAdapter as (ProviderRuntimeAdapter & {
+      setServerRequestHandler?: (handler: (request: Record<string, unknown>, context: {
+        sessionId: string;
+        providerSessionId: string;
+      }) => Promise<unknown>) => void;
+    }) | null;
+    grokPermissionAdapter?.setServerRequestHandler?.((request, context) =>
+      this.sessionPermissionRequestService.handleGrokServerRequest({
+        sessionId: context.sessionId,
+        providerSessionId: context.providerSessionId,
+        request
+      })
+    );
     const runtimeAdapters = createProviderRuntimeAdapters(config, {
       handleCodexServerRequest: async (input) =>
         this.sessionPermissionRequestService.handleCodexServerRequest(

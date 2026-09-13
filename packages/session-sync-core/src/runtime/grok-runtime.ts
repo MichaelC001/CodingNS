@@ -16,12 +16,22 @@ export interface GrokRuntimeOptions {
   requestTimeoutMs?: number;
   includeNoLeader?: boolean;
   spawnFactory?: typeof import("node:child_process").spawn;
+  onServerRequest?: (request: GrokAcpServerRequest, context: {
+    sessionId: string;
+    providerSessionId: string;
+  }) => unknown | Promise<unknown>;
 }
 
 export class GrokRuntimeAdapter implements ProviderRuntimeAdapter {
   readonly providerId = "grok" as const;
 
   constructor(private readonly options: GrokRuntimeOptions) {}
+
+  setServerRequestHandler(
+    handler: GrokRuntimeOptions["onServerRequest"]
+  ): void {
+    this.options.onServerRequest = handler;
+  }
 
   async startSession(
     request: ProviderRuntimeRunRequest,
@@ -50,7 +60,6 @@ export class GrokRuntimeAdapter implements ProviderRuntimeAdapter {
       : [
         "agent",
         ...(this.options.includeNoLeader ? ["--no-leader"] : []),
-        "--always-approve",
         ...(this.options.apiBaseUrl ? ["--xai-api-base-url", this.options.apiBaseUrl] : []),
         "stdio"
       ];
@@ -89,8 +98,14 @@ export class GrokRuntimeAdapter implements ProviderRuntimeAdapter {
         }
         if (mapped.terminal) resolveTerminal();
       },
-      onServerRequest: (_request: GrokAcpServerRequest) => {
-        throw new Error("GROK_PERMISSION_BRIDGE_UNAVAILABLE");
+      onServerRequest: (serverRequest: GrokAcpServerRequest) => {
+        if (!this.options.onServerRequest) {
+          throw new Error("GROK_PERMISSION_BRIDGE_UNAVAILABLE");
+        }
+        return this.options.onServerRequest(serverRequest, {
+          sessionId: request.sessionId,
+          providerSessionId
+        });
       }
     });
 
@@ -126,7 +141,18 @@ export class GrokRuntimeAdapter implements ProviderRuntimeAdapter {
       sink.updateSessionBinding({ providerSessionId, rawStoreRef });
       await applyGrokConfigOptions(client, providerSessionId, request.options);
 
-      const completed = this.runPrompt(client, request, providerSessionId, terminalState(), terminalDetailState(), terminalReceived);
+      const completed = this.runPrompt(client, request, providerSessionId, terminalState(), terminalDetailState(), terminalReceived, (result) => {
+        const stopReason = readPromptStopReason(result);
+        if (!stopReason) return;
+        if (stopReason === "cancelled" || stopReason === "error") {
+          terminal = "error";
+          terminalDetail = `GROK_PROMPT_STOPPED: ${stopReason}`;
+          return;
+        }
+        terminal = "complete";
+        terminalDetail = stopReason;
+        resolveTerminal();
+      });
       return {
         providerSessionId,
         rawStoreRef,
@@ -161,7 +187,8 @@ export class GrokRuntimeAdapter implements ProviderRuntimeAdapter {
     providerSessionId: string,
     terminalState: () => "complete" | "error" | null,
     terminalDetailState: () => string | null,
-    terminalReceived: Promise<void>
+    terminalReceived: Promise<void>,
+    onPromptResult: (result: unknown) => void
   ): Promise<void> {
     const prompt = request.options.providerPrompt?.trim() || request.options.content.trim();
     if (!prompt) {
@@ -169,10 +196,13 @@ export class GrokRuntimeAdapter implements ProviderRuntimeAdapter {
       return;
     }
     try {
-      await Promise.race([client.request("session/prompt", {
+      const promptResult = client.request("session/prompt", {
         sessionId: providerSessionId,
         prompt: [{ type: "text", text: prompt }]
-      }, null), terminalReceived]);
+      }, null);
+      await Promise.race([promptResult.then((result) => {
+        onPromptResult(result);
+      }), terminalReceived]);
       // Grok 1.0.25 的 prompt 结果可能先于最后一批 session/update 返回。
       // 留出一个有界的排空窗口，避免关闭进程时丢掉真实文本事件。
       await client.flushMessages(250);
@@ -216,4 +246,10 @@ function readSessionId(value: unknown): string {
   const record = asRecord(value);
   const id = record.sessionId ?? record.session_id ?? asRecord(record.session).id;
   return typeof id === "string" ? id.trim() : "";
+}
+
+function readPromptStopReason(value: unknown): string | null {
+  const record = asRecord(value);
+  const stopReason = record.stopReason ?? record.stop_reason;
+  return typeof stopReason === "string" && stopReason.trim() ? stopReason.trim().toLowerCase() : null;
 }

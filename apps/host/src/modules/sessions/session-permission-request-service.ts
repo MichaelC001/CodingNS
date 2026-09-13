@@ -128,6 +128,12 @@ interface SessionPermissionRequestInternalRecord extends SessionPermissionReques
         requestType: "approval" | "question";
         approvalId: string | null;
         respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
+      }
+    | {
+        kind: "grok";
+        requestType: "approval" | "question";
+        questions: SessionPermissionRequestQuestionView[];
+        respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
       };
 }
 
@@ -391,6 +397,43 @@ export class SessionPermissionRequestService {
       return await this.markResolved(request, accepted ? "approved" : "declined");
     }
 
+    if (request.source.kind === "grok") {
+      const action = normalizeText(input.action);
+      const selected = request.actions.find((candidate) => candidate.value === action);
+      if (!selected) {
+        throw new AppError({
+          statusCode: 400,
+          errorCode: "INVALID_INPUT",
+          detail: "Grok 权限申请选项无效",
+          field: "action"
+        });
+      }
+
+      if (request.source.requestType === "question" && selected.value === "cancel") {
+        await request.source.respond({
+          ok: true,
+          value: { outcome: "cancelled" }
+        });
+      } else {
+        await request.source.respond(request.source.requestType === "question"
+        ? {
+            ok: true,
+            value: {
+              outcome: "accepted",
+              answers: request.source.questions.map((question) => input.answers?.[question.id] ?? [])
+            }
+          }
+        : {
+            ok: true,
+            value: { outcome: { outcome: "selected", optionId: selected.value } }
+          });
+      }
+      return await this.markResolved(
+        request,
+        selected.value.startsWith("reject") ? "declined" : "approved"
+      );
+    }
+
     const responsePayload = buildCodexServerRequestResponsePayload(request, input);
 
     if (!request.source.resolve) {
@@ -459,6 +502,105 @@ export class SessionPermissionRequestService {
     };
     this.upsertRequest(request);
     await this.emitEnvelope({ type: "session.permission_request", sessionId: input.sessionId, request: this.toRequestView(request) });
+  }
+
+  async handleGrokServerRequest(input: {
+    sessionId: string;
+    providerSessionId: string;
+    request: Record<string, unknown>;
+  }): Promise<unknown> {
+    const method = normalizeText(input.request.method);
+    if (method !== "session/request_permission" && method !== "_x.ai/ask_user_question") {
+      throw new AppError({
+        statusCode: 400,
+        errorCode: "UNSUPPORTED_GROK_SERVER_REQUEST",
+        detail: "当前暂不支持这类 Grok server request"
+      });
+    }
+
+    const params = toRecord(input.request.params) ?? {};
+    const requestType = method === "_x.ai/ask_user_question" ? "question" : "approval";
+    const toolCall = toRecord(params.toolCall) ?? {};
+    const rawInput = toRecord(toolCall.rawInput) ?? {};
+    const toolMetadata = toRecord(toRecord(toolCall._meta)?.["x.ai/tool"]);
+    const options = Array.isArray(params.options) ? params.options : [];
+    const questions = requestType === "question" ? normalizeGrokQuestions(params.questions) : [];
+    if (requestType === "question" && questions.length === 0) {
+      throw new AppError({
+        statusCode: 400,
+        errorCode: "UNSUPPORTED_GROK_SERVER_REQUEST",
+        detail: "Grok 问答请求没有有效问题"
+      });
+    }
+    const actions = options.flatMap((option) => {
+      const record = toRecord(option);
+      const value = normalizeText(record?.optionId);
+      if (!value) return [];
+      const isReject = value.startsWith("reject");
+      return [createAction(
+        value,
+        normalizeText(record?.name) ?? value,
+        isReject ? "danger" : value === "allow-once" ? "primary" : "neutral",
+        normalizeText(record?.name) ?? value
+      )];
+    });
+    if (actions.length === 0 && requestType === "question") {
+      actions.push(createAction("submit", "提交回答", "primary", "提交回答"));
+      actions.push(createAction("cancel", "取消", "danger", "取消本次问题"));
+    }
+    if (actions.length === 0) {
+      throw new AppError({
+        statusCode: 400,
+        errorCode: "UNSUPPORTED_GROK_SERVER_REQUEST",
+        detail: "Grok 权限申请没有可用选项"
+      });
+    }
+
+    const now = nowIso();
+    let resolveResponse!: (value: unknown) => void;
+    let rejectResponse!: (error: Error) => void;
+    const response = new Promise<unknown>((resolve, reject) => {
+      resolveResponse = resolve;
+      rejectResponse = reject;
+    });
+    const title = normalizeText(toolCall.title) ?? "Grok 请求执行确认";
+    const request: SessionPermissionRequestInternalRecord = {
+      id: `grok-${input.request.id}`,
+      sessionId: input.sessionId,
+      provider: "grok",
+      providerSessionId: input.providerSessionId,
+      requestKey: String(input.request.id),
+      kind: requestType === "question" ? "user_input" : "permissions",
+      status: "pending",
+      title,
+      summary: requestType === "question" ? questions[0].question : title,
+      detail: stringifyPayload(params),
+      reason: normalizeText(rawInput.description),
+      toolName: normalizeText(toolMetadata?.name),
+      command: normalizeText(rawInput.command),
+      cwd: normalizeText(rawInput.cwd),
+      paths: [normalizeText(rawInput.target_file), normalizeText(rawInput.path)].filter((value): value is string => Boolean(value)),
+      permissionProfile: null,
+      questions,
+      actions,
+      rawPayload: stringifyPayload(input.request),
+      createdAt: now,
+      updatedAt: now,
+      resolvedAt: null,
+      source: {
+        kind: "grok",
+        requestType,
+        questions,
+        respond: async (result) => {
+          if (result.ok) resolveResponse(result.value);
+          else rejectResponse(new Error(result.error.message));
+        }
+      }
+    };
+
+    this.upsertRequest(request);
+    await this.emitEnvelope({ type: "session.permission_request", sessionId: input.sessionId, request: this.toRequestView(request) });
+    return await response;
   }
 
   async handleClaudePreToolUse(
@@ -3294,6 +3436,31 @@ function normalizeHarnessQuestions(value: unknown): SessionPermissionRequestQues
       question: normalizeText(record.question ?? record.text) ?? "请提供所需信息",
       allowOther: record.allowOther !== false,
       secret: record.secret === true,
+      multiSelect: record.multiSelect === true,
+      options
+    };
+  });
+}
+
+function normalizeGrokQuestions(value: unknown): SessionPermissionRequestQuestionView[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item, index) => {
+    const record = toRecord(item) ?? {};
+    const options = Array.isArray(record.options)
+      ? record.options.map((option) => {
+        const optionRecord = toRecord(option);
+        return {
+          label: normalizeText(optionRecord?.label ?? option) ?? "选项",
+          description: normalizeText(optionRecord?.description)
+        };
+      })
+      : [];
+    return {
+      id: normalizeText(record.id) ?? `question-${index + 1}`,
+      header: normalizeText(record.header) ?? "需要回答",
+      question: normalizeText(record.question) ?? "请提供所需信息",
+      allowOther: true,
+      secret: false,
       multiSelect: record.multiSelect === true,
       options
     };

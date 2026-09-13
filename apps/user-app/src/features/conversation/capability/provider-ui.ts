@@ -153,7 +153,7 @@ const PROVIDER_METADATA: Record<BuiltinProviderId, ProviderMetadata> = {
     defaultReasoningLevel: null,
     supportsInterrupt: true,
     supportsAttachments: false,
-    supportsPermissionPrompt: false,
+    supportsPermissionPrompt: true,
     supportsSlashMenuByDefault: false,
     supportsSessionDeleteByDefault: true,
     foldRulesMessagesByDefault: false

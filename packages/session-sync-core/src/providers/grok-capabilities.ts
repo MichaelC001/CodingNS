@@ -18,9 +18,9 @@ export function createGrokCapabilities(input: GrokCapabilityInput = {}): Provide
     ? false
     : capabilities.has("tool_call") && capabilities.has("tool_call_update");
   const status = input.readOnly ? "read-only" : input.ready === false ? "degraded" : "ready";
+  const supportsPermissionBridge = status === "ready";
   const limitations = [
-    "Grok 的文件、终端和 MCP 权限由 Grok 运行时处理，CodingNS 不提供逐次审批。",
-    "首版不支持 CodingNS 权限桥接、附件、Token Usage、原生 Fork 和分享。",
+    "Grok 的附件、Token Usage、原生 Fork 和分享仍不支持。",
     ...(status !== "ready" ? ["Grok ACP 尚未完成可写能力握手，当前只能读取或诊断。"] : []),
     ...(!structuredTools ? ["结构化工具事件尚未通过稳定的 tool_call/tool_call_update 契约验证。"] : [])
   ];
@@ -36,9 +36,9 @@ export function createGrokCapabilities(input: GrokCapabilityInput = {}): Provide
     supportsStructuredToolCalls: structuredTools,
     supportsTokenUsage: false,
     supportsAttachments: false,
-    supportsPermissionPrompt: false,
+    supportsPermissionPrompt: supportsPermissionBridge,
     supportsCheckpoint: false,
-    supportsPermissionRequests: false,
+    supportsPermissionRequests: supportsPermissionBridge,
     supportsSessionFork: false,
     supportsSessionDelete: true,
     supportsSessionShare: false,
