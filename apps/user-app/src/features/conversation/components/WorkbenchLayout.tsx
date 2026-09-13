@@ -253,6 +253,7 @@ import {
   type ButlerFollowUpTaskDto,
   type ButlerOverviewDto
 } from "../../butler/api/butler-api";
+import { BUTLER_FEATURE_ENABLED } from "../../butler/butler-feature-status";
 import {
   clearSessionProviderPickerCapabilityCache,
   SessionProviderPicker
@@ -9736,11 +9737,13 @@ function SidebarContent({
             </button>
           ) : null}
           <WorkbenchHostSwitcher />
-          <WorkbenchNotificationButton
-            unreadCount={unreadNotificationCount}
-            open={notificationPanelOpen}
-            onToggle={onToggleNotificationPanel}
-          />
+          {BUTLER_FEATURE_ENABLED ? (
+            <WorkbenchNotificationButton
+              unreadCount={unreadNotificationCount}
+              open={notificationPanelOpen}
+              onToggle={onToggleNotificationPanel}
+            />
+          ) : null}
           <button
             type="button"
             className="workbench-nav-toolbar-button"
@@ -12564,6 +12567,12 @@ export function WorkbenchLayout({
   }, []);
 
   const refreshGlobalNotifications = useCallback(async () => {
+    if (!BUTLER_FEATURE_ENABLED) {
+      setGlobalNotifications([]);
+      setArchivedNotificationIds(new Set());
+      return;
+    }
+
     const requestId = notificationRefreshRequestIdRef.current + 1;
     notificationRefreshRequestIdRef.current = requestId;
 
@@ -12638,6 +12647,10 @@ export function WorkbenchLayout({
   }, [notificationSeenAt]);
 
   useEffect(() => {
+    if (!BUTLER_FEATURE_ENABLED) {
+      return;
+    }
+
     void refreshGlobalNotifications();
 
     const timer = window.setInterval(() => {
@@ -15167,6 +15180,10 @@ export function WorkbenchLayout({
   }, [closeLightweightChatCreateModal, currentWorkspaceId, currentWorkspaceRef, lightweightChatCreateWorkspace, navigate]);
 
   const toggleNotificationArchive = useCallback(async (notificationId: string, archived: boolean) => {
+    if (!BUTLER_FEATURE_ENABLED) {
+      return;
+    }
+
     const requestId = notificationArchiveMutationRequestIdRef.current + 1;
     notificationArchiveMutationRequestIdRef.current = requestId;
 
@@ -15829,7 +15846,9 @@ export function WorkbenchLayout({
           listAllAffairsSearchDocumentsForKeywords(workspace.id, searchKeywords),
           withPromiseTimeout(listAffairsLightweightSessions(workspace.id)),
           withPromiseTimeout(getAffairsAssistantSessionsSnapshot(workspace.id)),
-          withPromiseTimeout(listButlerInboxItems({ workspaceId: workspace.id }))
+          BUTLER_FEATURE_ENABLED
+            ? withPromiseTimeout(listButlerInboxItems({ workspaceId: workspace.id }))
+            : Promise.resolve({ items: [] as ButlerInboxItemDto[] })
         ]).then(([snapshotResult, documentResult, lightweightResult, agentResult, inboxResult]) => ({
           workspace,
           snapshotResult,
@@ -15841,7 +15860,9 @@ export function WorkbenchLayout({
       );
 
       const results = await Promise.allSettled([
-        withPromiseTimeout(listButlerFollowUpTasks()),
+        BUTLER_FEATURE_ENABLED
+          ? withPromiseTimeout(listButlerFollowUpTasks())
+          : Promise.resolve({ items: [] as ButlerFollowUpTaskDto[] }),
         ...workspaceSearches
       ]);
       if (disposed || requestId !== affairsSearchRequestIdRef.current) {
@@ -17747,14 +17768,16 @@ export function WorkbenchLayout({
                         onClick={openLeftPanel}
                       />
                       <WorkbenchHostSwitcher collapsed />
-                      <WorkbenchNotificationButton
-                        unreadCount={unreadNotificationCount}
-                        open={notificationPanelOpen}
-                        onToggle={() => {
-                          setNotificationPanelOpen((current) => !current);
-                        }}
-                        collapsed
-                      />
+                      {BUTLER_FEATURE_ENABLED ? (
+                        <WorkbenchNotificationButton
+                          unreadCount={unreadNotificationCount}
+                          open={notificationPanelOpen}
+                          onToggle={() => {
+                            setNotificationPanelOpen((current) => !current);
+                          }}
+                          collapsed
+                        />
+                      ) : null}
                       <button
                         type="button"
                         className="workbench-nav-toolbar-button workbench-collapsed-button"
@@ -17864,23 +17887,25 @@ export function WorkbenchLayout({
         </AffairsWorkbenchProvider>
       ) : null}
 
-      <WorkbenchNotificationModal
-        open={notificationPanelOpen}
-        notifications={globalNotifications}
-        archivedNotificationIds={archivedNotificationIds}
-        showArchivedNotifications={showArchivedNotifications}
-        onClose={() => setNotificationPanelOpen(false)}
-        onToggleShowArchivedNotifications={setShowArchivedNotifications}
-        onArchiveNotification={(notificationId) => {
-          void toggleNotificationArchive(notificationId, true);
-        }}
-        onUnarchiveNotification={(notificationId) => {
-          void toggleNotificationArchive(notificationId, false);
-        }}
-        onSelectNotification={handleSelectNotification}
-        preferredWorkspaceId={currentWorkspaceId}
-        preferredSessionId={isDraftSession ? null : currentSessionId}
-      />
+      {BUTLER_FEATURE_ENABLED ? (
+        <WorkbenchNotificationModal
+          open={notificationPanelOpen}
+          notifications={globalNotifications}
+          archivedNotificationIds={archivedNotificationIds}
+          showArchivedNotifications={showArchivedNotifications}
+          onClose={() => setNotificationPanelOpen(false)}
+          onToggleShowArchivedNotifications={setShowArchivedNotifications}
+          onArchiveNotification={(notificationId) => {
+            void toggleNotificationArchive(notificationId, true);
+          }}
+          onUnarchiveNotification={(notificationId) => {
+            void toggleNotificationArchive(notificationId, false);
+          }}
+          onSelectNotification={handleSelectNotification}
+          preferredWorkspaceId={currentWorkspaceId}
+          preferredSessionId={isDraftSession ? null : currentSessionId}
+        />
+      ) : null}
 
       <WorkspaceSearchModal
         open={searchModalOpen}

@@ -12,6 +12,7 @@ import { useHostRuntimeBoundaryKey } from "../config/host-runtime-store";
 import { LoginPage } from "../features/auth/pages/LoginPage";
 import { TrustedEntryLandingPage } from "../features/auth/pages/TrustedEntryLandingPage";
 import { useAuthSelector } from "../features/auth/store/auth-store";
+import { BUTLER_FEATURE_ENABLED } from "../features/butler/butler-feature-status";
 import { resolveWorkbenchShellMode } from "../features/workbench/components/workbench-shell-mode";
 import { usePlatform } from "../platform/platform-provider";
 import { shouldShowTrustedEntryLanding } from "../config/trusted-entry-mode";
@@ -267,13 +268,13 @@ const appRoutes = [
               "PluginContainerPage"
             )
           },
-          {
+          ...(BUTLER_FEATURE_ENABLED ? [{
             path: "workspaces/:workspaceId/butler",
             lazy: lazyRouteComponent(
               () => import("../features/butler/pages/AdaptiveButlerPage"),
               "AdaptiveButlerPage"
             )
-          },
+          }] : []),
           {
             path: "settings",
             lazy: lazyRouteComponent(

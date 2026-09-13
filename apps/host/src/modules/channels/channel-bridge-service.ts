@@ -9,6 +9,7 @@ import type {
 } from "../../types/domain.js";
 import type { ButlerControlSessionView } from "../butler/butler-control-session-service.js";
 import type { ButlerControlSessionService } from "../butler/butler-control-session-service.js";
+import { BUTLER_FEATURE_ENABLED } from "../butler/butler-feature-status.js";
 
 export interface NormalizedChannelInboundMessage {
   externalEventId: string;
@@ -70,6 +71,15 @@ export class ChannelBridgeService {
     channelAccountId: string,
     input: NormalizedChannelInboundMessage
   ): Promise<ChannelBridgeDispatchResult> {
+    // [待移除] 外部渠道当前只负责 Butler 控制会话，Butler 停用后不再接收新消息。
+    if (!BUTLER_FEATURE_ENABLED) {
+      throw new AppError({
+        statusCode: 410,
+        errorCode: "BUTLER_DISABLED",
+        detail: "Butler 功能已停用，外部渠道消息不会再转入助手会话"
+      });
+    }
+
     const account = this.requireEnabledAccount(channelAccountId);
     const normalized = normalizeInboundMessage(input);
     const duplicate = this.channelInboundEventRepository.findByAccountAndExternalEventId(

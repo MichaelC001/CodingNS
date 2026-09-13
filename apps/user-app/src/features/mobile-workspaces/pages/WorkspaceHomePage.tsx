@@ -17,6 +17,7 @@ import {
   listButlerFollowUpTasks,
   listButlerInboxItems
 } from "../../butler/api/butler-api";
+import { BUTLER_FEATURE_ENABLED } from "../../butler/butler-feature-status";
 import { countInProgressButlerTasks } from "../../butler/butler-task-count";
 import { BUTLER_INBOX_UPDATED_EVENT } from "../../butler/runtime/butler-inbox-events";
 import { subscribeButlerRecordsUpdated } from "../../butler/runtime/butler-records-events";
@@ -197,6 +198,15 @@ export function WorkspaceHomePage() {
         : t("shell.workspaceHomeQuickLaunchStopped");
 
   useEffect(() => {
+    if (!BUTLER_FEATURE_ENABLED) {
+      setButlerState({
+        loading: false,
+        activeTaskCount: 0,
+        pendingInboxCount: 0
+      });
+      return;
+    }
+
     const workspaceId = currentWorkspace?.id ?? null;
 
     if (!workspaceId) {
@@ -573,12 +583,12 @@ export function WorkspaceHomePage() {
       accent: shouldAccentMetricCount(activeSessions.length),
       onClick: visibleSessions.length > 0 ? openSessionIndex : undefined
     },
-    {
+    ...(BUTLER_FEATURE_ENABLED ? [{
       label: t("shell.workspaceHomeMetricUnread"),
       value: unreadNotificationCount,
       accent: shouldAccentMetricCount(unreadNotificationCount),
       onClick: () => setNotificationOpen(true)
-    },
+    }] : []),
     {
       label: t("shell.workspaceHomeMetricTerminal"),
       value: dashboardState.terminalLoading ? "…" : dashboardState.activeTerminalCount ?? "—",
@@ -602,24 +612,24 @@ export function WorkspaceHomePage() {
       accent: shouldAccentMetricCount(waitingInputSessions.length),
       onClick: visibleSessions.length > 0 ? openSessionIndex : undefined
     },
-    {
+    ...(BUTLER_FEATURE_ENABLED ? [{
       label: t("shell.workspaceHomeButlerLabel"),
       value: butlerState.loading ? "…" : butlerState.activeTaskCount,
       accent: butlerState.loading === false && shouldAccentMetricCount(butlerState.activeTaskCount),
       onClick: currentWorkspace ? openCurrentWorkspaceButler : undefined
-    },
+    }] : []),
     {
       label: t("shell.workspaceHomeQuickLaunchStatusLabel"),
       value: quickLaunchStatusValue,
       accent: dashboardState.quickLaunchRunning === true,
       onClick: currentWorkspace ? openCurrentWorkspaceProcesses : undefined
     },
-    {
+    ...(BUTLER_FEATURE_ENABLED ? [{
       label: t("shell.butlerInboxAction"),
       value: butlerState.loading ? "…" : butlerState.pendingInboxCount,
       accent: butlerState.loading === false && shouldAccentMetricCount(butlerState.pendingInboxCount),
       onClick: currentWorkspace ? () => setInboxOpen(true) : undefined
-    }
+    }] : [])
   ] as const;
 
   return (
@@ -888,29 +898,33 @@ export function WorkspaceHomePage() {
         onClose={() => setCreateSessionOpen(false)}
         onSelect={handleSelectSessionProvider}
       />
-      <WorkspaceInboxModal
-        open={inboxOpen}
-        preferredWorkspaceId={currentWorkspace?.id ?? null}
-        compactComposer
-        onClose={() => setInboxOpen(false)}
-      />
-      <MobileNotificationsModal
-        open={notificationOpen}
-        notifications={globalNotifications}
-        archivedNotificationIds={archivedNotificationIds}
-        showArchivedNotifications={showArchivedNotifications}
-        onClose={() => setNotificationOpen(false)}
-        onToggleShowArchivedNotifications={setShowArchivedNotifications}
-        onArchiveNotification={archiveNotification}
-        onUnarchiveNotification={unarchiveNotification}
-        onSelectNotification={(notification) => {
-          setNotificationOpen(false);
+      {BUTLER_FEATURE_ENABLED ? (
+        <>
+          <WorkspaceInboxModal
+            open={inboxOpen}
+            preferredWorkspaceId={currentWorkspace?.id ?? null}
+            compactComposer
+            onClose={() => setInboxOpen(false)}
+          />
+          <MobileNotificationsModal
+            open={notificationOpen}
+            notifications={globalNotifications}
+            archivedNotificationIds={archivedNotificationIds}
+            showArchivedNotifications={showArchivedNotifications}
+            onClose={() => setNotificationOpen(false)}
+            onToggleShowArchivedNotifications={setShowArchivedNotifications}
+            onArchiveNotification={archiveNotification}
+            onUnarchiveNotification={unarchiveNotification}
+            onSelectNotification={(notification) => {
+              setNotificationOpen(false);
 
-          if (notification.routePath) {
-            navigate(notification.routePath);
-          }
-        }}
-      />
+              if (notification.routePath) {
+                navigate(notification.routePath);
+              }
+            }}
+          />
+        </>
+      ) : null}
     </main>
   );
 }

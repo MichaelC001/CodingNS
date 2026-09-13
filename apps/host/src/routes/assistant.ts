@@ -1,16 +1,50 @@
 import type { FastifyInstance } from "fastify";
 
+import { BUTLER_UI_REQUEST_SOURCE } from "../middlewares/auth-guard.js";
+import { AppError } from "../shared/errors/app-error.js";
 import type { AssistantCapabilityController } from "../modules/assistant-capability/assistant-capability-controller.js";
 import type {
   AssistantCapabilityReceipt,
   AssistantCapabilityService
 } from "../modules/assistant-capability/assistant-capability-service.js";
+import { BUTLER_FEATURE_ENABLED } from "../modules/butler/butler-feature-status.js";
 
 export async function registerAssistantCapabilityRoutes(
   app: FastifyInstance,
   assistantCapabilityController: AssistantCapabilityController,
   assistantCapabilityService?: AssistantCapabilityService
 ): Promise<void> {
+  // [待移除] 这些能力接口原本服务 Butler 控制面；workspace-scoped 调用仍属于普通工作区会话。
+  app.addHook("preHandler", async (request) => {
+    if (BUTLER_FEATURE_ENABLED) {
+      return;
+    }
+
+    const routePath = request.url.split("?")[0] ?? request.url;
+    if (!routePath.startsWith("/api/assistant/")) {
+      return;
+    }
+
+    const callerKind = request.auth?.callerKind;
+    const capabilityProfile = request.auth?.capabilityProfile;
+    const requestSource = request.headers["x-codingns-assistant-source"];
+    const normalizedRequestSource = Array.isArray(requestSource) ? requestSource[0] : requestSource;
+    if (
+      callerKind !== "assistant_runtime"
+      && capabilityProfile !== "butler-full"
+      && capabilityProfile !== "butler-ui"
+      && normalizedRequestSource !== BUTLER_UI_REQUEST_SOURCE
+    ) {
+      return;
+    }
+
+    throw new AppError({
+      statusCode: 410,
+      errorCode: "BUTLER_DISABLED",
+      detail: "Butler 功能已停用，相关助手能力代码仅保留待移除"
+    });
+  });
+
   app.addHook("preSerialization", async (request, _reply, payload) => {
     const routePath = request.url.split("?")[0] ?? request.url;
 

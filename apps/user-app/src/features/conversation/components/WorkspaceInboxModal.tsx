@@ -16,6 +16,7 @@ import {
   type ButlerInboxItemType,
   type ButlerProjectDto
 } from "../../butler/api/butler-api";
+import { BUTLER_FEATURE_ENABLED } from "../../butler/butler-feature-status";
 import { dispatchButlerInboxUpdatedEvent } from "../../butler/runtime/butler-inbox-events";
 import { WorkbenchModal } from "./WorkbenchModal";
 
@@ -123,6 +124,10 @@ export function WorkspaceInboxPanel({
   }, [active, creationRequestId, initialDraft, onComposerOpenChange, preferredProjectId, preferredWorkspaceId]);
 
   async function loadData() {
+    if (!BUTLER_FEATURE_ENABLED) {
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -176,6 +181,10 @@ export function WorkspaceInboxPanel({
       title: nextDraft?.title?.trim() ?? "",
       content: nextDraft?.content?.trim() ?? ""
     });
+  }
+
+  if (!BUTLER_FEATURE_ENABLED) {
+    return null;
   }
 
   function handleEditClick(item: ButlerInboxItemDto) {
@@ -816,6 +825,10 @@ export function WorkspaceInboxModal({
       setComposerOpen(!compactComposer);
     }
   }, [compactComposer, open]);
+
+  if (!BUTLER_FEATURE_ENABLED) {
+    return null;
+  }
 
   return (
     <WorkbenchModal

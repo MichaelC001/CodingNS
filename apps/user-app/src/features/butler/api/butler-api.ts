@@ -1,3 +1,4 @@
+// [待移除] Butler API 类型和调用封装暂时保留；运行时入口已由功能总开关关闭。
 import { httpClient } from "../../../network/http-client";
 import { getHostBaseUrl } from "../../../config/env";
 import { ApiError } from "../../../shared/network/api-error";

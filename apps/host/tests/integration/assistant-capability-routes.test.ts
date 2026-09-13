@@ -10,6 +10,7 @@ import {
 import { AssistantCapabilityController } from "../../src/modules/assistant-capability/assistant-capability-controller.js";
 import type { AssistantCapabilityService } from "../../src/modules/assistant-capability/assistant-capability-service.js";
 import type { AuthService } from "../../src/modules/auth/auth-service.js";
+import { BUTLER_FEATURE_ENABLED } from "../../src/modules/butler/butler-feature-status.js";
 import { registerAssistantCapabilityRoutes } from "../../src/routes/assistant.js";
 import { AppError } from "../../src/shared/errors/app-error.js";
 import { setErrorHandler } from "../../src/shared/http/error-handler.js";
@@ -169,6 +170,14 @@ describe("assistant capability routes", () => {
       }
     });
 
+    if (!BUTLER_FEATURE_ENABLED) {
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toMatchObject({
+        error_code: "BUTLER_DISABLED"
+      });
+      return;
+    }
+
     expect(response.statusCode).toBe(200);
     expect(response.headers[ASSISTANT_CALLER_KIND_HEADER]).toBe("assistant_runtime");
     expect(response.json()).toMatchObject({
@@ -205,6 +214,14 @@ describe("assistant capability routes", () => {
         "x-codingns-assistant-source": BUTLER_UI_REQUEST_SOURCE
       }
     });
+
+    if (!BUTLER_FEATURE_ENABLED) {
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toMatchObject({
+        error_code: "BUTLER_DISABLED"
+      });
+      return;
+    }
 
     expect(response.statusCode).toBe(200);
     expect(response.headers[ASSISTANT_CALLER_KIND_HEADER]).toBe("interactive_user");

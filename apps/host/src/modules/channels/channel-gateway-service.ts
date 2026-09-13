@@ -6,6 +6,7 @@ import type {
   ChannelWebhookRequestContext
 } from "./channel-platform-adapters.js";
 import type { ChannelDeliveryService } from "./channel-delivery-service.js";
+import { BUTLER_FEATURE_ENABLED } from "../butler/butler-feature-status.js";
 
 interface ChannelAccountRepository {
   findById(id: string): ChannelAccount | null;
@@ -31,6 +32,15 @@ export class ChannelGatewayService {
     statusCode: number;
     body: Record<string, unknown> | string;
   }> {
+    // [待移除] 外部渠道 webhook 只服务 Butler；停用后立即拒绝，避免解析和投递链路继续运行。
+    if (!BUTLER_FEATURE_ENABLED) {
+      throw new AppError({
+        statusCode: 410,
+        errorCode: "BUTLER_DISABLED",
+        detail: "Butler 功能已停用，外部渠道 webhook 不再接收消息"
+      });
+    }
+
     const account = this.requireWebhookAccount(channelAccountId);
     const adapter = this.adapterRegistry.require(account.platformCode);
     const parsed = await adapter.parseWebhook(account, request);

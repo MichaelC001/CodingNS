@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 
 import type { ButlerController } from "../modules/butler/butler-controller.js";
 
+// [待移除] Butler 路由代码暂时保留，运行时由 create-server 的总开关决定是否注册。
 export async function registerButlerRoutes(
   app: FastifyInstance,
   butlerController: ButlerController
