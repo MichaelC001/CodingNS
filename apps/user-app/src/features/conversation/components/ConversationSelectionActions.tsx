@@ -38,6 +38,7 @@ import { useEnabledProviderCatalog } from "../capability/use-enabled-provider-ca
 import {
   createDeploymentPresetOptions,
   DeploymentMacSelect,
+  getModelProviderPrefix,
   GLOBAL_DEFAULT_PRESET_VALUE,
   isProviderDefaultModel,
   mapProviderToModelSwitchApp,
@@ -69,6 +70,18 @@ interface SelectionSnapshot {
 }
 
 const SELECTION_COMMIT_DELAY_MS = 48;
+
+function getSelectionModelLabel(
+  model: NonNullable<ProviderCapabilitiesDto["modelOptions"]>[number],
+  provider: ProviderId
+): string {
+  if (isProviderDefaultModel(model)) {
+    return t("conversation.modelUseCliDefault");
+  }
+
+  const providerPrefix = getModelProviderPrefix(model, provider);
+  return providerPrefix ? `${providerPrefix} · ${model.name}` : model.name;
+}
 
 function copyTextWithExecCommand(text: string): boolean {
   if (typeof document === "undefined") {
@@ -373,9 +386,9 @@ export function ConversationSelectionActions({
     () =>
       modelOptions.map((item) => ({
         value: item.id,
-        label: isProviderDefaultModel(item) ? t("conversation.modelUseCliDefault") : item.name
+        label: getSelectionModelLabel(item, selectedProvider)
       })),
-    [modelOptions]
+    [modelOptions, selectedProvider]
   );
   const currentModelOption = useMemo(
     () => modelOptions.find((item) => item.id === selectedModel) ?? modelOptions[0] ?? null,
@@ -383,7 +396,7 @@ export function ConversationSelectionActions({
   );
   const deploymentTriggerLabel = useMemo(() => {
     const modelLabel = currentModelOption
-      ? (isProviderDefaultModel(currentModelOption) ? t("conversation.modelUseCliDefault") : currentModelOption.name)
+      ? getSelectionModelLabel(currentModelOption, selectedProvider)
       : t("conversation.modelUseCliDefault");
 
     if (!showDeploymentPresetColumn) {
@@ -392,7 +405,7 @@ export function ConversationSelectionActions({
 
     const presetLabel = selectedPresetOption?.label ?? t("conversation.deploymentDefaultPreset");
     return `${presetLabel} · ${modelLabel}`;
-  }, [currentModelOption, selectedPresetOption, showDeploymentPresetColumn]);
+  }, [currentModelOption, selectedPresetOption, selectedProvider, showDeploymentPresetColumn]);
   const applySelectedProvider = useCallback((nextProvider: BuiltinProviderId) => {
     setSelectedProvider(nextProvider);
 
@@ -1164,7 +1177,7 @@ export function ConversationSelectionActions({
               >
                 {modelOptions.map((item) => (
                   <option key={item.id} value={item.id}>
-                    {item.name}
+                    {getSelectionModelLabel(item, selectedProvider)}
                   </option>
                 ))}
               </select>

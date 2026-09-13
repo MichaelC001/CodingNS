@@ -874,6 +874,8 @@ export interface RunDebugTargetResultDto {
 export interface ProviderModelOptionDto {
   id: string;
   name: string;
+  /** 模型目录中的供应商显示名称，用于区分同名模型。 */
+  providerName?: string;
   usesProviderDefault?: boolean;
   supportedReasoningEfforts?: string[];
   defaultReasoningEffort?: string | null;

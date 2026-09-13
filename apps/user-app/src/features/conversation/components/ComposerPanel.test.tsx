@@ -3111,12 +3111,14 @@ describe("ComposerPanel", () => {
             {
               id: "deepseek-official:deepseek-v4-flash",
               name: "DeepSeek-V4-Flash",
+              providerName: "DeepSeek",
               supportedReasoningEfforts: ["off", "high", "max"],
               defaultReasoningEffort: "high"
             },
             {
               id: "deepseek-official:deepseek-v4-pro",
               name: "DeepSeek-V4-Pro",
+              providerName: "DeepSeek",
               supportedReasoningEfforts: ["off", "high", "max"],
               defaultReasoningEffort: "high"
             }
@@ -3131,7 +3133,7 @@ describe("ComposerPanel", () => {
       expect(screen.getByLabelText(t("conversation.modelSelectorLabel"))).toBeInTheDocument();
       expect(screen.getByLabelText(t("conversation.reasoningSelectorLabel"))).toBeInTheDocument();
     });
-    chooseOption(t("conversation.modelSelectorLabel"), "DeepSeek-V4-Pro");
+    chooseOption(t("conversation.modelSelectorLabel"), "DeepSeek · DeepSeek-V4-Pro");
     chooseOption(t("conversation.reasoningSelectorLabel"), t("conversation.reasoningOff"));
 
     expect(preferenceStoreMock.updatePreferences).toHaveBeenCalledWith({

@@ -65,6 +65,7 @@ import { MacSelect, type MacSelectOption } from "./MacSelect";
 import {
   createDeploymentPresetOptions,
   DeploymentMacSelect,
+  getModelProviderPrefix,
   GLOBAL_DEFAULT_PRESET_VALUE,
   isProviderDefaultModel,
   mapProviderToModelSwitchApp,
@@ -207,6 +208,7 @@ type ModelOption = {
   id: string;
   name: string;
   provider: ProviderId;
+  providerName?: string;
   usesProviderDefault?: boolean;
   supportedReasoningEfforts?: ReasoningLevel[];
   defaultReasoningEffort?: ReasoningLevel | null;
@@ -232,6 +234,15 @@ function getDeepSeekHarnessPresetLabel(id: string, name: string): string {
     minimal: t("conversation.deepSeekHarnessModeMinimal"),
     creator: t("conversation.deepSeekHarnessModeCreator")
   } as Record<string, string>)[id] ?? id;
+}
+
+function getComposerModelLabel(model: ModelOption): string {
+  if (isProviderDefaultModel(model)) {
+    return t("conversation.modelUseCliDefault");
+  }
+
+  const providerPrefix = getModelProviderPrefix(model, model.provider);
+  return providerPrefix ? `${providerPrefix} · ${model.name}` : model.name;
 }
 
 const FOCUS_COMPOSER_EVENT = "workbench:focus-composer";
@@ -1024,7 +1035,7 @@ export function ComposerPanel({
     () =>
       availableModels.map((model) => ({
         value: model.id,
-        label: isProviderDefaultModel(model) ? t("conversation.modelUseCliDefault") : model.name
+        label: getComposerModelLabel(model)
       })),
     [availableModels]
   );
@@ -1034,7 +1045,7 @@ export function ComposerPanel({
   );
   const deploymentTriggerLabel = useMemo(() => {
     const modelLabel = selectedModelOption
-      ? (isProviderDefaultModel(selectedModelOption) ? t("conversation.modelUseCliDefault") : selectedModelOption.name)
+      ? getComposerModelLabel(selectedModelOption)
       : t("conversation.modelUseCliDefault");
     if (!showDeploymentPresetColumn) {
       return modelLabel;
@@ -1121,7 +1132,7 @@ export function ComposerPanel({
     () =>
       forkAvailableModels.map((model) => ({
         value: model.id,
-        label: isProviderDefaultModel(model) ? t("conversation.modelUseCliDefault") : model.name
+        label: getComposerModelLabel(model)
       })),
     [forkAvailableModels]
   );
@@ -1158,7 +1169,7 @@ export function ComposerPanel({
   );
   const forkDeploymentTriggerLabel = useMemo(() => {
     const modelLabel = forkSelectedModelOption
-      ? (isProviderDefaultModel(forkSelectedModelOption) ? t("conversation.modelUseCliDefault") : forkSelectedModelOption.name)
+      ? getComposerModelLabel(forkSelectedModelOption)
       : t("conversation.modelUseCliDefault");
     if (!showForkDeploymentPresetColumn) {
       return modelLabel;

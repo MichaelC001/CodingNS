@@ -31,6 +31,7 @@ import { useEnabledProviderCatalog } from "../capability/use-enabled-provider-ca
 import {
   createDeploymentPresetOptions,
   DeploymentMacSelect,
+  getModelProviderPrefix,
   GLOBAL_DEFAULT_PRESET_VALUE,
   isProviderDefaultModel,
   mapProviderToModelSwitchApp,
@@ -41,6 +42,18 @@ import {
 import { MacSelect } from "./MacSelect";
 
 const DEPLOYMENT_SNAPSHOT_APPS: ModelSwitchAppId[] = ["codex", "claude-code", "gemini"];
+
+function getParallelModelLabel(
+  model: NonNullable<ProviderCapabilitiesDto["modelOptions"]>[number],
+  provider: ProviderId
+): string {
+  if (isProviderDefaultModel(model)) {
+    return t("conversation.modelUseCliDefault");
+  }
+
+  const providerPrefix = getModelProviderPrefix(model, provider);
+  return providerPrefix ? `${providerPrefix} · ${model.name}` : model.name;
+}
 
 interface ParallelSessionCreateMemberDraft {
   provider: ProviderId;
@@ -456,7 +469,7 @@ export function ParallelSessionCreateModal({
             : resolveModelOptions(defaultCapabilities, member.provider);
         const modelOptions = rawModelOptions.map((option) => ({
           value: option.id,
-          label: isProviderDefaultModel(option) ? t("conversation.modelUseCliDefault") : option.name
+          label: getParallelModelLabel(option, member.provider)
         }));
         const selectedModelValue = member.model.trim() || PROVIDER_DEFAULT_MODEL_ID;
         const selectedModelLabel = modelOptions.find((option) => option.value === selectedModelValue)?.label

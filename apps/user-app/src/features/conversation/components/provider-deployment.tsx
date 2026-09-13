@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 
 import { t } from "../../../shared/i18n";
 import type { ModelManagementAppSnapshotDto, ModelSwitchAppId } from "../../settings/api/model-switch-api";
-import type { ProviderId, SessionProviderConfigMode } from "../api/conversation-api";
+import type { ProviderId, ProviderModelOptionDto, SessionProviderConfigMode } from "../api/conversation-api";
 
 export interface DeploymentSelectOption {
   value: string;
@@ -23,6 +23,18 @@ export interface ProviderDeploymentSelection {
 
 export const PROVIDER_DEFAULT_MODEL_ID = "provider-default";
 export const GLOBAL_DEFAULT_PRESET_VALUE = "__global_default__";
+
+/** 返回 DeepSeek 模型所属供应商名称，兼容旧响应中的 ID 前缀。 */
+export function getModelProviderPrefix(
+  model: Pick<ProviderModelOptionDto, "id" | "providerName">,
+  provider: ProviderId
+): string | null {
+  if (provider !== "deepseek-harness") return null;
+  const providerName = model.providerName?.trim();
+  if (providerName) return providerName;
+  const separator = model.id.indexOf(":");
+  return separator > 0 ? model.id.slice(0, separator) : null;
+}
 
 export function mapProviderToModelSwitchApp(provider: ProviderId | null): ModelSwitchAppId | null {
   switch (provider) {
