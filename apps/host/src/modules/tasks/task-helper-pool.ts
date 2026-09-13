@@ -72,6 +72,12 @@ export class TaskHelperPool {
     if (signal && rootDir) {
       onAbort = () => {
         entry.lastSoftCancelRequestedAtMs = Date.now();
+        // 真实 helper 客户端会按 requestId 自己保留未确认请求并兜底回收；
+        // 只有无法提供该能力的替身客户端才由 pool 负责宽限期强杀。
+        if (typeof entry.client.hasUnacknowledgedRemoteWork === "function") {
+          return;
+        }
+
         cancelFallbackTimer = setTimeout(() => {
           if (!entry.client.hasInflightRemoteWork()) {
             return;
@@ -83,6 +89,7 @@ export class TaskHelperPool {
             `helper_soft_cancel_timeout:${handler}:${rootDir}`
           );
         }, ROOTDIR_HELPER_CANCEL_FALLBACK_MS);
+        cancelFallbackTimer.unref?.();
       };
 
       if (signal.aborted) {

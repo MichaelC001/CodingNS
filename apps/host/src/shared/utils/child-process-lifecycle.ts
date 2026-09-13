@@ -6,6 +6,9 @@ export const HELPER_PROCESS_TERM_GRACE_MS = 1_500;
 /** 优雅退出失败后，发送 SIGKILL 后再等待的时间。 */
 export const HELPER_PROCESS_KILL_WAIT_MS = 750;
 
+/** 发送取消请求后等待 helper 自行收尾的时间。 */
+export const HELPER_PROCESS_CANCEL_FALLBACK_MS = 3_000;
+
 interface TerminateChildProcessOptions {
   termGraceMs?: number;
   killWaitMs?: number;
@@ -33,10 +36,8 @@ export function signalChildProcessGroup(
         ? String(error.code)
         : "";
 
-      // 进程已经退出时无需再回退，其他错误继续尝试单进程信号。
-      if (code === "ESRCH") {
-        return false;
-      }
+      // 进程组可能已经先于 child 句柄被回收；仍然尝试单进程信号，
+      // 避免测试替身或短暂竞态下遗漏最后一个可回收的 child。
     }
   }
 

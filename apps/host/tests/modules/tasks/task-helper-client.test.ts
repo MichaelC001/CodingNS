@@ -170,6 +170,9 @@ describe("TaskHelperProcessClient", () => {
     const client = Object.create(TaskHelperProcessClient.prototype) as TaskHelperProcessClient & {
       pendingRequests: Map<string, { reject: (reason?: unknown) => void }>;
       inflightRemoteRequestIds: Set<string>;
+      unacknowledgedRemoteRequestIds: Set<string>;
+      remoteRequestChildren: Map<string, ChildProcessWithoutNullStreams>;
+      cancelFallbackTimers: Map<string, NodeJS.Timeout>;
       lastHeartbeatAtMs: number | null;
     };
 
@@ -177,6 +180,9 @@ describe("TaskHelperProcessClient", () => {
       ["1", { reject }]
     ]);
     client.inflightRemoteRequestIds = new Set(["1"]);
+    client.unacknowledgedRemoteRequestIds = new Set(["1"]);
+    client.remoteRequestChildren = new Map();
+    client.cancelFallbackTimers = new Map();
     client.lastHeartbeatAtMs = null;
 
     (TaskHelperProcessClient.prototype as any).handleResponseLine.call(
@@ -211,6 +217,9 @@ describe("TaskHelperProcessClient", () => {
       stdoutReaderChild: ChildProcessWithoutNullStreams | null;
       pendingRequests: Map<string, unknown>;
       inflightRemoteRequestIds: Set<string>;
+      unacknowledgedRemoteRequestIds: Set<string>;
+      remoteRequestChildren: Map<string, ChildProcessWithoutNullStreams>;
+      cancelFallbackTimers: Map<string, NodeJS.Timeout>;
       idleRecycleTimer: NodeJS.Timeout | null;
       lastTerminationReason: string | null;
       lastExitAtMs: number | null;
@@ -222,6 +231,9 @@ describe("TaskHelperProcessClient", () => {
     client.stdoutReaderChild = child;
     client.pendingRequests = new Map();
     client.inflightRemoteRequestIds = new Set();
+    client.unacknowledgedRemoteRequestIds = new Set();
+    client.remoteRequestChildren = new Map();
+    client.cancelFallbackTimers = new Map();
     client.idleRecycleTimer = null;
     client.lastTerminationReason = null;
     client.lastExitAtMs = null;

@@ -56,6 +56,7 @@ describe("TaskHelperProcessClient", () => {
     controller.abort(new Error("manual abort"));
 
     await expect(promise).rejects.toThrow("manual abort");
+    expect(client.hasInflightRemoteWork()).toBe(false);
 
     expect(writes).toHaveLength(2);
     expect(JSON.parse(writes[0])).toMatchObject({
@@ -71,6 +72,69 @@ describe("TaskHelperProcessClient", () => {
       type: "cancel",
       targetId: "1"
     });
+  });
+
+  it("helper 忽略取消时会在宽限期后回收对应进程组", async () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const stdin = {
+      destroyed: false,
+      on: vi.fn(),
+      write: vi.fn((content: string, callback?: (error?: Error | null) => void) => {
+        writes.push(content.trim());
+        callback?.(null);
+        return true;
+      })
+    };
+    const kill = vi.fn();
+    const child = {
+      stdout: {},
+      stderr: { on: vi.fn() },
+      stdin,
+      killed: false,
+      exitCode: null,
+      signalCode: null,
+      kill,
+      on: vi.fn()
+    };
+    const stdoutReader = {
+      on: vi.fn(),
+      close: vi.fn()
+    };
+
+    vi.doMock("node:child_process", () => ({
+      spawn: vi.fn(() => child)
+    }));
+    vi.doMock("node:readline", () => ({
+      default: {
+        createInterface: vi.fn(() => stdoutReader)
+      }
+    }));
+
+    try {
+      const { TaskHelperProcessClient } = await import("../../src/modules/tasks/task-helper-client.js");
+      const client = new TaskHelperProcessClient();
+      const controller = new AbortController();
+      const pending = client.execute(
+        "workspace.code_composition_scan",
+        { workspacePath: "/tmp/ignored-cancel" },
+        controller.signal
+      );
+
+      controller.abort(new Error("manual abort"));
+      await expect(pending).rejects.toThrow("manual abort");
+      expect(client.hasInflightRemoteWork()).toBe(false);
+      expect(client.hasUnacknowledgedRemoteWork()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(3_100);
+
+      expect(kill).toHaveBeenCalledWith("SIGTERM");
+      expect(stdoutReader.close).toHaveBeenCalledTimes(1);
+      expect(client.hasUnacknowledgedRemoteWork()).toBe(false);
+      expect(writes.map((line) => JSON.parse(line).type)).toEqual(["run", "cancel"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("helper 子进程回收退出后，请求会自动拉起新进程并重试一次", async () => {

@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
 import net from "node:net";
 
 import {
@@ -13,6 +12,7 @@ import { resolveCommandLaunch } from "../../../shared/utils/command-launch.js";
 import { resolveCommandVersion } from "../../../shared/utils/command-version.js";
 import { DeepSeekHarnessApiClient } from "./deepseek-harness-api-client.js";
 import { parseHarnessHandshake } from "./deepseek-harness-protocol.js";
+import { terminateChildProcess } from "../../../shared/utils/child-process-lifecycle.js";
 
 export type DeepSeekHarnessSidecarStatus = "stopped" | "starting" | "ready" | "degraded" | "read-only" | "stopping" | "failed";
 
@@ -134,8 +134,10 @@ export class DeepSeekHarnessSidecarManager {
     }
 
     this.state = { ...this.state, status: "stopping" };
-    child.kill();
-    await Promise.race([once(child, "exit"), delay(2_000)]);
+    await terminateChildProcess(child, {
+      termGraceMs: 750,
+      killWaitMs: 500
+    });
     this.child = null;
     this.authCookie = null;
     this.authUrl = null;
@@ -179,7 +181,8 @@ export class DeepSeekHarnessSidecarManager {
       child = (this.options.spawnImpl ?? spawn)(launch.command, launch.args, {
         env: { ...process.env, ...this.options.env, HOST: bindHost, PORT: String(port) },
         stdio: ["ignore", "pipe", "pipe"],
-        shell: launch.shell
+        shell: launch.shell,
+        detached: process.platform !== "win32"
       });
       this.child = child;
       this.state = { ...this.state, pid: child.pid ?? null, baseUrl, startedAt: new Date().toISOString() };
@@ -276,7 +279,12 @@ export class DeepSeekHarnessSidecarManager {
       });
       // 先解除所有权再 kill，避免稍后的 exit 事件覆盖真正的失败阶段。
       if (this.child === child) this.child = null;
-      child?.kill();
+      if (child) {
+        await terminateChildProcess(child, {
+          termGraceMs: 250,
+          killWaitMs: 250
+        });
+      }
       throw error;
     }
   }

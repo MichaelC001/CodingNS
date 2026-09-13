@@ -122,6 +122,69 @@ describe("ProviderDiscoveryHelperClient", () => {
     });
   });
 
+  it("provider helper 忽略取消时会在宽限期后回收对应进程组", async () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const kill = vi.fn();
+    const child = {
+      stdout: {},
+      stderr: { on: vi.fn() },
+      stdin: {
+        destroyed: false,
+        on: vi.fn(),
+        write: vi.fn((content: string, callback?: (error?: Error | null) => void) => {
+          writes.push(content.trim());
+          callback?.(null);
+          return true;
+        })
+      },
+      killed: false,
+      exitCode: null,
+      signalCode: null,
+      kill,
+      on: vi.fn()
+    };
+    const stdoutReader = {
+      on: vi.fn(),
+      close: vi.fn()
+    };
+
+    vi.doMock("node:child_process", () => ({
+      spawn: vi.fn(() => child)
+    }));
+    vi.doMock("node:readline", () => ({
+      default: {
+        createInterface: vi.fn(() => stdoutReader)
+      }
+    }));
+
+    try {
+      const { ProviderDiscoveryHelperClient } = await import(
+        "../../src/modules/provider/provider-discovery-helper-client.js"
+      );
+      const client = new ProviderDiscoveryHelperClient();
+      const controller = new AbortController();
+      const pending = client.readOpenCodeCliModels({
+        commandPath: "/tmp/opencode",
+        workspacePath: "/tmp/workspace",
+        timeoutMs: 5000
+      }, controller.signal);
+
+      controller.abort(new Error("manual abort"));
+      await expect(pending).rejects.toThrow("manual abort");
+      await vi.advanceTimersByTimeAsync(3_100);
+
+      expect(kill).toHaveBeenCalledWith("SIGTERM");
+      expect(stdoutReader.close).toHaveBeenCalledTimes(1);
+      expect(writes.map((line) => JSON.parse(line).type)).toEqual([
+        "opencode_cli_models",
+        "cancel"
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     {
       title: "discoverWorkspaceSessions",

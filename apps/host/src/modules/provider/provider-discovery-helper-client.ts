@@ -8,6 +8,7 @@ import type {
   ProviderSessionSummary
 } from "@codingns/session-sync-core";
 import {
+  HELPER_PROCESS_CANCEL_FALLBACK_MS,
   terminateChildProcess
 } from "../../shared/utils/child-process-lifecycle.js";
 
@@ -44,8 +45,13 @@ let sharedProviderDiscoveryHelperClient: ProviderDiscoveryHelperClient | null = 
 export class ProviderDiscoveryHelperClient {
   private child: ChildProcessWithoutNullStreams | null = null;
   private stdoutReader: readline.Interface | null = null;
+  private stdoutReaderChild: ChildProcessWithoutNullStreams | null = null;
   private readonly pendingRequests = new Map<string, PendingRequest<unknown>>();
   private readonly inflightRequestIds = new Set<string>();
+  /** 已写入 helper、但尚未收到结果或退出确认的请求。 */
+  private readonly unacknowledgedRequestIds = new Set<string>();
+  private readonly remoteRequestChildren = new Map<string, ChildProcessWithoutNullStreams>();
+  private readonly cancelFallbackTimers = new Map<string, NodeJS.Timeout>();
   private nextRequestId = 1;
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
@@ -178,6 +184,11 @@ export class ProviderDiscoveryHelperClient {
       return Promise.reject(new Error("provider discovery helper 已关闭"));
     }
 
+    // 已经取消的调用不应为了发送一条永远不会执行的请求而拉起 helper。
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error("provider discovery helper aborted"));
+    }
+
     const child = this.ensureChild();
     const id = String(this.nextRequestId++);
 
@@ -190,7 +201,10 @@ export class ProviderDiscoveryHelperClient {
           aborted = true;
           this.pendingRequests.delete(id);
           this.inflightRequestIds.delete(id);
-          void this.sendCancel(id);
+          if (this.remoteRequestChildren.has(id)) {
+            this.armCancelFallback(id, child);
+            void this.sendCancel(id, child);
+          }
           reject(signal.reason ?? new Error("provider discovery helper aborted"));
         };
 
@@ -224,7 +238,9 @@ export class ProviderDiscoveryHelperClient {
           }
         }
       });
+      this.remoteRequestChildren.set(id, child);
       this.inflightRequestIds.add(id);
+      this.unacknowledgedRequestIds.add(id);
 
       try {
         child.stdin.write(
@@ -242,7 +258,7 @@ export class ProviderDiscoveryHelperClient {
             }
 
             this.pendingRequests.delete(id);
-            this.inflightRequestIds.delete(id);
+            this.clearRemoteRequestTracking(id);
             reject(error);
           }
         );
@@ -252,7 +268,7 @@ export class ProviderDiscoveryHelperClient {
         }
 
         this.pendingRequests.delete(id);
-        this.inflightRequestIds.delete(id);
+        this.clearRemoteRequestTracking(id);
         reject(error);
       }
     });
@@ -283,6 +299,7 @@ export class ProviderDiscoveryHelperClient {
     }
 
     const pending = this.pendingRequests.get(payload.id);
+    this.clearRemoteRequestTracking(payload.id);
 
     if (!pending) {
       return;
@@ -305,14 +322,21 @@ export class ProviderDiscoveryHelperClient {
 
     this.pendingRequests.clear();
     this.inflightRequestIds.clear();
+    this.unacknowledgedRequestIds.clear();
+    this.remoteRequestChildren.clear();
+    this.clearCancelFallbackTimers();
   }
 
-  private async sendCancel(targetId: string, allowDuringDispose = false): Promise<void> {
+  private async sendCancel(
+    targetId: string,
+    child = this.remoteRequestChildren.get(targetId) ?? this.child,
+    allowDuringDispose = false
+  ): Promise<void> {
     if (
       (this.disposed && !allowDuringDispose) ||
-      !this.child ||
-      this.child.killed ||
-      this.child.stdin.destroyed
+      !child ||
+      child.killed ||
+      child.stdin.destroyed
     ) {
       return;
     }
@@ -322,8 +346,6 @@ export class ProviderDiscoveryHelperClient {
       id: `cancel:${targetId}`,
       targetId
     };
-    const child = this.child;
-
     await new Promise<void>((resolve) => {
       try {
         child.stdin.write(
@@ -336,6 +358,75 @@ export class ProviderDiscoveryHelperClient {
         resolve();
       }
     });
+  }
+
+  private armCancelFallback(
+    requestId: string,
+    child: ChildProcessWithoutNullStreams
+  ): void {
+    if (this.cancelFallbackTimers.has(requestId)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.cancelFallbackTimers.delete(requestId);
+
+      if (
+        this.disposed
+        || !this.unacknowledgedRequestIds.has(requestId)
+        || this.remoteRequestChildren.get(requestId) !== child
+      ) {
+        return;
+      }
+
+      this.handleChildTermination(
+        new Error(`provider discovery helper 取消超时：${requestId}`),
+        child
+      );
+    }, HELPER_PROCESS_CANCEL_FALLBACK_MS);
+    timer.unref?.();
+    this.cancelFallbackTimers.set(requestId, timer);
+  }
+
+  private clearRemoteRequestTracking(requestId: string): void {
+    this.inflightRequestIds.delete(requestId);
+    this.unacknowledgedRequestIds.delete(requestId);
+    this.remoteRequestChildren.delete(requestId);
+
+    const timer = this.cancelFallbackTimers.get(requestId);
+    if (timer) {
+      clearTimeout(timer);
+      this.cancelFallbackTimers.delete(requestId);
+    }
+  }
+
+  private clearCancelFallbackTimers(): void {
+    for (const timer of this.cancelFallbackTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.cancelFallbackTimers.clear();
+  }
+
+  private rejectPendingForChild(
+    child: ChildProcessWithoutNullStreams,
+    error: unknown
+  ): void {
+    const targetIds = new Set<string>();
+
+    for (const [requestId, requestChild] of this.remoteRequestChildren.entries()) {
+      if (requestChild === child) {
+        targetIds.add(requestId);
+      }
+    }
+
+    for (const requestId of targetIds) {
+      const pending = this.pendingRequests.get(requestId);
+      if (pending) {
+        this.pendingRequests.delete(requestId);
+        pending.reject(error);
+      }
+      this.clearRemoteRequestTracking(requestId);
+    }
   }
 
   private ensureChild(): ChildProcessWithoutNullStreams {
@@ -357,6 +448,22 @@ export class ProviderDiscoveryHelperClient {
     stdoutReader.on("line", (line) => {
       this.handleResponseLine(line);
     });
+    stdoutReader.on("close", () => {
+      if (this.stdoutReader === stdoutReader) {
+        this.stdoutReader = null;
+        this.stdoutReaderChild = null;
+      }
+      if (this.child === child) {
+        this.child = null;
+      }
+
+      // stdout 提前关闭不代表 child 已退出，仍需回收整组进程，避免
+      // 下一次请求重新拉起 helper 后留下旧 child。
+      this.handleChildTermination(
+        new Error("provider discovery helper stdout 已关闭"),
+        child
+      );
+    });
     child.stderr.on("data", (chunk) => {
       const content = String(chunk).trim();
 
@@ -368,30 +475,42 @@ export class ProviderDiscoveryHelperClient {
       this.handleChildTermination(
         error instanceof Error
           ? error
-          : new Error("provider discovery helper stdin 已断开")
+          : new Error("provider discovery helper stdin 已断开"),
+        child
       );
     });
     child.on("error", (error) => {
-      this.handleChildTermination(error);
+      this.handleChildTermination(error, child);
     });
     child.on("exit", (code, signal) => {
       this.handleChildTermination(
         new Error(
           `provider discovery helper 已退出：code=${code ?? "null"} signal=${signal ?? "null"}`
-        )
+        ),
+        child
       );
     });
 
     this.child = child;
     this.stdoutReader = stdoutReader;
+    this.stdoutReaderChild = child;
     return child;
   }
 
-  private handleChildTermination(error: Error): void {
-    const child = this.child;
+  private handleChildTermination(
+    error: Error,
+    childOverride?: ChildProcessWithoutNullStreams
+  ): void {
+    const child = childOverride ?? this.child;
+    const isCurrentChild = Boolean(child && this.child === child);
 
-    if (this.stdoutReader) {
-      this.stdoutReader.close();
+    if (isCurrentChild) {
+      this.child = null;
+      if (this.stdoutReaderChild === child) {
+        this.stdoutReader?.close();
+        this.stdoutReader = null;
+        this.stdoutReaderChild = null;
+      }
     }
 
     if (child) {
@@ -400,38 +519,49 @@ export class ProviderDiscoveryHelperClient {
         termGraceMs: 250,
         killWaitMs: 250
       });
+      this.rejectPendingForChild(child, error);
+      return;
     }
 
-    this.child = null;
-    this.stdoutReader = null;
     this.rejectAll(error);
   }
 
   private async disposeInternal(): Promise<void> {
-    const child = this.child;
-    const pendingRequestIds = [...this.inflightRequestIds];
+    const pendingRequestIds = new Set([
+      ...this.inflightRequestIds,
+      ...this.unacknowledgedRequestIds
+    ]);
+    const children = new Set<ChildProcessWithoutNullStreams>();
+    if (this.child) {
+      children.add(this.child);
+    }
+    for (const requestChild of this.remoteRequestChildren.values()) {
+      children.add(requestChild);
+    }
     this.disposed = true;
     await Promise.allSettled(
-      pendingRequestIds.map((requestId) => this.sendCancel(requestId, true))
+      [...pendingRequestIds].map((requestId) => this.sendCancel(requestId, undefined, true))
     );
     const pending = new Error("provider discovery helper 已关闭");
     this.rejectAll(pending);
 
-    if (!child) {
+    if (children.size === 0) {
       this.stdoutReader?.close();
       this.stdoutReader = null;
+      this.stdoutReaderChild = null;
       return;
     }
 
-    await terminateChildProcess(child, {
-      termGraceMs: 750,
-      killWaitMs: 500
-    });
-    if (this.child === child) {
-      this.child = null;
-    }
+    await Promise.allSettled(
+      [...children].map((requestChild) => terminateChildProcess(requestChild, {
+        termGraceMs: 750,
+        killWaitMs: 500
+      }))
+    );
+    this.child = null;
     this.stdoutReader?.close();
     this.stdoutReader = null;
+    this.stdoutReaderChild = null;
   }
 }
 
@@ -447,7 +577,9 @@ function isRetryableHelperClientError(error: unknown): boolean {
   }
 
   const message = "message" in error ? String(error.message ?? "") : "";
-  return message.includes("provider discovery helper 已退出");
+  return message.includes("provider discovery helper 已退出")
+    || message.includes("provider discovery helper stdout 已关闭")
+    || message.includes("provider discovery helper pipe 已断开");
 }
 
 export function getSharedProviderDiscoveryHelperClient(): ProviderDiscoveryHelperClient {

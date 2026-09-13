@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { TaskHelperProcessHandlerName } from "./task-helper-process-handlers.js";
 import { TaskQueueWaitTimeoutError, TaskTimeoutError } from "./task-types.js";
 import {
-  signalChildProcessGroup,
+  HELPER_PROCESS_CANCEL_FALLBACK_MS,
   terminateChildProcess
 } from "../../shared/utils/child-process-lifecycle.js";
 
@@ -39,6 +39,8 @@ export interface TaskHelperWorkerClientLike {
   ): Promise<TResult>;
   dispose(): void | Promise<void>;
   hasInflightRemoteWork(): boolean;
+  /** caller 已取消但 helper 尚未确认结束的请求。 */
+  hasUnacknowledgedRemoteWork?(): boolean;
   terminateCurrentChild(reason: string): void;
   getHealthSnapshot(): TaskHelperProcessClientHealthSnapshot;
 }
@@ -73,6 +75,10 @@ export class TaskHelperProcessClient {
   private stdoutReaderChild: ChildProcessWithoutNullStreams | null = null;
   private readonly pendingRequests = new Map<string, PendingRequest<unknown>>();
   private readonly inflightRemoteRequestIds = new Set<string>();
+  /** 已写入 helper、但尚未收到结果或退出确认的请求。 */
+  private readonly unacknowledgedRemoteRequestIds = new Set<string>();
+  private readonly remoteRequestChildren = new Map<string, ChildProcessWithoutNullStreams>();
+  private readonly cancelFallbackTimers = new Map<string, NodeJS.Timeout>();
   private nextRequestId = 1;
   private disposed = false;
   private startedAtMs: number | null = null;
@@ -142,6 +148,11 @@ export class TaskHelperProcessClient {
       return Promise.reject(new Error("task helper 已关闭"));
     }
 
+    // 已经取消的调用不应为了发送一条永远不会执行的请求而拉起 helper。
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason ?? new Error("helper task aborted"));
+    }
+
     const child = this.ensureChild();
     this.clearIdleRecycleTimer();
     const id = String(this.nextRequestId++);
@@ -154,7 +165,11 @@ export class TaskHelperProcessClient {
         onAbort = () => {
           aborted = true;
           this.pendingRequests.delete(id);
-          void this.sendCancel(id);
+          this.inflightRemoteRequestIds.delete(id);
+          if (this.remoteRequestChildren.has(id)) {
+            this.armCancelFallback(id, child);
+            void this.sendCancel(id, child);
+          }
           reject(signal.reason ?? new Error("helper task aborted"));
         };
 
@@ -187,7 +202,9 @@ export class TaskHelperProcessClient {
           }
         }
       });
+      this.remoteRequestChildren.set(id, child);
       this.inflightRemoteRequestIds.add(id);
+      this.unacknowledgedRemoteRequestIds.add(id);
 
       child.stdin.write(
         `${JSON.stringify({
@@ -207,7 +224,7 @@ export class TaskHelperProcessClient {
           }
 
           this.pendingRequests.delete(id);
-          this.inflightRemoteRequestIds.delete(id);
+          this.clearRemoteRequestTracking(id);
           reject(attachFailedHelperChild(
             normalizeHelperTransportError(error, "task helper stdin 已断开"),
             child
@@ -228,6 +245,10 @@ export class TaskHelperProcessClient {
 
   hasInflightRemoteWork(): boolean {
     return this.inflightRemoteRequestIds.size > 0;
+  }
+
+  hasUnacknowledgedRemoteWork(): boolean {
+    return this.unacknowledgedRemoteRequestIds.size > 0;
   }
 
   terminateCurrentChild(reason: string): void {
@@ -264,10 +285,11 @@ export class TaskHelperProcessClient {
     }
 
     const pending = this.pendingRequests.get(payload.id);
-    this.inflightRemoteRequestIds.delete(payload.id);
+    this.clearRemoteRequestTracking(payload.id);
     this.lastHeartbeatAtMs = Date.now();
 
     if (!pending) {
+      this.armIdleRecycleTimerIfNeeded();
       return;
     }
 
@@ -296,19 +318,25 @@ export class TaskHelperProcessClient {
 
     this.pendingRequests.clear();
     this.inflightRemoteRequestIds.clear();
+    this.unacknowledgedRemoteRequestIds.clear();
+    this.remoteRequestChildren.clear();
+    this.clearCancelFallbackTimers();
     this.clearIdleRecycleTimer();
   }
 
-  private async sendCancel(targetId: string, allowDuringDispose = false): Promise<void> {
+  private async sendCancel(
+    targetId: string,
+    child = this.remoteRequestChildren.get(targetId) ?? this.child,
+    allowDuringDispose = false
+  ): Promise<void> {
     if (
       (this.disposed && !allowDuringDispose) ||
-      !this.child ||
-      this.child.killed ||
-      this.child.stdin.destroyed
+      !child ||
+      child.killed ||
+      child.stdin.destroyed
     ) {
       return;
     }
-    const child = this.child;
 
     await new Promise<void>((resolve) => {
       try {
@@ -358,7 +386,9 @@ export class TaskHelperProcessClient {
         this.child = null;
       }
 
-      this.rejectPendingForChild(
+      // stdout 提前关闭不等于 child 已经退出；必须继续回收整个进程组，
+      // 否则下一次 ensureChild 会留下一个无法再被引用的旧 helper。
+      this.handleChildTermination(
         child,
         attachFailedHelperChild(new Error("task helper stdout 已关闭"), child)
       );
@@ -430,9 +460,11 @@ export class TaskHelperProcessClient {
       this.stdoutReaderChild = null;
     }
 
-    if (!child.killed && typeof child.kill === "function") {
-      signalChildProcessGroup(child, "SIGKILL");
-    }
+    // 统一走 TERM→KILL，并等待退出；不能只给 helper 外壳发一次信号。
+    void terminateChildProcess(child, {
+      termGraceMs: 250,
+      killWaitMs: 250
+    });
 
     this.rejectPendingForChild(child, new TaskTimeoutError(reason));
   }
@@ -479,24 +511,29 @@ export class TaskHelperProcessClient {
   }
 
   private rejectPendingForChild(child: ChildProcessWithoutNullStreams, error: unknown): void {
-    const targetIds: string[] = [];
+    const targetIds = new Set<string>();
 
     for (const [requestId, pending] of this.pendingRequests.entries()) {
       if (pending.child === child) {
-        targetIds.push(requestId);
+        targetIds.add(requestId);
+      }
+    }
+
+    for (const [requestId, requestChild] of this.remoteRequestChildren.entries()) {
+      if (requestChild === child) {
+        targetIds.add(requestId);
       }
     }
 
     for (const requestId of targetIds) {
       const pending = this.pendingRequests.get(requestId);
 
-      if (!pending) {
-        continue;
+      if (pending) {
+        this.pendingRequests.delete(requestId);
+        pending.reject(error);
       }
 
-      this.pendingRequests.delete(requestId);
-      this.inflightRemoteRequestIds.delete(requestId);
-      pending.reject(error);
+      this.clearRemoteRequestTracking(requestId);
     }
 
     this.armIdleRecycleTimerIfNeeded();
@@ -535,6 +572,53 @@ export class TaskHelperProcessClient {
     this.idleRecycleTimer = null;
   }
 
+  private armCancelFallback(
+    requestId: string,
+    child: ChildProcessWithoutNullStreams
+  ): void {
+    if (this.cancelFallbackTimers.has(requestId)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.cancelFallbackTimers.delete(requestId);
+
+      if (
+        this.disposed
+        || !this.unacknowledgedRemoteRequestIds.has(requestId)
+        || this.remoteRequestChildren.get(requestId) !== child
+      ) {
+        return;
+      }
+
+      this.forceRecycleChild(
+        child,
+        `helper_soft_cancel_timeout:${requestId}`
+      );
+    }, HELPER_PROCESS_CANCEL_FALLBACK_MS);
+    timer.unref?.();
+    this.cancelFallbackTimers.set(requestId, timer);
+  }
+
+  private clearRemoteRequestTracking(requestId: string): void {
+    this.inflightRemoteRequestIds.delete(requestId);
+    this.unacknowledgedRemoteRequestIds.delete(requestId);
+    this.remoteRequestChildren.delete(requestId);
+
+    const timer = this.cancelFallbackTimers.get(requestId);
+    if (timer) {
+      clearTimeout(timer);
+      this.cancelFallbackTimers.delete(requestId);
+    }
+  }
+
+  private clearCancelFallbackTimers(): void {
+    for (const timer of this.cancelFallbackTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.cancelFallbackTimers.clear();
+  }
+
   private recycleIdleChild(reason: string): void {
     const child = this.child;
     if (!child) {
@@ -551,7 +635,12 @@ export class TaskHelperProcessClient {
       this.stdoutReader = null;
       this.stdoutReaderChild = null;
     }
-    signalChildProcessGroup(child, "SIGTERM");
+    // 空闲回收也必须经过统一的 TERM→KILL 等待流程，不能只发一次
+    // SIGTERM；否则不响应的 CLI 会在 Host 重启后继续成为孤儿进程。
+    void terminateChildProcess(child, {
+      termGraceMs: 750,
+      killWaitMs: 500
+    });
   }
 
   private async disposeInternal(): Promise<void> {
@@ -559,33 +648,42 @@ export class TaskHelperProcessClient {
       return;
     }
 
-    const child = this.child;
-    const pendingRequestIds = [...this.inflightRemoteRequestIds];
+    const pendingRequestIds = new Set([
+      ...this.inflightRemoteRequestIds,
+      ...this.unacknowledgedRemoteRequestIds
+    ]);
+    const children = new Set<ChildProcessWithoutNullStreams>();
+    if (this.child) {
+      children.add(this.child);
+    }
+    for (const requestChild of this.remoteRequestChildren.values()) {
+      children.add(requestChild);
+    }
     this.disposed = true;
     this.clearIdleRecycleTimer();
 
     // 先通知 helper 取消正在执行的请求，再进入进程组终止流程；即使
     // helper 不响应，后面的超时强杀也会兜底。
     await Promise.allSettled(
-      pendingRequestIds.map((requestId) => this.sendCancel(requestId, true))
+      [...pendingRequestIds].map((requestId) => this.sendCancel(requestId, undefined, true))
     );
     this.rejectAll(new Error("task helper 已关闭"));
 
-    if (!child) {
+    if (children.size === 0) {
       this.stdoutReader?.close();
       this.stdoutReader = null;
       this.stdoutReaderChild = null;
       return;
     }
 
-    await terminateChildProcess(child, {
-      termGraceMs: 750,
-      killWaitMs: 500
-    });
-    if (this.child === child) {
-      this.child = null;
-    }
-    if (this.stdoutReaderChild === child) {
+    await Promise.allSettled(
+      [...children].map((requestChild) => terminateChildProcess(requestChild, {
+        termGraceMs: 750,
+        killWaitMs: 500
+      }))
+    );
+    this.child = null;
+    if (this.stdoutReaderChild && children.has(this.stdoutReaderChild)) {
       this.stdoutReader?.close();
       this.stdoutReader = null;
       this.stdoutReaderChild = null;

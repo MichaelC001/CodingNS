@@ -1509,9 +1509,9 @@ export class SessionLiveRuntimeService {
     this.sessionActivityAuthorityService.dispose();
     await this.sessionPermissionRequestService.dispose();
     await this.providerRuntimeService.dispose();
-    for (const disposable of this.runtimeAdapterDisposables) {
-      await disposable.dispose();
-    }
+    await Promise.allSettled(
+      this.runtimeAdapterDisposables.map((disposable) => disposable.dispose())
+    );
     this.externalRuntimeSnapshots.clear();
     this.runtimeListeners.clear();
   }

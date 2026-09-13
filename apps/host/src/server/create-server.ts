@@ -2012,17 +2012,21 @@ export function createServer(config: HostConfig) {
     stopTerminalDebugEventLoopLagMonitor();
     eventLoopMonitor.dispose();
     butlerFollowUpTerminalSubscription.close();
-    await patrolScheduler.dispose();
-    await butlerFollowUpScheduler.dispose();
-    await butlerControlTimerScheduler.dispose();
-    await channelPollingScheduler.dispose();
-    await pluginSchedulerService.dispose();
-    await providerPriceBookScheduler.dispose();
-    await terminalService.dispose();
-    await butlerFollowUpSessionLiveRuntimeService.dispose();
-    await butlerSessionLiveRuntimeService.dispose();
-    await sessionLiveRuntimeService.dispose();
-    await deepSeekHarnessSidecarManager.shutdown();
+    // 这些调度器和运行时彼此独立，关闭时并行等待，避免每个内部宽限期
+    // 串行叠加后超过 tsx 的退出窗口；运行时完成后再回收它们依赖的 helper。
+    await Promise.allSettled([
+      patrolScheduler.dispose(),
+      butlerFollowUpScheduler.dispose(),
+      butlerControlTimerScheduler.dispose(),
+      channelPollingScheduler.dispose(),
+      pluginSchedulerService.dispose(),
+      providerPriceBookScheduler.dispose(),
+      terminalService.dispose(),
+      butlerFollowUpSessionLiveRuntimeService.dispose(),
+      butlerSessionLiveRuntimeService.dispose(),
+      sessionLiveRuntimeService.dispose(),
+      deepSeekHarnessSidecarManager.shutdown()
+    ]);
     workspaceSessionInstructionWatchService.dispose();
     affairsLibraryService.dispose();
     sessionTitleChangedWorkbenchSync.close();
@@ -2031,7 +2035,6 @@ export function createServer(config: HostConfig) {
     codexArchiveWatcher.dispose();
     fileWatcher.dispose();
     workspaceFileBridgeWatchService.dispose();
-    config.opencodeBaseUrlResolver?.dispose?.();
     // 这些 helper 彼此独立，必须并行等待，避免多个 750ms 关闭宽限期
     // 串行叠加后再次超过 tsx 的 5 秒退出窗口。
     await Promise.allSettled([
@@ -2043,7 +2046,8 @@ export function createServer(config: HostConfig) {
       wechatClawRuntimeManager?.dispose(),
       disposeSharedTaskHelperPool(),
       disposeSharedProviderDiscoveryHelperClient(),
-      disposeSharedOpenCodeSystemProbeHelperClient()
+      disposeSharedOpenCodeSystemProbeHelperClient(),
+      config.opencodeBaseUrlResolver?.dispose?.()
     ]);
     database.close();
   });

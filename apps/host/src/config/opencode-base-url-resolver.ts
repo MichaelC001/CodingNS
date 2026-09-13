@@ -5,6 +5,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
 import { getSharedOpenCodeSystemProbeHelperClient } from "./opencode-system-probe-helper-client.js";
+import { terminateChildProcess } from "../shared/utils/child-process-lifecycle.js";
 const DEFAULT_CACHE_TTL_MS = 5_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 800;
 const DEFAULT_MANAGED_SERVER_RETRY_COOLDOWN_MS = 10_000;
@@ -340,7 +341,8 @@ export class OpenCodeBaseUrlResolver {
         cwd: workspacePath,
         env,
         stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true
+        windowsHide: true,
+        detached: process.platform !== "win32"
       }
     );
 
@@ -361,7 +363,10 @@ export class OpenCodeBaseUrlResolver {
     return new Promise<string>((resolve, reject) => {
       const timeout = setTimeout(() => {
         cleanup();
-        child.kill();
+        void terminateChildProcess(child, {
+          termGraceMs: 250,
+          killWaitMs: 250
+        });
         this.recordManagedServerFailure(workspaceKey);
         reject(new Error("SERVER_UNAVAILABLE"));
       }, 5_000);
@@ -413,7 +418,7 @@ export class OpenCodeBaseUrlResolver {
     });
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.disposed) {
       return;
     }
@@ -434,13 +439,14 @@ export class OpenCodeBaseUrlResolver {
 
     this.managedServerIdleTimerByWorkspaceKey.clear();
 
-    for (const child of this.managedServerProcessByWorkspaceKey.values()) {
-      if (!child.killed) {
-        child.kill("SIGTERM");
-      }
-    }
-
+    const children = [...this.managedServerProcessByWorkspaceKey.values()];
     this.managedServerProcessByWorkspaceKey.clear();
+    await Promise.allSettled(
+      children.map((child) => terminateChildProcess(child, {
+        termGraceMs: 750,
+        killWaitMs: 500
+      }))
+    );
   }
 
   private ensureNotDisposed(): void {
@@ -547,7 +553,10 @@ export class OpenCodeBaseUrlResolver {
     const activeChild = this.managedServerProcessByWorkspaceKey.get(workspaceKey);
 
     if (isChildProcessAlive(activeChild)) {
-      activeChild.kill("SIGTERM");
+      await terminateChildProcess(activeChild, {
+        termGraceMs: 750,
+        killWaitMs: 500
+      });
     }
   }
 

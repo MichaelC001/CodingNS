@@ -93,9 +93,9 @@ export class ProviderRuntimeService {
   async dispose(): Promise<void> {
     const handles = [...this.handles.values()];
 
-    for (const handle of handles) {
-      await handle.dispose();
-    }
+    // 每个运行句柄都拥有独立的 provider 资源，关闭时并行等待，避免多个
+    // CLI 的宽限期串行叠加拖慢 Host 退出。
+    await Promise.allSettled(handles.map((handle) => handle.dispose()));
 
     this.handles.clear();
     await this.registry.disposeAll();

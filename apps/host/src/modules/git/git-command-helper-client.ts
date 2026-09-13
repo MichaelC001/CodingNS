@@ -4,7 +4,10 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import { AppError } from "../../shared/errors/app-error.js";
-import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
+import {
+  HELPER_PROCESS_CANCEL_FALLBACK_MS,
+  terminateChildProcess
+} from "../../shared/utils/child-process-lifecycle.js";
 
 interface GitCommandOptions {
   allowNonZeroExit?: boolean;
@@ -65,6 +68,9 @@ export class GitCommandHelperClient {
   private readonly stdoutReader: readline.Interface;
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly inflightRequestIds = new Set<string>();
+  /** 已发送但尚未收到 helper 确认的请求。 */
+  private readonly unacknowledgedRequestIds = new Set<string>();
+  private readonly cancelFallbackTimers = new Map<string, NodeJS.Timeout>();
   private nextRequestId = 1;
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
@@ -134,7 +140,10 @@ export class GitCommandHelperClient {
           aborted = true;
           this.pendingRequests.delete(id);
           this.inflightRequestIds.delete(id);
-          void this.sendCancel(id);
+          if (this.unacknowledgedRequestIds.has(id)) {
+            this.armCancelFallback(id);
+            void this.sendCancel(id);
+          }
           reject(signal.reason ?? new Error("git helper aborted"));
         };
 
@@ -148,7 +157,7 @@ export class GitCommandHelperClient {
 
       this.pendingRequests.set(id, {
         resolve: (value) => {
-          this.inflightRequestIds.delete(id);
+          this.clearRequestTracking(id);
           if (onAbort && signal) {
             signal.removeEventListener("abort", onAbort);
           }
@@ -158,7 +167,7 @@ export class GitCommandHelperClient {
           }
         },
         reject: (error) => {
-          this.inflightRequestIds.delete(id);
+          this.clearRequestTracking(id);
           if (onAbort && signal) {
             signal.removeEventListener("abort", onAbort);
           }
@@ -169,6 +178,7 @@ export class GitCommandHelperClient {
         }
       });
       this.inflightRequestIds.add(id);
+      this.unacknowledgedRequestIds.add(id);
 
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
         if (!error) {
@@ -180,7 +190,7 @@ export class GitCommandHelperClient {
         }
 
         this.pendingRequests.delete(id);
-        this.inflightRequestIds.delete(id);
+        this.clearRequestTracking(id);
         reject(
           createHelperUnavailableError(`写入 Git helper 失败：${error.message}`)
         );
@@ -194,7 +204,10 @@ export class GitCommandHelperClient {
     }
 
     this.disposed = true;
-    const pendingRequestIds = [...this.inflightRequestIds];
+    const pendingRequestIds = new Set([
+      ...this.inflightRequestIds,
+      ...this.unacknowledgedRequestIds
+    ]);
     this.disposePromise = this.disposeInternal(pendingRequestIds);
     return await this.disposePromise;
   }
@@ -210,6 +223,7 @@ export class GitCommandHelperClient {
     }
 
     const pending = this.pendingRequests.get(payload.id);
+    this.clearRequestTracking(payload.id);
 
     if (!pending) {
       return;
@@ -238,6 +252,49 @@ export class GitCommandHelperClient {
 
     this.pendingRequests.clear();
     this.inflightRequestIds.clear();
+    this.unacknowledgedRequestIds.clear();
+    this.clearCancelFallbackTimers();
+  }
+
+  private armCancelFallback(requestId: string): void {
+    if (this.cancelFallbackTimers.has(requestId)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.cancelFallbackTimers.delete(requestId);
+      if (!this.unacknowledgedRequestIds.has(requestId)) {
+        return;
+      }
+
+      this.rejectAllPending(
+        createHelperUnavailableError(`Git helper 取消超时：${requestId}`)
+      );
+      // helper 与它启动的 git CLI 共用一个进程组，必须整体回收。
+      void terminateChildProcess(this.child, {
+        termGraceMs: 250,
+        killWaitMs: 250
+      });
+    }, HELPER_PROCESS_CANCEL_FALLBACK_MS);
+    timer.unref?.();
+    this.cancelFallbackTimers.set(requestId, timer);
+  }
+
+  private clearRequestTracking(requestId: string): void {
+    this.inflightRequestIds.delete(requestId);
+    this.unacknowledgedRequestIds.delete(requestId);
+    const timer = this.cancelFallbackTimers.get(requestId);
+    if (timer) {
+      clearTimeout(timer);
+      this.cancelFallbackTimers.delete(requestId);
+    }
+  }
+
+  private clearCancelFallbackTimers(): void {
+    for (const timer of this.cancelFallbackTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.cancelFallbackTimers.clear();
   }
 
   private async sendCancel(targetId: string, allowDuringDispose = false): Promise<void> {
@@ -258,9 +315,9 @@ export class GitCommandHelperClient {
     });
   }
 
-  private async disposeInternal(pendingRequestIds: string[]): Promise<void> {
+  private async disposeInternal(pendingRequestIds: Iterable<string>): Promise<void> {
     await Promise.allSettled(
-      pendingRequestIds.map((requestId) => this.sendCancel(requestId, true))
+      [...pendingRequestIds].map((requestId) => this.sendCancel(requestId, true))
     );
     this.stdoutReader.close();
     this.rejectAllPending(createHelperUnavailableError("Git helper 已关闭"));
