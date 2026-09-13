@@ -715,7 +715,7 @@ export function createWorkspaceManagementSummary(workspaceId: string, name: stri
   };
 }
 
-async function clickOpenSessionToastActionByTitle(title: string) {
+export async function clickOpenSessionToastActionByTitle(title: string) {
   const titleElement = await screen.findByText(title);
   const toastCard = titleElement.closest(".toast-card");
 
