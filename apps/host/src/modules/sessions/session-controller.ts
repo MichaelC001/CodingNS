@@ -818,6 +818,30 @@ export class SessionController {
     ));
   };
 
+  readonly refreshStats = async (
+    request: FastifyRequest<{ Params: SessionParams }>,
+    reply: FastifyReply
+  ): Promise<void> => {
+    const sessionId = request.params.sessionId;
+    const userId = requireUserId(request);
+
+    // 先做用户级会话校验，再进入按 sessionId 去重的后台刷新任务。
+    this.sessionHistoryService.getSession(sessionId, userId);
+    const handle = this.sessionHistoryService.requestSessionStatsRefresh(
+      sessionId,
+      "session_controller.stats_refresh"
+    );
+
+    if (handle) {
+      // 这是显式刷新入口，调用方需要拿到本轮刷新后的快照；失败时保留旧快照。
+      await handle.promise.catch(() => {
+        return;
+      });
+    }
+
+    reply.send(await this.sessionHistoryService.getSessionStats(sessionId));
+  };
+
   readonly interrupt = async (
     request: FastifyRequest<{ Params: SessionParams }>,
     reply: FastifyReply

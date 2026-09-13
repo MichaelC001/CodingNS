@@ -30,6 +30,7 @@ import { ButlerNotificationService } from "../modules/butler/butler-notification
 import { ButlerProfileService } from "../modules/butler/butler-profile-service.js";
 import { ButlerProjectService } from "../modules/butler/butler-project-service.js";
 import { ButlerSessionService } from "../modules/butler/butler-session-service.js";
+import { BUTLER_FEATURE_ENABLED } from "../modules/butler/butler-feature-status.js";
 import { InstructionAdapter } from "../modules/butler/instruction-adapter.js";
 import { PatrolPlanService } from "../modules/butler/patrol-plan-service.js";
 import { PatrolExecutionService } from "../modules/butler/patrol-execution-service.js";
@@ -1119,9 +1120,12 @@ export function createServer(config: HostConfig) {
     null,
     providerPriceBookService
   );
-  sessionHistoryService.registerLiveActivityObservationResolver((sessionId) =>
-    butlerSessionLiveRuntimeService.resolveLiveActivityObservation(sessionId)
-  );
+  // [待移除] Butler 停用期间不把 Butler 运行时挂进历史会话的活动状态解析链。
+  if (BUTLER_FEATURE_ENABLED) {
+    sessionHistoryService.registerLiveActivityObservationResolver((sessionId) =>
+      butlerSessionLiveRuntimeService.resolveLiveActivityObservation(sessionId)
+    );
+  }
   const butlerFollowUpSessionLiveRuntimeService = new SessionLiveRuntimeService(
     sessionHistoryService,
     sessionMessageAttachmentService,
@@ -1140,15 +1144,20 @@ export function createServer(config: HostConfig) {
     null,
     providerPriceBookService
   );
-  sessionHistoryService.registerLiveActivityObservationResolver((sessionId) =>
-    butlerFollowUpSessionLiveRuntimeService.resolveLiveActivityObservation(sessionId)
-  );
+  // [待移除] Butler 停用期间不再解析跟进运行时的活动状态。
+  if (BUTLER_FEATURE_ENABLED) {
+    sessionHistoryService.registerLiveActivityObservationResolver((sessionId) =>
+      butlerFollowUpSessionLiveRuntimeService.resolveLiveActivityObservation(sessionId)
+    );
+  }
   const routedSessionLiveRuntimeService = new SessionLiveRuntimeRouterService(
     sessionLiveRuntimeService,
-    [
-      butlerSessionLiveRuntimeService,
-      butlerFollowUpSessionLiveRuntimeService
-    ]
+    BUTLER_FEATURE_ENABLED
+      ? [
+        butlerSessionLiveRuntimeService,
+        butlerFollowUpSessionLiveRuntimeService
+      ]
+      : []
   );
   const sessionProviderUsageLimitGuardService = new SessionProviderUsageLimitGuardService(
     sessionHistoryService
@@ -1321,7 +1330,9 @@ export function createServer(config: HostConfig) {
     channelPlatformAdapterRegistry,
     taskManager
   );
-  channelDeliveryService.recoverRetryableDeliveries();
+  if (BUTLER_FEATURE_ENABLED) {
+    channelDeliveryService.recoverRetryableDeliveries();
+  }
   const channelGatewayService = new ChannelGatewayService(
     repositories.channelAccountRepository,
     channelPlatformAdapterRegistry,
@@ -1378,11 +1389,14 @@ export function createServer(config: HostConfig) {
       schedulerMetrics
     }
   );
-  const butlerFollowUpTerminalSubscription = sessionLiveRuntimeService.registerTerminalStateListener(
-    async (event) => {
-      await butlerFollowUpService.handleSessionTerminal(event.sessionId, event.timestamp);
-    }
-  );
+  // [待移除] Butler 已停用，不再监听会话终态，也不再驱动跟进任务。
+  const butlerFollowUpTerminalSubscription = BUTLER_FEATURE_ENABLED
+    ? sessionLiveRuntimeService.registerTerminalStateListener(
+      async (event) => {
+        await butlerFollowUpService.handleSessionTerminal(event.sessionId, event.timestamp);
+      }
+    )
+    : { close: () => undefined };
   butlerInboxService.configureLifecycleServices({
     butlerInboxAnalysisService,
     butlerControlSessionService,
@@ -1507,13 +1521,16 @@ export function createServer(config: HostConfig) {
     affairsLibraryService,
     config.filePreviewTokenSecret
   );
-  const affairsAssistantSessionSnapshotService = new AffairsAssistantSessionSnapshotService(
-    repositories.affairsAssistantSessionSnapshotRepository,
-    affairsLibraryService,
-    butlerProjectService,
-    butlerSessionService,
-    taskManager
-  );
+  // [待移除] Butler 已停用；不实例化事务助手会话快照服务，避免注册后台任务并触发会话同步。
+  const affairsAssistantSessionSnapshotService = BUTLER_FEATURE_ENABLED
+    ? new AffairsAssistantSessionSnapshotService(
+      repositories.affairsAssistantSessionSnapshotRepository,
+      affairsLibraryService,
+      butlerProjectService,
+      butlerSessionService,
+      taskManager
+    )
+    : undefined;
   const workbenchService = new WorkbenchService(
     repositories.workspaceRepository,
     repositories.workspaceNavigationStateRepository,
@@ -1923,7 +1940,10 @@ export function createServer(config: HostConfig) {
   void registerAuthRoutes(app, authController);
   void registerPeerHostRoutes(app, peerHostController, hostApiProxyController);
   void registerAssistantCapabilityRoutes(app, assistantCapabilityController);
-  void registerChannelRoutes(app, channelController);
+  // [待移除] 外部渠道是 Butler 的入口之一；停用期间不再暴露渠道管理、轮询和投递接口。
+  if (BUTLER_FEATURE_ENABLED) {
+    void registerChannelRoutes(app, channelController);
+  }
   void registerClientRoutes(app, clientController);
   void registerObservabilityRoutes(app, observabilityController);
   void registerOfficeRoutes(app, officeController);
@@ -1949,7 +1969,10 @@ export function createServer(config: HostConfig) {
   );
   void registerWorktreeRoutes(app, worktreeController);
   void registerWorkbenchRoutes(app, workbenchController);
-  void registerButlerRoutes(app, butlerController);
+  // [待移除] Butler 路由保留在代码中，但停用期间不注册到运行中的 Host。
+  if (BUTLER_FEATURE_ENABLED) {
+    void registerButlerRoutes(app, butlerController);
+  }
   void registerSessionRoutes(app, sessionController);
   void registerSessionCleanupRoutes(app, sessionCleanupController);
   void registerParallelGroupRoutes(app, parallelSessionController);
@@ -1969,10 +1992,15 @@ export function createServer(config: HostConfig) {
   void registerTerminalRoutes(app, terminalController);
   void registerProviderRoutes(app, providerController);
   void registerGitRoutes(app, gitController);
-  patrolScheduler.start();
-  butlerFollowUpScheduler.start();
-  butlerControlTimerScheduler.start();
-  channelPollingScheduler.start();
+  // [待移除] Butler 的巡视、跟进和控制定时器全部停止，不创建任何周期后台任务。
+  if (BUTLER_FEATURE_ENABLED) {
+    patrolScheduler.start();
+    butlerFollowUpScheduler.start();
+    butlerControlTimerScheduler.start();
+  }
+  if (BUTLER_FEATURE_ENABLED) {
+    channelPollingScheduler.start();
+  }
   pluginSchedulerService.start();
 
   if (config.webUiDir) {

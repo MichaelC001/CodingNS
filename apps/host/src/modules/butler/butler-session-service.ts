@@ -93,7 +93,7 @@ export class ButlerSessionService {
     private readonly sessionLiveRuntimeService?: Pick<SessionLiveRuntimeService, "startLiveSession">,
     private readonly sessionHistoryService?: Pick<
       SessionHistoryService,
-      "discoverWorkspaceSessions" | "listWorkspaceSessions" | "requestWorkspaceDiscovery" | "resumeSession"
+      "listWorkspaceSessions" | "markWorkspaceDiscoveryDirty" | "resumeSession"
     >,
     private readonly sessionMessageOriginRepository: Pick<
       SessionMessageOriginRepository,
@@ -320,28 +320,21 @@ export class ButlerSessionService {
     }
   ): Promise<void> {
     const project = this.getProjectForUserOrThrow(projectId, userId);
-    const mode = options?.mode ?? "blocking";
 
     if (!isWorkspaceAutoManagedProject(project) || !this.sessionHistoryService?.listWorkspaceSessions) {
       return;
     }
 
-    if (
-      mode === "blocking" &&
-      this.sessionHistoryService.discoverWorkspaceSessions
-    ) {
-      await this.sessionHistoryService.discoverWorkspaceSessions(project.workspaceId, userId, {
-        maxAgeMs: options?.force ? 0 : 15_000,
-        force: options?.force ?? false,
-        refreshStateMode: "inline",
-        signal: options?.signal
-      });
-    } else if (this.sessionHistoryService.requestWorkspaceDiscovery) {
-      this.sessionHistoryService.requestWorkspaceDiscovery(project.workspaceId, userId, {
-        maxAgeMs: options?.force ? 0 : 15_000,
-        force: options?.force ?? false,
-        refreshStateMode: "deferred"
-      });
+    if (this.sessionHistoryService.markWorkspaceDiscoveryDirty) {
+      // Butler 上下文刷新只能标记工作区脏状态，不能把会话目录扫描偷偷
+      // 带入普通工作台或控制链路；全量扫描由用户显式操作触发。
+      this.sessionHistoryService.markWorkspaceDiscoveryDirty(
+        project.workspaceId,
+        userId,
+        options?.force
+          ? "butler.project_sessions_sync.force"
+          : "butler.project_sessions_sync"
+      );
     }
 
     this.importWorkspaceSessions(project, userId, options?.includeArchived ?? false);

@@ -60,7 +60,11 @@ import type {
   SessionStatusSnapshot
 } from "../../types/domain.js";
 import type { SessionBindingRepository } from "../../storage/repositories/session-binding-repository.js";
-import { SessionDiscoveryDiagnosticsRepository } from "../../storage/repositories/session-discovery-diagnostics-repository.js";
+import {
+  DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE,
+  DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
+  SessionDiscoveryDiagnosticsRepository
+} from "../../storage/repositories/session-discovery-diagnostics-repository.js";
 import type { SessionIndexRepository } from "../../storage/repositories/session-index-repository.js";
 import { SessionSourceIndexRepository } from "../../storage/repositories/session-source-index-repository.js";
 import type { SessionStateRepository } from "../../storage/repositories/session-state-repository.js";
@@ -287,6 +291,17 @@ interface SessionHistoryReadTaskInput {
   readMode: "page" | "delta";
 }
 
+interface ExplicitWorkspaceScanTaskInput {
+  workspaceId: string;
+  userId: string;
+  workspacePath: string;
+  config: ProviderSessionDiscoveryHelperConfig;
+  knownSessions: import("@codingns/session-sync-core").ProviderSessionSummary[];
+  enabledProviders: string[];
+  claudeExtraProjectRoots: string[];
+  refreshStateMode: "deferred";
+}
+
 interface SessionStatsSnapshotReadTaskInput {
   config: ProviderSessionDiscoveryHelperConfig;
   provider: string;
@@ -339,11 +354,6 @@ interface WorkspaceStateRefreshStatus {
 interface ProviderCapabilityCacheEntry {
   refreshedAt: number;
   value: ProviderCapabilities;
-}
-
-interface CodexDirtyBindingRepairState {
-  promise: Promise<SessionBinding> | null;
-  lastAttemptedAt: number;
 }
 
 interface DeliveredHistoryMessageState {
@@ -431,11 +441,17 @@ const WORKSPACE_DISCOVERY_PARTIAL_COOLDOWN_MS = 60_000;
 const WORKSPACE_DISCOVERY_SCAN_CONCURRENCY = 2;
 const PROVIDER_CAPABILITY_CACHE_MAX_AGE_MS = 5_000;
 const WORKSPACE_DISCOVERY_PERSIST_BATCH_SIZE = 25;
+const SESSION_DISCOVERY_TRIGGER_SOURCES = {
+  background: "session_history.workspace_discovery.scan",
+  explicit: "session_history.explicit_workspace_scan"
+} as const;
+type WorkspaceDiscoveryTrigger = "automatic" | "explicit";
+// 全量会话发现只能由明确的用户操作启动，自动路径只能留下脏标记。
+const ALLOW_AUTOMATIC_WORKSPACE_DISCOVERY = false;
 const SESSION_TRANSACTION_HOTSPOT_THRESHOLD_MS = 150;
 const WORKSPACE_STATE_REFRESH_COOLDOWN_MS = 1_500;
 const SQLITE_BUSY_RETRY_LIMIT = 3;
 const SQLITE_BUSY_RETRY_DELAY_MS = 100;
-const CODEX_DIRTY_BINDING_REPAIR_COOLDOWN_MS = 5_000;
 
 export class SessionHistoryService {
   private readonly providerRegistry: ProviderRegistry;
@@ -480,7 +496,6 @@ export class SessionHistoryService {
   private readonly sessionSourceIndexRepairScopes = new Map<string, SessionSourceIndexRepairScope>();
   private readonly workspaceStateRefreshStatuses = new Map<string, WorkspaceStateRefreshStatus>();
   private readonly providerCapabilityCache = new Map<string, ProviderCapabilityCacheEntry>();
-  private readonly codexDirtyBindingRepairStates = new Map<string, CodexDirtyBindingRepairState>();
   private readonly streamingDeltaSuppressionDebugState = new Map<string, string>();
   private readonly helperHistorySourceStates = new Map<string, HelperHistorySourceState>();
   private readonly sessionHistorySourceCoordinator: SessionHistorySourceCoordinator;
@@ -664,20 +679,30 @@ export class SessionHistoryService {
       .list()
       .map((adapter) => adapter.providerId)
       .filter((providerId) => this.isProviderEnabled(providerId));
-    const handle = this.taskManager.enqueue<{
-      workspaceId: string;
-      userId: string;
-      workspacePath: string;
-      enabledProviders: string[];
-      refreshStateMode: "deferred";
-    }, SessionListItem[]>(HOST_TASK_TYPES.workspaceDiscoveryExplicitScan, {
+    const existingWorkspaceSessions = this.sessionIndexRepository.listByWorkspace(workspaceId, userId);
+    const existingWorkspaceSourceIndexes = this.sessionSourceIndexRepository.listByWorkspaceId(workspaceId);
+    const activeRepairScope = this.sessionSourceIndexRepairScopes.get(workspaceId) ?? null;
+    const knownSessions = this.buildKnownSessionSummaries(
+      existingWorkspaceSessions.filter((session) => enabledProviders.includes(session.provider)),
+      existingWorkspaceSourceIndexes.filter((record) => enabledProviders.includes(record.provider)),
+      workspace.path,
+      activeRepairScope
+    );
+    const claudeExtraProjectRoots = this.collectClaudeDiscoveryProjectRoots(
+      workspaceId,
+      existingWorkspaceSessions
+    );
+    const handle = this.taskManager.enqueue<ExplicitWorkspaceScanTaskInput, SessionListItem[]>(HOST_TASK_TYPES.workspaceDiscoveryExplicitScan, {
       key: workspaceId,
-      source: "session_history.explicit_workspace_scan",
+      source: SESSION_DISCOVERY_TRIGGER_SOURCES.explicit,
       input: {
         workspaceId,
         userId,
         workspacePath: workspace.path,
+        config: this.providerSessionDiscoveryConfig,
+        knownSessions,
         enabledProviders,
+        claudeExtraProjectRoots,
         refreshStateMode: "deferred"
       }
     });
@@ -767,12 +792,14 @@ export class SessionHistoryService {
     if (awaitDiscovery) {
       await this.discoverWorkspaceSessions(workspaceId, userId, {
         force: true,
-        refreshStateMode: "deferred"
+        refreshStateMode: "deferred",
+        trigger: "explicit"
       });
     } else {
       this.requestWorkspaceDiscovery(workspaceId, userId, {
         force: true,
-        refreshStateMode: "deferred"
+        refreshStateMode: "deferred",
+        trigger: "explicit"
       });
     }
 
@@ -875,25 +902,28 @@ export class SessionHistoryService {
     }
 
     if (!this.taskManager.has(HOST_TASK_TYPES.workspaceDiscoveryExplicitScan)) {
-      this.taskManager.register<{
-        workspaceId: string;
-        userId: string;
-        workspacePath: string;
-        enabledProviders: string[];
-        refreshStateMode: "deferred";
-      }, SessionListItem[]>({
+      this.taskManager.register<ExplicitWorkspaceScanTaskInput, SessionListItem[]>({
         taskType: HOST_TASK_TYPES.workspaceDiscoveryExplicitScan,
         executionLane: "helper_process",
         timeoutMs: 30_000,
-        run: async ({ workspaceId, userId, refreshStateMode }, context) =>
-          await this.runDiscoverWorkspaceSessions(
-            workspaceId,
-            userId,
-            refreshStateMode,
+        helperProcessHandler: "session.workspace_discovery",
+        postProcess: async (input, discovery, context) => {
+          const discoveryResult = discovery as unknown as ProviderSessionDiscovery;
+          return await this.runDiscoverWorkspaceSessions(
+            input.workspaceId,
+            input.userId,
+            input.refreshStateMode,
             context.signal,
             context.taskId,
-            false
-          )
+            false,
+            discoveryResult,
+            SESSION_DISCOVERY_TRIGGER_SOURCES.explicit
+          );
+        },
+        // helper_process 任务的主逻辑由 helperProcessHandler 执行，run 仅作为无 helper 执行器的兼容兜底。
+        run: async () => {
+          throw new Error("显式扫描必须通过 helper_process 执行");
+        }
       });
     }
 
@@ -1230,9 +1260,16 @@ export class SessionHistoryService {
       force?: boolean;
       refreshStateMode?: "inline" | "deferred";
       signal?: AbortSignal;
+      trigger?: WorkspaceDiscoveryTrigger;
     }
   ): Promise<SessionListItem[]> {
     this.getDiscoverableWorkspaceForUserOrThrow(workspaceId, userId);
+
+    if (!this.canStartWorkspaceDiscovery(options?.trigger ?? "explicit")) {
+      this.markAutomaticWorkspaceDiscoveryBlocked(workspaceId);
+      return this.listWorkspaceSessions(workspaceId, userId);
+    }
+
     this.markWorkspaceDiscoveryRequested(workspaceId, "session_history.discover_workspace_sessions");
     const maxAgeMs = options?.maxAgeMs ?? 0;
     const force = options?.force ?? false;
@@ -1282,12 +1319,18 @@ export class SessionHistoryService {
       maxAgeMs?: number;
       force?: boolean;
       refreshStateMode?: "inline" | "deferred";
+      trigger?: WorkspaceDiscoveryTrigger;
     }
   ): void {
     const maxAgeMs = options?.maxAgeMs ?? WORKSPACE_DISCOVERY_BACKGROUND_MAX_AGE_MS;
     const force = options?.force ?? false;
 
     if (!this.isWorkspaceDiscoverableForUser(workspaceId, userId)) {
+      return;
+    }
+
+    if (!this.canStartWorkspaceDiscovery(options?.trigger ?? "automatic")) {
+      this.markAutomaticWorkspaceDiscoveryBlocked(workspaceId);
       return;
     }
 
@@ -1380,6 +1423,16 @@ export class SessionHistoryService {
     return !this.isWorkspaceDiscoveryCompleteAndFresh(discoveryStatus, maxAgeMs, Date.now());
   }
 
+  private canStartWorkspaceDiscovery(trigger: WorkspaceDiscoveryTrigger): boolean {
+    return trigger === "explicit" || ALLOW_AUTOMATIC_WORKSPACE_DISCOVERY;
+  }
+
+  private markAutomaticWorkspaceDiscoveryBlocked(workspaceId: string): void {
+    const status = this.getOrCreateWorkspaceDiscoveryStatus(workspaceId);
+    status.lastRequestedAt = Date.now();
+    status.dirtyReasons.add("session_history.automatic_discovery_blocked");
+  }
+
   async readSessionHistory(
     sessionId: string,
     cursor: string | null,
@@ -1399,7 +1452,6 @@ export class SessionHistoryService {
     if (userId) {
       const repairStartedAt = Date.now();
       binding = await this.repairCodexDirtyBindingBeforeHistoryRead(
-        resolvedSessionId,
         userId,
         binding
       );
@@ -3312,7 +3364,9 @@ export class SessionHistoryService {
     refreshStateMode: "inline" | "deferred" = "inline",
     signal?: AbortSignal,
     taskId?: string,
-    allowCleanup = true
+    allowCleanup = true,
+    precomputedDiscovery?: ProviderSessionDiscovery,
+    triggerSource: string = SESSION_DISCOVERY_TRIGGER_SOURCES.background
   ): Promise<SessionListItem[]> {
     const startedAt = Date.now();
     const debugStartedAtMs = terminalDebugNowMs();
@@ -3354,32 +3408,34 @@ export class SessionHistoryService {
         workspaceId,
         existingWorkspaceSessions
       );
-      const discoveryHandle = this.taskManager.enqueue<{
-        config: ProviderSessionDiscoveryHelperConfig;
-        workspacePath: string;
-        knownSessions: import("@codingns/session-sync-core").ProviderSessionSummary[];
-        enabledProviders: string[];
-        claudeExtraProjectRoots: string[];
-      }, ProviderSessionDiscovery>(HOST_TASK_TYPES.workspaceDiscoveryScan, {
-        key: workspaceId,
-        source: "session_history.workspace_discovery.scan",
-        input: {
-          config: this.providerSessionDiscoveryConfig,
-          workspacePath: workspace.path,
-          knownSessions,
-          enabledProviders,
-          claudeExtraProjectRoots
-        }
-      });
-      const discovery = await awaitTaskHandleWithSignal(discoveryHandle, signal).catch((error) => {
-        throw mapSessionProviderError(error);
-      });
+      const discovery = precomputedDiscovery ?? await (async () => {
+        const discoveryHandle = this.taskManager.enqueue<{
+          config: ProviderSessionDiscoveryHelperConfig;
+          workspacePath: string;
+          knownSessions: import("@codingns/session-sync-core").ProviderSessionSummary[];
+          enabledProviders: string[];
+          claudeExtraProjectRoots: string[];
+        }, ProviderSessionDiscovery>(HOST_TASK_TYPES.workspaceDiscoveryScan, {
+          key: workspaceId,
+          source: SESSION_DISCOVERY_TRIGGER_SOURCES.background,
+          input: {
+            config: this.providerSessionDiscoveryConfig,
+            workspacePath: workspace.path,
+            knownSessions,
+            enabledProviders,
+            claudeExtraProjectRoots
+          }
+        });
+        return await awaitTaskHandleWithSignal(discoveryHandle, signal).catch((error) => {
+          throw mapSessionProviderError(error);
+        });
+      })();
       const sessions = discovery.sessions;
       discoverDurationMs = Date.now() - discoverStartedAt;
       const timestamp = nowIso();
-      this.persistDiscoveryDiagnostics(
+      await this.persistDiscoveryDiagnostics(
         workspaceId,
-        "session_history.workspace_discovery.scan",
+        triggerSource,
         discovery,
         timestamp
       );
@@ -6660,15 +6716,15 @@ export class SessionHistoryService {
     }
   }
 
-  private persistDiscoveryDiagnostics(
+  private async persistDiscoveryDiagnostics(
     workspaceId: string,
     triggerSource: string,
     discovery: ProviderSessionDiscovery,
     timestamp: string
-  ): void {
+  ): Promise<void> {
     try {
-      for (const entry of discovery.providerDiagnostics ?? []) {
-        const record: SessionDiscoveryDiagnosticRecord = {
+      const records = (discovery.providerDiagnostics ?? []).map((entry) => {
+        return {
           id: createId(),
           workspaceId,
           triggerSource,
@@ -6683,8 +6739,40 @@ export class SessionHistoryService {
           bytesRead: Math.max(0, entry.bytesRead ?? 0),
           createdAt: timestamp
         };
+      });
 
-        this.sessionDiscoveryDiagnosticsRepository.insert(record);
+      let retryCount = 0;
+      let prunedCount = 0;
+      while (true) {
+        try {
+          prunedCount = this.sessionDiscoveryDiagnosticsRepository.insertAndPrune(
+            records,
+            workspaceId,
+            {
+              now: timestamp,
+              retentionMs: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
+              maxRowsPerWorkspace: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE
+            }
+          );
+          break;
+        } catch (error) {
+          if (!isSqliteBusyError(error) || retryCount >= SQLITE_BUSY_RETRY_LIMIT) {
+            throw error;
+          }
+
+          retryCount += 1;
+          await delay(SQLITE_BUSY_RETRY_DELAY_MS * retryCount);
+        }
+      }
+
+      if (prunedCount > 0) {
+        console.info("[session-discovery-diagnostics-pruned]", {
+          workspaceId,
+          triggerSource,
+          prunedCount,
+          retentionMs: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
+          maxRowsPerWorkspace: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE
+        });
       }
     } catch (error) {
       console.warn("[session-discovery-diagnostics-persist-failed]", {
@@ -6839,57 +6927,21 @@ export class SessionHistoryService {
   }
 
   private async repairCodexDirtyBindingBeforeHistoryRead(
-    sessionId: string,
     userId: string,
     binding: SessionBinding
   ): Promise<SessionBinding> {
     if (!shouldRepairCodexDirtyBinding(binding)) {
-      this.codexDirtyBindingRepairStates.delete(sessionId);
       return binding;
     }
 
-    const existingState = this.codexDirtyBindingRepairStates.get(sessionId);
-
-    if (existingState?.promise) {
-      return existingState.promise;
-    }
-
-    const now = Date.now();
-
-    if (
-      existingState &&
-      now - existingState.lastAttemptedAt < CODEX_DIRTY_BINDING_REPAIR_COOLDOWN_MS
-    ) {
-      return this.getBindingOrThrow(sessionId);
-    }
-
-    const repairPromise = (async (): Promise<SessionBinding> => {
-      await this.discoverWorkspaceSessions(binding.workspaceId, userId, {
-        force: true,
-        refreshStateMode: "deferred"
-      }).catch(() => {
-        return [];
-      });
-
-      return this.getBindingOrThrow(sessionId);
-    })();
-
-    this.codexDirtyBindingRepairStates.set(sessionId, {
-      promise: repairPromise,
-      lastAttemptedAt: now
-    });
-
-    return repairPromise.finally(() => {
-      const currentState = this.codexDirtyBindingRepairStates.get(sessionId);
-
-      if (!currentState || currentState.promise !== repairPromise) {
-        return;
-      }
-
-      currentState.promise = null;
-      currentState.lastAttemptedAt = Date.now();
-      this.codexDirtyBindingRepairStates.set(sessionId, currentState);
-    });
+    // 绑定异常只能标记为脏，不能在打开详情时偷偷扫描整个工作区。
+    // 用户下次主动点击“扫描当前工作目录会话”后，再由显式任务修复绑定。
+    this.markWorkspaceDiscoveryDirty(
+      binding.workspaceId,
+      userId,
+      "session_history.codex_binding_dirty"
+    );
+    return binding;
   }
 
   private repairClaudeEmptyBindingBeforeHistoryRead(

@@ -3307,6 +3307,16 @@ export function getSessionRuntime(sessionId: string, options?: ScopedRequestOpti
   );
 }
 
+export function refreshSessionStats(sessionId: string, options?: ScopedRequestOptions) {
+  return httpClient.request<ProviderSessionStatsDto | null>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/stats/refresh`,
+    {
+      method: "POST",
+      targetHostId: options?.targetHostId ?? undefined
+    }
+  );
+}
+
 export function interruptSession(sessionId: string, options?: ScopedRequestOptions) {
   return httpClient.request<InterruptSessionResponseDto>(
     `/api/sessions/${encodeURIComponent(sessionId)}/interrupt`,

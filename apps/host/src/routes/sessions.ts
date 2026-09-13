@@ -19,6 +19,7 @@ export async function registerSessionRoutes(
   app.get("/api/sessions/:sessionId/permission-requests", sessionController.listPermissionRequests);
   app.get("/api/sessions/:sessionId/queue", sessionController.listQueue);
   app.get("/api/sessions/:sessionId/runtime", sessionController.getRuntime);
+  app.post("/api/sessions/:sessionId/stats/refresh", sessionController.refreshStats);
   app.patch("/api/sessions/:sessionId/title", sessionController.renameTitle);
   app.patch("/api/sessions/:sessionId/archive", sessionController.updateArchiveState);
   app.patch("/api/sessions/:sessionId/favorite", sessionController.updateFavoriteState);

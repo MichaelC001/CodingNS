@@ -336,7 +336,7 @@ describe("WorkbenchService", () => {
   });
 
   it("显式刷新才会调度工作区 discovery", async () => {
-    const requestWorkspaceDiscovery = vi.fn();
+    const markWorkspaceDiscoveryDirty = vi.fn();
     const service = new WorkbenchService(
       createWorkspaceRepositoryStub([
         {
@@ -350,7 +350,7 @@ describe("WorkbenchService", () => {
       } as never,
       {
         listWorkspaceSessions: vi.fn(() => [createRunningSession("session-active")]),
-        requestWorkspaceDiscovery
+        markWorkspaceDiscoveryDirty
       } as never,
       {
         getProfile: vi.fn(() => null)
@@ -361,20 +361,19 @@ describe("WorkbenchService", () => {
     );
 
     service.getSnapshot("user-1");
-    expect(requestWorkspaceDiscovery).not.toHaveBeenCalled();
+    expect(markWorkspaceDiscoveryDirty).not.toHaveBeenCalled();
 
     await service.refreshSnapshot("user-1");
 
-    expect(requestWorkspaceDiscovery).toHaveBeenCalledWith("workspace-1", "user-1", {
-      maxAgeMs: 15_000,
-      force: true,
-      refreshStateMode: "deferred"
-    });
+    expect(markWorkspaceDiscoveryDirty).toHaveBeenCalledWith(
+      "workspace-1",
+      "user-1",
+      "workbench.snapshot_refresh"
+    );
   });
 
-  it("显式要求等待 discovery 时，会先跑完工作区刷新再返回快照", async () => {
-    const requestWorkspaceDiscovery = vi.fn();
-    const discoverWorkspaceSessions = vi.fn(async () => []);
+  it("即使要求等待 discovery，工作台也只标记脏状态并立即返回缓存", async () => {
+    const markWorkspaceDiscoveryDirty = vi.fn();
     const service = new WorkbenchService(
       createWorkspaceRepositoryStub([
         {
@@ -388,8 +387,7 @@ describe("WorkbenchService", () => {
       } as never,
       {
         listWorkspaceSessions: vi.fn(() => [createRunningSession("session-active")]),
-        requestWorkspaceDiscovery,
-        discoverWorkspaceSessions
+        markWorkspaceDiscoveryDirty
       } as never,
       {
         getProfile: vi.fn(() => null)
@@ -404,12 +402,11 @@ describe("WorkbenchService", () => {
       awaitDiscovery: true
     });
 
-    expect(discoverWorkspaceSessions).toHaveBeenCalledWith("workspace-1", "user-1", {
-      maxAgeMs: 15_000,
-      force: true,
-      refreshStateMode: "deferred"
-    });
-    expect(requestWorkspaceDiscovery).not.toHaveBeenCalled();
+    expect(markWorkspaceDiscoveryDirty).toHaveBeenCalledWith(
+      "workspace-1",
+      "user-1",
+      "workbench.snapshot_refresh"
+    );
   });
 
   it("事务助手会话列表刷新默认只调度后台任务，不阻塞返回现有快照", async () => {

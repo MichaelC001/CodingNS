@@ -26,6 +26,7 @@ function createSessionControllerMock() {
     listPermissionRequests: vi.fn(),
     listQueue: vi.fn(),
     getRuntime: vi.fn(),
+    refreshStats: vi.fn(),
     renameTitle: vi.fn(),
     updateArchiveState: vi.fn(),
     updateFavoriteState: vi.fn(),
@@ -91,6 +92,18 @@ describe("session routes", () => {
     expect(app.post).toHaveBeenCalledWith(
       "/api/sessions/:sessionId/forks",
       controller.fork
+    );
+  });
+
+  it("应该注册会话统计显式刷新路由", async () => {
+    const app = createRouteAppMock();
+    const controller = createSessionControllerMock();
+
+    await registerSessionRoutes(app as never, controller as never);
+
+    expect(app.post).toHaveBeenCalledWith(
+      "/api/sessions/:sessionId/stats/refresh",
+      controller.refreshStats
     );
   });
 });

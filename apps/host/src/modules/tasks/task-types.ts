@@ -87,6 +87,8 @@ export interface TaskDefinition<TInput = unknown, TResult = unknown> {
   queueWaitTimeoutMs?: number;
   retryPolicy?: TaskRetryPolicy;
   helperProcessHandler?: string;
+  /** helper 完成后在 Host 侧执行轻量收尾，例如索引回写；不得在此重复扫描。 */
+  postProcess?: (input: TInput, result: unknown, context: TaskRunContext) => Promise<TResult> | TResult;
   run: (input: TInput, context: TaskRunContext) => Promise<TResult>;
 }
 

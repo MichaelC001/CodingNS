@@ -328,4 +328,46 @@ describe("session routes", () => {
       errorDetail: "session 已删除或不存在"
     });
   });
+
+  it("会话统计刷新先校验用户，再等待去重任务并返回最新快照", async () => {
+    const stats = {
+      provider: "codex",
+      capturedAt: "2026-09-13T13:40:00.000Z",
+      metrics: {
+        inputTokens: {
+          value: 120,
+          source: "provider-history-log",
+          semantic: "sum-of-final-events"
+        }
+      },
+      modelUsages: []
+    };
+    const refreshStats = vi.fn(() => ({
+      promise: Promise.resolve(),
+      deduped: false
+    }));
+    const getSessionStats = vi.fn(() => stats);
+    const getSession = vi.fn(() => ({ sessionId: "session-1" }));
+    const app = await createSessionApp({
+      sessionHistoryService: {
+        getSession,
+        requestSessionStatsRefresh: refreshStats,
+        getSessionStats
+      }
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sessions/session-1/stats/refresh"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(stats);
+    expect(getSession).toHaveBeenCalledWith("session-1", "user-1");
+    expect(refreshStats).toHaveBeenCalledWith(
+      "session-1",
+      "session_controller.stats_refresh"
+    );
+    expect(getSessionStats).toHaveBeenCalledWith("session-1");
+  });
 });

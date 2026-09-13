@@ -24,8 +24,9 @@
   - 状态：DONE
   - 实际修改：新增 `workspace.discovery.explicit_scan`、POST/DELETE `/api/sessions/discovery/scan`、GET `/api/sessions/discovery/status`；任务 key 使用 workspaceId，执行位点声明为 helper_process；Host/helper 均沿用 enabled provider 过滤。
   - 可观察结果：重复点击返回同一任务（deduped），扫描结果继续走现有幂等索引合并逻辑。
-  - 验证：Host 类型检查通过；现有后台任务集成测试通过。
-  - 风险：显式任务的 Host 收尾仍复用旧 discovery 持久化流程，后续可进一步拆分 helper 结果与 Host 回写。
+  - 验证：Host 类型检查通过；现有后台任务集成测试通过；新增“显式扫描 helper_process + Host 回写”集成测试通过。
+  - 实际修改：`TaskDefinition` 增加 `postProcess`，显式扫描通过 `session.workspace_discovery` helper 处理器返回结果，再在同一 TaskManager 任务中执行 Host 索引回写；旧 discovery 路径保持不变。
+  - 风险：Host 回写仍与任务结果串联执行，但已不再由 Host `run()` 间接嵌套扫描。
 
 - [x] 2.2 新增扫描结果观测和错误状态
   - 状态：DONE
@@ -52,12 +53,12 @@
   - 验证：`MobileCreateSessionSheet.test.tsx` 覆盖扫描完成状态及 `targetHostId` 透传。
   - 风险：扫描任务关闭弹窗后继续运行，结果需重新打开弹窗查看。
 
-- [x] 3.3 虚拟会话和历史改为打开会话后加载
-  - 状态：DONE
+- [ ] 3.3 虚拟会话和历史改为打开会话后加载
+  - 状态：IN_PROGRESS
   - 实际修改：确认 `SessionRuntimeStore.initialize()` 只在具体会话详情挂载后启动历史首屏；普通导航列表不请求 messages/virtual history；`conversation-api.ts` 增加无 AbortSignal 首屏请求去重缓存。
   - 可观察结果：同一会话相同 cursor/limit/direction/host 的并发首屏请求共享一个 HTTP Promise，虚拟/子 Agent 展开仍由详情阶段触发。
   - 验证：`pnpm --dir apps/user-app exec tsc --noEmit`；移动扫描组件测试通过。
-  - 风险：并行会话详情若使用不同分页参数仍会产生独立请求，这是预期行为。
+  - 风险：虚拟会话、子 Agent 历史的详情阶段请求边界和所有组件去重尚未完全收口；并行会话详情若使用不同分页参数仍会产生独立请求，这是预期行为。
 
 ## 阶段检查
 
@@ -65,4 +66,32 @@
   - 状态：DONE
   - 已执行：Host/user-app 类型检查、会话历史集成测试、`pnpm check:sqlite-runtime`、`git diff --check`。
   - 补充验证：`tests/integration/session-routes.test.ts`（6 项）、`tests/integration/session-route-config.test.ts`（2 项）通过；`MobileCreateSessionSheet.test.tsx`（1 项）通过；WorkbenchLayout 扫描/并行按钮顺序专项测试（1 项）通过。
-  - 已知风险：WorkbenchLayout 全量组件测试在 180 秒超时保护内未结束；显式任务 Host 回写仍复用旧 discovery 的收尾函数。
+  - 已知风险：WorkbenchLayout 全量组件测试在 180 秒超时保护内未结束；Host 回写仍属于显式任务的收尾阶段，需要后续继续做批量预算优化。
+
+- [ ] 4.2 事务文档库停用时禁止所有任务入队
+  - 状态：IN_PROGRESS
+  - 实际修改：现有 `apps/host/src/modules/workspace/affairs-library-service.ts` 已统一通过 `enqueueLibraryTask()` 处理配置保存、手动刷新和目录提示入口。
+  - 可观察结果：任务停用时不访问 TaskManager 注册表，返回 `disabled` 句柄或 `scheduled: false`，目录列表不再因任务未注册返回 500。
+  - 验证：待执行事务文档库服务专项测试。
+  - 风险：事务库只读接口仍保留，若后续重新启用任务，必须恢复注册和 helper handler 的成对配置。
+
+- [ ] 4.3 discovery diagnostics 保留策略与来源区分
+  - 状态：IN_PROGRESS
+  - 实际修改：`session-discovery-diagnostics-repository.ts` 增加按时间和按工作区数量清理；显式扫描使用独立 `trigger_source`。
+  - 可观察结果：默认只保留最近 30 天且每工作区最多 500 条诊断，普通 discovery 与显式扫描可在 SQLite 中区分。
+  - 验证：待执行仓储和会话 discovery 测试。
+  - 风险：历史数据库首次触发清理时可能产生一次较大的 SQLite 删除事务，尚未做分批后台清理。
+
+- [ ] 4.4 helper 关闭、取消与进程组回收
+  - 状态：IN_PROGRESS
+  - 实际修改：新增 `child-process-lifecycle.ts`，接入任务、provider discovery、Claude/Codex runtime、Git、Tailscale、tmux 和 conpty helper；Host 关闭链路等待 helper 退出。
+  - 可观察结果：Abort 会先发送取消消息；关闭先等待 SIGTERM，超时再向 detached 进程组发送 SIGKILL，不再只丢弃 child 引用。
+  - 验证：待执行 helper client/pool 和 Host 类型检查。
+  - 风险：Windows 不支持负 PID 进程组信号，仍使用单进程回退；外部 CLI 自身若脱离进程组仍需单独处理。
+
+- [ ] 4.5 JSONL 半行读取与扫描重试
+  - 状态：IN_PROGRESS
+  - 实际修改：`session-sync-core` JSONL 解析跳过末尾未闭合半行；发现扫描读取前后指纹变化时最多重读 3 次。
+  - 可观察结果：追加中的 JSONL 不再被误报为损坏记录，下一次读取可重新解析补齐记录；完整坏行仍按原逻辑告警并跳过。
+  - 验证：待执行 session-sync-core JSONL 工具测试及 provider 核心测试。
+  - 风险：连续高频写入超过重试窗口时仍可能得到不完整快照，需依赖下一次显式扫描或历史增量读取修正。

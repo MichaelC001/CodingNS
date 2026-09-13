@@ -1570,21 +1570,14 @@ export class SessionPermissionRequestService {
       return null;
     }
 
-    await this.sessionHistoryService.discoverWorkspaceSessions(workspace.id, userId, {
-      force: true,
-      refreshStateMode: "deferred"
-    }).catch(() => {
-      return;
-    });
-
-    const discoveredBinding =
-      this.sessionBindingRepository.findByProviderSession("opencode", providerSessionId);
-
-    if (!discoveredBinding) {
-      return null;
-    }
-
-    return this.sessionHistoryService.getSession(discoveredBinding.sessionId, userId);
+    // 权限事件不能为了寻找一条未知绑定而扫描整个工作区；等待显式扫描
+    // 或运行时创建绑定后，下一次事件会从本地索引命中。
+    this.sessionHistoryService.markWorkspaceDiscoveryDirty(
+      workspace.id,
+      userId,
+      "session_permission.opencode_binding_missing"
+    );
+    return null;
   }
 
   private resolveClaudeWorkspaceSessionFallback(input: {
@@ -1676,34 +1669,18 @@ export class SessionPermissionRequestService {
     }
 
     if (userId) {
-      await this.sessionHistoryService.discoverWorkspaceSessions(workspaceId, userId, {
-        force: true,
-        refreshStateMode: "deferred"
-      }).catch(() => {
-        return;
-      });
+      this.sessionHistoryService.markWorkspaceDiscoveryDirty(
+        workspaceId,
+        userId,
+        "session_permission.claude_binding_missing"
+      );
     }
 
-    const refreshed =
-      (userId
-        ? this.sessionBindingRepository.findByProviderSessionForUser(provider, providerSessionId, userId)
-        : this.sessionBindingRepository.findByProviderSession(provider, providerSessionId)) ??
-      (userId
-        ? this.sessionBindingRepository.findByRawStoreRefForUser(provider, rawStoreRef, userId)
-        : this.sessionBindingRepository.findByRawStoreRef(provider, rawStoreRef));
-
-    if (!refreshed) {
-      throw new AppError({
-        statusCode: 404,
-        errorCode: "CLAUDE_SESSION_NOT_FOUND",
-        detail: "没有找到对应的兼容 CLI 会话绑定"
-      });
-    }
-
-    return {
-      sessionId: refreshed.sessionId,
-      rawStoreRef: refreshed.rawStoreRef
-    };
+    throw new AppError({
+      statusCode: 404,
+      errorCode: "CLAUDE_SESSION_NOT_FOUND",
+      detail: "没有找到对应的兼容 CLI 会话绑定，请先执行工作区会话扫描"
+    });
   }
 
   private async resolveOpenCodeBaseUrl(

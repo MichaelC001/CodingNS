@@ -1870,21 +1870,6 @@ export class SessionLiveRuntimeService {
       this.sessionBindingRepository.findByProviderSession(input.provider, input.providerSessionId) ??
       this.sessionBindingRepository.findByRawStoreRef(input.provider, rawStoreRef);
 
-    if (!binding) {
-      if (input.userId) {
-        await this.sessionHistoryService.discoverWorkspaceSessions(input.workspaceId, input.userId, {
-          force: true,
-          refreshStateMode: "deferred"
-        }).catch(() => {
-          return;
-        });
-      }
-
-      binding =
-        this.sessionBindingRepository.findByProviderSession(input.provider, input.providerSessionId) ??
-        this.sessionBindingRepository.findByRawStoreRef(input.provider, rawStoreRef);
-    }
-
     if (binding) {
       return {
         sessionId: binding.sessionId,

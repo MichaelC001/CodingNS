@@ -382,17 +382,11 @@ export class WorkbenchService {
       refreshStateMode?: "inline" | "deferred";
     }
   ): Promise<void> {
-    const candidates = this.selectDiscoveryCandidates(userId, options?.force ?? false);
-
-    await Promise.allSettled(
-      candidates.map((candidate) =>
-        this.sessionHistoryService.discoverWorkspaceSessions(candidate.workspace.id, userId, {
-          maxAgeMs: candidate.maxAgeMs,
-          force: options?.force ?? true,
-          refreshStateMode: options?.refreshStateMode ?? "deferred"
-        })
-      )
-    );
+    // 工作台刷新只标记脏状态，不能因为 awaitDiscovery 参数再次触发全量扫描。
+    // 扫描必须由新建会话弹窗中的显式按钮发起。
+    this.scheduleWorkspaceRefreshes(userId, {
+      force: options?.force ?? false
+    });
   }
 
   private selectDiscoveryCandidates(

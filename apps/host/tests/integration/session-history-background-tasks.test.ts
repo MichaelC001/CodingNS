@@ -54,8 +54,14 @@ describe("SessionHistoryService background tasks", () => {
     const service = createSessionHistoryService(taskManager);
     seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
 
-    service.instance.requestWorkspaceDiscovery("workspace-1", "user-1", { force: true });
-    service.instance.requestWorkspaceDiscovery("workspace-1", "user-1", { force: true });
+    service.instance.requestWorkspaceDiscovery("workspace-1", "user-1", {
+      force: true,
+      trigger: "explicit"
+    });
+    service.instance.requestWorkspaceDiscovery("workspace-1", "user-1", {
+      force: true,
+      trigger: "explicit"
+    });
 
     expect(discoverMock).toHaveBeenCalledTimes(1);
 
@@ -79,6 +85,57 @@ describe("SessionHistoryService background tasks", () => {
     const metrics = service.instance.observeBackgroundTaskMetrics();
     expect(metrics.taskTypes[HOST_TASK_TYPES.workspaceDiscovery]?.counters.finished).toBe(1);
     expect(metrics.taskTypes[HOST_TASK_TYPES.workspaceDiscovery]?.counters.cache_hit).toBe(1);
+
+    service.dispose();
+  });
+
+  it("显式扫描使用 helper_process 处理器并在同一任务完成 Host 索引回写", async () => {
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.workspaceDiscoveryExplicitScan) {
+            expect(definition.executionLane).toBe("helper_process");
+            expect(definition.helperProcessHandler).toBe("session.workspace_discovery");
+            const discovery = {
+              sessions: [],
+              isComplete: true,
+              providerDiagnostics: [{
+                provider: "codex",
+                status: "success",
+                durationMs: 1,
+                sessionCount: 0,
+                isComplete: true,
+                scannedFiles: 0,
+                skippedByMtimeSize: 0,
+                parsedFiles: 0,
+                bytesRead: 0
+              }]
+            };
+            return definition.postProcess
+              ? await definition.postProcess(input, discovery, context)
+              : discovery;
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+
+    const started = service.instance.requestExplicitWorkspaceScan("workspace-1", "user-1");
+    expect(started.taskType).toBe(HOST_TASK_TYPES.workspaceDiscoveryExplicitScan);
+    expect(started.executionLane).toBe("helper_process");
+    await flushMicrotasks();
+
+    const status = service.instance.getExplicitWorkspaceScanStatus("workspace-1", "user-1");
+    expect(status.status).toBe("succeeded");
+    expect(status.resultCount).toBe(0);
+    expect(service.instance.listWorkspaceDiscoveryDiagnostics("workspace-1", "user-1", 10)[0])
+      .toMatchObject({
+        provider: "codex",
+        triggerSource: "session_history.explicit_workspace_scan"
+      });
 
     service.dispose();
   });
@@ -358,7 +415,7 @@ describe("SessionHistoryService background tasks", () => {
     service.dispose();
   });
 
-  it("显式历史读取成功后会请求一次统计刷新", async () => {
+  it("显式历史读取成功后不会隐式请求统计刷新", async () => {
     const service = createSessionHistoryService();
     seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
     seedSession(service.database.db, {
@@ -394,10 +451,7 @@ describe("SessionHistoryService background tasks", () => {
       total: 0
     });
 
-    expect(statsRefresh).toHaveBeenCalledWith(
-      "session-history-read",
-      "session_history.read_complete"
-    );
+    expect(statsRefresh).not.toHaveBeenCalled();
     service.dispose();
   });
 
@@ -1084,7 +1138,10 @@ describe("SessionHistoryService background tasks", () => {
     const service = createSessionHistoryService(taskManager);
     seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
 
-    service.instance.requestWorkspaceDiscovery("workspace-1", "user-1", { force: true });
+    service.instance.requestWorkspaceDiscovery("workspace-1", "user-1", {
+      force: true,
+      trigger: "explicit"
+    });
     await flushMicrotasks();
 
     expect(receivedSignal).not.toBeNull();

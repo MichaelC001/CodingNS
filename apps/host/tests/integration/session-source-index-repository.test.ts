@@ -96,6 +96,52 @@ describe("SessionSourceIndexRepository", () => {
 
     database.close();
   });
+
+  it("会按保留时间和工作区数量清理 discovery diagnostics", () => {
+    const database = createDatabaseClient(":memory:");
+    seedWorkspace(database.db);
+
+    const diagnosticsRepository = new SessionDiscoveryDiagnosticsRepository(database.db);
+    for (const [id, createdAt] of [
+      ["diag-old", "2026-06-08T10:00:00.000Z"],
+      ["diag-recent-1", "2026-06-10T10:00:00.000Z"],
+      ["diag-recent-2", "2026-06-10T10:01:00.000Z"],
+      ["diag-recent-3", "2026-06-10T10:02:00.000Z"]
+    ] as const) {
+      diagnosticsRepository.insert({
+        id,
+        workspaceId: "workspace-1",
+        triggerSource: id === "diag-recent-3"
+          ? "session_history.explicit_workspace_scan"
+          : "session_history.workspace_discovery.scan",
+        provider: "codex",
+        isComplete: true,
+        status: "success",
+        durationMs: 1,
+        sessionCount: 1,
+        scannedFiles: 1,
+        skippedByFingerprint: 0,
+        parsedFiles: 1,
+        bytesRead: 1,
+        createdAt
+      });
+    }
+
+    expect(diagnosticsRepository.pruneWorkspace("workspace-1", {
+      now: "2026-06-10T10:03:00.000Z",
+      retentionMs: 24 * 60 * 60 * 1000,
+      maxRowsPerWorkspace: 2
+    })).toBe(2);
+    expect(diagnosticsRepository.listByWorkspaceId("workspace-1", 20).map((item) => item.id)).toEqual([
+      "diag-recent-3",
+      "diag-recent-2"
+    ]);
+    expect(diagnosticsRepository.listByWorkspaceId("workspace-1", 20)
+      .some((item) => item.triggerSource === "session_history.explicit_workspace_scan"))
+      .toBe(true);
+
+    database.close();
+  });
 });
 
 function seedWorkspace(db: ReturnType<typeof createDatabaseClient>["db"]): void {
