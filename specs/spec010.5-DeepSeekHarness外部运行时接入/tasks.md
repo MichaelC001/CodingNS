@@ -465,6 +465,9 @@
 
 ## 统一验证记录
 
+- 2026-09-13 启动兼容性修复：新增通用 Harness 安装器入口刷新脚本，扫描已安装版本并原子更新稳定 `dsh` 入口；本机入口已从 `0.1.5-rc.1` 切换到 `0.1.5-rc.2`。Host sidecar 默认追加 `--no-open`，协议改为根据认证 URL 探测 Remote/legacy，启动健康检查移除 `session.list`，并记录 `lastErrorCode`/`lastErrorStage` 结构化失败原因。
+- 2026-09-13 rc2 协议回放：使用本机 `0.1.5-rc.2` 完成 Remote 认证、能力探测、临时工作区和会话创建、Agent preset、模型目录、会话列表（81 条）及 WebSocket 订阅回放；rc2 仅作为验证样本，没有写入业务版本判断。
+
 - 2026-09-10 Remote 协议兼容补齐：本机 `dsh --version` 返回 `0.1.2-rc.1`。Host 已按 `remote-v1` 使用 `/api/remote.mux`、`session/follow`、`session/page`、`workspace/follow`、`session/control`、`$events` 和 `$events/result`；修复 `session/list` 必须使用 `_request` 的参数错误，并补齐 `agentPresets/list/select`、模型目录和 Remote 事件拒绝结果格式。
 - 2026-09-10 真实 sidecar 回放：通过 `DeepSeekHarnessSidecarManager` 完成 token Cookie 交换、Remote 握手、`session/list`（66 条会话）、Agent preset 列表、workspace baseline、model catalog 和非空会话历史读取（实测 76 条记录）；未发送模型 prompt。
 - 2026-09-10 Remote 认证回归：token URL 返回 `303` 并签发 `dsh-auth-*` Cookie；无 Cookie HTTP 请求返回 `401`；带 Cookie 的 HTTP RPC 和 Remote WebSocket 均通过。

@@ -16,6 +16,15 @@ import { parseHarnessHandshake } from "./deepseek-harness-protocol.js";
 
 export type DeepSeekHarnessSidecarStatus = "stopped" | "starting" | "ready" | "degraded" | "read-only" | "stopping" | "failed";
 
+/** sidecar 启动失败发生在哪个阶段，便于区分认证、协议探测和进程问题。 */
+export type DeepSeekHarnessSidecarFailureStage =
+  | "allocate_port"
+  | "spawn"
+  | "protocol_probe"
+  | "auth_exchange"
+  | "child_exit"
+  | "shutdown";
+
 export interface DeepSeekHarnessSidecarState {
   instanceId: string;
   status: DeepSeekHarnessSidecarStatus;
@@ -27,6 +36,8 @@ export interface DeepSeekHarnessSidecarState {
   compatibility: DeepSeekHarnessCompatibility | null;
   startedAt: string | null;
   lastError: string | null;
+  lastErrorCode: string | null;
+  lastErrorStage: DeepSeekHarnessSidecarFailureStage | null;
 }
 
 export interface DeepSeekHarnessSidecarManagerOptions {
@@ -58,7 +69,9 @@ export class DeepSeekHarnessSidecarManager {
     capabilities: [],
     compatibility: null,
     startedAt: null,
-    lastError: null
+    lastError: null,
+    lastErrorCode: null,
+    lastErrorStage: null
   };
 
   constructor(options: DeepSeekHarnessSidecarManagerOptions) {
@@ -134,63 +147,91 @@ export class DeepSeekHarnessSidecarManager {
       return { baseUrl: this.state.baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility: this.state.compatibility };
     }
 
-    this.state = resetHandshakeState({ ...this.state, status: "starting", lastError: null });
+    this.state = resetHandshakeState({
+      ...this.state,
+      status: "starting",
+      lastError: null,
+      lastErrorCode: null,
+      lastErrorStage: null
+    });
     this.authUrl = null;
     this.authCookie = null;
-    const port = await (this.options.portAllocator ?? allocateLoopbackPort)();
-    const baseUrl = `http://127.0.0.1:${port}`;
-    const bindHost = this.options.bindHost ?? "127.0.0.1";
-    const commandPath = this.options.commandPath ?? "dsh";
-    const usesDefaultCommandArgs = this.options.commandArgs === undefined;
-    const commandArgs = this.options.commandArgs ?? ["web", "--host", bindHost, "--port", String(port)];
-
-    if (!hasSupportedBindHost(commandArgs)) {
-      throw new Error("HARNESS_BIND_HOST_UNSUPPORTED");
-    }
-
-    // CLI 版本只用于诊断和旧版无握手回退，不能再作为新协议的精确匹配条件。
-    const commandVersion = usesDefaultCommandArgs ? resolveCommandVersion(commandPath) : null;
-
-    const launch = resolveCommandLaunch(commandPath, commandArgs);
-    const child = (this.options.spawnImpl ?? spawn)(launch.command, launch.args, {
-      env: { ...process.env, ...this.options.env, HOST: bindHost, PORT: String(port) },
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: launch.shell
-    });
-    this.child = child;
-    this.state = { ...this.state, pid: child.pid ?? null, baseUrl, startedAt: new Date().toISOString() };
-    const captureOutput = (chunk: Buffer | string) => {
-      const text = String(chunk);
-      for (const line of text.split(/\r?\n/u)) {
-        const match = line.match(/dsh web:\s+(https?:\/\/[^\s]+)/u);
-        if (match?.[1]) this.authUrl = match[1];
-      }
-    };
-    child.stdout?.on("data", captureOutput);
-    // sidecar 的日志不属于 Host 业务数据，必须持续消费，避免子进程因管道写满而卡死。
-    child.stdout?.resume();
-    child.stderr?.resume();
-
-    const exitPromise = new Promise<void>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", () => {
-        if (this.child === child && this.state.status !== "stopping") {
-          this.state = resetHandshakeState({ ...this.state, status: "failed", pid: null, baseUrl: null, lastError: "HARNESS_SIDECAR_EXITED" });
-          this.child = null;
-        }
-        resolve();
-      });
-    });
-
+    let startupStage: DeepSeekHarnessSidecarFailureStage = "allocate_port";
+    let child: ChildProcess | null = null;
     try {
-      let protocol: "legacy" | "remote" = isRemoteHarnessVersion(commandVersion) ? "remote" : "legacy";
+      const port = await (this.options.portAllocator ?? allocateLoopbackPort)();
+      const baseUrl = `http://127.0.0.1:${port}`;
+      const bindHost = this.options.bindHost ?? "127.0.0.1";
+      const commandPath = this.options.commandPath ?? "dsh";
+      const usesDefaultCommandArgs = this.options.commandArgs === undefined;
+      // dsh web 默认会打开浏览器；sidecar 必须显式关闭，避免每次重试都弹出随机端口页面。
+      const commandArgs = this.options.commandArgs ?? ["web", "--host", bindHost, "--port", String(port), "--no-open"];
+
+      startupStage = "spawn";
+      if (!hasSupportedBindHost(commandArgs)) {
+        throw new Error("HARNESS_BIND_HOST_UNSUPPORTED");
+      }
+
+      // CLI 版本只用于诊断和旧版无握手回退，协议选择由实际握手/认证 URL 决定。
+      const commandVersion = usesDefaultCommandArgs ? resolveCommandVersion(commandPath) : null;
+
+      const launch = resolveCommandLaunch(commandPath, commandArgs);
+      child = (this.options.spawnImpl ?? spawn)(launch.command, launch.args, {
+        env: { ...process.env, ...this.options.env, HOST: bindHost, PORT: String(port) },
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: launch.shell
+      });
+      this.child = child;
+      this.state = { ...this.state, pid: child.pid ?? null, baseUrl, startedAt: new Date().toISOString() };
+      const captureOutput = (chunk: Buffer | string) => {
+        const text = String(chunk);
+        for (const line of text.split(/\r?\n/u)) {
+          const match = line.match(/dsh web:\s+(https?:\/\/[^\s]+)/u);
+          if (match?.[1]) this.authUrl = match[1];
+        }
+      };
+      child.stdout?.on("data", captureOutput);
+      child.stderr?.on("data", captureOutput);
+      // sidecar 的日志不属于 Host 业务数据，必须持续消费，避免子进程因管道写满而卡死。
+      child.stdout?.resume();
+      child.stderr?.resume();
+
+      const exitPromise = new Promise<void>((resolve, reject) => {
+        child!.once("error", reject);
+        child!.once("exit", (code, signalName) => {
+          if (this.child === child && this.state.status !== "stopping") {
+            startupStage = "child_exit";
+            const detail = code === null ? `HARNESS_SIDECAR_EXITED:${signalName ?? "unknown"}` : `HARNESS_SIDECAR_EXITED:${code}`;
+            this.state = resetHandshakeState({
+              ...this.state,
+              status: "failed",
+              pid: null,
+              baseUrl: null,
+              lastError: detail,
+              lastErrorCode: "HARNESS_SIDECAR_EXITED",
+              lastErrorStage: "child_exit"
+            });
+            console.warn("[deepseek-harness-sidecar] sidecar 进程退出", {
+              stage: "child_exit",
+              code: "HARNESS_SIDECAR_EXITED",
+              detail
+            });
+            this.child = null;
+          }
+          resolve();
+        });
+      });
+
       let authCookie: string | null = null;
       const createClient = async () => {
-        if (protocol === "legacy" && this.authUrl) protocol = "remote";
+        // 有一次性认证 URL 就说明 sidecar 暴露的是 Remote Gateway；没有 URL 才走旧版 HTTP。
+        const protocol: "legacy" | "remote" = this.authUrl ? "remote" : "legacy";
         if (protocol === "remote" && !authCookie) {
+          startupStage = "auth_exchange";
           if (!this.authUrl) throw new Error("HARNESS_AUTH_URL_NOT_READY");
           authCookie = await DeepSeekHarnessApiClient.exchangeAuthCookie(this.authUrl, this.options.fetchImpl ?? fetch);
         }
+        startupStage = "protocol_probe";
         return new DeepSeekHarnessApiClient({
           baseUrl,
           requestTimeoutMs: this.options.requestTimeoutMs,
@@ -200,7 +241,7 @@ export class DeepSeekHarnessSidecarManager {
           authCookie
         });
       };
-      const description = await waitForReady(createClient, this.options.startupTimeoutMs, exitPromise, signal, () => protocol === "remote");
+      const description = await waitForReady(createClient, this.options.startupTimeoutMs, exitPromise, signal);
       const harnessVersion = commandVersion ?? readVersion(description);
       const handshake = parseHarnessHandshake(description, harnessVersion);
       const compatibility = resolveDeepSeekHarnessCompatibility(handshake);
@@ -212,12 +253,30 @@ export class DeepSeekHarnessSidecarManager {
         protocolVersion: compatibility.protocolVersion,
         capabilities: compatibility.capabilities,
         compatibility,
-        lastError: compatibility.detail
+        lastError: compatibility.detail,
+        lastErrorCode: null,
+        lastErrorStage: null
       };
       return { baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility };
     } catch (error) {
-      this.state = resetHandshakeState({ ...this.state, status: "failed", pid: child.pid ?? null, lastError: sanitizeError(error) });
-      child.kill();
+      const errorCode = resolveErrorCode(error);
+      const errorDetail = sanitizeError(error);
+      this.state = resetHandshakeState({
+        ...this.state,
+        status: "failed",
+        pid: child?.pid ?? null,
+        lastError: errorDetail,
+        lastErrorCode: errorCode,
+        lastErrorStage: startupStage
+      });
+      console.warn("[deepseek-harness-sidecar] 启动失败", {
+        stage: startupStage,
+        code: errorCode,
+        detail: errorDetail
+      });
+      // 先解除所有权再 kill，避免稍后的 exit 事件覆盖真正的失败阶段。
+      if (this.child === child) this.child = null;
+      child?.kill();
       throw error;
     }
   }
@@ -238,8 +297,7 @@ async function waitForReady(
   createClient: () => Promise<DeepSeekHarnessApiClient>,
   timeoutMs: number,
   exitPromise: Promise<unknown>,
-  signal: AbortSignal | undefined,
-  remote: () => boolean
+  signal: AbortSignal | undefined
 ): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
   let lastError: unknown = null;
@@ -248,7 +306,8 @@ async function waitForReady(
     try {
       const client = await createClient();
       const description = await client.describe(signal);
-      if (remote()) await client.listSessions(signal);
+      // Remote describe 是本地能力声明，额外探测模型目录即可验证认证和 RPC；不要读取完整 session.list。
+      if (client.isRemoteProtocol()) await client.models("", signal);
       return description;
     } catch (error) {
       lastError = error;
@@ -266,17 +325,6 @@ async function waitForReady(
   }
   if (lastError instanceof Error) throw lastError;
   throw new Error("HARNESS_SIDECAR_START_FAILED");
-}
-
-function isRemoteHarnessVersion(version: string | null): boolean {
-  if (typeof version !== "string") return false;
-  const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  const patch = Number(match[3]);
-  // Remote Gateway 从 0.1.2 开始；未知大版本仍交给 legacy 握手和只读降级判断。
-  return major === 0 && minor === 1 && patch >= 2;
 }
 
 async function allocateLoopbackPort(): Promise<number> {
@@ -301,6 +349,16 @@ function readVersion(value: Record<string, unknown>): string | null {
 
 function sanitizeError(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 200) : "HARNESS_SIDECAR_START_FAILED";
+}
+
+function resolveErrorCode(error: unknown): string {
+  if (isRecord(error) && typeof error.code === "string" && error.code.trim()) return error.code.trim().slice(0, 80);
+  if (error instanceof Error && error.name && error.name !== "Error") return error.name;
+  return sanitizeError(error).split(/\s+/u, 1)[0] || "HARNESS_SIDECAR_START_FAILED";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function hasSupportedBindHost(args: string[]): boolean {

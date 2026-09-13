@@ -16,6 +16,9 @@ WINDOWS_PRIVATE_NODE_VERSION="${CODINGNS_WINDOWS_NODE_VERSION:-22.16.0}"
 WINDOWS_PRIVATE_NODE_DIST_BASE="${CODINGNS_WINDOWS_NODE_DIST_BASE:-https://nodejs.org/dist}"
 WINDOWS_NODE_PTY_PACKAGE_NAME="${CODINGNS_WINDOWS_NODE_PTY_PACKAGE_NAME:-@codingns/node-pty}"
 WINDOWS_BETTER_SQLITE_PACKAGE_NAME="${CODINGNS_WINDOWS_BETTER_SQLITE_PACKAGE_NAME:-better-sqlite3}"
+DEEPSEEK_HARNESS_ROOT="${CODINGNS_DEEPSEEK_HARNESS_ROOT:-$HOME/.local/share/codingns/deepseek-harness}"
+DEEPSEEK_HARNESS_BIN="${CODINGNS_DEEPSEEK_HARNESS_BIN:-$HOME/.local/bin/dsh}"
+INSTALL_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 SUPPORTED_CLIS=(
   "claude-code|Claude Code|claude"
@@ -2289,6 +2292,21 @@ install_or_resolve_codingns() {
   resolve_codingns_better_sqlite_dependency_metadata
 }
 
+refresh_deepseek_harness_launcher() {
+  local launcher_script="$INSTALL_SCRIPT_DIR/scripts/ensure-deepseek-harness-launcher.mjs"
+  [[ -f "$launcher_script" ]] || return 0
+  [[ -d "$DEEPSEEK_HARNESS_ROOT" ]] || return 0
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say_info_custom "node $launcher_script $DEEPSEEK_HARNESS_ROOT $DEEPSEEK_HARNESS_BIN"
+    return 0
+  fi
+
+  if ! "$NODE_BIN" "$launcher_script" "$DEEPSEEK_HARNESS_ROOT" "$DEEPSEEK_HARNESS_BIN"; then
+    say_warn_custom "DeepSeek Harness 稳定 dsh 入口更新失败，保留现有入口。"
+  fi
+}
+
 install_or_resolve_pm2() {
   if [[ "$USE_PM2" != "1" ]]; then
     say_info info_skip_pm2_management
@@ -2659,6 +2677,7 @@ main() {
   prepare_windows_install_runtime
   ensure_registry_if_needed
   install_or_resolve_codingns
+  refresh_deepseek_harness_launcher
   install_or_resolve_pm2
   resolve_pm2_start_script_path
   write_private_runtime_state
