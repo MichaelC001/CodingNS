@@ -20,7 +20,7 @@ import {
   type FormEvent,
   type ReactNode
 } from "react";
-import { createPortal, flushSync } from "react-dom";
+import { createPortal } from "react-dom";
 import { Outlet, matchPath, useLocation, useNavigate } from "react-router-dom";
 
 import {
@@ -9019,14 +9019,12 @@ function SidebarContent({
         return;
       }
 
-      flushSync(() => {
-        setExportRenderJob({
-          session,
-          items: buildConversationTimelineSourceItems({
-            messages: snapshot.messages
-          }),
-          shellWidthPx: exportLayout.shellWidthPx
-        });
+      setExportRenderJob({
+        session,
+        items: buildConversationTimelineSourceItems({
+          messages: snapshot.messages
+        }),
+        shellWidthPx: exportLayout.shellWidthPx
       });
 
       await waitForSessionExportRender(exportRenderRootRef.current);
@@ -9075,9 +9073,7 @@ function SidebarContent({
         tone: "error"
       });
     } finally {
-      flushSync(() => {
-        setExportRenderJob(null);
-      });
+      setExportRenderJob(null);
       setExportingSessionId(null);
     }
   }
@@ -14982,12 +14978,10 @@ export function WorkbenchLayout({
     }
 
     setSelectedWorkspaceId(workspaceId);
-    flushSync(() => {
-      setRightCollapsed(nextState.primarySection === "workbench");
-      setCodeEmbeddedAffairsState({
-        ...nextState,
-        workspaceId
-      });
+    setRightCollapsed(nextState.primarySection === "workbench");
+    setCodeEmbeddedAffairsState({
+      ...nextState,
+      workspaceId
     });
 
     const targetPath = buildCodeEmbeddedAffairsRoutePath(nextState.primarySection);
