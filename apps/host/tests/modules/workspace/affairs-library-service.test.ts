@@ -238,6 +238,30 @@ describe("AffairsLibraryService disabled tasks", () => {
     service.dispose();
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
+
+  it("任务停用时保存配置只落盘，不会尝试调度 apply-config", async () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-lib-disabled-config-"));
+    const enqueue = vi.fn();
+    const service = createService({ rootDir, enqueue });
+
+    const result = await service.saveConfig("workspace-1", "user-1", {
+      mirrorRoot: null,
+      allowedExtensions: ["md"],
+      includedHiddenPaths: [],
+      folderOpenBehavior: "double_click"
+    });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(result.applyConfigTaskId).toBe("disabled");
+    expect(JSON.parse(
+      fs.readFileSync(path.join(rootDir, ".ai-index", "doc-semantic-index.config.json"), "utf8")
+    )).toMatchObject({
+      allowedExtensions: [".md"]
+    });
+
+    service.dispose();
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  });
 });
 
 describe("AffairsLibraryService auto tasks", () => {
