@@ -1202,6 +1202,84 @@ describe("WorkbenchLayout", () => {
     expect(await screen.findByRole("dialog", { name: t("shell.parallelCreateModalTitle") })).toBeInTheDocument();
   });
 
+  it("点击扫描按钮只创建一个任务，并显示完成数量", async () => {
+    const snapshot = createWorkbenchSnapshot([
+      {
+        workspace: createWorkspace("workspace-1", "项目一"),
+        sessions: [
+          createSessionSummary({
+            sessionId: "session-1",
+            title: "会话 Alpha",
+            workspaceId: "workspace-1"
+          })
+        ]
+      }
+    ]);
+    let resolveScanRequest: ((response: Response) => void) | null = null;
+    let scanRequestCount = 0;
+
+    MockWebSocket.workbenchSnapshot = snapshot;
+    global.fetch = vi.fn(async (rawInput: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof rawInput === "string" ? rawInput : rawInput.toString();
+
+      if (url.endsWith("/api/workbench")) {
+        return createJsonResponse(snapshot);
+      }
+
+      if (url.includes("/api/providers/")) {
+        return createJsonResponse(createAvailableCapabilities("codex"));
+      }
+
+      if (url.endsWith("/api/sessions/discovery/scan") && init?.method === "POST") {
+        scanRequestCount += 1;
+        return await new Promise<Response>((resolve) => {
+          resolveScanRequest = resolve;
+        });
+      }
+
+      if (url.includes("/api/sessions/discovery/status")) {
+        return createJsonResponse({
+          workspaceId: "workspace-1",
+          taskId: "task-1",
+          status: "succeeded",
+          progress: null,
+          resultCount: 4,
+          errorCode: null,
+          errorMessage: null
+        });
+      }
+
+      throw new Error(`未处理的请求: ${url}`);
+    }) as typeof fetch;
+
+    const user = userEvent.setup();
+    await renderWorkbenchRoute("/workspaces/workspace-1/sessions/session-1");
+    const workspaceGroup = await findWorkspaceGroupByName("项目一");
+    await user.click(within(workspaceGroup).getByRole("button", { name: t("shell.createSession") }));
+
+    const dialog = await screen.findByRole("dialog", { name: t("shell.createSessionModalTitle") });
+    const scanButton = within(dialog).getByRole("button", { name: t("shell.workspaceSessionScanAction") });
+    await user.click(scanButton);
+    await waitFor(() => expect(scanButton).toBeDisabled());
+
+    await user.click(scanButton);
+    expect(scanRequestCount).toBe(1);
+
+    resolveScanRequest?.(createJsonResponse({
+      workspaceId: "workspace-1",
+      taskId: "task-1",
+      deduped: false,
+      taskType: "workspace.discovery.explicit_scan",
+      executionLane: "helper_process"
+    }));
+
+    await waitFor(() => {
+      expect(within(dialog).getByRole("button", {
+        name: t("shell.workspaceSessionScanSucceeded", { count: 4 })
+      })).toBeInTheDocument();
+    });
+  });
+
   it("新增子工作区时会拦截不符合推荐格式的分支名", async () => {
     const worktreeBodies: Array<Record<string, unknown>> = [];
     const snapshot = createWorkbenchSnapshot([
