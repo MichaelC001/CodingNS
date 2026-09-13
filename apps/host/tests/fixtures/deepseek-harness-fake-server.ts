@@ -25,6 +25,7 @@ export async function createDeepSeekHarnessFakeServer(options: {
   version?: string;
   protocolVersion?: string;
   capabilities?: readonly string[];
+  unsupportedReasoningEffort?: string;
 } = {}): Promise<DeepSeekHarnessFakeServer> {
   const calls: Array<{ method: string; payload: unknown }> = [];
   const workspaces = new Map<string, { workspaceId: string; path: string }>();
@@ -44,6 +45,7 @@ export async function createDeepSeekHarnessFakeServer(options: {
       options.version ?? "0.1.0-rc.5",
       options.protocolVersion,
       options.capabilities,
+      options.unsupportedReasoningEffort,
       (sessionId) => promptHandler?.(sessionId)
     );
   });
@@ -103,6 +105,7 @@ async function handleRequest(
   version: string,
   protocolVersion: string | undefined,
   capabilities: readonly string[] | undefined,
+  unsupportedReasoningEffort: string | undefined,
   onPrompt: (sessionId: string) => void
 ): Promise<void> {
   if (request.method !== "POST") { response.writeHead(405).end(); return; }
@@ -113,7 +116,7 @@ async function handleRequest(
   if (!parsed || parsed.type !== "client-request") { response.writeHead(400).end(); return; }
   const requestBody = parsed;
   calls.push({ method: requestBody.method, payload: requestBody.payload });
-  const result = dispatch(requestBody.method, requestBody.payload, workspaces, sessions, archivedSessionIds, version, protocolVersion, capabilities, onPrompt);
+  const result = dispatch(requestBody.method, requestBody.payload, workspaces, sessions, archivedSessionIds, version, protocolVersion, capabilities, unsupportedReasoningEffort, onPrompt);
   const envelope: HarnessServerResponse = { type: "server-response", rpcId: requestBody.rpcId === "bad-rpc" ? "wrong-rpc" : requestBody.rpcId, result };
   response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(envelope));
 }
@@ -127,6 +130,7 @@ function dispatch(
   version: string,
   protocolVersion: string | undefined,
   capabilities: readonly string[] | undefined,
+  unsupportedReasoningEffort: string | undefined,
   onPrompt: (sessionId: string) => void
 ): { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } } {
   const input = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
@@ -214,6 +218,19 @@ function dispatch(
           }
         ],
         failures: []
+      }
+    };
+  }
+  if (
+    method === "session.selectModel"
+    && unsupportedReasoningEffort
+    && input.reasoningEffort === unsupportedReasoningEffort
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: "invalid-argument",
+        message: `provider "${String(input.provider ?? "")}" model "${String(input.model ?? "")}" does not support reasoning effort "${unsupportedReasoningEffort}"`
       }
     };
   }

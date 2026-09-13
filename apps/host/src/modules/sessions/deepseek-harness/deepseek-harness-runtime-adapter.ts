@@ -143,7 +143,14 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
         await client.selectAgentPreset(providerSessionId, agentPreset);
       }
       const selection = parseModelSelection(request.options.model);
-      if (selection) await client.selectModel(providerSessionId, selection.provider, selection.model, request.options.reasoningLevel ?? undefined);
+      if (selection) {
+        await selectModelWithReasoningFallback(
+          client,
+          providerSessionId,
+          selection,
+          request.options.reasoningLevel ?? undefined
+        );
+      }
       promptStarted = true;
       await client.prompt(
         providerSessionId,
@@ -195,6 +202,38 @@ function parseModelSelection(value: string | null): { provider: string; model: s
   const separator = normalized.indexOf(":");
   if (separator <= 0 || separator === normalized.length - 1) return { provider: "deepseek", model: normalized };
   return { provider: normalized.slice(0, separator), model: normalized.slice(separator + 1) };
+}
+
+async function selectModelWithReasoningFallback(
+  client: DeepSeekHarnessApiClient,
+  providerSessionId: string,
+  selection: { provider: string; model: string },
+  reasoningEffort?: string
+): Promise<void> {
+  try {
+    await client.selectModel(
+      providerSessionId,
+      selection.provider,
+      selection.model,
+      reasoningEffort
+    );
+  } catch (error) {
+    if (!reasoningEffort || !isUnsupportedReasoningEffortError(error)) {
+      throw error;
+    }
+
+    // 模型目录可能来自旧缓存，或者外部配置刚刚换过模型；省略参数即可让 Harness 使用模型默认值。
+    await client.selectModel(
+      providerSessionId,
+      selection.provider,
+      selection.model
+    );
+  }
+}
+
+function isUnsupportedReasoningEffortError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /does not support reasoning effort\s+"[^"]+"/i.test(message);
 }
 
 async function buildPromptContent(

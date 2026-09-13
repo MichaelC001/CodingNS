@@ -641,6 +641,60 @@ describe("DeepSeek Harness Web API", () => {
     expect(fake.calls.some((call) => call.method === "session.selectModel")).toBe(false);
   });
 
+  it("模型不支持已保存的 reasoning effort 时回退到模型默认值", async () => {
+    fake = await createDeepSeekHarnessFakeServer({ unsupportedReasoningEffort: "max" });
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager());
+    const sink: ProviderRuntimeEventSink = {
+      emit: async () => undefined,
+      updateSessionBinding: vi.fn()
+    };
+    fake.setPromptHandler((sessionId) => {
+      fake?.emitMux({ type: "session/event", sessionId, event: { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } } });
+      fake?.emitHost({ type: "host/session-status", sessionId, running: false });
+    });
+
+    const launch = await adapter.startSession({
+      sessionId: "codingns-stale-reasoning",
+      workspaceId: "workspace-1",
+      workspacePath: "C:\\workspace",
+      provider: "deepseek-harness",
+      providerSessionId: null,
+      rawStoreRef: null,
+      sequenceBase: 1,
+      options: {
+        content: "使用默认推理强度启动",
+        clientRequestId: null,
+        model: "glor:deepseek-v4.1-flash",
+        reasoningLevel: "max",
+        permissionMode: "ask",
+        providerPrompt: null,
+        attachments: []
+      }
+    }, sink);
+
+    await expect(launch.completed).resolves.toBeUndefined();
+    expect(fake.calls.filter((call) => call.method === "session.selectModel")).toEqual([
+      {
+        method: "session.selectModel",
+        payload: {
+          sessionId: "harness-1",
+          provider: "glor",
+          model: "deepseek-v4.1-flash",
+          reasoningEffort: "max"
+        }
+      },
+      {
+        method: "session.selectModel",
+        payload: {
+          sessionId: "harness-1",
+          provider: "glor",
+          model: "deepseek-v4.1-flash"
+        }
+      }
+    ]);
+  });
+
   it("会等待异步工具消息写入完成后再结束本轮", async () => {
     fake = await createDeepSeekHarnessFakeServer();
     const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
