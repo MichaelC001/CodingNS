@@ -72,7 +72,8 @@ export const DEFAULT_PROVIDER_PRICE_BOOK: ProviderPriceBook = {
 
 /**
  * 只要选中模型能命中当前 Provider 的本地价格表，就为新会话推断直连收费策略。
- * 未命中模型时仍返回空值，避免用相近模型或未知代理路线估价。
+ * 匹配规则与费用计算共用同一套实现（含 provider 别名和唯一最优的相似度兜底），
+ * 否则会出现“绑定了计费却算不出费用”的错位。
  */
 export function inferProviderSessionBillingProfile(
   provider: ProviderId | string,
@@ -81,10 +82,7 @@ export function inferProviderSessionBillingProfile(
 ): string | null {
   const normalizedModel = selectedModel?.trim() ?? "";
 
-  return normalizedModel
-    && priceBook.entries.some(
-      (entry) => entry.provider === provider && getPriceBookModelCandidates(normalizedModel).has(entry.model)
-    )
+  return normalizedModel && findPriceBookEntry(priceBook, provider, normalizedModel)
     ? "direct-api"
     : null;
 }
@@ -505,6 +503,24 @@ export function filterUsageLinesByBillingStart(
   return lines.filter((line) => line.unavailableReason || line.timestamp >= billing.billingStartedAt);
 }
 
+/**
+ * 价格表用 CodingNS 的内部 provider 名，而运行时可能上报自己的路由名。
+ *
+ * DeepSeek Harness 会把同一个模型挂在 `glor`、`deepseek-official` 等多个可路由
+ * provider 下，价格表只登记内部名 `deepseek-harness`。这些写法指向同一家供应商、
+ * 同一套价格，所以在这里统一归一。
+ */
+const PRICE_BOOK_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
+  glor: "deepseek-harness",
+  "deepseek-official": "deepseek-harness",
+  deepseek: "deepseek-harness"
+};
+
+function normalizePriceBookProvider(provider: string): string {
+  const normalized = provider.trim().toLowerCase();
+  return PRICE_BOOK_PROVIDER_ALIASES[normalized] ?? normalized;
+}
+
 function findPriceBookEntry(
   priceBook: ProviderPriceBook,
   provider: ProviderId,
@@ -515,14 +531,26 @@ function findPriceBookEntry(
     return null;
   }
 
-  return priceBook.entries.find((entry) =>
-    entry.provider === provider && isExactModelMatch(normalizedModel, entry.model)
-  ) ?? null;
+  const normalizedProvider = normalizePriceBookProvider(provider);
+  const candidates = priceBook.entries.filter(
+    (entry) => normalizePriceBookProvider(entry.provider) === normalizedProvider
+  );
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  // 先做精确匹配：命中即用，绝不被相似度结果覆盖。
+  const exact = candidates.find((entry) => isExactModelMatch(normalizedModel, entry.model));
+  if (exact) {
+    return exact;
+  }
+
+  return findClosestModelEntry(normalizedModel, candidates);
 }
 
 /**
  * 代理路由前缀不是模型本身时，只允许剥离一次显式分隔符后做完整字符串匹配。
- * 不做大小写、版本号、相似度或“最近模型”推断。
  */
 function isExactModelMatch(actualModel: string, priceBookModel: string): boolean {
   if (actualModel === priceBookModel) {
@@ -531,6 +559,108 @@ function isExactModelMatch(actualModel: string, priceBookModel: string): boolean
 
   const candidates = getPriceBookModelCandidates(actualModel);
   return candidates.size > 1 && candidates.has(priceBookModel);
+}
+
+/**
+ * 相似度兜底：在精确匹配失败后挑一个最接近的价格条目。
+ *
+ * 价格表里的模型名会随供应商改名、加版本号而变化（例如运行时上报
+ * `deepseek-v4.1-flash`，价格表登记 `deepseek-flash`），完全精确匹配会让这些
+ * 会话直接失去费用。这里按归一化后的公共前缀挑最接近的一项。
+ *
+ * 安全约束优先于覆盖率：候选必须唯一最优，否则一律放弃。像 `deepseek-v4-pro`
+ * 和 `deepseek-v4-flash` 这种同前缀但价位不同的模型，宁可判为“没有价格”，
+ * 也不能把 pro 按 flash 计价。
+ */
+function findClosestModelEntry(
+  actualModel: string,
+  candidates: readonly ProviderPriceBookEntry[]
+): ProviderPriceBookEntry | null {
+  const actual = normalizeModelForComparison(actualModel);
+  if (!actual) {
+    return null;
+  }
+
+  let best: { entry: ProviderPriceBookEntry; score: number } | null = null;
+  let ambiguous = false;
+
+  for (const entry of candidates) {
+    const target = normalizeModelForComparison(entry.model);
+    if (!target) {
+      continue;
+    }
+
+    const score = modelSimilarity(actual, target);
+    if (score === 0) {
+      continue;
+    }
+
+    if (!best || score > best.score) {
+      best = { entry, score };
+      ambiguous = false;
+      continue;
+    }
+
+    if (score === best.score) {
+      ambiguous = true;
+    }
+  }
+
+  if (!best || ambiguous) {
+    return null;
+  }
+
+  // 相似度必须显著高于“碰巧共享前缀”。候选之间同分已经放弃，这里再挡住
+  // 只有零星公共字符的假匹配。
+  return best.score >= 0.5 ? best.entry : null;
+}
+
+/** 去掉供应商前缀和分隔符差异，只比较模型名本身。 */
+function normalizeModelForComparison(model: string): string {
+  const candidates = [...getPriceBookModelCandidates(model)]
+    .map((value) =>
+      value
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/gu, "")
+    )
+    .filter(Boolean);
+
+  // `getPriceBookModelCandidates` 会把原串和剥前缀后的串一起返回。这里要的是
+  // 模型名本身，所以取最短候选；取最长会把 `glor:deepseek-v4.1-flash` 的
+  // provider 前缀一起带进比较，导致和任何价格表条目都没有公共前缀。
+  return candidates.sort((left, right) => (left.length - right.length))[0] ?? "";
+}
+
+/**
+ * 归一化字符串的相似度，取最长公共子序列占较长串的比例，取值 0~1。
+ *
+ * 用最长公共子序列而不是公共前缀：模型名中间的版本号经常变
+ * （`deepseek-v4.1-flash` 对 `deepseek-v4-flash`），只看前缀会把真正同族的
+ * 名字排到后面，而子序列占比能稳定地把同族名字和不同族名字拉开。
+ */
+function modelSimilarity(left: string, right: string): number {
+  const maxLength = Math.max(left.length, right.length);
+  if (maxLength === 0) {
+    return 0;
+  }
+
+  const previous = new Array<number>(right.length + 1).fill(0);
+  const current = new Array<number>(right.length + 1).fill(0);
+
+  for (let i = 1; i <= left.length; i += 1) {
+    for (let j = 1; j <= right.length; j += 1) {
+      current[j] = left[i - 1] === right[j - 1]
+        ? previous[j - 1] + 1
+        : Math.max(previous[j], current[j - 1]);
+    }
+
+    for (let j = 0; j <= right.length; j += 1) {
+      previous[j] = current[j];
+    }
+  }
+
+  return previous[right.length] / maxLength;
 }
 
 function getPriceBookModelCandidates(model: string): Set<string> {
