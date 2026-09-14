@@ -21,6 +21,7 @@ import {
   type ForkStrategy,
   type HistoryDirection,
   type HistoryPage,
+  inferProviderSessionBillingProfile,
   type ProviderCapabilities,
   type ProviderAdapter,
   type ProviderSessionActivityObservation,
@@ -322,7 +323,7 @@ interface SessionStatsSnapshotReadTaskInput {
   options?: ProviderSessionStatsReadOptions;
 }
 
-interface PendingCodexBilling {
+interface PendingSessionBilling {
   billingStartedAt: string;
   pricingProfileId: string;
   priceBookVersion: string;
@@ -1166,7 +1167,7 @@ export class SessionHistoryService {
       return;
     }
 
-    const { options, pendingCodexBilling } = this.resolveSessionStatsReadOptions(sessionId, binding);
+    const { options, pendingSessionBilling } = this.resolveSessionStatsReadOptions(sessionId, binding);
 
     let stats: ProviderSessionStats | null;
     if (binding.provider === "deepseek-harness") {
@@ -1208,14 +1209,14 @@ export class SessionHistoryService {
 
     const updatedAt = nowIso();
 
-    if (pendingCodexBilling && this.hasConfirmedCatalogCost(stats, pendingCodexBilling)) {
+    if (pendingSessionBilling && this.hasConfirmedCatalogCost(stats, pendingSessionBilling)) {
       this.sessionBindingRepository.confirmBillingIfUnset({
         sessionId,
         provider: binding.provider,
         createdAt: binding.createdAt,
-        billingStartedAt: pendingCodexBilling.billingStartedAt,
-        pricingProfileId: pendingCodexBilling.pricingProfileId,
-        priceBookVersion: pendingCodexBilling.priceBookVersion,
+        billingStartedAt: pendingSessionBilling.billingStartedAt,
+        pricingProfileId: pendingSessionBilling.pricingProfileId,
+        priceBookVersion: pendingSessionBilling.priceBookVersion,
         updatedAt
       });
     }
@@ -1228,7 +1229,7 @@ export class SessionHistoryService {
     binding: SessionBinding
   ): {
       options: ProviderSessionStatsReadOptions | undefined;
-      pendingCodexBilling: PendingCodexBilling | null;
+      pendingSessionBilling: PendingSessionBilling | null;
     } {
     const priceBook = this.resolveSessionPriceBook(sessionId, binding);
 
@@ -1242,40 +1243,39 @@ export class SessionHistoryService {
             priceBook
           }
         },
-        pendingCodexBilling: null
+        pendingSessionBilling: null
       };
     }
 
-    const pendingCodexBilling = this.resolvePendingCodexBilling(binding);
+    const pendingSessionBilling = this.resolvePendingSessionBilling(binding);
 
-    return pendingCodexBilling
+    return pendingSessionBilling
       ? {
           options: {
-            billing: pendingCodexBilling
+            billing: pendingSessionBilling
           },
-          pendingCodexBilling
+          pendingSessionBilling
         }
       : {
           options: undefined,
-          pendingCodexBilling: null
+          pendingSessionBilling: null
         };
   }
 
   /**
-   * Codex 允许用户沿用 CLI 默认模型，启动时不会拿到实际 model。完成后的
-   * turn_context 才是可信来源，因此只把当前会话的已确认费用反向固定为绑定。
+   * 会话创建时没能固定计费元数据时，在第一次统计刷新里补写绑定。
+   *
+   * 两种情况会走到这里：
+   * 1. Codex 沿用 CLI 默认模型，创建时拿不到实际 model，完成后的 turn_context 才可信；
+   * 2. 创建时模型名还没能命中价格表（例如运行时报的是供应商路由名），
+   *    补上匹配能力之后需要让老会话也能恢复计费，不能只照顾新会话。
    *
    * 价格快照的抓取时间不是计费资格条件，否则同一个模型仅因会话创建时刻跨过
-   * 每日同步就会一有一无。首次显式统计刷新确认当前有效快照后，绑定会固定该版本；
+   * 每日同步就会一有一无。首次统计刷新确认当前有效快照后，绑定会固定该版本；
    * 已有任意收费字段的会话也绝不改绑到新快照。
    */
-  private resolvePendingCodexBilling(binding: SessionBinding): PendingCodexBilling | null {
-    if (
-      binding.provider !== "codex"
-      || binding.billingStartedAt
-      || binding.pricingProfileId
-      || binding.priceBookVersion
-    ) {
+  private resolvePendingSessionBilling(binding: SessionBinding): PendingSessionBilling | null {
+    if (binding.billingStartedAt || binding.pricingProfileId || binding.priceBookVersion) {
       return null;
     }
 
@@ -1291,6 +1291,16 @@ export class SessionHistoryService {
       return null;
     }
 
+    // Codex 创建时没有可信模型，只能反向用已确认费用固定绑定；其余 provider
+    // 必须先用同一套价格匹配确认这个模型确实有价，否则会给无价会话写上一个
+    // 永远算不出费用的绑定，反而把“缺少计费上下文”固化成更难看的状态。
+    if (
+      binding.provider !== "codex"
+      && !inferProviderSessionBillingProfile(binding.provider, binding.selectedModel, priceBook)
+    ) {
+      return null;
+    }
+
     return {
       billingStartedAt: binding.createdAt,
       pricingProfileId: this.sessionBillingProfileId ?? "direct-api",
@@ -1301,7 +1311,7 @@ export class SessionHistoryService {
 
   private hasConfirmedCatalogCost(
     stats: ProviderSessionStats,
-    billing: PendingCodexBilling
+    billing: PendingSessionBilling
   ): boolean {
     const cost = stats.metrics.costUsd;
 
