@@ -24,10 +24,12 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
   private readonly attachmentRootDir: string | null;
 
   private runtime: Promise<{ client: DeepSeekHarnessApiClient; eventBridge: DeepSeekHarnessEventBridge }> | null = null;
+  private readonly recoveredSessions = new Map<string, () => void>();
   private permissionRequestHandler: ((input: {
     sessionId: string;
     providerSessionId: string;
     rpcId: string;
+    protocol: "legacy" | "remote";
     type: "approval" | "question";
     payload: unknown;
     respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
@@ -43,6 +45,46 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
 
   setPermissionRequestHandler(handler: NonNullable<DeepSeekHarnessRuntimeAdapter["permissionRequestHandler"]>): void {
     this.permissionRequestHandler = handler;
+  }
+
+  /**
+   * Host 重启后重新挂载一个已有 Harness 会话的事件流。
+   * Remote Gateway 会把仍未完成的 waterfall 请求重放到新连接，
+   * 因此这里不伪造请求，只等待 DSH 用原 eventId 重新投递。
+   */
+  async recoverPermissionRequests(sessionId: string, providerSessionId: string): Promise<void> {
+    if (this.recoveredSessions.has(providerSessionId)) return;
+
+    const { client, eventBridge } = await this.getRuntime();
+    if (!client.isRemoteProtocol()) return;
+    const watched = await eventBridge.watch(providerSessionId, (event) => {
+      if (event.type !== "approval" && event.type !== "question") return;
+      void this.forwardPermissionRequest({
+        sessionId,
+        providerSessionId,
+        protocol: "remote",
+        type: event.type,
+        rpcId: event.rpcId,
+        payload: event.payload
+      });
+    });
+
+    if (this.recoveredSessions.has(providerSessionId)) {
+      watched.close();
+      return;
+    }
+    this.recoveredSessions.set(providerSessionId, watched.close);
+  }
+
+  async dispose(): Promise<void> {
+    for (const close of this.recoveredSessions.values()) close();
+    this.recoveredSessions.clear();
+    const runtime = this.runtime;
+    this.runtime = null;
+    if (runtime) {
+      const { eventBridge } = await runtime;
+      await eventBridge.close();
+    }
   }
 
   async startSession(request: ProviderRuntimeRunRequest, sink: ProviderRuntimeEventSink): Promise<ProviderRuntimeLaunchResult> {
@@ -123,13 +165,13 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
         void enqueueSinkEvent({ type: "error", status: "failed", errorCode: "HARNESS_RUNTIME_ERROR", detail: event.detail, providerSessionId, rawStoreRef })
           .finally(settle);
       } else if ((event.type === "approval" || event.type === "question") && this.permissionRequestHandler) {
-        void this.permissionRequestHandler({
+        void this.forwardPermissionRequest({
           sessionId: request.sessionId,
           providerSessionId,
           rpcId: event.rpcId,
+          protocol: client.isRemoteProtocol() ? "remote" : "legacy",
           type: event.type,
-          payload: event.payload,
-          respond: (result) => client.respond(event.rpcId, result)
+          payload: event.payload
         });
       }
     };
@@ -141,6 +183,10 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
       const agentPreset = request.options.agentPreset?.trim();
       if (agentPreset && request.providerSessionId && request.sequenceBase === 1) {
         await client.selectAgentPreset(providerSessionId, agentPreset);
+      }
+      const permissionPreset = resolvePermissionPreset(request.options.permissionMode);
+      if (permissionPreset) {
+        await client.executeCommand(providerSessionId, `/permission ${permissionPreset}`);
       }
       const selection = parseModelSelection(request.options.model);
       if (selection) {
@@ -189,6 +235,21 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
     }
     return this.runtime;
   }
+
+  private async forwardPermissionRequest(input: Omit<Parameters<NonNullable<DeepSeekHarnessRuntimeAdapter["permissionRequestHandler"]>>[0], "respond"> & { respond?: never }): Promise<void> {
+    if (!this.permissionRequestHandler) return;
+    const { client } = await this.getRuntime();
+    await this.permissionRequestHandler({
+      ...input,
+      respond: (result) => client.respond(input.rpcId, result)
+    });
+  }
+}
+
+function resolvePermissionPreset(permissionMode: string | null): "workspace-write" | "danger-full-access" | null {
+  if (permissionMode === "acceptEdits") return "workspace-write";
+  if (permissionMode === "bypassPermissions") return "danger-full-access";
+  return null;
 }
 
 function resolvePromptMode(options: RuntimeSendOptions): "queue" | "steer" {

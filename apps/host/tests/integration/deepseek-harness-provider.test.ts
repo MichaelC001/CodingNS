@@ -641,6 +641,52 @@ describe("DeepSeek Harness Web API", () => {
     expect(fake.calls.some((call) => call.method === "session.selectModel")).toBe(false);
   });
 
+  it("会把 DSH 的权限模式转换成不进入模型上下文的权限命令", async () => {
+    fake = await createDeepSeekHarnessFakeServer();
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager());
+    const sink: ProviderRuntimeEventSink = {
+      emit: async () => undefined,
+      updateSessionBinding: vi.fn()
+    };
+    fake.setPromptHandler((sessionId) => {
+      fake?.emitMux({
+        type: "session/event",
+        sessionId,
+        event: { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } }
+      });
+      fake?.emitHost({ type: "host/session-status", sessionId, running: false });
+    });
+
+    const launch = await adapter.startSession({
+      sessionId: "codingns-permission-mode",
+      workspaceId: "workspace-1",
+      workspacePath: "C:\\workspace",
+      provider: "deepseek-harness",
+      providerSessionId: null,
+      rawStoreRef: null,
+      options: {
+        content: "权限模式测试",
+        clientRequestId: null,
+        model: null,
+        reasoningLevel: null,
+        permissionMode: "acceptEdits",
+        providerPrompt: null,
+        attachments: []
+      }
+    }, sink);
+
+    await expect(launch.completed).resolves.toBeUndefined();
+    expect(fake.calls).toContainEqual({
+      method: "commands.execute",
+      payload: {
+        sessionId: "harness-1",
+        line: "/permission workspace-write",
+        attachments: []
+      }
+    });
+  });
+
   it("模型不支持已保存的 reasoning effort 时回退到模型默认值", async () => {
     fake = await createDeepSeekHarnessFakeServer({ unsupportedReasoningEffort: "max" });
     const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });

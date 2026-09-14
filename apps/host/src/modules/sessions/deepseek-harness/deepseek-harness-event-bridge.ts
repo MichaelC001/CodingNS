@@ -79,10 +79,10 @@ export class DeepSeekHarnessEventBridge {
     }
     return {
       close: () => {
-        this.remoteSessionCloseFns.get(sessionId)?.();
-        this.remoteSessionCloseFns.delete(sessionId);
         set.delete(listener);
         if (set.size !== 0) return;
+        this.remoteSessionCloseFns.get(sessionId)?.();
+        this.remoteSessionCloseFns.delete(sessionId);
         this.listeners.delete(sessionId);
         this.cursors.delete(sessionId);
         this.clearSessionStreamState(sessionId);

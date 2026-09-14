@@ -183,6 +183,9 @@ function dispatch(
     onPrompt(String(input.sessionId));
     return { ok: true, value: { accepted: true } };
   }
+  if (method === "commands.execute" || method === "commands/execute") {
+    return { ok: true, value: { accepted: true } };
+  }
   if (method === "session.cancel" || method === "session.updateQueue") return { ok: true, value: { accepted: true } };
   if (method === "workspace.archiveSession") {
     archivedSessionIds.add(String(input.sessionId ?? ""));

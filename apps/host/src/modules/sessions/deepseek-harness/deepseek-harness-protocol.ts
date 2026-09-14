@@ -195,7 +195,11 @@ function isHarnessRpcResult(value: unknown): value is HarnessRpcResult<unknown> 
   }
 
   if (value.ok) {
-    return "value" in value;
+    // DSH 的 void RPC（例如 Remote `$events/result`）成功时 value 为
+    // undefined，经过 JSON 序列化后会被省略，只剩下 { ok: true }。
+    // 成功结果的 value 必须按可选字段处理，否则会把已经送达的权限回复
+    // 错误地判成协议错误。
+    return true;
   }
 
   return isRecord(value.error) && typeof value.error.code === "string" && typeof value.error.message === "string";

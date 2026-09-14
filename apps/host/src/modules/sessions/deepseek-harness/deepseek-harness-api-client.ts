@@ -248,6 +248,22 @@ export class DeepSeekHarnessApiClient {
     return this.call<{ accepted: true }>("session.prompt", { requestId: randomUUID(), sessionId, content, mode }, signal);
   }
 
+  /** 执行不进入模型上下文的会话命令，例如切换 DSH 权限预设。 */
+  async executeCommand(sessionId: string, line: string, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
+    if (this.protocol === "remote") {
+      return this.call<Record<string, unknown> | undefined>("commands/execute", {
+        agentId: sessionId,
+        line,
+        submittedAttachments: []
+      }, signal);
+    }
+    return this.call<Record<string, unknown> | undefined>("commands.execute", {
+      sessionId,
+      line,
+      attachments: []
+    }, signal);
+  }
+
   async cancel(sessionId: string, signal?: AbortSignal): Promise<{ accepted: true }> {
     return this.call<{ accepted: true }>("session.cancel", { sessionId }, signal);
   }
@@ -592,9 +608,21 @@ export class DeepSeekHarnessApiClient {
       if (value.event === "api-session/removed" && typeof value.args[0] === "string") return [{ type: "server-request", rpcId: randomUUID(), method: "events.push", payload: { type: "host/session-removed", sessionId: value.args[0] } }];
       if (value.event === "api-session/error" && typeof value.args[0] === "string") return [{ type: "server-request", rpcId: randomUUID(), method: "events.push", payload: { type: "host/agent-error", sessionId: value.args[0], message: String(value.args[1] ?? "Harness Agent error") } }];
     }
-    if (value.type === "waterfall" && typeof value.eventId === "string" && typeof value.event === "string") {
-      if (this.remoteEventClientId) this.remoteEventClients.set(value.eventId, this.remoteEventClientId);
-      return [{ type: "server-request", rpcId: value.eventId, method: value.event, payload: { ...isRecord(value.request) ? value.request : {}, type: value.event, ...(typeof value.agentId === "string" ? { sessionId: value.agentId } : {}) } }];
+    const interaction = readRemoteInteractionFrame(value);
+
+    if (interaction) {
+      const clientId = interaction.clientId ?? this.remoteEventClientId;
+      if (clientId) this.remoteEventClients.set(interaction.eventId, clientId);
+      return [{
+        type: "server-request",
+        rpcId: interaction.eventId,
+        method: "events.push",
+        payload: {
+          ...interaction.request,
+          type: interaction.requestType,
+          sessionId: interaction.sessionId
+        }
+      }];
     }
     return [];
   }
@@ -672,6 +700,61 @@ export class DeepSeekHarnessApiClient {
   }
 }
 
+function readRemoteInteractionFrame(value: Record<string, any>): {
+  eventId: string;
+  clientId: string | null;
+  sessionId: string;
+  requestType: "approval/requested" | "question/requested";
+  request: Record<string, unknown>;
+} | null {
+  const eventName = value.type === "waterfall" ? value.event : value.type;
+  const requestType = eventName === "approval/request" || eventName === "approval/requested"
+    ? "approval/requested"
+    : eventName === "question/request"
+      || eventName === "question/requested"
+      || eventName === "user-question/request"
+      || eventName === "user-questions/request"
+      || eventName === "user-question/requested"
+      || eventName === "user-questions/requested"
+      ? "question/requested"
+      : null;
+  const eventId = typeof value.eventId === "string" || typeof value.eventId === "number"
+    ? String(value.eventId)
+    : null;
+
+  if (!requestType || !eventId) return null;
+
+  const request = isRecord(value.request)
+    ? value.request
+    : isRecord(value.payload)
+      ? value.payload
+      : value;
+  const sessionId = firstText(
+    value.agentId,
+    value.sessionId,
+    request.agentId,
+    request.sessionId
+  );
+
+  if (!sessionId) return null;
+
+  return {
+    eventId,
+    clientId: firstText(value.clientId, value.eventClientId, value.client_id),
+    sessionId,
+    requestType,
+    request
+  };
+}
+
+function firstText(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
 function unwrapResult<T>(result: HarnessRpcResult<unknown>): T {
   if (result.ok) return result.value as T;
   throw new DeepSeekHarnessRpcError("HARNESS_RPC_BUSINESS_ERROR", result.error.message, isRetryableCode(result.error.code));
@@ -694,6 +777,14 @@ function remoteArgs(endpoint: string, payload: unknown): Record<string, unknown>
   if (endpoint === "agentPresets/select") {
     const input = isRecord(payload) ? payload : {};
     return { agentId: input.sessionId, agentPreset: input.agentPreset };
+  }
+  if (endpoint === "commands/execute") {
+    const input = isRecord(payload) ? payload : {};
+    return {
+      agentId: input.agentId,
+      line: input.line,
+      submittedAttachments: Array.isArray(input.submittedAttachments) ? input.submittedAttachments : []
+    };
   }
   if (endpoint === "llm/discoverModels") {
     const input = isRecord(payload) ? payload : {};
