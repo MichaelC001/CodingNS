@@ -987,6 +987,21 @@ function hasHarnessAssistantMessageBlocks(data: Record<string, unknown>): boolea
   return Array.isArray(message.content) || Array.isArray(data.content);
 }
 
+/**
+ * 判断一条 `user/message` 是不是 DSH 自己注入的上下文，而不是用户真实发言。
+ *
+ * DSH 把「用户说的话」和「DSH 塞进模型上下文的材料」都记成 `user/message`，
+ * 两者的区别只有一个：`source.kind`。DSH 承认的来源共 15 种
+ * （user / plugin / model / tool / agent-instructions / session-reference /
+ * team-message / goal / skill-invocation / skill-catalog / coordinator /
+ * subagent-report / subagent-settled / webhook / agent-message），
+ * 其中只有 `user` 是用户真的发了消息；审批策略变化通知、技能目录、
+ * 运行时快照这些都是注入的。
+ *
+ * 该判定决定前端把它们渲染成用户气泡还是可折叠的系统行。这里按「不等于 user
+ * 即注入」判断，而不是逐个列举已知类型：DSH 上游新增来源时，列举法会漏判，
+ * 让系统文字冒充用户发言。
+ */
 function isHarnessSystemContextMessage(type: string, data: Record<string, unknown>): boolean {
   if (type !== "user/message") {
     return false;
@@ -995,13 +1010,13 @@ function isHarnessSystemContextMessage(type: string, data: Record<string, unknow
   const source = asRecord(data.source);
   const kind = ensureText(source.kind).trim();
 
-  if (kind === "agent-instructions") {
-    return true;
+  // 没有 source 的历史记录无法证明是用户发言，但仍按用户消息处理更安全：
+  // 误折真实发言会让用户看不到自己说过的话，代价比多显示一段系统文字更高。
+  if (!kind) {
+    return false;
   }
 
-  return kind === "plugin"
-    && ensureText(source.plugin).trim() === "@deepseek-ai/dsh-system-prompt"
-    && ensureText(source.form).trim() === "snapshot";
+  return kind !== "user";
 }
 
 function extractHarnessToolResult(data: Record<string, unknown>, sequence: number): {

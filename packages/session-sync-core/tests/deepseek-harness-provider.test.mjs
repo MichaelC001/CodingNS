@@ -536,6 +536,49 @@ describe("DeepSeekHarnessAdapter", () => {
     expect(runtimeContext).toMatchObject({ role: "system", kind: "text" });
   });
 
+  it("把 DSH 注入的审批通知和技能目录标记为 system 消息", () => {
+    // DSH 把系统注入和用户发言都记成 user/message，只有 source.kind 能区分。
+    // 这两条是用户没主动问过的背景信息，漏判会冒充成用户气泡显示在时间线里。
+    const approvalNotice = mapHarnessEntry("h1", "harness://v/h1", {
+      event: {
+        type: "user/message",
+        seq: 16,
+        data: {
+          content: [{ type: "text", text: 'The approval policy changed from "ask" to "never" (changed by the user).' }],
+          source: { kind: "plugin", plugin: "user-approval" }
+        }
+      }
+    }, 0);
+    const skillCatalog = mapHarnessEntry("h1", "harness://v/h1", {
+      event: {
+        type: "user/message",
+        seq: 19,
+        data: {
+          content: [{ type: "text", text: "<system-reminder>\n<available_skills>\n- `demo`: 演示\n</available_skills>\n</system-reminder>" }],
+          source: { kind: "skill-catalog", form: "catalog", entries: [] }
+        }
+      }
+    }, 0);
+
+    expect(approvalNotice).toMatchObject({ role: "system", kind: "text" });
+    expect(skillCatalog).toMatchObject({ role: "system", kind: "text" });
+  });
+
+  it("仍然把 source.kind 为 user 的消息当成用户发言", () => {
+    const userMessage = mapHarnessEntry("h1", "harness://v/h1", {
+      event: {
+        type: "user/message",
+        seq: 17,
+        data: {
+          content: [{ type: "text", text: "向我提问2个测试问题" }],
+          source: { kind: "user", rpcId: "rpc-1" }
+        }
+      }
+    }, 0);
+
+    expect(userMessage).toMatchObject({ role: "user", kind: "text", content: "向我提问2个测试问题" });
+  });
+
   it("把最终 assistant message 的思考和正文拆成稳定消息", () => {
     const messages = mapHarnessEntries("h1", "harness://v/h1", {
       event: {
