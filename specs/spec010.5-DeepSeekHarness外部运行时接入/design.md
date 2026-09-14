@@ -112,7 +112,7 @@ Harness 在 CodingNS 中以 `deepseek-harness` Provider 路由出现，但这个
 
 覆盖需求：1、2、3、4、5、6、7
 
-- `DeepSeekHarnessSidecarManager`：只管理 CodingNS 自己启动的 sidecar，不扫描或接管用户手工进程。
+- `DeepSeekHarnessSidecarManager`：只管理 CodingNS 自己启动的 sidecar，不扫描或接管用户手工进程。启动自己的 sidecar 之前，它会回收一次"失去 Host 归属"的 sidecar：进程命令行必须是 `dsh web --host <loopback> --port <n> --no-open` 这个 CodingNS 专有形态，并且父进程已经是 1（原来的 Host 已经不在了）。两个条件缺一不可，用户手动启动的 `dsh` 进程不会命中。原因见 [tasks.md](./tasks.md) 的 2026-09-14 孤儿 sidecar 回收记录：这些孤儿会一直占着 DSH 的会话写入租约，让新 Host 打不开旧会话。
 - `DeepSeekHarnessApiClient`：只暴露经过 DTO 校验的最小方法，不把 Harness 内部 TypeScript 类型泄漏到通用模块。
 - `DeepSeekHarnessEventBridge`：每个 sidecar 实例最多维护一组 mux/host 订阅，再按 session id 分发。
 - `DeepSeekHarnessProviderAdapter`：接入现有 `ProviderRegistry`，明确实现和拒绝每个 ProviderAdapter 方法。
