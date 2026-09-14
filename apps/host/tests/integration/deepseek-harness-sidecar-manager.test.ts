@@ -45,6 +45,8 @@ describe("DeepSeekHarnessSidecarManager", () => {
   it("按需启动 loopback sidecar，并在 shutdown 时只回收自有进程", async () => {
     const manager = new DeepSeekHarnessSidecarManager({
       taskManager: createTaskManager(),
+      // 单元测试不动真实进程表，孤儿回收单独覆盖。
+      reclaimOrphanSidecars: false,
       commandPath: process.execPath,
       commandArgs: ["-e", FAKE_HARNESS_SCRIPT],
       startupTimeoutMs: 5_000
@@ -59,6 +61,8 @@ describe("DeepSeekHarnessSidecarManager", () => {
   it("未知应用版本且没有握手元数据时进入只读，不抛版本不支持", async () => {
     const manager = new DeepSeekHarnessSidecarManager({
       taskManager: createTaskManager(),
+      // 单元测试不动真实进程表，孤儿回收单独覆盖。
+      reclaimOrphanSidecars: false,
       commandPath: process.execPath,
       commandArgs: ["-e", FAKE_HARNESS_SCRIPT.replaceAll("0.1.1-rc.2", "9.9.9")],
       startupTimeoutMs: 5_000
@@ -78,6 +82,8 @@ describe("DeepSeekHarnessSidecarManager", () => {
   it("启动 sidecar 时会传入配置的 DSH_HOME", async () => {
     const manager = new DeepSeekHarnessSidecarManager({
       taskManager: createTaskManager(),
+      // 单元测试不动真实进程表，孤儿回收单独覆盖。
+      reclaimOrphanSidecars: false,
       commandPath: process.execPath,
       commandArgs: ["-e", FAKE_HARNESS_SCRIPT],
       env: { DSH_HOME: "/tmp/codingns-dsh-home" },
@@ -95,6 +101,8 @@ describe("DeepSeekHarnessSidecarManager", () => {
   it("拒绝 DSH 不支持的绑定地址", async () => {
     const manager = new DeepSeekHarnessSidecarManager({
       taskManager: createTaskManager(),
+      // 单元测试不动真实进程表，孤儿回收单独覆盖。
+      reclaimOrphanSidecars: false,
       commandPath: process.execPath,
       commandArgs: ["--host=192.0.2.10"]
     });
@@ -112,6 +120,8 @@ describe("DeepSeekHarnessSidecarManager", () => {
     writeFileSync(commandPath, FAKE_DSH_SCRIPT, "utf8");
     const manager = new DeepSeekHarnessSidecarManager({
       taskManager: createTaskManager(),
+      // 单元测试不动真实进程表，孤儿回收单独覆盖。
+      reclaimOrphanSidecars: false,
       commandPath,
       bindHost: "0.0.0.0",
       startupTimeoutMs: 5_000
@@ -135,6 +145,8 @@ describe("DeepSeekHarnessSidecarManager", () => {
     writeFileSync(commandPath, FAKE_REMOTE_DSH_SCRIPT, "utf8");
     const manager = new DeepSeekHarnessSidecarManager({
       taskManager: createTaskManager(),
+      // 单元测试不动真实进程表，孤儿回收单独覆盖。
+      reclaimOrphanSidecars: false,
       commandPath,
       startupTimeoutMs: 5_000
     });
@@ -157,6 +169,8 @@ describe("DeepSeekHarnessSidecarManager", () => {
     writeFileSync(commandPath, FAKE_DSH_SCRIPT.replaceAll("0.1.1-rc.2", "0.1.0-rc.5"), "utf8");
     const manager = new DeepSeekHarnessSidecarManager({
       taskManager: createTaskManager(),
+      // 单元测试不动真实进程表，孤儿回收单独覆盖。
+      reclaimOrphanSidecars: false,
       commandPath,
       startupTimeoutMs: 5_000
     });
@@ -166,6 +180,52 @@ describe("DeepSeekHarnessSidecarManager", () => {
     } finally {
       await manager.shutdown();
       rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("启动 sidecar 前回收孤儿 sidecar，且同一实例只回收一次", async () => {
+    let reclaimCalls = 0;
+    const manager = new DeepSeekHarnessSidecarManager({
+      taskManager: createTaskManager(),
+      commandPath: process.execPath,
+      commandArgs: ["-e", FAKE_HARNESS_SCRIPT],
+      startupTimeoutMs: 5_000,
+      reclaimOrphanSidecarsImpl: async () => {
+        reclaimCalls += 1;
+        return { scanned: 33, reclaimed: [8994, 3239], failed: [] };
+      }
+    });
+
+    try {
+      await manager.ensureReady();
+      // 关闭后重新拉起会再次进入启动路径，但不应该重复回收。
+      await manager.shutdown();
+      await manager.ensureReady();
+      expect(reclaimCalls).toBe(1);
+      expect(manager.getState()).toMatchObject({ status: "ready" });
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
+  it("孤儿回收失败时不阻塞 sidecar 启动", async () => {
+    const manager = new DeepSeekHarnessSidecarManager({
+      taskManager: createTaskManager(),
+      commandPath: process.execPath,
+      commandArgs: ["-e", FAKE_HARNESS_SCRIPT],
+      startupTimeoutMs: 5_000,
+      reclaimOrphanSidecarsImpl: async () => {
+        throw new Error("PS_SCAN_FAILED");
+      }
+    });
+
+    try {
+      await expect(manager.ensureReady()).resolves.toMatchObject({
+        harnessVersion: "0.1.1-rc.2"
+      });
+      expect(manager.getState()).toMatchObject({ status: "ready" });
+    } finally {
+      await manager.shutdown();
     }
   });
 });

@@ -12,6 +12,10 @@ import { resolveCommandLaunch } from "../../../shared/utils/command-launch.js";
 import { resolveCommandVersion } from "../../../shared/utils/command-version.js";
 import { DeepSeekHarnessApiClient } from "./deepseek-harness-api-client.js";
 import { parseHarnessHandshake } from "./deepseek-harness-protocol.js";
+import {
+  reclaimOrphanSidecars,
+  type SidecarReclaimResult
+} from "./deepseek-harness-sidecar-reclaim.js";
 import { terminateChildProcess } from "../../../shared/utils/child-process-lifecycle.js";
 
 export type DeepSeekHarnessSidecarStatus = "stopped" | "starting" | "ready" | "degraded" | "read-only" | "stopping" | "failed";
@@ -51,6 +55,10 @@ export interface DeepSeekHarnessSidecarManagerOptions {
   spawnImpl?: typeof spawn;
   portAllocator?: () => Promise<number>;
   fetchImpl?: typeof fetch;
+  /** 是否在启动 sidecar 前回收失去 Host 归属的孤儿 sidecar，默认开启。 */
+  reclaimOrphanSidecars?: boolean;
+  /** 回收实现，测试可替换，避免真的动进程。 */
+  reclaimOrphanSidecarsImpl?: () => Promise<SidecarReclaimResult>;
 }
 
 /** 只管理 CodingNS 自己启动的 sidecar，外部进程不会被接管。 */
@@ -59,6 +67,7 @@ export class DeepSeekHarnessSidecarManager {
   private child: ChildProcess | null = null;
   private authUrl: string | null = null;
   private authCookie: string | null = null;
+  private orphanReclaim: Promise<void> | null = null;
   private state: DeepSeekHarnessSidecarState = {
     instanceId: "sidecar-" + randomUUID(),
     status: "stopped",
@@ -144,10 +153,44 @@ export class DeepSeekHarnessSidecarManager {
     this.state = resetHandshakeState({ ...this.state, status: "stopped", pid: null, baseUrl: null });
   }
 
+  /**
+   * 启动前回收孤儿 sidecar，只做一次。
+   *
+   * 孤儿 sidecar 会一直占着 DSH 的会话写入租约，导致新 Host resume 报
+   * `SessionAlreadyOwnedError`；回收失败只记日志，不能挡住本次启动。
+   */
+  private async reclaimOrphansBeforeStart(): Promise<void> {
+    if (this.options.reclaimOrphanSidecars === false) {
+      return;
+    }
+
+    this.orphanReclaim ??= (async () => {
+      try {
+        const result = await (this.options.reclaimOrphanSidecarsImpl ?? reclaimOrphanSidecars)();
+        if (result.reclaimed.length > 0 || result.failed.length > 0) {
+          console.warn("[deepseek-harness-sidecar] 回收无主 sidecar", {
+            scanned: result.scanned,
+            reclaimed: result.reclaimed,
+            failed: result.failed
+          });
+        }
+      } catch (error) {
+        console.warn("[deepseek-harness-sidecar] 回收无主 sidecar 失败", {
+          detail: sanitizeError(error)
+        });
+      }
+    })();
+
+    await this.orphanReclaim;
+  }
+
   private async startOwnedSidecar(signal?: AbortSignal): Promise<{ baseUrl: string; instanceId: string; harnessVersion: string | null; compatibility: DeepSeekHarnessCompatibility }> {
     if (["ready", "degraded", "read-only"].includes(this.state.status) && this.state.baseUrl && this.state.compatibility) {
       return { baseUrl: this.state.baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility: this.state.compatibility };
     }
+
+    // 先清掉占着会话租约的孤儿，再分配端口启动自己的 sidecar。
+    await this.reclaimOrphansBeforeStart();
 
     this.state = resetHandshakeState({
       ...this.state,
