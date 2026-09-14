@@ -1187,7 +1187,8 @@ export function createServer(config: HostConfig) {
     sessionLiveRuntimeService,
     sessionHistoryService,
     repositories.sessionMessageOriginRepository,
-    sessionProviderUsageLimitGuardService
+    sessionProviderUsageLimitGuardService,
+    BUTLER_FEATURE_ENABLED
   );
   const projectMemoryService = new ProjectMemoryService(
     repositories.butlerProjectRepository,

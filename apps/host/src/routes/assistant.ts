@@ -25,6 +25,17 @@ export async function registerAssistantCapabilityRoutes(
       return;
     }
 
+    if (
+      routePath === "/api/assistant/projects"
+      || routePath.startsWith("/api/assistant/projects/")
+    ) {
+      throw new AppError({
+        statusCode: 410,
+        errorCode: "BUTLER_DISABLED",
+        detail: "Butler 功能已停用，项目会话助手能力已下线"
+      });
+    }
+
     const callerKind = request.auth?.callerKind;
     const capabilityProfile = request.auth?.capabilityProfile;
     const requestSource = request.headers["x-codingns-assistant-source"];

@@ -19,6 +19,7 @@ import type { TerminalWsHub } from "./terminal-ws-hub.js";
 import type { WorkbenchWsHub } from "./workbench-ws-hub.js";
 import type { WsAuthGuard } from "./ws-auth-guard.js";
 import type { HostWsProxyService } from "../modules/peer-host/host-ws-proxy-service.js";
+import { BUTLER_FEATURE_ENABLED } from "../modules/butler/butler-feature-status.js";
 
 interface SessionSubscribeMessage {
   type: "session.subscribe";
@@ -218,10 +219,12 @@ export function createWsServer(
 
       subscriptions.get(payload.sessionId)?.close();
 
-      butlerActionContextService?.preloadSessionActionContext(
-        payload.sessionId,
-        authContext.user.userId
-      );
+      if (BUTLER_FEATURE_ENABLED) {
+        butlerActionContextService?.preloadSessionActionContext(
+          payload.sessionId,
+          authContext.user.userId
+        );
+      }
 
       const seenMessages = new Map<string, SeenMessageEntry>();
       const workbenchSummarySignatures = new Map<string, string>();

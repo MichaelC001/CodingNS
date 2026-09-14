@@ -24,6 +24,7 @@ import type { SessionHistoryService } from "../sessions/session-history-service.
 import type { SessionMessageOriginRepository } from "../../storage/repositories/session-message-origin-repository.js";
 import { recordButlerProxyMessageOrigin } from "../sessions/session-message-origin-utils.js";
 import type { SessionProviderUsageLimitGuardService } from "../sessions/session-provider-usage-guard-service.js";
+import { BUTLER_FEATURE_ENABLED } from "./butler-feature-status.js";
 
 export interface ButlerProjectSessionView {
   id: string;
@@ -102,7 +103,8 @@ export class ButlerSessionService {
     private readonly providerUsageLimitGuardService: Pick<
       SessionProviderUsageLimitGuardService,
       "resolveBlockingInspection" | "createBlockedAppError"
-    > | null = null
+    > | null = null,
+    private readonly featureEnabled: boolean = BUTLER_FEATURE_ENABLED
   ) {}
 
   async startSession(
@@ -319,6 +321,10 @@ export class ButlerSessionService {
       signal?: AbortSignal;
     }
   ): Promise<void> {
+    if (!this.featureEnabled) {
+      return;
+    }
+
     const project = this.getProjectForUserOrThrow(projectId, userId);
 
     if (!isWorkspaceAutoManagedProject(project) || !this.sessionHistoryService?.listWorkspaceSessions) {
@@ -326,8 +332,7 @@ export class ButlerSessionService {
     }
 
     if (this.sessionHistoryService.markWorkspaceDiscoveryDirty) {
-      // Butler 上下文刷新只能标记工作区脏状态，不能把会话目录扫描偷偷
-      // 带入普通工作台或控制链路；全量扫描由用户显式操作触发。
+      // 先记录工作区需要刷新；Butler 停用时已在函数入口返回，不会进入后续导入。
       this.sessionHistoryService.markWorkspaceDiscoveryDirty(
         project.workspaceId,
         userId,
