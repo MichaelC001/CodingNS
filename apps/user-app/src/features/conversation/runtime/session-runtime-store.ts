@@ -655,14 +655,6 @@ export class SessionRuntimeStore {
     });
   }
 
-  /** 删除 Host 已确认不存在的旧请求，避免重启后缓存卡片持续触发 404。 */
-  discardPermissionRequest(requestId: string): void {
-    if (!this.state.permissionRequests.some((item) => item.id === requestId)) return;
-    this.patch({
-      permissionRequests: this.state.permissionRequests.filter((item) => item.id !== requestId)
-    });
-  }
-
   reconnect(): void {
     this.realtimeClient?.reconnectNow();
   }
@@ -771,6 +763,9 @@ export class SessionRuntimeStore {
           sessionId: this.sessionId,
           lastCursor: this.state.lastCursor
         });
+        // Host 重启后，重新订阅实时流会触发一次权限请求读取；Host 会借此
+        // 重新挂载 DSH Remote `$events`，接收网关重放的原 eventId。
+        void this.refreshPermissionRequests();
         this.patch({
           connectionState: "connected",
           hasOlderMessages: resolveHasOlderMessages({
@@ -1629,7 +1624,7 @@ export class SessionRuntimeStore {
     await Promise.allSettled(tasks);
   }
 
-  private async refreshPermissionRequests(): Promise<void> {
+  async refreshPermissionRequests(): Promise<void> {
     try {
       const response = await getSessionPermissionRequests(this.sessionId, {
         targetHostId: this.options.targetHostId
