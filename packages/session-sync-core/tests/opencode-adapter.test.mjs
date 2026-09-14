@@ -81,6 +81,78 @@ test("OpenCodeAdapter 读取 session 表的原生累计统计", async () => {
   }
 });
 
+test("OpenCodeAdapter 按最后一条 assistant usage 和模型上下文上限计算上下文占用", async (context) => {
+  const fixture = createOpenCodeFixture();
+  const originalFetch = globalThis.fetch;
+
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+    fixture.dispose();
+  });
+
+  const db = new DatabaseSync(fixture.dbPath);
+  db.prepare(
+    `UPDATE message
+     SET data = ?
+     WHERE id = ?`
+  ).run(
+    JSON.stringify({
+      role: "assistant",
+      providerID: "openai",
+      modelID: "gpt-5.5",
+      tokens: {
+        input: 1200,
+        output: 300,
+        reasoning: 45,
+        total: 2000,
+        cache: { read: 400, write: 55 }
+      },
+      time: {
+        created: 1_700_000_002_000,
+        completed: 1_700_000_020_000
+      }
+    }),
+    "msg_demo_assistant"
+  );
+  db.close();
+
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.toString();
+    assert.match(url, /\/config\/providers/);
+    return jsonResponse({
+      providers: [{
+        id: "openai",
+        models: {
+          "gpt-5.5": {
+            id: "gpt-5.5",
+            limit: { context: 10000 }
+          }
+        }
+      }],
+      default: { openai: "gpt-5.5" }
+    });
+  };
+
+  const usage = await new OpenCodeAdapter({
+    dbPath: fixture.dbPath,
+    baseUrl: "http://127.0.0.1:41827"
+  }).readContextUsage("ses_demo", "opencode://session/ses_demo");
+
+  assert.deepEqual(usage, {
+    provider: "opencode",
+    promptTokens: 2000,
+    uncachedInputTokens: 1200,
+    cachedInputTokens: 455,
+    contextWindow: 10000,
+    usageRatio: 0.2,
+    source: "provider-log",
+    contextWindowSource: "provider-runtime",
+    modelId: "gpt-5.5",
+    capturedAt: "2023-11-14T22:13:40.000Z",
+    isEstimated: false
+  });
+});
+
 test("OpenCodeAdapter 旧消息发送路径在非 default permissionMode 下也只会沿用 OpenCode 当前配置", async (context) => {
   const originalFetch = globalThis.fetch;
   const requests = [];

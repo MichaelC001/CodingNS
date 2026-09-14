@@ -18,6 +18,7 @@ import type {
   ProviderId,
   ProviderRealtimeEvent,
   ProviderSessionStats,
+  ContextUsageSnapshot,
   ProviderSessionDiscovery,
   ProviderSessionSummary,
   ProviderSubscription,
@@ -112,6 +113,18 @@ interface SessionStatsRow {
   tokens_cache_write?: unknown;
 }
 
+interface ContextUsageMessageRow {
+  data?: unknown;
+  time_created?: unknown;
+  time_updated?: unknown;
+}
+
+interface OpenCodeContextModelSnapshot {
+  providerId: string;
+  modelId: string;
+  contextWindow: number;
+}
+
 interface PartHistoryRow {
   part_id?: unknown;
   message_id?: unknown;
@@ -174,6 +187,10 @@ const OPENCODE_DISCOVERY_CACHE_LIMIT = 32;
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly providerId: ProviderId = "opencode";
   private readonly discoveryCache = new Map<string, OpenCodeDiscoveryCacheEntry>();
+  private readonly contextModelCache = new Map<
+    string,
+    { expiresAt: number; value: OpenCodeContextModelSnapshot | null }
+  >();
 
   constructor(private readonly options: OpenCodeAdapterOptions = {}) {}
 
@@ -362,6 +379,83 @@ export class OpenCodeAdapter implements ProviderAdapter {
     return Object.keys(metrics).length > 0
       ? { provider: this.providerId, capturedAt, metrics }
       : null;
+  }
+
+  async readContextUsage(
+    providerSessionId: string,
+    rawStoreRef: string
+  ): Promise<ContextUsageSnapshot | null> {
+    const sessionId = this.resolveSessionId(providerSessionId, rawStoreRef);
+    const latest = this.withReadonlyDb((db) => db.prepare(
+      `SELECT data, time_created, time_updated
+       FROM message
+       WHERE session_id = ?
+       ORDER BY time_updated DESC, time_created DESC, rowid DESC`
+    ).all(sessionId) as ContextUsageMessageRow[])
+      .map((row) => ({
+        payload: toJsonRecord(row.data),
+        capturedAt: toIsoTimestamp(firstValidNumber(row.time_updated, row.time_created), null)
+      }))
+      .find((entry) => isOpenCodeContextMessage(entry.payload));
+
+    if (!latest?.payload) {
+      return null;
+    }
+
+    const tokens = toJsonRecord(latest.payload.tokens);
+    const providerId = ensureText(latest.payload.providerID ?? latest.payload.providerId).trim();
+    const modelId = ensureText(latest.payload.modelID ?? latest.payload.modelId).trim();
+    const inputTokens = readNonNegativeSessionNumber(tokens?.input);
+    const outputTokens = readNonNegativeSessionNumber(tokens?.output);
+    const reasoningTokens = readNonNegativeSessionNumber(tokens?.reasoning);
+    const cache = toJsonRecord(tokens?.cache);
+    const cacheReadTokens = readNonNegativeSessionNumber(cache?.read);
+    const cacheWriteTokens = readNonNegativeSessionNumber(cache?.write);
+    const reportedTotal = readNonNegativeSessionNumber(tokens?.total);
+    const promptTokens = reportedTotal !== null && reportedTotal > 0
+      ? reportedTotal
+      : sumOpenCodeContextTokens(
+        inputTokens,
+        outputTokens,
+        reasoningTokens,
+        cacheReadTokens,
+        cacheWriteTokens
+      );
+
+    if (!providerId || !modelId || promptTokens === null) {
+      return null;
+    }
+
+    const session = this.withReadonlyDb((db) => db.prepare(
+      "SELECT directory FROM session WHERE id = ? LIMIT 1"
+    ).get(sessionId) as { directory?: unknown } | undefined);
+    const workspacePath = ensureText(session?.directory).trim();
+
+    if (!workspacePath) {
+      return null;
+    }
+
+    const model = await this.readOpenCodeContextModel(workspacePath, providerId, modelId);
+
+    if (!model || model.contextWindow <= 0) {
+      return null;
+    }
+
+    return {
+      provider: this.providerId,
+      promptTokens,
+      ...(inputTokens !== null ? { uncachedInputTokens: inputTokens } : {}),
+      ...(cacheReadTokens !== null || cacheWriteTokens !== null
+        ? { cachedInputTokens: (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0) }
+        : {}),
+      contextWindow: model.contextWindow,
+      usageRatio: Math.min(Math.max(promptTokens / model.contextWindow, 0), 1),
+      source: "provider-log",
+      contextWindowSource: "provider-runtime",
+      modelId,
+      capturedAt: latest.capturedAt,
+      isEstimated: false
+    };
   }
 
   subscribeSession(
@@ -813,6 +907,40 @@ export class OpenCodeAdapter implements ProviderAdapter {
       }
 
       throw error;
+    }
+  }
+
+  private async readOpenCodeContextModel(
+    workspacePath: string,
+    providerId: string,
+    modelId: string
+  ): Promise<OpenCodeContextModelSnapshot | null> {
+    const cacheKey = `${workspacePath}\0${providerId}\0${modelId}`;
+    const cached = this.contextModelCache.get(cacheKey);
+
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.value;
+    }
+
+    try {
+      const response = await this.fetchJson<unknown>("/config/providers", {
+        workspacePath,
+        query: {
+          directory: workspacePath
+        }
+      });
+      const value = findOpenCodeContextModel(response.data, providerId, modelId);
+      this.contextModelCache.set(cacheKey, {
+        value,
+        expiresAt: Date.now() + 5_000
+      });
+      return value;
+    } catch {
+      this.contextModelCache.set(cacheKey, {
+        value: null,
+        expiresAt: Date.now() + 1_000
+      });
+      return null;
     }
   }
 
@@ -1776,6 +1904,65 @@ function readNonNegativeSessionNumber(value: unknown): number | null {
   }
 
   return null;
+}
+
+function isOpenCodeContextMessage(payload: Record<string, unknown> | null): boolean {
+  if (!payload || ensureText(payload.role).trim() !== "assistant") {
+    return false;
+  }
+
+  const tokens = toJsonRecord(payload.tokens);
+
+  if (!tokens) {
+    return false;
+  }
+
+  const total = sumOpenCodeContextTokens(
+    readNonNegativeSessionNumber(tokens.input),
+    readNonNegativeSessionNumber(tokens.output),
+    readNonNegativeSessionNumber(tokens.reasoning),
+    readNonNegativeSessionNumber(toJsonRecord(tokens.cache)?.read),
+    readNonNegativeSessionNumber(toJsonRecord(tokens.cache)?.write)
+  );
+  const reportedTotal = readNonNegativeSessionNumber(tokens.total);
+
+  return (reportedTotal !== null && reportedTotal > 0) || (total !== null && total > 0);
+}
+
+function sumOpenCodeContextTokens(...values: Array<number | null>): number | null {
+  if (values.every((value) => value === null)) {
+    return null;
+  }
+
+  return values.reduce<number>((total, value) => total + (value ?? 0), 0);
+}
+
+function findOpenCodeContextModel(
+  payload: unknown,
+  providerId: string,
+  modelId: string
+): OpenCodeContextModelSnapshot | null {
+  const root = toJsonRecord(payload);
+  const providers = Array.isArray(root?.providers) ? root.providers : [];
+  const provider = providers
+    .map((entry) => toJsonRecord(entry))
+    .find((entry) => ensureText(entry?.id).trim() === providerId);
+  const models = toJsonRecord(provider?.models);
+  const model = models
+    ? toJsonRecord(models[modelId])
+    : null;
+  const limit = toJsonRecord(model?.limit);
+  const contextWindow = readNonNegativeSessionNumber(limit?.context);
+
+  if (!contextWindow || contextWindow <= 0) {
+    return null;
+  }
+
+  return {
+    providerId,
+    modelId,
+    contextWindow
+  };
 }
 
 function resolveOpenCodeMessageTitle(message: Pick<NormalizedMessage, "role" | "kind" | "content">): string | null {
