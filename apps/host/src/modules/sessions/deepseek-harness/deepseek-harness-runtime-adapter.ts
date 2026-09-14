@@ -276,20 +276,40 @@ function parseModelSelection(value: string | null): { provider: string; model: s
   return { provider: normalized.slice(0, separator), model: normalized.slice(separator + 1) };
 }
 
-const DEEPSEEK_V41_FLASH_ALIASES = new Set([
+/**
+ * 能接收图片的 DeepSeek 模型 ID。
+ *
+ * `deepseek-flash` 是 DSH 目录里 V4.1 Flash 的正式 ID，也是 DSH 自己的默认模型，
+ * 它本身就声明了 `inputModalities: ['text', 'image']`，所以不需要被“切换”，
+ * 直接可用。其余几个是历史 ID：`deepseek-v4.1-flash` 等写法曾存在于 CodingNS 旧配置，
+ * `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 仍可调用但对应模型已下线，
+ * 请求最终由 V4.1 Flash 提供服务并按 Flash 计费，因此同样指向视觉模型。
+ */
+const DEEPSEEK_VISION_CAPABLE_MODELS = new Set([
+  "deepseek-flash",
   "deepseek-v4.1-flash",
   "deepseek-v41-flash",
-  "deepseek-v4-1-flash"
+  "deepseek-v4-1-flash",
+  "deepseek-v4-flash",
+  "deepseek-v4-flash-vision-exp"
 ]);
+
+/** DeepSeek 官方 provider 的两种写法：legacy `deepseek` 与 Remote `deepseek-official`。 */
+function isDeepSeekOfficialProvider(provider: string): boolean {
+  const normalized = provider.trim().toLowerCase();
+  return normalized === "deepseek" || normalized === "deepseek-official";
+}
 
 function hasImageAttachment(options: RuntimeSendOptions): boolean {
   return options.attachments.some((attachment) => attachment.kind === "image");
 }
 
 /**
- * Harness 的 DeepSeek 目录把 V4.1 Flash 的正式模型 ID 记为 deepseek-flash。
- * CodingNS 旧配置可能仍保存 deepseek-v4.1-flash；只有真正发送图片时才切换，
- * 这样不会改变普通文本请求，也不会误伤第三方 provider 的同名模型。
+ * 把即将用于发图的 DeepSeek 模型 ID 归一成视觉模型。
+ *
+ * 只有真正发送图片时才走到这里，因此不会改变普通文本请求，也不会误伤第三方
+ * provider 的同名模型。返回值是“确定要用哪个模型”，null 表示这不是一个
+ * DeepSeek 官方视觉模型，调用方应按原样处理（用户显式选择优先）。
  */
 async function resolveImageModelSelection(
   client: DeepSeekHarnessApiClient,
@@ -322,16 +342,12 @@ function normalizeDeepSeekImageModelSelection(
 ): { provider: string; model: string } | null {
   if (!selection) return null;
 
-  const provider = selection.provider.trim().toLowerCase();
-  const model = selection.model.trim().toLowerCase();
-  if (
-    (provider === "deepseek" || provider === "deepseek-official")
-    && DEEPSEEK_V41_FLASH_ALIASES.has(model)
-  ) {
-    return { ...selection, model: "deepseek-flash" };
-  }
+  if (!isDeepSeekOfficialProvider(selection.provider)) return null;
+  if (!DEEPSEEK_VISION_CAPABLE_MODELS.has(selection.model.trim().toLowerCase())) return null;
 
-  return null;
+  // 统一收敛到 DSH 目录的正式 ID；即便默认值本来就是 deepseek-flash，
+  // 也在这里显式声明，避免它因为是“新写法”而被当成未知模型漏掉。
+  return { ...selection, model: "deepseek-flash" };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

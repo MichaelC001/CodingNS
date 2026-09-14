@@ -430,6 +430,124 @@ describe("DeepSeek Harness Web API", () => {
     }
   });
 
+  it("DSH 默认模型已经是 deepseek-flash 时，图片请求仍然选中它", async () => {
+    fake = await createDeepSeekHarnessFakeServer({
+      defaultModel: { provider: "deepseek-official", model: "deepseek-flash" }
+    });
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const attachmentRootDir = mkdtempSync(join(tmpdir(), "codingns-harness-attachments-flash-default-"));
+    const attachmentPath = join(attachmentRootDir, "image.png");
+    mkdirSync(attachmentRootDir, { recursive: true });
+    writeFileSync(attachmentPath, Buffer.from([0, 1, 2, 3]));
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager(), { attachmentRootDir });
+    const sink: ProviderRuntimeEventSink = {
+      emit: async () => undefined,
+      updateSessionBinding: vi.fn()
+    };
+
+    fake.setPromptHandler((sessionId) => {
+      fake?.emitMux({ type: "session/event", sessionId, event: { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } } });
+      fake?.emitHost({ type: "host/session-status", sessionId, running: false });
+    });
+
+    try {
+      const launch = await adapter.startSession({
+        sessionId: "codingns-flash-default-image-model",
+        workspaceId: "workspace-1",
+        workspacePath: "/Users/jackson/Code/GCAC",
+        provider: "deepseek-harness",
+        providerSessionId: null,
+        rawStoreRef: null,
+        options: {
+          content: "请分析图片",
+          clientRequestId: "request-flash-default-image-model",
+          model: null,
+          reasoningLevel: null,
+          permissionMode: "ask",
+          providerPrompt: null,
+          attachments: [{
+            id: "attachment-flash-default-image-model",
+            kind: "image",
+            fileName: "image.png",
+            mimeType: "image/png",
+            fileSize: 4,
+            filePath: attachmentPath
+          }]
+        }
+      }, sink);
+
+      await expect(launch.completed).resolves.toBeUndefined();
+      expect(fake.calls).toContainEqual({
+        method: "session.selectModel",
+        payload: {
+          sessionId: "harness-1",
+          provider: "deepseek-official",
+          model: "deepseek-flash"
+        }
+      });
+    } finally {
+      rmSync(attachmentRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("用户显式选中已下线的 deepseek-v4-flash 时，图片请求收敛到 deepseek-flash", async () => {
+    fake = await createDeepSeekHarnessFakeServer();
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const attachmentRootDir = mkdtempSync(join(tmpdir(), "codingns-harness-attachments-retired-flash-"));
+    const attachmentPath = join(attachmentRootDir, "image.png");
+    mkdirSync(attachmentRootDir, { recursive: true });
+    writeFileSync(attachmentPath, Buffer.from([0, 1, 2, 3]));
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager(), { attachmentRootDir });
+    const sink: ProviderRuntimeEventSink = {
+      emit: async () => undefined,
+      updateSessionBinding: vi.fn()
+    };
+
+    fake.setPromptHandler((sessionId) => {
+      fake?.emitMux({ type: "session/event", sessionId, event: { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } } });
+      fake?.emitHost({ type: "host/session-status", sessionId, running: false });
+    });
+
+    try {
+      const launch = await adapter.startSession({
+        sessionId: "codingns-retired-flash-image-model",
+        workspaceId: "workspace-1",
+        workspacePath: "/Users/jackson/Code/GCAC",
+        provider: "deepseek-harness",
+        providerSessionId: null,
+        rawStoreRef: null,
+        options: {
+          content: "请分析图片",
+          clientRequestId: "request-retired-flash-image-model",
+          model: "deepseek-official:deepseek-v4-flash",
+          reasoningLevel: null,
+          permissionMode: "ask",
+          providerPrompt: null,
+          attachments: [{
+            id: "attachment-retired-flash-image-model",
+            kind: "image",
+            fileName: "image.png",
+            mimeType: "image/png",
+            fileSize: 4,
+            filePath: attachmentPath
+          }]
+        }
+      }, sink);
+
+      await expect(launch.completed).resolves.toBeUndefined();
+      expect(fake.calls).toContainEqual({
+        method: "session.selectModel",
+        payload: {
+          sessionId: "harness-1",
+          provider: "deepseek-official",
+          model: "deepseek-flash"
+        }
+      });
+    } finally {
+      rmSync(attachmentRootDir, { recursive: true, force: true });
+    }
+  });
+
   it("仍然拒绝不属于工作区或 Host 附件目录的路径，并且不会产生未处理拒绝", async () => {
     fake = await createDeepSeekHarnessFakeServer();
     const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });

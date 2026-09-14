@@ -206,6 +206,15 @@ function dispatch(
             name: "DeepSeek",
             models: [
               {
+                // DSH 目录里 V4.1 Flash 的正式 ID，也是 DSH 自己的默认模型。
+                id: "deepseek-flash",
+                name: "DeepSeek-V41-Flash",
+                reasoning: {
+                  efforts: [{ id: "off", name: "Off" }, { id: "high", name: "High" }, { id: "max", name: "Max" }],
+                  defaultEffort: "high"
+                }
+              },
+              {
                 id: "deepseek-v4-flash",
                 name: "DeepSeek-V4-Flash",
                 reasoning: {
