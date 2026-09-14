@@ -57,14 +57,18 @@ function prepareOutputDirectory() {
   fs.cpSync(hostBuildRoot, path.join(outputRoot, "server"), { recursive: true });
   fs.cpSync(userAppBuildRoot, path.join(outputRoot, "public"), { recursive: true });
 
-  const sourceHookBridgeScriptPath = path.join(workspaceRoot, "scripts", "claude-hook-bridge.cjs");
+  // 这些脚本由 Host 在运行时按包内路径拉起，必须跟着包一起分发。
+  const runtimeScripts = [
+    { fileName: "claude-hook-bridge.cjs", label: "Claude Hook Bridge 脚本" },
+    { fileName: "dsh-sidecar-guard.cjs", label: "DeepSeek Harness sidecar 父进程守卫脚本" }
+  ];
   const targetScriptsRoot = path.join(packageRoot, "scripts");
-  ensureDirectoryExists(sourceHookBridgeScriptPath, "Claude Hook Bridge 脚本");
   fs.mkdirSync(targetScriptsRoot, { recursive: true });
-  fs.copyFileSync(
-    sourceHookBridgeScriptPath,
-    path.join(targetScriptsRoot, "claude-hook-bridge.cjs")
-  );
+  for (const runtimeScript of runtimeScripts) {
+    const sourceScriptPath = path.join(workspaceRoot, "scripts", runtimeScript.fileName);
+    ensureDirectoryExists(sourceScriptPath, runtimeScript.label);
+    fs.copyFileSync(sourceScriptPath, path.join(targetScriptsRoot, runtimeScript.fileName));
+  }
 }
 
 function bundleSessionSyncCore() {

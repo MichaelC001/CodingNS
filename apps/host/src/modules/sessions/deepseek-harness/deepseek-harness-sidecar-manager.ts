@@ -1,6 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   resolveDeepSeekHarnessCompatibility,
@@ -16,9 +19,30 @@ import {
   reclaimOrphanSidecars,
   type SidecarReclaimResult
 } from "./deepseek-harness-sidecar-reclaim.js";
+import {
+  acquireSidecarStartLock,
+  addSidecarLeaseOwner,
+  isProcessAlive,
+  LEASE_VERSION,
+  readSidecarLease,
+  removeSidecarLeaseOwner,
+  resolveSidecarLeasePath,
+  resolveSidecarStartLockPath,
+  writeSidecarLease,
+  type SidecarLeaseRecord
+} from "./deepseek-harness-sidecar-registry.js";
 import { terminateChildProcess } from "../../../shared/utils/child-process-lifecycle.js";
 
 export type DeepSeekHarnessSidecarStatus = "stopped" | "starting" | "ready" | "degraded" | "read-only" | "stopping" | "failed";
+
+/** sidecar 父进程守卫脚本的文件名，源码与打包产物同名分发。 */
+const SIDECAR_GUARD_SCRIPT_NAME = "dsh-sidecar-guard.cjs";
+
+/** 传给守卫脚本的发起进程号环境变量，与脚本内的约定保持一致。 */
+const SIDECAR_GUARD_PARENT_PID_ENV = "CODINGNS_SIDECAR_GUARD_PARENT_PID";
+
+/** 传给守卫脚本的租约文件路径；有它时守卫改按"还有没有 Host 在用"判断存活。 */
+const SIDECAR_GUARD_LEASE_PATH_ENV = "CODINGNS_SIDECAR_GUARD_LEASE_PATH";
 
 /** sidecar 启动失败发生在哪个阶段，便于区分认证、协议探测和进程问题。 */
 export type DeepSeekHarnessSidecarFailureStage =
@@ -59,6 +83,38 @@ export interface DeepSeekHarnessSidecarManagerOptions {
   reclaimOrphanSidecars?: boolean;
   /** 回收实现，测试可替换，避免真的动进程。 */
   reclaimOrphanSidecarsImpl?: () => Promise<SidecarReclaimResult>;
+  /**
+   * 租约文件与启动锁所在目录，通常传 Host 数据目录。
+   *
+   * 给了它才启用"接管已有 sidecar"：Host 重启时优先复用上一个 Host 留下的
+   * 实例，而不是回收后重建。不传则退回"每次自己拉起、退出时自己收掉"。
+   */
+  stateDir?: string;
+  /** 抢不到启动锁时的重试间隔，默认 1200ms；测试可压到毫秒级。 */
+  adoptRetryDelayMs?: number;
+  /** 抢不到启动锁时的重试次数，默认 3。 */
+  adoptRetryCount?: number;
+  /** 接管探测实现，测试可替换，避免真的连端口。 */
+  adoptProbeImpl?: (record: SidecarLeaseRecord) => Promise<AdoptedSidecar | null>;
+}
+
+/** 成功接管一个已有 sidecar 后的结果。 */
+export interface AdoptedSidecar {
+  baseUrl: string;
+  instanceId: string;
+  pid: number;
+  authUrl: string;
+  authCookie: string;
+  harnessVersion: string | null;
+  compatibility: DeepSeekHarnessCompatibility;
+}
+
+/** 一次 sidecar 就绪结果，自己拉起的和接管来的都归一到这个形状。 */
+interface ReadySidecar {
+  baseUrl: string;
+  instanceId: string;
+  harnessVersion: string | null;
+  compatibility: DeepSeekHarnessCompatibility;
 }
 
 /** 只管理 CodingNS 自己启动的 sidecar，外部进程不会被接管。 */
@@ -68,6 +124,8 @@ export class DeepSeekHarnessSidecarManager {
   private authUrl: string | null = null;
   private authCookie: string | null = null;
   private orphanReclaim: Promise<void> | null = null;
+  /** 当前 sidecar 是接管来的（没有子进程句柄），关闭时只能注销租约不能 kill。 */
+  private adopted = false;
   private state: DeepSeekHarnessSidecarState = {
     instanceId: "sidecar-" + randomUUID(),
     status: "stopped",
@@ -107,6 +165,17 @@ export class DeepSeekHarnessSidecarManager {
     return this.state.compatibility;
   }
 
+  /**
+   * Host 启动时主动回收一次失去归属的孤儿 sidecar。
+   *
+   * 回收原本只在"自己要启动 sidecar"之前触发，所以本次 Host 只要一直没用到
+   * Harness，上一次崩溃留下的孤儿就会一直占着端口和会话写入租约。这里把它
+   * 提前到 Host 启动阶段；与管理器内部的一次性缓存共用同一次回收。
+   */
+  async reclaimOrphansOnStartup(): Promise<void> {
+    await this.reclaimOrphansBeforeStart();
+  }
+
   async ensureReady(): Promise<{ baseUrl: string; instanceId: string; harnessVersion: string | null; compatibility: DeepSeekHarnessCompatibility }> {
     if (["ready", "degraded", "read-only"].includes(this.state.status) && this.state.baseUrl && this.state.compatibility) {
       return { baseUrl: this.state.baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility: this.state.compatibility };
@@ -135,10 +204,30 @@ export class DeepSeekHarnessSidecarManager {
 
   async shutdown(): Promise<void> {
     const child = this.child;
+    const adopted = this.adopted;
+    const leasePath = this.resolveLeasePath();
+
+    // 先把自己从使用者名单里摘掉：sidecar 的守卫据此判断还有没有人在用。
+    if (leasePath) {
+      await removeSidecarLeaseOwner(leasePath, process.pid);
+    }
+
+    this.child = null;
+    this.adopted = false;
+    this.authCookie = null;
+    this.authUrl = null;
+
     if (!child) {
-      this.authCookie = null;
-      this.authUrl = null;
+      // 接管来的 sidecar 没有本进程的子进程句柄，交给租约和守卫决定它何时收尾。
       this.state = resetHandshakeState({ ...this.state, status: "stopped", pid: null, baseUrl: null });
+      return;
+    }
+
+    if (leasePath && !adopted) {
+      // 启用了复用：把进程留给下一个 Host 接管，由守卫在无人接管时收尾。
+      // unref 之后本进程退出不会再被它拖住。
+      this.state = resetHandshakeState({ ...this.state, status: "stopped", pid: null, baseUrl: null });
+      child.unref?.();
       return;
     }
 
@@ -147,10 +236,51 @@ export class DeepSeekHarnessSidecarManager {
       termGraceMs: 750,
       killWaitMs: 500
     });
-    this.child = null;
-    this.authCookie = null;
-    this.authUrl = null;
     this.state = resetHandshakeState({ ...this.state, status: "stopped", pid: null, baseUrl: null });
+  }
+
+  /** 租约文件路径；没配 stateDir 表示没启用复用，返回 null。 */
+  private resolveLeasePath(): string | null {
+    const stateDir = this.options.stateDir;
+    return stateDir && stateDir.trim() !== "" ? resolveSidecarLeasePath(stateDir) : null;
+  }
+
+  /**
+   * 把自己拉起的 sidecar 登记到租约里。
+   *
+   * 没有抓到一次性认证 URL 时不写：下一个 Host 拿不到认证就无法接管，留一份
+   * 只能看不能用的记录只会把它引向死路。
+   */
+  private async publishSidecarLease(input: { baseUrl: string; port: number; harnessVersion: string | null }): Promise<void> {
+    const leasePath = this.resolveLeasePath();
+    const authUrl = this.authUrl;
+    const pid = this.state.pid;
+    if (!leasePath || !authUrl || typeof pid !== "number") {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const record: SidecarLeaseRecord = {
+      version: LEASE_VERSION,
+      instanceId: this.state.instanceId,
+      pid,
+      port: input.port,
+      baseUrl: input.baseUrl,
+      authUrl,
+      harnessVersion: input.harnessVersion,
+      // 名单从自己开始；后续接管的 Host 会把自己追加进来。
+      owners: [process.pid],
+      startedAt: this.state.startedAt ?? now,
+      updatedAt: now
+    };
+
+    try {
+      await writeSidecarLease(leasePath, record);
+    } catch (error) {
+      console.warn("[deepseek-harness-sidecar] 写 sidecar 租约失败", {
+        detail: sanitizeError(error)
+      });
+    }
   }
 
   /**
@@ -184,14 +314,190 @@ export class DeepSeekHarnessSidecarManager {
     await this.orphanReclaim;
   }
 
-  private async startOwnedSidecar(signal?: AbortSignal): Promise<{ baseUrl: string; instanceId: string; harnessVersion: string | null; compatibility: DeepSeekHarnessCompatibility }> {
-    if (["ready", "degraded", "read-only"].includes(this.state.status) && this.state.baseUrl && this.state.compatibility) {
-      return { baseUrl: this.state.baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility: this.state.compatibility };
+  /**
+   * 让 sidecar 就绪：优先接管上一个 Host 留下的实例，其次才自己拉起。
+   *
+   * 过去每次 Host 重启都会回收旧 sidecar 再新建一个，开发时 tsx watch 一天
+   * 重启几十次就攒出几十个进程。现在把"这个 sidecar 还能用"记在租约文件里，
+   * 新 Host 直接接管，进程数只跟 Host 种类数有关，跟重启次数无关。
+   */
+  private async startOwnedSidecar(signal?: AbortSignal): Promise<ReadySidecar> {
+    if (this.isSidecarReady()) {
+      return this.readyResult();
     }
 
-    // 先清掉占着会话租约的孤儿，再分配端口启动自己的 sidecar。
-    await this.reclaimOrphansBeforeStart();
+    const leasePath = this.resolveLeasePath();
+    if (!leasePath) {
+      // 没启用复用：保持"回收孤儿后自己拉起"的老路径。
+      await this.reclaimOrphansBeforeStart();
+      return await this.spawnOwnSidecar(signal);
+    }
 
+    const adopted = await this.adoptExistingSidecar(leasePath);
+    if (adopted) {
+      return adopted;
+    }
+
+    // 没有可接管的：抢启动锁，避免多个 Host 同时各拉一个 sidecar。
+    const lock = await acquireSidecarStartLock(
+      resolveSidecarStartLockPath(this.options.stateDir!)
+    );
+    if (!lock) {
+      // 别人正在启动，等它写好租约后接管，省得自己也拉一个。
+      const waited = await this.waitAndAdopt(leasePath, signal);
+      if (waited) {
+        return waited;
+      }
+      // 等不到说明对方启动失败或卡住了，自己接管启动职责。
+      await this.reclaimOrphansBeforeStart();
+      return await this.spawnOwnSidecar(signal);
+    }
+
+    try {
+      // 拿到锁后再看一眼：排队期间可能已经有别的 Host 完成接管。
+      const second = await this.adoptExistingSidecar(leasePath);
+      if (second) {
+        return second;
+      }
+      await this.reclaimOrphansBeforeStart();
+      return await this.spawnOwnSidecar(signal);
+    } finally {
+      await lock.release();
+    }
+  }
+
+  private isSidecarReady(): boolean {
+    return ["ready", "degraded", "read-only"].includes(this.state.status)
+      && Boolean(this.state.baseUrl)
+      && Boolean(this.state.compatibility);
+  }
+
+  private readyResult(): ReadySidecar {
+    return {
+      baseUrl: this.state.baseUrl!,
+      instanceId: this.state.instanceId,
+      harnessVersion: this.state.harnessVersion,
+      compatibility: this.state.compatibility!
+    };
+  }
+
+  /**
+   * 尝试接管租约里记着的 sidecar。
+   * @param leasePath - 租约文件路径。
+   * @returns 接管成功时的就绪结果；记录无效或探测不通时为 null。
+   */
+  private async adoptExistingSidecar(leasePath: string): Promise<ReadySidecar | null> {
+    const record = await readSidecarLease(leasePath);
+    if (!record || !isProcessAlive(record.pid) || !record.authUrl) {
+      return null;
+    }
+
+    try {
+      const probe = this.options.adoptProbeImpl ?? ((candidate: SidecarLeaseRecord) => this.probeAdoptedSidecar(candidate));
+      const adopted = await probe(record);
+      if (!adopted) {
+        return null;
+      }
+
+      // 登记自己：守卫按这份名单判断还有没有人在用这个 sidecar。
+      await addSidecarLeaseOwner(leasePath, record, process.pid);
+
+      this.adopted = true;
+      this.child = null;
+      this.authUrl = adopted.authUrl;
+      this.authCookie = adopted.authCookie;
+      this.state = {
+        ...this.state,
+        instanceId: adopted.instanceId,
+        status: adopted.compatibility.status,
+        pid: adopted.pid,
+        baseUrl: adopted.baseUrl,
+        harnessVersion: adopted.harnessVersion,
+        protocolVersion: adopted.compatibility.protocolVersion,
+        capabilities: adopted.compatibility.capabilities,
+        compatibility: adopted.compatibility,
+        startedAt: record.startedAt,
+        lastError: adopted.compatibility.detail,
+        lastErrorCode: null,
+        lastErrorStage: null
+      };
+      console.info("[deepseek-harness-sidecar] 接管已有 sidecar", {
+        pid: adopted.pid,
+        baseUrl: adopted.baseUrl
+      });
+
+      return {
+        baseUrl: adopted.baseUrl,
+        instanceId: adopted.instanceId,
+        harnessVersion: adopted.harnessVersion,
+        compatibility: adopted.compatibility
+      };
+    } catch (error) {
+      console.warn("[deepseek-harness-sidecar] 接管已有 sidecar 失败", {
+        detail: sanitizeError(error)
+      });
+      return null;
+    }
+  }
+
+  /** 用租约里的一次性认证 URL 重新换一次 cookie，并探测协议能力。 */
+  private async probeAdoptedSidecar(record: SidecarLeaseRecord): Promise<AdoptedSidecar | null> {
+    if (!record.authUrl) {
+      return null;
+    }
+
+    const authCookie = await DeepSeekHarnessApiClient.exchangeAuthCookie(
+      record.authUrl,
+      this.options.fetchImpl ?? fetch
+    );
+    const client = new DeepSeekHarnessApiClient({
+      baseUrl: record.baseUrl,
+      requestTimeoutMs: this.options.requestTimeoutMs,
+      fetchImpl: this.options.fetchImpl,
+      protocol: "remote",
+      harnessVersion: record.harnessVersion,
+      authCookie
+    });
+    const description = await client.describe();
+    // 和首次启动一样：模型目录能打通才说明认证和 RPC 都可用。
+    await client.models("");
+    const harnessVersion = record.harnessVersion ?? readVersion(description);
+    const compatibility = resolveDeepSeekHarnessCompatibility(
+      parseHarnessHandshake(description, harnessVersion)
+    );
+
+    return {
+      baseUrl: record.baseUrl,
+      instanceId: record.instanceId,
+      pid: record.pid,
+      authUrl: record.authUrl,
+      authCookie,
+      harnessVersion,
+      compatibility
+    };
+  }
+
+  /** 抢不到启动锁时，等持有者写好租约再接管。 */
+  private async waitAndAdopt(leasePath: string, signal?: AbortSignal): Promise<ReadySidecar | null> {
+    const retries = this.options.adoptRetryCount ?? 3;
+    const delayMs = this.options.adoptRetryDelayMs ?? 1_200;
+
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      if (signal?.aborted) {
+        return null;
+      }
+
+      await delay(delayMs);
+      const adopted = await this.adoptExistingSidecar(leasePath);
+      if (adopted) {
+        return adopted;
+      }
+    }
+
+    return null;
+  }
+
+  private async spawnOwnSidecar(signal?: AbortSignal): Promise<ReadySidecar> {
     this.state = resetHandshakeState({
       ...this.state,
       status: "starting",
@@ -222,7 +528,7 @@ export class DeepSeekHarnessSidecarManager {
 
       const launch = resolveCommandLaunch(commandPath, commandArgs);
       child = (this.options.spawnImpl ?? spawn)(launch.command, launch.args, {
-        env: { ...process.env, ...this.options.env, HOST: bindHost, PORT: String(port) },
+        env: buildSidecarSpawnEnv({ HOST: bindHost, PORT: String(port) }, this.options.env, this.resolveLeasePath()),
         stdio: ["ignore", "pipe", "pipe"],
         shell: launch.shell,
         detached: process.platform !== "win32"
@@ -303,6 +609,8 @@ export class DeepSeekHarnessSidecarManager {
         lastErrorCode: null,
         lastErrorStage: null
       };
+      // 把实例登记到租约里，下一个 Host 才能接管它而不是重新拉起一个。
+      await this.publishSidecarLease({ baseUrl, port, harnessVersion });
       return { baseUrl, instanceId: this.state.instanceId, harnessVersion: this.state.harnessVersion, compatibility };
     } catch (error) {
       const errorCode = resolveErrorCode(error);
@@ -429,4 +737,77 @@ function hasSupportedBindHost(args: string[]): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 组装 sidecar 的启动环境，顺带注入父进程守卫。
+ *
+ * sidecar 是 detached 启动的，Host 被强杀时它不会跟着退出；注入的守卫脚本会
+ * 在没有人再使用它时自行收尾，避免留下占着会话写入租约的孤儿。
+ * @param base - 本次启动必须生效的变量，优先级最高。
+ * @param overrides - 调用方配置的环境变量。
+ * @param leasePath - 租约文件路径；给了它守卫就按使用者名单判断存活。
+ * @returns 传给 spawn 的环境变量。
+ */
+function buildSidecarSpawnEnv(
+  base: NodeJS.ProcessEnv,
+  overrides: NodeJS.ProcessEnv | undefined,
+  leasePath: string | null
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...overrides, ...base };
+  const guardScriptPath = resolveSidecarGuardScriptPath();
+  if (!guardScriptPath) {
+    return env;
+  }
+
+  env[SIDECAR_GUARD_PARENT_PID_ENV] = String(process.pid);
+  if (leasePath) {
+    env[SIDECAR_GUARD_LEASE_PATH_ENV] = leasePath;
+  }
+  env.NODE_OPTIONS = appendNodeOption(
+    env.NODE_OPTIONS,
+    `--require ${formatNodeOptionArgument(guardScriptPath)}`
+  );
+  return env;
+}
+
+/** 在已有 NODE_OPTIONS 之后追加一个选项，不覆盖调用方自己的配置。 */
+function appendNodeOption(existing: string | undefined, option: string): string {
+  const trimmed = existing?.trim() ?? "";
+  return trimmed.length > 0 ? `${trimmed} ${option}` : option;
+}
+
+/** NODE_OPTIONS 按空白分词，路径含空白时必须加引号才不会被拆成两个参数。 */
+function formatNodeOptionArgument(value: string): string {
+  return /\s/u.test(value) ? `"${value}"` : value;
+}
+
+/**
+ * 定位父进程守卫脚本。
+ *
+ * 源码运行时它在仓库根的 `scripts/` 下，打包后由 codingns 的构建脚本复制到
+ * 包的 `scripts/` 下；两种布局各探测一次，都找不到就退回不注入。
+ * @returns 守卫脚本的绝对路径；都不存在时为 null。
+ */
+function resolveSidecarGuardScriptPath(): string | null {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  // 源码布局：<repo>/apps/host/src/modules/sessions/deepseek-harness
+  // 打包布局：<pkg>/dist/server/modules/sessions/deepseek-harness
+  const moduleRoot = path.resolve(currentDir, "..", "..", "..", "..");
+  const candidates = [
+    path.resolve(moduleRoot, "scripts", SIDECAR_GUARD_SCRIPT_NAME),
+    path.resolve(moduleRoot, "..", "scripts", SIDECAR_GUARD_SCRIPT_NAME),
+    path.resolve(moduleRoot, "..", "..", "scripts", SIDECAR_GUARD_SCRIPT_NAME),
+    path.resolve(moduleRoot, "..", "..", "..", "scripts", SIDECAR_GUARD_SCRIPT_NAME),
+    path.resolve(process.cwd(), "scripts", SIDECAR_GUARD_SCRIPT_NAME),
+    path.resolve(process.cwd(), "..", "..", "scripts", SIDECAR_GUARD_SCRIPT_NAME)
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }

@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
@@ -203,6 +204,67 @@ describe("DeepSeekHarnessSidecarManager", () => {
       await manager.ensureReady();
       expect(reclaimCalls).toBe(1);
       expect(manager.getState()).toMatchObject({ status: "ready" });
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
+  it("启动 sidecar 时注入父进程守卫，并保留调用方自己的 NODE_OPTIONS", async () => {
+    const spawnEnvs: NodeJS.ProcessEnv[] = [];
+    const manager = new DeepSeekHarnessSidecarManager({
+      taskManager: createTaskManager(),
+      reclaimOrphanSidecars: false,
+      commandPath: process.execPath,
+      commandArgs: ["-e", FAKE_HARNESS_SCRIPT],
+      env: { DSH_HOME: "/tmp/codingns-dsh-home", NODE_OPTIONS: "--max-old-space-size=2048" },
+      startupTimeoutMs: 5_000,
+      spawnImpl: ((command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        spawnEnvs.push(options.env);
+        return spawn(command, args, options as never);
+      }) as unknown as typeof spawn
+    });
+
+    try {
+      await manager.ensureReady();
+      expect(spawnEnvs.length).toBeGreaterThan(0);
+
+      const env = spawnEnvs[0]!;
+      // 守卫靠这个变量认发起它的 Host，没有它就不会生效。
+      expect(env.CODINGNS_SIDECAR_GUARD_PARENT_PID).toBe(String(process.pid));
+      expect(env.NODE_OPTIONS).toContain("--require");
+      expect(env.NODE_OPTIONS).toContain("dsh-sidecar-guard.cjs");
+      expect(env.NODE_OPTIONS).toContain("--max-old-space-size=2048");
+
+      // 注入的必须是真实存在的脚本，否则 Node 会因 --require 失败而拉不起 sidecar。
+      const guardPath = env.NODE_OPTIONS!.match(/--require\s+"?([^"\s]+)"?/u)?.[1];
+      expect(guardPath).toBeTruthy();
+      expect(existsSync(guardPath!)).toBe(true);
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
+  it("Host 启动阶段可以主动回收一次孤儿 sidecar", async () => {
+    let reclaimCalls = 0;
+    const manager = new DeepSeekHarnessSidecarManager({
+      taskManager: createTaskManager(),
+      commandPath: process.execPath,
+      commandArgs: ["-e", FAKE_HARNESS_SCRIPT],
+      startupTimeoutMs: 5_000,
+      reclaimOrphanSidecarsImpl: async () => {
+        reclaimCalls += 1;
+        return { scanned: 12, reclaimed: [8994], failed: [] };
+      }
+    });
+
+    // 还没用到 Harness 就应该先清掉上一次崩溃留下的孤儿。
+    await manager.reclaimOrphansOnStartup();
+    expect(reclaimCalls).toBe(1);
+
+    // 之后真正拉起 sidecar 时复用同一次回收，不重复扫描。
+    try {
+      await manager.ensureReady();
+      expect(reclaimCalls).toBe(1);
     } finally {
       await manager.shutdown();
     }

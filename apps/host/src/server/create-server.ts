@@ -537,7 +537,10 @@ export function createServer(config: HostConfig) {
     taskManager,
     commandPath: config.deepseekHarnessCliPath,
     bindHost: config.deepseekHarnessBindHost,
-    env: { DSH_HOME: config.deepseekHarnessHomeDir }
+    env: { DSH_HOME: config.deepseekHarnessHomeDir },
+    // 租约按 Host 数据目录隔离：同一个 Host 重启时接管自己上次留下的 sidecar，
+    // 开发 Host 和安装版 Host 各管各的，不会互相接管。
+    stateDir: path.dirname(config.databasePath)
   });
   const deepSeekHarnessRuntimeAdapter = new DeepSeekHarnessRuntimeAdapter(
     () => deepSeekHarnessSidecarManager.createClient(),
@@ -2061,6 +2064,13 @@ export function createServer(config: HostConfig) {
 
   return {
     app,
+    /**
+     * 启动阶段主动回收失去归属的孤儿 sidecar，供 `startHost` 在监听就绪后触发。
+     *
+     * 不在这里直接调用，是因为 `createServer` 也被测试大量直接调用，不该让
+     * 每个用例都去扫描一遍本机进程表。
+     */
+    reclaimOrphanSidecarsOnStartup: () => deepSeekHarnessSidecarManager.reclaimOrphansOnStartup(),
     diagnostics: {
       requestDiagnosticsTracker
     },
