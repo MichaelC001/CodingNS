@@ -3304,6 +3304,53 @@ describe("ComposerPanel", () => {
     });
   });
 
+  it("DeepSeek Harness 的 deepseek-flash 按模型名显示，并能直接选中", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities({
+          provider: "deepseek-harness",
+          modelOptions: [
+            {
+              // Host 会把商品名 DeepSeek-V41-Flash 归一成模型名，用户按名字才找得到。
+              id: "deepseek-official:deepseek-flash",
+              name: "deepseek-flash",
+              providerName: "DeepSeek",
+              supportedReasoningEfforts: ["off", "high", "max"],
+              defaultReasoningEffort: "high"
+            },
+            {
+              id: "deepseek-official:deepseek-v4-pro",
+              name: "DeepSeek-V4-Pro",
+              providerName: "DeepSeek",
+              supportedReasoningEfforts: ["off", "high", "max"],
+              defaultReasoningEffort: "high"
+            }
+          ]
+        })}
+        isSubmitting={false}
+        onSend={onSend}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(t("conversation.modelSelectorLabel"))).toBeInTheDocument();
+    });
+
+    // 用户按 “deepseek-flash” 这个模型名应该能在列表里找到并选中它。
+    chooseOption(t("conversation.modelSelectorLabel"), "DeepSeek · deepseek-flash");
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "用 flash 回答" } });
+    fireEvent.submit(document.querySelector(".composer-form")!);
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith("用 flash 回答", expect.objectContaining({
+        model: "deepseek-official:deepseek-flash"
+      }));
+    });
+  });
+
   it("DeepSeek Harness 将模式合并到思考强度菜单，并透传所选模式", async () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
 
