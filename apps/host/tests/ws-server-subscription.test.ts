@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 
 import WebSocket from "ws";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { __internal__, createWsServer } from "../src/ws/ws-server.js";
 
@@ -141,6 +141,7 @@ describe("ws-server 会话订阅确认", () => {
       });
     }));
 
+    const preloadSessionActionContext = vi.fn();
     const wsServer = createWsServer(
       server,
       {
@@ -226,7 +227,10 @@ describe("ws-server 会话订阅确认", () => {
         },
         cleanupClient() {},
         async broadcastSnapshot() {}
-      } as never
+      } as never,
+      {
+        preloadSessionActionContext
+      }
     );
     activeClosers.push(() => wsServer.close());
 
@@ -291,5 +295,6 @@ describe("ws-server 会话订阅确认", () => {
 
     expect(sawSubscribed).toBe(true);
     expect(sawOlderHistory).toBe(true);
+    expect(preloadSessionActionContext).not.toHaveBeenCalled();
   });
 });

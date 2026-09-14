@@ -23,6 +23,33 @@ import { ButlerSessionService } from "../../src/modules/butler/butler-session-se
 import type { SessionHistoryService } from "../../src/modules/sessions/session-history-service.js";
 
 describe("ButlerSessionService", () => {
+  it("Butler 停用时不会扫描工作区会话，也不会读取 session 索引", async () => {
+    const listWorkspaceSessions = vi.fn(() => {
+      throw new Error("Butler 停用时不应读取工作区会话");
+    });
+    const listByWorkspace = vi.fn(() => {
+      throw new Error("Butler 停用时不应读取 session 索引");
+    });
+
+    const service = new ButlerSessionService(
+      { findById: vi.fn() } as unknown as ButlerProjectRepository,
+      {} as ButlerSessionRepository,
+      {} as SessionCheckpointRepository,
+      {} as SessionBindingRepository,
+      { listByWorkspace } as unknown as SessionIndexRepository,
+      {} as SessionStateRepository,
+      undefined,
+      { listWorkspaceSessions } as unknown as SessionHistoryService,
+      null,
+      null,
+      false
+    );
+
+    await expect(service.ensureProjectSessionsSynced("project-1", "user-1")).resolves.toBeUndefined();
+    expect(listWorkspaceSessions).not.toHaveBeenCalled();
+    expect(listByWorkspace).not.toHaveBeenCalled();
+  });
+
   it("可以把已有 session 纳入代码助手项目", () => {
     const project: ButlerProject = {
       id: "project-1",
@@ -914,7 +941,10 @@ describe("ButlerSessionService", () => {
         discoverWorkspaceSessions: vi.fn(async () => [workspaceSession]),
         listWorkspaceSessions: vi.fn(() => [workspaceSession]),
         resumeSession: vi.fn()
-      }
+      },
+      null,
+      null,
+      true
     );
 
     await service.ensureProjectSessionsSynced(project.id, "user-1");
@@ -1047,7 +1077,10 @@ describe("ButlerSessionService", () => {
         discoverWorkspaceSessions: vi.fn(async () => [workspaceSession]),
         listWorkspaceSessions: vi.fn(() => [workspaceSession]),
         resumeSession: vi.fn()
-      }
+      },
+      null,
+      null,
+      true
     );
 
     await expect(service.ensureProjectSessionsSynced(project.id, "user-1")).resolves.toBeUndefined();
@@ -1150,7 +1183,10 @@ describe("ButlerSessionService", () => {
           discoverWorkspaceSessions: vi.fn(async () => [workspaceSession]),
           listWorkspaceSessions: vi.fn(() => [workspaceSession]),
           resumeSession: vi.fn()
-        }
+        },
+        null,
+        null,
+        true
       );
 
       await service.ensureProjectSessionsSynced(project.id, "user-1");
@@ -1263,7 +1299,10 @@ describe("ButlerSessionService", () => {
           discoverWorkspaceSessions: vi.fn(async () => [workspaceSession]),
           listWorkspaceSessions: vi.fn(() => [workspaceSession]),
           resumeSession: vi.fn()
-        }
+        },
+        null,
+        null,
+        true
       );
 
       await service.ensureProjectSessionsSynced(project.id, "user-1");

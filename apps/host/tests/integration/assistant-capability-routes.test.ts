@@ -282,6 +282,44 @@ describe("assistant capability routes", () => {
     expect(assistantCapabilityService.listCapabilities).toHaveBeenCalledTimes(1);
   });
 
+  it("Butler 停用时所有项目兼容接口都会直接返回 BUTLER_DISABLED", async () => {
+    if (BUTLER_FEATURE_ENABLED) {
+      return;
+    }
+
+    const assistantCapabilityService = {
+      listProjects: vi.fn(),
+      getProject: vi.fn(),
+      listProjectSessions: vi.fn(),
+      startProjectSession: vi.fn()
+    };
+    const app = await createAssistantApp(assistantCapabilityService);
+
+    const requests = [
+      { method: "GET" as const, url: "/api/assistant/projects" },
+      { method: "GET" as const, url: "/api/assistant/projects/project-1" },
+      { method: "GET" as const, url: "/api/assistant/projects/project-1/sessions" },
+      { method: "POST" as const, url: "/api/assistant/projects/project-1/sessions" }
+    ];
+
+    for (const request of requests) {
+      const response = await app.inject({
+        ...request,
+        payload: request.method === "POST" ? {} : undefined
+      });
+
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toMatchObject({
+        error_code: "BUTLER_DISABLED"
+      });
+    }
+
+    expect(assistantCapabilityService.listProjects).not.toHaveBeenCalled();
+    expect(assistantCapabilityService.getProject).not.toHaveBeenCalled();
+    expect(assistantCapabilityService.listProjectSessions).not.toHaveBeenCalled();
+    expect(assistantCapabilityService.startProjectSession).not.toHaveBeenCalled();
+  });
+
   it("缺少 Bearer token 时会直接返回 401，不会继续执行助手路由", async () => {
     const assistantCapabilityService = {
       listCapabilities: vi.fn(() => ({
@@ -432,8 +470,17 @@ describe("assistant capability routes", () => {
       method: "GET",
       url: "/api/assistant/projects/project-1"
     });
-    expect(projectResponse.statusCode).toBe(200);
-    expect(assistantCapabilityService.getProject).toHaveBeenCalledWith("project-1", "user-1");
+
+    if (!BUTLER_FEATURE_ENABLED) {
+      expect(projectResponse.statusCode).toBe(410);
+      expect(projectResponse.json()).toMatchObject({
+        error_code: "BUTLER_DISABLED"
+      });
+      expect(assistantCapabilityService.getProject).not.toHaveBeenCalled();
+    } else {
+      expect(projectResponse.statusCode).toBe(200);
+      expect(assistantCapabilityService.getProject).toHaveBeenCalledWith("project-1", "user-1");
+    }
 
     const messagesResponse = await app.inject({
       method: "GET",
@@ -498,16 +545,25 @@ describe("assistant capability routes", () => {
         permissionMode: "  acceptEdits  "
       }
     });
-    expect(startResponse.statusCode).toBe(200);
-    expect(assistantCapabilityService.startProjectSession).toHaveBeenCalledWith({
-      projectId: "project-1",
-      userId: "user-1",
-      content: "请在新会话里继续修复这个问题",
-      providerId: "codex",
-      model: "gpt-5.4",
-      reasoningLevel: "high",
-      permissionMode: "acceptEdits"
-    });
+
+    if (!BUTLER_FEATURE_ENABLED) {
+      expect(startResponse.statusCode).toBe(410);
+      expect(startResponse.json()).toMatchObject({
+        error_code: "BUTLER_DISABLED"
+      });
+      expect(assistantCapabilityService.startProjectSession).not.toHaveBeenCalled();
+    } else {
+      expect(startResponse.statusCode).toBe(200);
+      expect(assistantCapabilityService.startProjectSession).toHaveBeenCalledWith({
+        projectId: "project-1",
+        userId: "user-1",
+        content: "请在新会话里继续修复这个问题",
+        providerId: "codex",
+        model: "gpt-5.4",
+        reasoningLevel: "high",
+        permissionMode: "acceptEdits"
+      });
+    }
 
     const timerResponse = await app.inject({
       method: "POST",
