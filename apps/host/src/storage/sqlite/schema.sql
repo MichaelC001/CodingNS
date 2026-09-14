@@ -913,28 +913,6 @@ CREATE INDEX IF NOT EXISTS idx_session_source_index_provider_session_id
 CREATE INDEX IF NOT EXISTS idx_session_source_index_workspace_path
   ON session_source_index(workspace_path, provider, updated_at DESC);
 
-CREATE TABLE IF NOT EXISTS session_discovery_diagnostics (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  trigger_source TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  is_complete INTEGER NOT NULL CHECK (is_complete IN (0, 1)),
-  status TEXT NOT NULL,
-  duration_ms INTEGER NOT NULL,
-  session_count INTEGER NOT NULL,
-  scanned_files INTEGER NOT NULL,
-  skipped_by_fingerprint INTEGER NOT NULL,
-  parsed_files INTEGER NOT NULL,
-  bytes_read INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_discovery_diagnostics_workspace_id
-  ON session_discovery_diagnostics(workspace_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_session_discovery_diagnostics_provider
-  ON session_discovery_diagnostics(provider, created_at DESC);
-
 CREATE TABLE IF NOT EXISTS session_cleanup_scans (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,

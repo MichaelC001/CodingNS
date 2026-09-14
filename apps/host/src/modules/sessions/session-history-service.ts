@@ -60,12 +60,6 @@ import type {
   SessionStatusSnapshot
 } from "../../types/domain.js";
 import type { SessionBindingRepository } from "../../storage/repositories/session-binding-repository.js";
-import {
-  DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE,
-  DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_PRUNE_BATCH_SIZE,
-  DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
-  SessionDiscoveryDiagnosticsRepository
-} from "../../storage/repositories/session-discovery-diagnostics-repository.js";
 import type { SessionIndexRepository } from "../../storage/repositories/session-index-repository.js";
 import { SessionSourceIndexRepository } from "../../storage/repositories/session-source-index-repository.js";
 import type { SessionStateRepository } from "../../storage/repositories/session-state-repository.js";
@@ -470,7 +464,7 @@ const SESSION_TRANSACTION_HOTSPOT_THRESHOLD_MS = 150;
 const WORKSPACE_STATE_REFRESH_COOLDOWN_MS = 1_500;
 const SQLITE_BUSY_RETRY_LIMIT = 3;
 const SQLITE_BUSY_RETRY_DELAY_MS = 100;
-const SESSION_DISCOVERY_DIAGNOSTICS_MIN_INTERVAL_MS = 30_000;
+const SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE = 500;
 
 export class SessionHistoryService {
   private readonly providerRegistry: ProviderRegistry;
@@ -479,7 +473,6 @@ export class SessionHistoryService {
   private readonly sessionActivityAuthorityService: SessionActivityAuthorityService;
   private readonly sessionForkRepository: Pick<SessionForkRepository, "upsert" | "findBySessionId">;
   private readonly sessionSourceIndexRepository: SessionSourceIndexRepository;
-  private readonly sessionDiscoveryDiagnosticsRepository: SessionDiscoveryDiagnosticsRepository;
   private readonly providerSessionDeleteCli: ProviderSessionDeleteCli;
   private readonly claudeCodeHomeDir: string;
   private readonly sessionBillingProfileId: string | null;
@@ -515,7 +508,11 @@ export class SessionHistoryService {
   private readonly workspaceDiscoveryStatuses = new Map<string, WorkspaceDiscoveryStatus>();
   private readonly sessionSourceIndexRepairScopes = new Map<string, SessionSourceIndexRepairScope>();
   private readonly workspaceStateRefreshStatuses = new Map<string, WorkspaceStateRefreshStatus>();
-  private readonly lastDiscoveryDiagnosticsAt = new Map<string, number>();
+  /**
+   * 诊断只在当前 Host 进程内保留，避免每次扫描都争抢会话库的写锁。
+   * 重启后快照自然清空；历史 SQLite 数据仍由维护任务负责清理。
+   */
+  private readonly workspaceDiscoveryDiagnostics = new Map<string, SessionDiscoveryDiagnosticRecord[]>();
   private readonly providerCapabilityCache = new Map<string, ProviderCapabilityCacheEntry>();
   private readonly streamingDeltaSuppressionDebugState = new Map<string, string>();
   private readonly helperHistorySourceStates = new Map<string, HelperHistorySourceState>();
@@ -570,7 +567,6 @@ export class SessionHistoryService {
     this.sessionActivityAuthorityService = sessionActivityAuthorityService;
     this.sessionForkRepository = sessionForkRepository ?? new SessionForkRepository(db);
     this.sessionSourceIndexRepository = new SessionSourceIndexRepository(db);
-    this.sessionDiscoveryDiagnosticsRepository = new SessionDiscoveryDiagnosticsRepository(db);
     this.providerSessionDeleteCli =
       adapterOverrides.providerSessionDeleteCli ?? new CodingnsProviderSessionDeleteCli(config);
     this.taskManager = taskManager;
@@ -691,7 +687,8 @@ export class SessionHistoryService {
   ): SessionDiscoveryDiagnosticRecord[] {
     this.getDiscoverableWorkspaceForUserOrThrow(workspaceId, userId);
     const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 20;
-    return this.sessionDiscoveryDiagnosticsRepository.listByWorkspaceId(workspaceId, normalizedLimit);
+    const memoryRecords = this.workspaceDiscoveryDiagnostics.get(workspaceId) ?? [];
+    return memoryRecords.slice(0, normalizedLimit);
   }
 
   getWorkspaceDiscoveryStatusSummary(workspaceId: string): WorkspaceDiscoveryStatusSummary | null {
@@ -6930,134 +6927,50 @@ export class SessionHistoryService {
     discovery: ProviderSessionDiscovery,
     timestamp: string
   ): Promise<void> {
-    try {
-      const records = (discovery.providerDiagnostics ?? []).map((entry) => {
-        return {
-          id: createId(),
-          workspaceId,
-          triggerSource,
-          provider: entry.provider,
-          isComplete: entry.isComplete,
-          status: entry.status,
-          durationMs: Math.max(0, Math.round(entry.durationMs)),
-          sessionCount: Math.max(0, entry.sessionCount),
-          scannedFiles: Math.max(0, entry.scannedFiles ?? 0),
-          skippedByFingerprint: Math.max(0, entry.skippedByMtimeSize ?? 0),
-          parsedFiles: Math.max(0, entry.parsedFiles ?? 0),
-          bytesRead: Math.max(0, entry.bytesRead ?? 0),
-          createdAt: timestamp
-        };
-      }).filter((record) => {
-        const key = `${record.workspaceId}:${record.provider}`;
-        const nowMs = Date.parse(record.createdAt);
-        const lastPersistedAt = this.lastDiscoveryDiagnosticsAt.get(key) ?? 0;
+    const records = (discovery.providerDiagnostics ?? []).map((entry) => ({
+      id: createId(),
+      workspaceId,
+      triggerSource,
+      provider: entry.provider,
+      isComplete: entry.isComplete,
+      status: entry.status,
+      durationMs: Math.max(0, Math.round(entry.durationMs)),
+      sessionCount: Math.max(0, entry.sessionCount),
+      scannedFiles: Math.max(0, entry.scannedFiles ?? 0),
+      skippedByFingerprint: Math.max(0, entry.skippedByMtimeSize ?? 0),
+      parsedFiles: Math.max(0, entry.parsedFiles ?? 0),
+      bytesRead: Math.max(0, entry.bytesRead ?? 0),
+      createdAt: timestamp
+    } satisfies SessionDiscoveryDiagnosticRecord));
 
-        if (Number.isFinite(nowMs) && nowMs - lastPersistedAt < SESSION_DISCOVERY_DIAGNOSTICS_MIN_INTERVAL_MS) {
-          return false;
-        }
-
-        this.lastDiscoveryDiagnosticsAt.set(key, Number.isFinite(nowMs) ? nowMs : Date.now());
-        return true;
-      });
-
-      if (records.length === 0) {
-        return;
-      }
-
-      let retryCount = 0;
-      let prunedCount = 0;
-      while (true) {
-        try {
-          const persist = () => this.sessionDiscoveryDiagnosticsRepository.insertAndPrune(
-            records,
-            workspaceId,
-            {
-              now: timestamp,
-              retentionMs: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
-              maxRowsPerWorkspace: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE
-            }
-          );
-          prunedCount = this.sqliteWriteQueue
-            ? await this.sqliteWriteQueue.enqueue(
-              "session.discovery_diagnostics.persist",
-              persist
-            )
-            : persist();
-          break;
-        } catch (error) {
-          if (!isSqliteBusyError(error) || retryCount >= SQLITE_BUSY_RETRY_LIMIT) {
-            throw error;
-          }
-
-          retryCount += 1;
-          await delay(SQLITE_BUSY_RETRY_DELAY_MS * retryCount);
-        }
-      }
-
-      if (prunedCount > 0) {
-        console.info("[session-discovery-diagnostics-pruned]", {
-          workspaceId,
-          triggerSource,
-          prunedCount,
-          retentionMs: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
-          maxRowsPerWorkspace: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE
-        });
-      }
-    } catch (error) {
-      console.warn("[session-discovery-diagnostics-persist-failed]", {
-        workspaceId,
-        triggerSource,
-        providerCount: discovery.providerDiagnostics?.length ?? 0,
-        error
-      });
+    if (records.length === 0) {
+      return;
     }
+
+    const current = this.workspaceDiscoveryDiagnostics.get(workspaceId) ?? [];
+    // 单个工作区只保留最近 500 条，避免长时间运行的 Host 自身无限增长。
+    this.workspaceDiscoveryDiagnostics.set(
+      workspaceId,
+      [...records, ...current].slice(0, SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE)
+    );
   }
 
   private async runSessionDiscoveryDiagnosticsMaintenance(
     context: TaskRunContext
   ): Promise<SessionDiscoveryDiagnosticsMaintenanceResult> {
-    const startedAt = Date.now();
-    const maxDeletesPerPass = DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_PRUNE_BATCH_SIZE;
+    // 诊断快照已迁移删除，保留任务入口只是为了兼容旧客户端调用。
+    const maxDeletesPerPass = 0;
     context.reportProgress({
       phase: "session_discovery_diagnostics_maintenance",
-      label: "正在分批清理会话发现诊断"
+      label: "诊断快照已停用"
     });
 
-    let deletedCount = 0;
-    let retryCount = 0;
-
-    while (true) {
-      throwIfAborted(context.signal);
-
-      try {
-        const prune = () => this.sessionDiscoveryDiagnosticsRepository.pruneGlobalBatch({
-          now: new Date(),
-          retentionMs: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
-          maxRowsPerWorkspace: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE,
-          maxDeletesPerPass
-        });
-        deletedCount = this.sqliteWriteQueue
-          ? await this.sqliteWriteQueue.enqueue(
-            "session.discovery_diagnostics.maintenance",
-            prune
-          )
-          : prune();
-        break;
-      } catch (error) {
-        if (!isSqliteBusyError(error) || retryCount >= SQLITE_BUSY_RETRY_LIMIT) {
-          throw error;
-        }
-
-        retryCount += 1;
-        await delayWithSignal(SQLITE_BUSY_RETRY_DELAY_MS * retryCount, context.signal);
-      }
-    }
-
+    const deletedCount = 0;
     throwIfAborted(context.signal);
     context.reportProgress({
       phase: "session_discovery_diagnostics_maintenance",
-      label: "会话发现诊断清理完成",
-      detail: `本轮删除 ${deletedCount} 条`,
+      label: "诊断快照迁移完成",
+      detail: "诊断快照表已移除，无需清理",
       current: deletedCount,
       total: maxDeletesPerPass,
       percent: maxDeletesPerPass > 0
@@ -7066,9 +6979,7 @@ export class SessionHistoryService {
     });
     console.info("[session-discovery-diagnostics-maintenance]", {
       deletedCount,
-      maxDeletesPerPass,
-      retryCount,
-      durationMs: Date.now() - startedAt
+      maxDeletesPerPass
     });
 
     return {

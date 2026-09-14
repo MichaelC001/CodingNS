@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { BetterSqliteDatabase } from "../../shared/runtime/better-sqlite3.js";
 import Database from "../../shared/runtime/better-sqlite3.js";
+import { runHostMigrations } from "./host-migrations.js";
 import { installSlowQueryDiagnostics } from "./slow-query-diagnostics.js";
 import { SqliteWriteQueue } from "./write-queue.js";
 
@@ -26,6 +27,7 @@ export function createDatabaseClient(databasePath: string): DatabaseClient {
 
   ensurePreSchemaCompatibility(db);
   db.exec(schema);
+  runHostMigrations(db);
   ensureAuthUserStatusSchema(db);
   ensureAuthTokenDeviceColumns(db);
   ensureAuthDeviceSchema(db);
