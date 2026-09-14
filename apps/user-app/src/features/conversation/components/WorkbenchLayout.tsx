@@ -69,6 +69,7 @@ import {
   type DesktopContextMenuItem
 } from "../../../platform/desktop/desktop-context-menu";
 import { usePlatform } from "../../../platform/platform-provider";
+import { getHostRequestUrl } from "../../../config/env";
 import { useClientConfigSelector } from "../../../config/client-config-store";
 import { getActiveHost, type HostProfile } from "../../../config/client-config-types";
 import { normalizeHostAliasLabel, resolveHostAliasTag } from "../../workbench/utils/host-alias";
@@ -4185,6 +4186,72 @@ function PencilIcon() {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="7" y="5" width="10" height="13" rx="2" />
+      <path d="M5 14H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+async function writeTextToClipboard(
+  text: string,
+  platform: ReturnType<typeof usePlatform>
+): Promise<void> {
+  if (platform.bridge.supported) {
+    try {
+      const nativeResult = await platform.bridge.writeClipboardText(text);
+
+      if (nativeResult.ok) {
+        return;
+      }
+    } catch {
+      // 原生剪贴板失败时继续尝试浏览器能力和同步回退。
+    }
+  }
+
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // 某些 WebView 或权限策略会拒绝 Clipboard API，继续走同步回退。
+    }
+  }
+
+  if (copyTextWithExecCommand(text)) {
+    return;
+  }
+
+  throw new Error(t("shell.sessionLinkCopyFailed"));
+}
+
+function copyTextWithExecCommand(text: string): boolean {
+  if (typeof document === "undefined" || typeof document.execCommand !== "function") {
+    return false;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  textarea.style.left = "-9999px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+  }
+}
+
 function ExportMenuIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -4849,6 +4916,7 @@ function SessionCard({
   onToggleSubagents,
   onOpen,
   onRename,
+  onCopyLink,
   onOpenContextMenu,
   onExport,
   onToggleFavorite,
@@ -4880,6 +4948,7 @@ function SessionCard({
   onToggleSubagents?: () => void;
   onOpen: () => void;
   onRename: () => void;
+  onCopyLink?: () => void | Promise<void>;
   onOpenContextMenu?: (anchorPoint: ContextMenuAnchorPoint) => void;
   onExport: (format: SessionExportFormat) => void;
   onToggleFavorite: () => void;
@@ -4934,7 +5003,10 @@ function SessionCard({
           height: window.innerHeight
         },
         {
-          estimatedHeightPx: supportsSessionDelete && onDelete ? 216 : 168
+          estimatedHeightPx:
+            supportsSessionDelete && onDelete
+              ? onCopyLink ? 254 : 216
+              : onCopyLink ? 206 : 168
         }
       );
       setMenuPositionStyle({
@@ -4956,7 +5028,7 @@ function SessionCard({
       window.removeEventListener("resize", updateMenuPosition);
       window.removeEventListener("scroll", updateMenuPosition, true);
     };
-  }, [menuAnchorPoint, menuOpen, platform.isDesktop]);
+  }, [menuAnchorPoint, menuOpen, onCopyLink, onDelete, platform.isDesktop, supportsSessionDelete]);
 
   async function openDesktopSessionMenu() {
     await showDesktopContextMenu([
@@ -4965,6 +5037,15 @@ function SessionCard({
         label: t("shell.renameAction"),
         onSelect: onRename
       },
+      ...(onCopyLink
+        ? [
+            {
+              id: `copy-link:${session.sessionId}`,
+              label: t("shell.copySessionLinkAction"),
+              onSelect: onCopyLink
+            }
+          ]
+        : []),
       {
         id: `export:${session.sessionId}`,
         label: t("conversation.exportAction"),
@@ -5039,6 +5120,19 @@ function SessionCard({
               <PencilIcon />
               <span>{t("shell.renameAction")}</span>
             </button>
+            {onCopyLink ? (
+              <button
+                type="button"
+                className="workbench-session-menu-item"
+                onClick={() => {
+                  void onCopyLink();
+                  onCloseMenu();
+                }}
+              >
+                <CopyIcon />
+                <span>{t("shell.copySessionLinkAction")}</span>
+              </button>
+            ) : null}
             <button
               type="button"
               className="workbench-session-menu-item"
@@ -6303,6 +6397,26 @@ function SidebarContent({
       hostId: nextHostId,
       peerHostId
     });
+  }
+
+  async function handleCopySessionLink(session: SessionSummaryDto, workspace: WorkspaceDto) {
+    const targetWorkspaceHostId = resolveWorkspaceHostId(workspace);
+    const targetWorkspaceRef = resolveWorkspaceRefForHost(workspace, targetWorkspaceHostId) ?? undefined;
+    const sessionPath = buildWorkspaceSessionPath(workspace.id, session.sessionId, targetWorkspaceRef);
+    const sessionUrl = getHostRequestUrl(sessionPath);
+
+    try {
+      await writeTextToClipboard(sessionUrl, platform);
+      showToast({
+        title: t("shell.sessionLinkCopied"),
+        tone: "success"
+      });
+    } catch {
+      showToast({
+        title: t("shell.sessionLinkCopyFailed"),
+        tone: "error"
+      });
+    }
   }
 
   const openCodeInExternalWindow = useCallback(async (workspaceId: string) => {
@@ -8608,6 +8722,7 @@ function SidebarContent({
               onClose?.();
             }}
             onRename={() => handleOpenRenameSession(session, sessionWorkspace)}
+            onCopyLink={() => handleCopySessionLink(session, sessionWorkspace)}
             menuAnchorPoint={
               openSessionMenuKey === `${menuKeyPrefix}:${branchKey ?? session.sessionId}`
                 ? openSessionMenuAnchorPoint
