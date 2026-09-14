@@ -76,7 +76,16 @@ async function createRemoteFixture(options: { requireAuth?: boolean } = {}): Pro
           cursor: 0,
           records: [{ type: "event", event: { type: "text-delta", seq: 0, time: Date.now(), data: { text: "hello" } } }],
           hasMore: false,
-          projections: { asOfSeq: 0, values: {} }
+          // Remote 的 `session/page` 不返回投影，只有这里带 projections；
+          // 会话统计与上下文占用都读这份值，必须原样透传给调用方。
+          projections: {
+            asOfSeq: 7,
+            values: {
+              sessionStats: { turns: 2, steps: 3, llmMs: 1200, toolMs: 0, ttftMs: 180, ttftSteps: 2, decodeMs: 700, decodeTokens: 42 },
+              tokenUsage: { uncachedInputTokens: 1000, outputTokens: 80, cacheReadTokens: 200, cacheWriteTokens: 50 },
+              contextPressure: { pressureTokens: 9500, projectedTokens: 9818, contextWindow: 1_000_000 }
+            }
+          }
         });
       } else if (message.endpoint === "$events") {
         eventStreams.set(socket, message.streamId);
@@ -296,6 +305,39 @@ describe("DeepSeekHarnessApiClient Remote 0.1.2", () => {
       }]);
     } finally {
       await adapter.dispose();
+      await fixture.close();
+    }
+  });
+
+  it("Remote 协议下会话统计与上下文占用不再因为丢失 projections 而为空", async () => {
+    const fixture = await createRemoteFixture();
+    const client = new DeepSeekHarnessApiClient({
+      baseUrl: fixture.baseUrl,
+      protocol: "remote",
+      harnessVersion: "0.1.2-rc.1"
+    });
+
+    try {
+      // `session/page` 只给事件，投影只能来自 `session/follow` 的快照帧。
+      const history = await client.readHistory("s-1");
+      expect(history.projections).toMatchObject({
+        asOfSeq: 7,
+        values: { sessionStats: { turns: 2 }, contextPressure: { projectedTokens: 9818 } }
+      });
+
+      const adapter = new DeepSeekHarnessAdapter({ transport: client, harnessVersion: "0.1.2-rc.1" });
+      const stats = await adapter.readSessionStats("s-1", "harness://v/s-1");
+      expect(stats?.metrics.turns?.value).toBe(2);
+      expect(stats?.metrics.inputTokens?.value).toBe(1250);
+      expect(stats?.metrics.outputTokens?.value).toBe(80);
+      expect(stats?.metrics.cacheReadTokens?.value).toBe(200);
+
+      await expect(adapter.readContextUsage("s-1", "harness://v/s-1")).resolves.toMatchObject({
+        promptTokens: 9818,
+        contextWindow: 1_000_000,
+        usageRatio: 0.009818
+      });
+    } finally {
       await fixture.close();
     }
   });
