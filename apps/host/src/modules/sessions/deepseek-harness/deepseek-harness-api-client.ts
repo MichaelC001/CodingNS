@@ -235,7 +235,7 @@ export class DeepSeekHarnessApiClient {
     return this.call<{ items: Array<Record<string, unknown>>; archivedSessionIds?: string[] }>("workspace.list", {}, signal);
   }
 
-  async readHistory(sessionId: string, beforeSeq?: number, maxMessages = 100, signal?: AbortSignal): Promise<{ events: Array<Record<string, unknown>>; hasMore?: boolean }> {
+  async readHistory(sessionId: string, beforeSeq?: number, maxMessages = 100, signal?: AbortSignal): Promise<{ events: Array<Record<string, unknown>>; hasMore?: boolean; projections?: Record<string, unknown> }> {
     if (this.protocol === "remote") {
       await this.ensureCompatibility("session.history", signal);
       this.assertCapability("session.history");
@@ -417,12 +417,12 @@ export class DeepSeekHarnessApiClient {
     return unwrapResult<T>(envelope.result);
   }
 
-  private async readRemoteHistory(sessionId: string, beforeSeq: number | undefined, maxMessages: number, signal?: AbortSignal): Promise<{ events: Array<Record<string, unknown>>; hasMore?: boolean }> {
-    const cursor = await this.readRemoteCursor(sessionId, signal);
+  private async readRemoteHistory(sessionId: string, beforeSeq: number | undefined, maxMessages: number, signal?: AbortSignal): Promise<{ events: Array<Record<string, unknown>>; hasMore?: boolean; projections?: Record<string, unknown> }> {
+    const snapshot = await this.readRemoteCursor(sessionId, signal);
     const page = await this.callRemoteRaw<Record<string, unknown>>("session/page", {
       address: { kind: "session", sessionId },
       // 0.1.2 要求调用方把 follow 快照返回的 cursor 作为分页上界。
-      throughSeq: cursor,
+      throughSeq: snapshot.cursor,
       ...(beforeSeq === undefined ? {} : { beforeSeq }),
       maxMessages
     }, signal);
@@ -432,10 +432,16 @@ export class DeepSeekHarnessApiClient {
       if (isRecord(record) && record.type === "chunks" && isRecord(record.event)) return { event: record.event };
       return { event: record };
     });
-    return { events, hasMore: page.hasMore === true };
+    // Remote 协议的 `session/page` 不返回投影，只有 `session/follow` 的快照帧带 projections。
+    // 会话统计和上下文占用都依赖这份投影，必须随历史读取一起带回，否则 DSH 会话统计只剩费用项。
+    return {
+      events,
+      hasMore: page.hasMore === true,
+      ...(snapshot.projections === undefined ? {} : { projections: snapshot.projections })
+    };
   }
 
-  private async readRemoteCursor(sessionId: string, signal?: AbortSignal): Promise<number> {
+  private async readRemoteCursor(sessionId: string, signal?: AbortSignal): Promise<{ cursor: number; projections?: Record<string, unknown> }> {
     const controller = new AbortController();
     const merged = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     try {
@@ -444,13 +450,16 @@ export class DeepSeekHarnessApiClient {
       }, merged)) {
         if (isRecord(value) && value.type === "snapshot" && typeof value.cursor === "number") {
           controller.abort();
-          return value.cursor;
+          return {
+            cursor: value.cursor,
+            ...(isRecord(value.projections) ? { projections: value.projections } : {})
+          };
         }
       }
     } catch (error) {
       if (!controller.signal.aborted || signal?.aborted) throw error;
     }
-    return -1;
+    return { cursor: -1 };
   }
 
   private async readRemoteWorkspaces(signal?: AbortSignal): Promise<{ items: Array<Record<string, unknown>>; archivedSessionIds?: string[] }> {
