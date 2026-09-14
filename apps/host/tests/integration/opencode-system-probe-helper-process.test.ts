@@ -91,4 +91,56 @@ describe("OpenCodeSystemProbeHelperProcess", () => {
     ).rejects.toThrow("COMMAND_TIMEOUT:ps");
     expect(kill).toHaveBeenCalledWith("SIGTERM");
   });
+
+  it("会把 ps 的 etime 文本解析成秒数", async () => {
+    const { __internal__ } = await import("../../src/config/opencode-system-probe-helper-process.js");
+
+    expect(__internal__.parseElapsedSeconds("00:42")).toBe(42);
+    expect(__internal__.parseElapsedSeconds("02:03:04")).toBe(7_384);
+    expect(__internal__.parseElapsedSeconds("1-02:03:04")).toBe(93_784);
+    expect(__internal__.parseElapsedSeconds("oops")).toBeNull();
+  });
+
+  it("会返回托管孤儿进程判定需要的 ppid、运行时长和活连接数", async () => {
+    const { __internal__ } = await import("../../src/config/opencode-system-probe-helper-process.js");
+
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "darwin"
+    });
+
+    try {
+      const stats = await __internal__.readProcessStats(process.pid);
+
+      expect(stats?.ppid).toBe(process.ppid);
+      expect(typeof stats?.elapsedSeconds).toBe("number");
+      expect(stats?.elapsedSeconds ?? -1).toBeGreaterThanOrEqual(0);
+      expect(stats?.activeConnectionCount).toBeGreaterThanOrEqual(0);
+    } finally {
+      Object.defineProperty(process, "platform", {
+        configurable: true,
+        value: originalPlatform
+      });
+    }
+  });
+
+  it("Windows 下不提供进程统计，避免误判孤儿进程", async () => {
+    const { __internal__ } = await import("../../src/config/opencode-system-probe-helper-process.js");
+
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "win32"
+    });
+
+    try {
+      await expect(__internal__.readProcessStats(process.pid)).resolves.toBeNull();
+    } finally {
+      Object.defineProperty(process, "platform", {
+        configurable: true,
+        value: originalPlatform
+      });
+    }
+  });
 });

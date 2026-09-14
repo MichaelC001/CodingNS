@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -541,6 +541,126 @@ describe("OpenCodeBaseUrlResolver", () => {
     ).resolves.toBe("http://127.0.0.1:4321");
   });
 
+  it("全局配置提供 context/output、工作区配置只提供 mcp 时，注入的模型上限仍然是完整 limit", async () => {
+    vi.resetModules();
+
+    // runtimeHomeDir 里的 opencode.json 只有 MCP 配置，没有 provider 段；
+    // 模型上限来自全局 opencode.json（只有 context/output，没有 input）。
+    // 这条路径以前只把 input 写进 limit，OpenCode 判定 limit 缺少
+    // context/output 后整份配置非法，serve 的每个请求都返回 400。
+    const runtimeHomeDir = mkdtempSync(path.join(tmpdir(), "codingns-opencode-runtime-"));
+    const fakeHomeDir = mkdtempSync(path.join(tmpdir(), "codingns-opencode-home-"));
+    tempDirs.push(runtimeHomeDir, fakeHomeDir);
+    writeFileSync(
+      path.join(runtimeHomeDir, "opencode.json"),
+      JSON.stringify({
+        mcp: {
+          "codingns-workspace-office": {
+            type: "local",
+            enabled: true,
+            command: [process.execPath, "/mock/codingns.mjs", "mcp", "workspace-office", "serve"]
+          }
+        }
+      }, null, 2),
+      "utf8"
+    );
+    mkdirSync(path.join(fakeHomeDir, ".config", "opencode"), { recursive: true });
+    writeFileSync(
+      path.join(fakeHomeDir, ".config", "opencode", "opencode.json"),
+      JSON.stringify({
+        provider: {
+          openai: {
+            models: {
+              "gpt-5.5": {
+                limit: {
+                  context: 262144,
+                  output: 32768
+                }
+              }
+            }
+          }
+        }
+      }, null, 2),
+      "utf8"
+    );
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(fakeHomeDir);
+
+    const stdoutHandlers: Array<(chunk: string) => void> = [];
+    const spawn = vi.fn((_command: string, _args: string[], options: { env?: Record<string, string> }) => {
+      const child = {
+        killed: false,
+        stdout: {
+          on: (event: string, handler: (chunk: string) => void) => {
+            if (event === "data") {
+              stdoutHandlers.push(handler);
+            }
+          },
+          off: vi.fn()
+        },
+        stderr: {
+          on: vi.fn(),
+          off: vi.fn()
+        },
+        once: vi.fn(),
+        off: vi.fn(),
+        kill: vi.fn(() => {
+          child.killed = true;
+        })
+      };
+
+      queueMicrotask(() => {
+        for (const handler of stdoutHandlers) {
+          handler("opencode server listening on http://127.0.0.1:4322\n");
+        }
+      });
+
+      return child;
+    });
+
+    vi.doMock("node:child_process", () => ({
+      spawn
+    }));
+
+    try {
+      const { OpenCodeBaseUrlResolver: Resolver } = await import(
+        "../../src/config/opencode-base-url-resolver.js"
+      );
+      const resolver = new Resolver({
+        commandPath: "/opt/homebrew/bin/opencode",
+        inspectProcessList: () => "",
+        inspectListeningSockets: () => [],
+        inspectProcessCwd: () => null,
+        probeBaseUrl: async (baseUrl) => baseUrl === "http://127.0.0.1:4322"
+      });
+
+      await expect(
+        resolver.resolve({ workspacePath: "/Users/jackson/Code/CodingNS", runtimeHomeDir })
+      ).resolves.toBe("http://127.0.0.1:4322");
+
+      const configContent = spawn.mock.calls[0]?.[2]?.env?.OPENCODE_CONFIG_CONTENT;
+      expect(configContent).toBeTruthy();
+      const parsed = JSON.parse(configContent ?? "{}") as {
+        provider?: {
+          openai?: {
+            models?: {
+              "gpt-5.5"?: {
+                limit?: Record<string, number>;
+              };
+            };
+          };
+        };
+      };
+
+      expect(parsed.provider?.openai?.models?.["gpt-5.5"]?.limit).toEqual({
+        context: 262144,
+        output: 32768,
+        input: 262144
+      });
+    } finally {
+      homedirSpy.mockRestore();
+    }
+  });
+
   it("dispose 会终止托管 serve，并阻止后续继续 resolve", async () => {
     vi.resetModules();
 
@@ -808,5 +928,93 @@ describe("OpenCodeBaseUrlResolver", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(disposeManagedServerInstance).toHaveBeenCalledWith("http://127.0.0.1:4314");
+  });
+
+  it("只会回收父进程已死、够旧且没有活连接的托管 serve", async () => {
+    const terminateProcess = vi.fn(async () => {});
+    const inspectProcessStats = vi.fn(async (pid: number) => {
+      if (pid === 9001) {
+        return { ppid: 1, elapsedSeconds: 3_600, activeConnectionCount: 0 };
+      }
+
+      if (pid === 9002) {
+        return { ppid: 1, elapsedSeconds: 3_600, activeConnectionCount: 3 };
+      }
+
+      if (pid === 9003) {
+        return { ppid: 4242, elapsedSeconds: 3_600, activeConnectionCount: 0 };
+      }
+
+      if (pid === 9004) {
+        return { ppid: 1, elapsedSeconds: 30, activeConnectionCount: 0 };
+      }
+
+      return null;
+    });
+    const resolver = new OpenCodeBaseUrlResolver({
+      commandPath: "/opt/homebrew/bin/opencode",
+      inspectProcessList: () =>
+        [
+          "9001 opencode serve --hostname 127.0.0.1 --port 0 --print-logs",
+          "9002 opencode serve --hostname 127.0.0.1 --port 0 --print-logs",
+          "9003 opencode serve --hostname 127.0.0.1 --port 0 --print-logs",
+          "9004 opencode serve --hostname 127.0.0.1 --port 0 --print-logs",
+          `${process.pid} opencode serve --hostname 127.0.0.1 --port 0 --print-logs`
+        ].join("\n"),
+      inspectProcessStats,
+      terminateProcess,
+      orphanReclaimMinAgeMs: 10 * 60_000
+    });
+
+    const summary = await resolver.reclaimOrphanedServers();
+
+    expect(terminateProcess).toHaveBeenCalledTimes(1);
+    expect(terminateProcess).toHaveBeenCalledWith(9001);
+    expect(summary).toEqual({
+      scanned: 1,
+      reclaimed: 1,
+      reclaimedPids: [9001],
+      skippedActive: 1
+    });
+  });
+
+  it("回收结果会缓存，避免托管失败时反复扫进程表", async () => {
+    const inspectProcessList = vi.fn(
+      () => "9001 opencode serve --hostname 127.0.0.1 --port 0 --print-logs"
+    );
+    const terminateProcess = vi.fn(async () => {});
+    const resolver = new OpenCodeBaseUrlResolver({
+      commandPath: "/opt/homebrew/bin/opencode",
+      inspectProcessList,
+      inspectProcessStats: () => ({ ppid: 1, elapsedSeconds: 3_600, activeConnectionCount: 0 }),
+      terminateProcess
+    });
+
+    await resolver.reclaimOrphanedServers();
+    await resolver.reclaimOrphanedServers();
+
+    expect(inspectProcessList).toHaveBeenCalledTimes(1);
+    expect(terminateProcess).toHaveBeenCalledTimes(1);
+
+    // 同一实例内重复调用直接返回上次结果，不再扫进程表
+    const again = await resolver.reclaimOrphanedServers();
+    expect(again.reclaimedPids).toEqual([9001]);
+    expect(inspectProcessList).toHaveBeenCalledTimes(1);
+  });
+
+  it("关闭孤儿回收时不会扫描进程表", async () => {
+    const inspectProcessList = vi.fn(() => "");
+    const resolver = new OpenCodeBaseUrlResolver({
+      orphanReclaimEnabled: false,
+      inspectProcessList
+    });
+
+    await expect(resolver.reclaimOrphanedServers()).resolves.toEqual({
+      scanned: 0,
+      reclaimed: 0,
+      reclaimedPids: [],
+      skippedActive: 0
+    });
+    expect(inspectProcessList).not.toHaveBeenCalled();
   });
 });

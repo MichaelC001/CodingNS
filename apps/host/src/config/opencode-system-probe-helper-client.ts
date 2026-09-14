@@ -10,6 +10,12 @@ interface OpenCodeListeningSocket {
   port: number;
 }
 
+interface OpenCodeProcessStats {
+  ppid: number;
+  elapsedSeconds: number | null;
+  activeConnectionCount: number;
+}
+
 type HelperResponse =
   | {
       type: "result";
@@ -104,6 +110,37 @@ export class OpenCodeSystemProbeHelperClient {
             && Number.isInteger((entry as { port?: unknown }).port);
         })
       : [];
+  }
+
+  async readProcessStats(pid: number): Promise<OpenCodeProcessStats | null> {
+    const result = await this.sendRequest({
+      type: "read_process_stats",
+      pid
+    });
+
+    if (!result || typeof result !== "object") {
+      return null;
+    }
+
+    const candidate = result as {
+      ppid?: unknown;
+      elapsedSeconds?: unknown;
+      activeConnectionCount?: unknown;
+    };
+
+    if (!Number.isInteger(candidate.ppid)) {
+      return null;
+    }
+
+    return {
+      ppid: candidate.ppid as number,
+      elapsedSeconds: Number.isFinite(candidate.elapsedSeconds)
+        ? (candidate.elapsedSeconds as number)
+        : null,
+      activeConnectionCount: Number.isInteger(candidate.activeConnectionCount)
+        ? (candidate.activeConnectionCount as number)
+        : 0
+    };
   }
 
   private async sendRequest(payload: Record<string, unknown>): Promise<unknown> {

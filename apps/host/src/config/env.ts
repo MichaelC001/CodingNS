@@ -192,7 +192,12 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
       overrides.opencodeBaseUrlResolver
       ?? new OpenCodeBaseUrlResolver({
         configuredBaseUrl: configuredOpenCodeBaseUrl,
-        commandPath: opencodeCliPath
+        commandPath: opencodeCliPath,
+        // 主机测试会构造真实 resolver，默认不要去扫进程表杀进程；
+        // 需要覆盖这条逻辑的测试自己传 orphanReclaimEnabled。
+        orphanReclaimEnabled: resolveOpenCodeOrphanReclaimEnabled(
+          process.env.CODINGNS_ENABLE_OPENCODE_ORPHAN_RECLAIM
+        )
       }),
     opencodeDataDir,
     opencodeDbPath,
@@ -541,6 +546,21 @@ function resolveKimiCliPath(configuredPath: string | undefined, homeDir: string)
   }
 
   return "kimi";
+}
+
+function resolveOpenCodeOrphanReclaimEnabled(configuredValue: string | undefined): boolean {
+  const normalized = configuredValue?.trim().toLowerCase();
+
+  if (normalized === "0" || normalized === "false" || normalized === "off") {
+    return false;
+  }
+
+  if (normalized === "1" || normalized === "true" || normalized === "on") {
+    return true;
+  }
+
+  // 测试进程里默认关掉，避免测试去杀开发机上的 opencode 进程。
+  return !process.env.VITEST;
 }
 
 function resolveOpenCodeCliPath(configuredPath: string | undefined, homeDir: string): string {

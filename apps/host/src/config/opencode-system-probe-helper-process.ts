@@ -9,6 +9,14 @@ interface OpenCodeListeningSocket {
   port: number;
 }
 
+interface OpenCodeProcessStats {
+  ppid: number;
+  /** 进程已运行秒数；拿不到时为 null。 */
+  elapsedSeconds: number | null;
+  /** 该进程当前处于 ESTABLISHED 的连接数。 */
+  activeConnectionCount: number;
+}
+
 const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
 
 type HelperRequest =
@@ -24,6 +32,11 @@ type HelperRequest =
   | {
       id: string;
       type: "read_listening_sockets";
+      pid: number;
+    }
+  | {
+      id: string;
+      type: "read_process_stats";
       pid: number;
     };
 
@@ -55,6 +68,9 @@ async function handleLine(line: string): Promise<void> {
         return;
       case "read_listening_sockets":
         emitResult(payload.id, await readListeningSockets(payload.pid));
+        return;
+      case "read_process_stats":
+        emitResult(payload.id, await readProcessStats(payload.pid));
         return;
     }
   } catch (error) {
@@ -129,6 +145,77 @@ async function readProcessCwd(pid: number): Promise<string | null> {
     .find((entry) => entry.startsWith("n"));
 
   return line?.slice(1).trim() || null;
+}
+
+async function readProcessStats(pid: number): Promise<OpenCodeProcessStats | null> {
+  if (!Number.isFinite(pid) || pid <= 0 || process.platform === "win32") {
+    return null;
+  }
+
+  const result = await tryRunCommand("ps", ["-o", "pid=,ppid=,etime=", "-p", String(pid)]);
+
+  if (!result || result.status !== 0) {
+    return null;
+  }
+
+  const ppid = Number(result.stdout.trim().split(/\s+/)[1]);
+
+  if (!Number.isInteger(ppid)) {
+    return null;
+  }
+
+  return {
+    ppid,
+    elapsedSeconds: await readProcessElapsedSeconds(pid),
+    activeConnectionCount: await readActiveConnectionCount(pid)
+  };
+}
+
+async function readProcessElapsedSeconds(pid: number): Promise<number | null> {
+  const result = await tryRunCommand("ps", ["-o", "etime=", "-p", String(pid)]);
+
+  if (!result || result.status !== 0) {
+    return null;
+  }
+
+  return parseElapsedSeconds(result.stdout.trim());
+}
+
+/** 只统计 ESTABLISHED：孤儿进程上挂着活连接说明还有客户端在用，不能回收。 */
+async function readActiveConnectionCount(pid: number): Promise<number> {
+  const result = await tryRunCommand(
+    "lsof",
+    ["-Pan", "-n", "-a", "-p", String(pid), "-iTCP", "-sTCP:ESTABLISHED"]
+  );
+
+  if (!result || result.status !== 0) {
+    return 0;
+  }
+
+  return result.stdout.split(/\r?\n/).filter((line) => {
+    const trimmed = line.trim();
+    return trimmed.length > 0 && !/^COMMAND\s/i.test(trimmed);
+  }).length;
+}
+
+/** 解析 ps 的 etime：[[dd-]hh:]mm:ss。 */
+function parseElapsedSeconds(value: string): number | null {
+  const matched = value.trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+
+  if (!matched) {
+    return null;
+  }
+
+  const days = Number(matched[1] ?? 0);
+  const hours = Number(matched[2] ?? 0);
+  const minutes = Number(matched[3] ?? 0);
+  const seconds = Number(matched[4] ?? 0);
+
+  if (![days, hours, minutes, seconds].every((item) => Number.isFinite(item))) {
+    return null;
+  }
+
+  return days * 86_400 + hours * 3_600 + minutes * 60 + seconds;
 }
 
 async function readListeningSockets(pid: number): Promise<OpenCodeListeningSocket[]> {
@@ -427,6 +514,8 @@ export const __internal__ = {
   isCommandTimeoutError,
   readListeningSocketsViaLsof,
   readListeningSocketsViaSs,
+  parseElapsedSeconds,
+  readProcessStats,
   tryRunCommand,
   runCommand
 };

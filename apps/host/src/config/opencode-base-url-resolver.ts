@@ -9,9 +9,20 @@ import { getSharedOpenCodeSystemProbeHelperClient } from "./opencode-system-prob
 import { terminateChildProcess } from "../shared/utils/child-process-lifecycle.js";
 const DEFAULT_CACHE_TTL_MS = 5_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 800;
+// 托管 serve 打印出监听地址时只是 HTTP 端口就绪，opencode 还要等第一个请求
+// 才创建实例：加载配置、初始化项目目录。第一次 /session 请求实测可能要两三秒，
+// 用发现路径那套 800ms 超时探测会直接判死，接下来十秒的冷却又把用户的重试全部挡掉。
+const DEFAULT_MANAGED_SERVER_PROBE_TIMEOUT_MS = 4_000;
+const DEFAULT_MANAGED_SERVER_READY_WAIT_MS = 8_000;
+const DEFAULT_MANAGED_SERVER_PROBE_INTERVAL_MS = 250;
 const DEFAULT_MANAGED_SERVER_RETRY_COOLDOWN_MS = 10_000;
 const DEFAULT_MANAGED_SERVER_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_MANAGED_SERVER_DISPOSE_GRACE_MS = 2_000;
+// Host 被 kill -9 或 tsx watch 重启时，它拉起的 opencode serve 会被 launchd
+// 收养（ppid 变成 1）并一直占着随机端口。这里只回收“父进程已经没了、闲了
+// 一段时间、身上没有活连接”的实例，别的都留着。
+const DEFAULT_ORPHAN_RECLAIM_MIN_AGE_MS = 2 * 60_000;
+const DEFAULT_ORPHAN_RECLAIM_INTERVAL_MS = 5 * 60_000;
 
 interface OpenCodeBaseUrlResolverOptions {
   configuredBaseUrl?: string | null;
@@ -20,12 +31,40 @@ interface OpenCodeBaseUrlResolverOptions {
   inspectProcessList?: () => Promise<string> | string;
   inspectListeningSockets?: (pid: number) => Promise<OpenCodeListeningSocket[]> | OpenCodeListeningSocket[];
   inspectProcessCwd?: (pid: number) => Promise<string | null> | string | null;
-  probeBaseUrl?: (baseUrl: string) => Promise<boolean>;
+  probeBaseUrl?: (baseUrl: string, timeoutMs?: number) => Promise<boolean>;
+  inspectProcessStats?: (
+    pid: number
+  ) => Promise<OpenCodeProcessStats | null> | OpenCodeProcessStats | null;
+  terminateProcess?: (pid: number) => Promise<void>;
   now?: () => number;
+  managedServerProbeTimeoutMs?: number;
+  managedServerReadyWaitMs?: number;
+  managedServerProbeIntervalMs?: number;
   managedServerRetryCooldownMs?: number;
   managedServerIdleTimeoutMs?: number;
   managedServerDisposeGraceMs?: number;
   disposeManagedServerInstance?: (baseUrl: string) => Promise<void>;
+  /** 是否允许回收历史遗留的孤儿 opencode serve；测试默认关掉，避免真的去杀进程。 */
+  orphanReclaimEnabled?: boolean;
+  /** 只回收已经存活超过这个时长的孤儿进程，避免误杀刚启动的实例。 */
+  orphanReclaimMinAgeMs?: number;
+  /** 两次扫描之间的最小间隔，避免托管失败时反复扫进程表。 */
+  orphanReclaimIntervalMs?: number;
+  /** 当前 Host 进程号，用来跳过自己拉起的托管实例。 */
+  reclaimProcessPid?: number;
+}
+
+interface OpenCodeProcessStats {
+  ppid: number;
+  elapsedSeconds: number | null;
+  activeConnectionCount: number;
+}
+
+export interface OpenCodeOrphanReclaimSummary {
+  scanned: number;
+  reclaimed: number;
+  reclaimedPids: number[];
+  skippedActive: number;
 }
 
 interface ResolveBaseUrlInput {
@@ -55,12 +94,26 @@ export class OpenCodeBaseUrlResolver {
   private readonly inspectListeningSockets:
     (pid: number) => Promise<OpenCodeListeningSocket[]> | OpenCodeListeningSocket[];
   private readonly inspectProcessCwd: (pid: number) => Promise<string | null> | string | null;
-  private readonly probeBaseUrl: (baseUrl: string) => Promise<boolean>;
+  private readonly probeBaseUrl: (baseUrl: string, timeoutMs?: number) => Promise<boolean>;
+  private readonly inspectProcessStats: (
+    pid: number
+  ) => Promise<OpenCodeProcessStats | null> | OpenCodeProcessStats | null;
+  private readonly terminateProcess: (pid: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly managedServerProbeTimeoutMs: number;
+  private readonly managedServerReadyWaitMs: number;
+  private readonly managedServerProbeIntervalMs: number;
   private readonly managedServerRetryCooldownMs: number;
   private readonly managedServerIdleTimeoutMs: number;
   private readonly managedServerDisposeGraceMs: number;
   private readonly disposeManagedServerInstance: (baseUrl: string) => Promise<void>;
+  private readonly orphanReclaimEnabled: boolean;
+  private readonly orphanReclaimMinAgeMs: number;
+  private readonly orphanReclaimIntervalMs: number;
+  private readonly reclaimProcessPid: number;
+  private cachedOrphanReclaimSummary: OpenCodeOrphanReclaimSummary | null = null;
+  private lastOrphanReclaimAtMs = 0;
+  private lastOrphanReclaimPid = -1;
   private readonly cachedBaseUrlByWorkspaceKey = new Map<string, string>();
   private readonly cachedAtByWorkspaceKey = new Map<string, number>();
   private readonly inflightByWorkspaceKey = new Map<string, Promise<string>>();
@@ -87,7 +140,23 @@ export class OpenCodeBaseUrlResolver {
       options.inspectProcessCwd
       ?? ((pid) => getSharedOpenCodeSystemProbeHelperClient().readProcessCwd(pid));
     this.probeBaseUrl = options.probeBaseUrl ?? probeOpenCodeBaseUrl;
+    this.inspectProcessStats =
+      options.inspectProcessStats
+      ?? ((pid) => getSharedOpenCodeSystemProbeHelperClient().readProcessStats(pid));
+    this.terminateProcess = options.terminateProcess ?? terminateOrphanProcess;
     this.now = options.now ?? Date.now;
+    this.managedServerProbeTimeoutMs = Math.max(
+      500,
+      Math.floor(options.managedServerProbeTimeoutMs ?? DEFAULT_MANAGED_SERVER_PROBE_TIMEOUT_MS)
+    );
+    this.managedServerReadyWaitMs = Math.max(
+      0,
+      Math.floor(options.managedServerReadyWaitMs ?? DEFAULT_MANAGED_SERVER_READY_WAIT_MS)
+    );
+    this.managedServerProbeIntervalMs = Math.max(
+      20,
+      Math.floor(options.managedServerProbeIntervalMs ?? DEFAULT_MANAGED_SERVER_PROBE_INTERVAL_MS)
+    );
     this.managedServerRetryCooldownMs = Math.max(
       1_000,
       Math.floor(options.managedServerRetryCooldownMs ?? DEFAULT_MANAGED_SERVER_RETRY_COOLDOWN_MS)
@@ -102,6 +171,16 @@ export class OpenCodeBaseUrlResolver {
     );
     this.disposeManagedServerInstance =
       options.disposeManagedServerInstance ?? disposeManagedOpenCodeInstance;
+    this.orphanReclaimEnabled = options.orphanReclaimEnabled ?? true;
+    this.orphanReclaimMinAgeMs = Math.max(
+      0,
+      Math.floor(options.orphanReclaimMinAgeMs ?? DEFAULT_ORPHAN_RECLAIM_MIN_AGE_MS)
+    );
+    this.orphanReclaimIntervalMs = Math.max(
+      0,
+      Math.floor(options.orphanReclaimIntervalMs ?? DEFAULT_ORPHAN_RECLAIM_INTERVAL_MS)
+    );
+    this.reclaimProcessPid = Math.floor(options.reclaimProcessPid ?? process.pid);
   }
 
   async resolve(input: ResolveBaseUrlInput = {}): Promise<string> {
@@ -134,6 +213,104 @@ export class OpenCodeBaseUrlResolver {
     this.inflightByWorkspaceKey.set(scopeKey, wrappedTask);
 
     return wrappedTask;
+  }
+
+  /**
+   * 回收历史遗留的孤儿 opencode serve。
+   *
+   * Host 被强杀或热重启时，它拉起的 serve 会被 launchd 收养，ppid 变成 1，
+   * 一直占着随机端口，既不归当前 Host 管，也没人回收。这里挑出这类进程杀掉，
+   * 但只动“父进程没了 + 活了足够久 + 身上没有活连接”的，避免影响别的客户端。
+   */
+  async reclaimOrphanedServers(): Promise<OpenCodeOrphanReclaimSummary> {
+    if (!this.orphanReclaimEnabled || this.disposed) {
+      return emptyOrphanReclaimSummary();
+    }
+
+    if (this.cachedOrphanReclaimSummary && this.lastOrphanReclaimPid === process.pid) {
+      return this.cachedOrphanReclaimSummary;
+    }
+
+    const summary = await this.reclaimOrphanedServersInternal();
+    this.cachedOrphanReclaimSummary = summary;
+    this.lastOrphanReclaimAtMs = this.now();
+    this.lastOrphanReclaimPid = process.pid;
+    return summary;
+  }
+
+  private async reclaimOrphanedServersInternal(): Promise<OpenCodeOrphanReclaimSummary> {
+    const summary = emptyOrphanReclaimSummary();
+    let serveProcesses: OpenCodeServeProcessRecord[];
+
+    try {
+      serveProcesses = parseServeProcesses(await this.inspectProcessList(), this.commandPath);
+    } catch (error) {
+      console.warn(
+        "[opencode-orphan-reclaim] 读取进程列表失败，本次跳过",
+        error instanceof Error ? error.message : error
+      );
+      return summary;
+    }
+
+    const managedPids = new Set<number>();
+
+    for (const child of this.managedServerProcessByWorkspaceKey.values()) {
+      if (typeof child.pid === "number") {
+        managedPids.add(child.pid);
+      }
+    }
+
+    for (const record of serveProcesses) {
+      if (record.pid === this.reclaimProcessPid || managedPids.has(record.pid)) {
+        continue;
+      }
+
+      let stats: OpenCodeProcessStats | null = null;
+
+      try {
+        stats = await this.inspectProcessStats(record.pid);
+      } catch {
+        stats = null;
+      }
+
+      if (!stats || stats.ppid !== 1) {
+        // 父进程还在的 serve 归别的进程管，不能碰。
+        continue;
+      }
+
+      if (
+        stats.elapsedSeconds !== null
+        && stats.elapsedSeconds * 1000 < this.orphanReclaimMinAgeMs
+      ) {
+        continue;
+      }
+
+      if (stats.activeConnectionCount > 0) {
+        summary.skippedActive += 1;
+        continue;
+      }
+
+      summary.scanned += 1;
+
+      try {
+        await this.terminateProcess(record.pid);
+        summary.reclaimed += 1;
+        summary.reclaimedPids.push(record.pid);
+      } catch (error) {
+        console.warn(
+          `[opencode-orphan-reclaim] 回收 opencode serve(${record.pid}) 失败`,
+          error instanceof Error ? error.message : error
+        );
+      }
+    }
+
+    if (summary.reclaimed > 0) {
+      console.info(
+        `[opencode-orphan-reclaim] 已回收 ${summary.reclaimed} 个遗留 opencode serve：${summary.reclaimedPids.join(", ")}`
+      );
+    }
+
+    return summary;
   }
 
   async listReachableBaseUrls(input: ResolveBaseUrlInput = {}): Promise<string[]> {
@@ -215,19 +392,27 @@ export class OpenCodeBaseUrlResolver {
     }
 
     if (workspacePath || process.platform === "win32") {
+      // 托管 serve 的登记 key 用的是实际 cwd，没有 workspacePath 时会退到
+      // process.cwd()；这里必须用同一个 key，否则就绪探测查不到刚拉起的进程。
+      const managedWorkspacePath = workspacePath ?? process.cwd();
+      const managedWorkspaceKey = normalizeResolverScopeKey(managedWorkspacePath, runtimeHomeDir);
       const managedCandidate = await this.ensureManagedServerBaseUrl(
-        workspacePath ?? process.cwd(),
+        managedWorkspacePath,
         runtimeHomeDir,
         permissionMode
       );
 
-      if (await this.probeBaseUrl(managedCandidate)) {
-        this.managedServerBaseUrlByWorkspaceKey.set(workspaceKey, managedCandidate);
+      if (await this.waitForManagedServerReady(managedWorkspaceKey, managedCandidate)) {
+        this.managedServerBaseUrlByWorkspaceKey.set(managedWorkspaceKey, managedCandidate);
         this.cachedBaseUrlByWorkspaceKey.set(workspaceKey, managedCandidate);
         this.cachedAtByWorkspaceKey.set(workspaceKey, this.now());
-        this.noteManagedServerActivity(workspaceKey);
+        this.noteManagedServerActivity(managedWorkspaceKey);
         return managedCandidate;
       }
+
+      await this.teardownManagedServerProcess(managedWorkspaceKey);
+      this.recordManagedServerFailure(managedWorkspaceKey);
+      this.triggerOrphanReclaim();
     }
 
     this.cachedAtByWorkspaceKey.set(workspaceKey, this.now());
@@ -290,8 +475,18 @@ export class OpenCodeBaseUrlResolver {
     const managedServerProcess = this.managedServerProcessByWorkspaceKey.get(workspaceKey) ?? null;
     const managedServerBaseUrl = this.managedServerBaseUrlByWorkspaceKey.get(workspaceKey) ?? null;
 
-    if (managedServerProcess && !managedServerProcess.killed && managedServerBaseUrl) {
+    // 进程已经退出但缓存里还留着地址、或者只剩一个没有地址的进程记录时，
+    // 都当成“没有托管进程”，否则这里会一直返回探不通的旧地址，
+    // 而后面再也不会重新拉起 serve。
+    if (managedServerProcess && isChildProcessAlive(managedServerProcess) && managedServerBaseUrl) {
       return managedServerBaseUrl;
+    }
+
+    if (managedServerProcess || managedServerBaseUrl) {
+      this.managedServerProcessByWorkspaceKey.delete(workspaceKey);
+      this.managedServerBaseUrlByWorkspaceKey.delete(workspaceKey);
+      this.managedServerLastUsedAtByWorkspaceKey.delete(workspaceKey);
+      this.clearManagedServerIdleTimer(workspaceKey);
     }
 
     const inflight = this.managedServerInflightByWorkspaceKey.get(workspaceKey) ?? null;
@@ -303,6 +498,7 @@ export class OpenCodeBaseUrlResolver {
     const blockedUntil = this.managedServerRetryBlockedUntilByWorkspaceKey.get(workspaceKey) ?? 0;
 
     if (blockedUntil > this.now()) {
+      this.triggerOrphanReclaim();
       throw new Error("SERVER_UNAVAILABLE");
     }
 
@@ -470,6 +666,70 @@ export class OpenCodeBaseUrlResolver {
       workspaceKey,
       this.now() + this.managedServerRetryCooldownMs
     );
+  }
+
+  /**
+   * 托管 serve 起不来时，顺手看一眼有没有历史遗留的孤儿进程。
+   * 这里只做带节流的后台触发，不阻塞当前请求。
+   */
+  private triggerOrphanReclaim(): void {
+    if (!this.orphanReclaimEnabled || this.disposed) {
+      return;
+    }
+
+    if (this.now() - this.lastOrphanReclaimAtMs < this.orphanReclaimIntervalMs) {
+      return;
+    }
+
+    void this.reclaimOrphanedServers().catch((error) => {
+      console.warn(
+        "[opencode-orphan-reclaim] 后台回收失败",
+        error instanceof Error ? error.message : error
+      );
+    });
+  }
+
+  /**
+   * 托管 serve 打印监听地址时，HTTP 端口只是刚打开；opencode 的第一个请求
+   * 还要创建实例（加载配置、初始化项目目录），冷启动可能要好几秒。这里给
+   * 首次可用性探测留出宽限时间，避免刚拉起来就被判死。
+   */
+  private async waitForManagedServerReady(workspaceKey: string, baseUrl: string): Promise<boolean> {
+    const deadline = this.now() + this.managedServerReadyWaitMs;
+
+    while (true) {
+      if (!isChildProcessAlive(this.managedServerProcessByWorkspaceKey.get(workspaceKey) ?? null)) {
+        return false;
+      }
+
+      if (await this.probeBaseUrl(baseUrl, this.managedServerProbeTimeoutMs)) {
+        return true;
+      }
+
+      if (this.now() + this.managedServerProbeIntervalMs >= deadline) {
+        return false;
+      }
+
+      await delay(this.managedServerProbeIntervalMs);
+    }
+  }
+
+  private async teardownManagedServerProcess(workspaceKey: string): Promise<void> {
+    const child = this.managedServerProcessByWorkspaceKey.get(workspaceKey) ?? null;
+
+    this.managedServerProcessByWorkspaceKey.delete(workspaceKey);
+    this.managedServerBaseUrlByWorkspaceKey.delete(workspaceKey);
+    this.managedServerLastUsedAtByWorkspaceKey.delete(workspaceKey);
+    this.clearManagedServerIdleTimer(workspaceKey);
+
+    if (!isChildProcessAlive(child)) {
+      return;
+    }
+
+    await terminateChildProcess(child as ManagedOpenCodeServerProcess, {
+      termGraceMs: 250,
+      killWaitMs: 250
+    });
   }
 
   private noteManagedServerActivity(workspaceKey: string): void {
@@ -649,6 +909,69 @@ function isChildProcessAlive(
   return Boolean(child && !child.killed);
 }
 
+function emptyOrphanReclaimSummary(): OpenCodeOrphanReclaimSummary {
+  return {
+    scanned: 0,
+    reclaimed: 0,
+    reclaimedPids: [],
+    skippedActive: 0
+  };
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * 回收不在自己名下的进程：托管 serve 是 detached 启动的，先用进程组发信号，
+ * 拿不到进程组时再退回单进程。
+ */
+async function terminateOrphanProcess(pid: number): Promise<void> {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return;
+  }
+
+  signalProcessTree(pid, "SIGTERM");
+
+  const deadline = Date.now() + 2_000;
+
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) {
+      return;
+    }
+
+    await delay(100);
+  }
+
+  if (!isProcessAlive(pid)) {
+    return;
+  }
+
+  signalProcessTree(pid, "SIGKILL");
+}
+
+function signalProcessTree(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // 没有独立进程组时退回单进程信号。
+    }
+  }
+
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // 进程已经退出，忽略。
+  }
+}
+
 async function disposeManagedOpenCodeInstance(baseUrl: string): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -792,7 +1115,10 @@ function applyOpenCodeContextInputOverrides(
     readOpenCodeConfigFileFromContent(process.env.OPENCODE_CONFIG_CONTENT),
     config
   ];
-  const contextByModel = new Map<string, { context: number; input: number | null }>();
+  const contextByModel = new Map<
+    string,
+    { context: number; input: number | null; output: number | null }
+  >();
 
   for (const source of sources) {
     collectOpenCodeContextLimits(source, contextByModel);
@@ -816,6 +1142,15 @@ function applyOpenCodeContextInputOverrides(
     const safeInput = limit.input === null
       ? limit.context
       : Math.min(limit.context, limit.input);
+    const safeContext = readPositiveNumber(currentLimit.context) ?? limit.context;
+    const safeOutput = readPositiveNumber(currentLimit.output) ?? limit.output;
+
+    if (safeContext === null || safeOutput === null) {
+      // OpenCode 只要看到 limit，就要求 context 和 output 这两个键都在。
+      // 缺任何一个时宁可不写，也不能写半个 limit：整份 OPENCODE_CONFIG_CONTENT
+      // 会被判为非法，serve 之后每个请求都返回 400，表现成“provider 服务暂时不可用”。
+      continue;
+    }
 
     const currentProviderOverride = isRecord(providerOverrides[providerId])
       ? providerOverrides[providerId]
@@ -829,8 +1164,12 @@ function applyOpenCodeContextInputOverrides(
         ...currentModelOverrides,
         [modelId]: {
           ...modelConfig,
+          // 覆盖 input 时必须把 context / output 一起写全，只写 input 会让
+          // OpenCode 拒绝整份配置。
           limit: {
             ...currentLimit,
+            context: safeContext,
+            output: safeOutput,
             input: safeInput
           }
         }
@@ -846,7 +1185,7 @@ function applyOpenCodeContextInputOverrides(
 
 function collectOpenCodeContextLimits(
   config: Record<string, unknown> | null,
-  result: Map<string, { context: number; input: number | null }>
+  result: Map<string, { context: number; input: number | null; output: number | null }>
 ): void {
   if (!config || !isRecord(config.provider)) {
     return;
@@ -868,7 +1207,17 @@ function collectOpenCodeContextLimits(
       }
 
       const input = readPositiveNumber(modelValue.limit.input);
-      result.set(`${providerId}\0${modelId}`, { context, input });
+      const output = readPositiveNumber(modelValue.limit.output);
+      const key = `${providerId}\0${modelId}`;
+      const existing = result.get(key);
+
+      // 同一个模型可能来自多个配置源，各源声明的字段不一定一样：
+      // 这里按字段合并，避免后一个源把前一个源里已有的 context / output 丢掉。
+      result.set(key, {
+        context,
+        input: input ?? existing?.input ?? null,
+        output: output ?? existing?.output ?? null
+      });
     }
   }
 }
@@ -1034,11 +1383,14 @@ function scoreListeningSocket(value: OpenCodeListeningSocket): number {
   return 1;
 }
 
-async function probeOpenCodeBaseUrl(baseUrl: string): Promise<boolean> {
+async function probeOpenCodeBaseUrl(
+  baseUrl: string,
+  timeoutMs: number = DEFAULT_PROBE_TIMEOUT_MS
+): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => {
     controller.abort();
-  }, DEFAULT_PROBE_TIMEOUT_MS);
+  }, timeoutMs);
 
   try {
     const response = await fetch(new URL("/session", `${baseUrl}/`), {

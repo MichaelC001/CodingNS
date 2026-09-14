@@ -76,10 +76,33 @@ export async function startHost(overrides: Partial<HostConfig> = {}): Promise<St
   hosted.startWs();
   console.info(`[host] 监听中 http://${config.host}:${config.port}`);
   void syncReleaseManifests(config);
+  void reclaimOrphanedOpenCodeServers(config);
+  // 上一次 Host 崩溃留下的孤儿 dsh sidecar 会一直占着 DSH 的会话写入租约和端口，
+  // 让本次启动打不开旧会话；这里不等首次 Harness 请求就先清一遍。
+  void hosted.reclaimOrphanSidecarsOnStartup();
 
   return {
     app: hosted.app,
     config,
     close: () => shutdown("manual")
   };
+}
+
+/**
+ * 上次 Host 被强杀或热重启时，它拉起的 opencode serve 会被 launchd 收养并
+ * 一直占着随机端口。启动后扫一次，把这类没人管的实例收掉。
+ */
+async function reclaimOrphanedOpenCodeServers(config: HostConfig): Promise<void> {
+  try {
+    const summary = await config.opencodeBaseUrlResolver?.reclaimOrphanedServers();
+
+    if (summary && summary.reclaimedPids.length > 0) {
+      console.info(`[host] 已清理遗留的 opencode serve 进程：${summary.reclaimedPids.join(", ")}`);
+    }
+  } catch (error) {
+    console.warn(
+      "[host] 清理遗留 opencode serve 进程失败",
+      error instanceof Error ? error.message : error
+    );
+  }
 }
