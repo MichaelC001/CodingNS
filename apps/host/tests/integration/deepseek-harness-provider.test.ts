@@ -361,6 +361,75 @@ describe("DeepSeek Harness Web API", () => {
     }
   });
 
+  it("图片请求会把 global-default 的 DeepSeek V41 Flash 别名切换到 Harness 视觉模型", async () => {
+    fake = await createDeepSeekHarnessFakeServer({
+      defaultModel: { provider: "deepseek-official", model: "deepseek-v4.1-flash" }
+    });
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const attachmentRootDir = mkdtempSync(join(tmpdir(), "codingns-harness-attachments-default-model-"));
+    const attachmentPath = join(attachmentRootDir, "image.png");
+    mkdirSync(attachmentRootDir, { recursive: true });
+    writeFileSync(attachmentPath, Buffer.from([0, 1, 2, 3]));
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager(), { attachmentRootDir });
+    const sink: ProviderRuntimeEventSink = {
+      emit: async () => undefined,
+      updateSessionBinding: vi.fn()
+    };
+
+    fake.setPromptHandler((sessionId) => {
+      fake?.emitMux({ type: "session/event", sessionId, event: { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } } });
+      fake?.emitHost({ type: "host/session-status", sessionId, running: false });
+    });
+
+    try {
+      const launch = await adapter.startSession({
+        sessionId: "codingns-default-image-model",
+        workspaceId: "workspace-1",
+        workspacePath: "/Users/jackson/Code/GCAC",
+        provider: "deepseek-harness",
+        providerSessionId: null,
+        rawStoreRef: null,
+        options: {
+          content: "请分析图片",
+          clientRequestId: "request-default-image-model",
+          model: null,
+          reasoningLevel: null,
+          permissionMode: "ask",
+          providerPrompt: null,
+          attachments: [{
+            id: "attachment-default-image-model",
+            kind: "image",
+            fileName: "image.png",
+            mimeType: "image/png",
+            fileSize: 4,
+            filePath: attachmentPath
+          }]
+        }
+      }, sink);
+
+      await expect(launch.completed).resolves.toBeUndefined();
+      expect(fake.calls).toContainEqual({
+        method: "session.selectModel",
+        payload: {
+          sessionId: "harness-1",
+          provider: "deepseek-official",
+          model: "deepseek-flash"
+        }
+      });
+      expect(fake.calls).toContainEqual({
+        method: "session.prompt",
+        payload: expect.objectContaining({
+          content: [
+            { type: "text", text: "请分析图片" },
+            { type: "image", mediaType: "image/png", data: "AAECAw==", name: "image.png" }
+          ]
+        })
+      });
+    } finally {
+      rmSync(attachmentRootDir, { recursive: true, force: true });
+    }
+  });
+
   it("仍然拒绝不属于工作区或 Host 附件目录的路径，并且不会产生未处理拒绝", async () => {
     fake = await createDeepSeekHarnessFakeServer();
     const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });

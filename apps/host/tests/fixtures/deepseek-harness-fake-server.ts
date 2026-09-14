@@ -26,6 +26,7 @@ export async function createDeepSeekHarnessFakeServer(options: {
   protocolVersion?: string;
   capabilities?: readonly string[];
   unsupportedReasoningEffort?: string;
+  defaultModel?: { provider: string; model: string };
 } = {}): Promise<DeepSeekHarnessFakeServer> {
   const calls: Array<{ method: string; payload: unknown }> = [];
   const workspaces = new Map<string, { workspaceId: string; path: string }>();
@@ -46,6 +47,7 @@ export async function createDeepSeekHarnessFakeServer(options: {
       options.protocolVersion,
       options.capabilities,
       options.unsupportedReasoningEffort,
+      options.defaultModel,
       (sessionId) => promptHandler?.(sessionId)
     );
   });
@@ -106,6 +108,7 @@ async function handleRequest(
   protocolVersion: string | undefined,
   capabilities: readonly string[] | undefined,
   unsupportedReasoningEffort: string | undefined,
+  defaultModel: { provider: string; model: string } | undefined,
   onPrompt: (sessionId: string) => void
 ): Promise<void> {
   if (request.method !== "POST") { response.writeHead(405).end(); return; }
@@ -116,7 +119,7 @@ async function handleRequest(
   if (!parsed || parsed.type !== "client-request") { response.writeHead(400).end(); return; }
   const requestBody = parsed;
   calls.push({ method: requestBody.method, payload: requestBody.payload });
-  const result = dispatch(requestBody.method, requestBody.payload, workspaces, sessions, archivedSessionIds, version, protocolVersion, capabilities, unsupportedReasoningEffort, onPrompt);
+  const result = dispatch(requestBody.method, requestBody.payload, workspaces, sessions, archivedSessionIds, version, protocolVersion, capabilities, unsupportedReasoningEffort, defaultModel, onPrompt);
   const envelope: HarnessServerResponse = { type: "server-response", rpcId: requestBody.rpcId === "bad-rpc" ? "wrong-rpc" : requestBody.rpcId, result };
   response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(envelope));
 }
@@ -131,6 +134,7 @@ function dispatch(
   protocolVersion: string | undefined,
   capabilities: readonly string[] | undefined,
   unsupportedReasoningEffort: string | undefined,
+  defaultModel: { provider: string; model: string } | undefined,
   onPrompt: (sessionId: string) => void
 ): { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } } {
   const input = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
@@ -220,6 +224,7 @@ function dispatch(
             ]
           }
         ],
+        ...(defaultModel ? { default: defaultModel } : {}),
         failures: []
       }
     };
