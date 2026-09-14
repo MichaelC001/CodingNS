@@ -17,6 +17,10 @@ out/
 .output/
 .next/
 .nuxt/
+# 桌面壳嵌入的前端快照（由 scripts/prepare-desktop-frontend.mjs 生成）
+apps/desktop/frontend-dist/
+apps/desktop/.frontend-dist-staging/
+apps/desktop/.frontend-dist-previous/
 vendor/*
 !vendor/wry-0.54.4/
 !vendor/wry-0.54.4/**

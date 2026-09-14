@@ -4,10 +4,10 @@
   "version": "2.0.0-beta.1",
   "identifier": "com.codingns.desktop",
   "build": {
-    "frontendDist": "../../user-app/dist",
+    "frontendDist": "../frontend-dist",
     "devUrl": "http://127.0.0.1:4174",
     "beforeDevCommand": "pnpm --dir ../user-app dev -- --host 127.0.0.1 --port 4174",
-    "beforeBuildCommand": "pnpm --dir ../user-app build"
+    "beforeBuildCommand": "pnpm --dir ../user-app build && node ../../scripts/prepare-desktop-frontend.mjs"
   },
   "app": {
     "macOSPrivateApi": true,
