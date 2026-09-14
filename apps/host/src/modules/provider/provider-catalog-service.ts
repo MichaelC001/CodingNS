@@ -30,7 +30,13 @@ const STREAMING_OUTPUT_PROVIDER_IDS = new Set<ProviderId>([
   "deepseek-harness",
   "grok"
 ]);
-const ASSISTANT_SERVICE_PROVIDER_IDS = new Set<ProviderId>(["codex", "claude-code"]);
+// 会话互动（原“助手服务”）：既要产品侧有正式入口，也要 CLI 本身支持审批、问题这类交互。
+// deepseek-harness 与 affairs-lightweight-session-service 里的轻量会话支持范围保持一致。
+const ASSISTANT_SERVICE_PROVIDER_IDS = new Set<ProviderId>([
+  "codex",
+  "claude-code",
+  "deepseek-harness"
+]);
 const SKILL_TARGET_PROVIDER_IDS = new Set<ProviderId>([
   "codex",
   "claude-code",

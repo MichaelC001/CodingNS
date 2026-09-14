@@ -148,9 +148,13 @@ describe("provider catalog routes", () => {
     );
     expect(deepSeekHarnessEntry).toMatchObject({
       provider: "deepseek-harness",
+      enabled: true,
       installState: "ready",
       version: "0.1.0-rc.5",
-      commandPath: fakeDeepSeekHarnessPath
+      commandPath: fakeDeepSeekHarnessPath,
+      productCapabilities: {
+        assistantService: true
+      }
     });
 
     const disableResponse = await hosted.app.inject({
