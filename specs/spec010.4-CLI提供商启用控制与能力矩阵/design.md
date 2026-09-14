@@ -75,7 +75,7 @@ provider 启用态默认落在 **Host 全局配置**，不复用账户偏好。
 
 - `工具调用`：来自 `supportsStructuredToolCalls`
 - `会话 Fork`：来自 `supportsSessionFork`，再补一个当前项目是否允许跨 provider 重建 Fork
-- `助手服务`：不是 provider 原生字段，而是本项目当前是否把它纳入 Butler/跟进正式支持范围
+- `会话互动`：不是 provider 原生字段，而是本项目当前是否支持计划审批、问题交互这类会话内互动（当前由 Butler 正式支持范围决定）
 - `Skill 使用`：不是 provider 原生字段，而是当前是否存在对应 `SkillTargetCli` 适配器并允许作为目标
 
 ## 3. 架构
@@ -286,7 +286,7 @@ Skill 管理需要区分两件事：
 
 - 流式输出
 - 工具调用
-- 助手服务
+- 会话互动
 - 会话 Fork
 - Skill 使用
 
@@ -303,7 +303,7 @@ Skill 管理需要区分两件事：
 | --- | --- |
 | 流式输出 | `capabilities.canSendMessage` + provider 运行时支持流式事件；第一版由 Host 显式映射，不让前端猜 `inRunInputMode` |
 | 工具调用 | `capabilities.supportsStructuredToolCalls` |
-| 助手服务 | provider 属于 Butler 正式支持范围且 enabled |
+| 会话互动 | provider 属于 Butler 正式支持范围且 enabled；界面上这一列回答“是否支持计划审批、问题交互等互动操作” |
 | 会话 Fork | `capabilities.supportsSessionFork` 或当前允许重建式 Fork |
 | Skill 使用 | provider 存在 `SkillTargetCli` 适配器且 enabled |
 

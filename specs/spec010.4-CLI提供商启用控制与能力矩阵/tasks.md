@@ -381,6 +381,15 @@
     - 已把能力标记进一步收紧成参考图那种绿色对号方块；不支持的能力单元格保持留白，同时去掉每行冗余说明文案，让矩阵密度更高
     - 已让 provider catalog 向前端带出 CLI 版本号；矩阵里“状态”列显示安装状态，“CLI 名称右侧标签”改成版本号
     - 已补 `ProviderManagementPanel.test.tsx` 和 `SettingsPage.test.tsx`，覆盖入口按钮、模态框矩阵、开关更新、统一分类页和旧路由别名
+    - 已把矩阵“状态”列收成一行：启用标签旁边直接跟“当前限制”按钮，限制说明气泡改成向下展开，避免被表格横向滚动容器裁掉
+    - 已去掉“运行正常”标签，只有“能力受限”“只读模式”这类异常运行时才显示状态标签
+    - 已把矩阵里原来的“助手服务”列改名为“会话互动”，表头补上“是否支持计划审批、问题交互等互动操作”的说明
+    - 已把 deepseek-harness 补进“会话互动”（原助手服务）支持范围，和 `affairs-lightweight-session-service` 里的轻量会话支持范围对齐；它本来就有 `approval.respond` 这类互动能力
+    - 已去掉状态列里单独一行的“运行版本”：没有真实 sidecar 握手时，这个字段填的是内核基准常量，不是真实运行版本，继续显示会误导
+    - 已把“刷新列表”按钮从模态框底部动作区移到“能力矩阵”分组标题行右侧，底部动作区整体删除；空态里重复的刷新按钮也一并去掉
+    - 已去掉能力矩阵的横向滚动：桌面模态框定宽 `min(880px, calc(100% - 32px))`，表格 `width: 100%` 配百分比列宽（provider 25%、5 个能力列各 8.6%、状态 21%、开关 11%），卡片 body 再加 `overflow-x: hidden` 兜底，PC 上任何视口都不再出现横向滚动条
+    - 踩过的坑：`table-layout: fixed` 下表格宽度不会小于列宽之和，所以“固定列宽 + `max-width: 100%`”压不住表格，窄视口照样溢出；列宽必须用百分比才能跟着容器缩
+    - 手机屏宽固定，表格由外层外壳横向滚动承载，桌面端不受影响
   - 对应需求：`requirements.md` 需求 6、需求 7
   - 对应设计：`design.md` §6.2、§6.3
 
@@ -461,6 +470,9 @@
     - 已完成阶段 4 相关前端自动化回归：
       - `pnpm --filter user-app exec vitest run src/settings/ProviderManagementPanel.test.tsx src/features/settings/pages/SettingsPage.test.tsx src/features/conversation/components/SessionProviderPicker.test.tsx src/features/conversation/components/ConversationSelectionActions.test.tsx src/features/conversation/components/ParallelSessionCreateModal.test.tsx src/features/conversation/components/ComposerPanel.test.tsx`
     - 已在这轮 UI 调整后重新跑通同一组前端自动化回归，确认“能力管理”合并、provider 模态框和矩阵改版没有把已有门禁逻辑打回去
+    - 本轮矩阵文案与状态列微调后，已跑 `pnpm --dir apps/user-app test -- --run src/settings/ProviderManagementPanel.test.tsx`，并用 `pnpm --dir apps/user-app build` 校验类型和产物
+    - 本轮“复制会话互动范围 + 去内层滚动 + 按钮移入分组标题行”之后，已跑 `pnpm --dir apps/user-app test -- --run src/settings/ProviderManagementPanel.test.tsx src/features/settings/pages/SettingsPage.test.tsx`（39 项通过）、`pnpm --dir apps/host test -- --run tests/integration/provider-catalog-routes.test.ts`（4 项通过）和 `pnpm --dir apps/user-app build`
+    - 横向滚动这轮不靠肉眼判断：用 Edge headless 加载构建产物 CSS + 复刻模态框 DOM，实测视口 1432 / 1192 / 1016 / 889 / 812 下 `body.scrollWidth === body.clientWidth`，均无横向滚动条；旧规则在 889 / 812 下实测溢出（`scrollWidth 833 > clientWidth 767`）
     - 真实界面手工验收还没做；按项目规则，本轮没有主动启动前后端服务，所以这一步暂时停在 `IN_REVIEW`
   - 对应需求：`requirements.md` 全部需求
   - 对应设计：`design.md` 全文
