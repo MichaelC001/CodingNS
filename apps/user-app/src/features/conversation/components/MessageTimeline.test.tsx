@@ -10,7 +10,7 @@ import {
 } from "../timeline-source-items";
 import type { HistoryMessageDto } from "../api/conversation-api";
 import { toViewMessage } from "../runtime/session-runtime-machine";
-import { MessageTimeline as RawMessageTimeline } from "./MessageTimeline";
+import { ConversationTranscriptExport, MessageTimeline as RawMessageTimeline } from "./MessageTimeline";
 
 import type { SessionMessageViewModel } from "../runtime/session-runtime-machine";
 
@@ -2198,13 +2198,15 @@ Approval policy: ask.`, "dsh-runtime-context"),
       />
     );
 
+    // 多条注入消息合并成一张卡片：开关只有一个，展开后两条内容都在。
     const expandButtons = screen.getAllByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) });
-    expect(expandButtons).toHaveLength(2);
+    expect(expandButtons).toHaveLength(1);
+    expect(screen.getByText(t("conversation.startupMessagesTitle"))).toBeInTheDocument();
+    expect(screen.getByText(t("conversation.startupMessagesSummary", { count: 2 }))).toBeInTheDocument();
     expect(screen.queryByText("不要把这行规则直接展示出来")).not.toBeInTheDocument();
     expect(screen.queryByText("Current DSH file policy: workspace-write.")).not.toBeInTheDocument();
 
     await userEvent.click(expandButtons[0]!);
-    await userEvent.click(expandButtons[1]!);
 
     expect(screen.getByText((content) => content.includes("不要把这行规则直接展示出来"))).toBeInTheDocument();
     expect(screen.getByText("Current DSH file policy: workspace-write.")).toBeInTheDocument();
@@ -2239,6 +2241,228 @@ Instructions from: AGENTS.md
     expect(screen.queryByText("DSH 规则正文不应直接展示")).not.toBeInTheDocument();
   });
 
+  it("会折叠当前版本的 DSH 运行时上下文（审批文案已改版）", () => {
+    // 旧版快照里有 "Approval policy:" 字样，新版改成 "Approval prompts are disabled in this session:"。
+    // 识别逻辑只认首行，所以文案再改也不会让整段快照摊在时间线里。
+    render(
+      <MessageTimeline
+        messages={[
+          {
+            // 故意用 user 角色：模拟角色修正之前落库的历史消息，
+            // 这时只能靠文案识别兜底，本用例守住的就是这条兜底路径。
+            ...createTextMessage(`Current runtime context. This snapshot supersedes earlier runtime-context snapshots.
+
+Current DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations.
+
+Approval prompts are disabled in this session: actions that require approval are rejected automatically — do not request sandbox escalation (do not set \`sandbox_permissions\`).`),
+            id: "dsh-runtime-context-current",
+            rawRef: "harness://session-1#seq=18"
+          }
+        ]}
+        historyState="ready"
+        provider="deepseek-harness"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes("Approval prompts are disabled in this session"))).not.toBeInTheDocument();
+  });
+
+  it("会折叠 DSH 的审批策略变化通知和技能目录", async () => {
+    render(
+      <MessageTimeline
+        messages={[
+          {
+            ...createSystemMessage('The approval policy changed from "ask" to "never" (changed by the user).', "dsh-approval-notice"),
+            rawRef: "harness://session-1#seq=16"
+          },
+          {
+            ...createSystemMessage(`<system-reminder>
+A skill is a reusable set of task-specific instructions. The following skills are available in this session:
+
+<available_skills>
+- \`codexhost-delegation\`: Delegate tasks to other coding agents.
+</available_skills>
+</system-reminder>`, "dsh-skill-catalog"),
+            sequence: 2,
+            rawRef: "harness://session-1#seq=19"
+          }
+        ]}
+        historyState="ready"
+        provider="deepseek-harness"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    // 审批通知和技能目录合并成一条，收起态只有一行摘要和一个开关。
+    const expandButtons = screen.getAllByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) });
+    expect(expandButtons).toHaveLength(1);
+    expect(expandButtons[0]!.getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelectorAll(".rules-message-body")).toHaveLength(0);
+    expect(screen.getByText(t("conversation.startupMessagesSummary", { count: 2 }))).toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes("codexhost-delegation"))).not.toBeInTheDocument();
+
+    await userEvent.click(expandButtons[0]!);
+    expect(document.querySelectorAll(".rules-message-body")).toHaveLength(1);
+    const body = document.querySelector(".rules-message-body")?.textContent ?? "";
+    expect(body).toContain("The approval policy changed");
+    expect(body).toContain("codexhost-delegation");
+  });
+
+  it("DSH 首轮注入分散在用户消息前后时，合并成一条并放到用户消息上方", () => {
+    // 真实会话顺序：审批通知 → 用户提问 → 运行时快照 → 技能目录。
+    // 合并后应该只剩一张卡片，位置在用户消息上方，提示语也只出现一次。
+    render(
+      <MessageTimeline
+        messages={[
+          {
+            ...createSystemMessage('The approval policy changed from "ask" to "never" (changed by the user).', "dsh-approval"),
+            sequence: 1,
+            rawRef: "harness://session-1#seq=16"
+          },
+          {
+            ...createTextMessage("向我提问2个测试问题，并验证我回答的是否正确"),
+            id: "dsh-user",
+            sequence: 2,
+            rawRef: "harness://session-1#seq=17"
+          },
+          {
+            ...createSystemMessage(`Current runtime context. This snapshot supersedes earlier runtime-context snapshots.
+
+Current DSH file policy: danger-full-access.`, "dsh-snapshot"),
+            sequence: 3,
+            rawRef: "harness://session-1#seq=18"
+          },
+          {
+            ...createSystemMessage(`<system-reminder>
+<available_skills>
+- \`demo\`: 演示技能
+</available_skills>
+</system-reminder>`, "dsh-catalog"),
+            sequence: 4,
+            rawRef: "harness://session-1#seq=19"
+          }
+        ]}
+        historyState="ready"
+        provider="deepseek-harness"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).toHaveLength(1);
+    expect(screen.getByText(t("conversation.startupMessagesSummary", { count: 3 }))).toBeInTheDocument();
+    expect(screen.getByText("向我提问2个测试问题，并验证我回答的是否正确")).toBeInTheDocument();
+
+    // 「太啰嗦」的根因是同一句提示重复出现多条，合并后只应剩一条。
+    expect(screen.getAllByText(t("conversation.startupMessagesHint"))).toHaveLength(1);
+
+    const card = document.querySelector(".rules-message-card");
+    const userBubble = document.querySelector(".message-item.user-message");
+    expect(card).not.toBeNull();
+    expect(userBubble).not.toBeNull();
+    expect(card!.compareDocumentPosition(userBubble!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("DSH 的系统角色消息（系统提示词、命令回显）也收进同一条卡片", () => {
+    render(
+      <MessageTimeline
+        messages={[
+          {
+            ...createSystemMessage("preset danger-full-access", "dsh-command-echo"),
+            sequence: 1,
+            rawRef: "harness://session-1#seq=8"
+          },
+          {
+            ...createSystemMessage(`You are an AI agent powered by DeepSeek Harness.
+
+You are a coding agent powered by the deepseek-flash model.`, "dsh-system-prompt"),
+            sequence: 2,
+            rawRef: "harness://session-1#seq=15"
+          },
+          {
+            ...createTextMessage("你好，帮我看看这个文件"),
+            id: "dsh-user-after-prompt",
+            sequence: 3,
+            rawRef: "harness://session-1#seq=17"
+          }
+        ]}
+        historyState="ready"
+        provider="deepseek-harness"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).toHaveLength(1);
+    expect(screen.getByText(t("conversation.startupMessagesSummary", { count: 2 }))).toBeInTheDocument();
+    expect(screen.getByText("你好，帮我看看这个文件")).toBeInTheDocument();
+    // 系统提示词正文不再直接摊开在时间线里。
+    expect(screen.queryByText((content) => content.includes("You are a coding agent"))).not.toBeInTheDocument();
+    expect(screen.queryByText("preset danger-full-access")).not.toBeInTheDocument();
+  });
+
+  it("非 DSH 提供者的 system 消息不受影响", () => {
+    // 角色规则只对 DSH 生效；其他提供者的 system 消息维持原样，避免误伤。
+    render(
+      <MessageTimeline
+        messages={[createSystemMessage("这是 Claude Code 的运行提示，保持可见。", "claude-notice")]}
+        historyState="ready"
+        provider="claude-code"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("这是 Claude Code 的运行提示，保持可见。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).not.toBeInTheDocument();
+  });
+
+  it("导出时会展开合并的启动信息，内容一条不少", () => {
+    const messages = [
+      {
+        ...createSystemMessage('The approval policy changed from "ask" to "never" (changed by the user).', "export-approval"),
+        sequence: 1,
+        rawRef: "harness://session-1#seq=16"
+      },
+      {
+        ...createSystemMessage(`Current runtime context. This snapshot supersedes earlier runtime-context snapshots.
+
+Current DSH file policy: danger-full-access.`, "export-snapshot"),
+        sequence: 2,
+        rawRef: "harness://session-1#seq=18"
+      }
+    ];
+
+    render(
+      <ConversationTranscriptExport
+        items={buildConversationTimelineSourceItems({ messages })}
+        provider="deepseek-harness"
+      />
+    );
+
+    // 导出场景强制展开：没有折叠开关，正文直接渲染。
+    expect(screen.queryAllByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).toHaveLength(0);
+    expect(document.querySelectorAll(".rules-message-body")).toHaveLength(1);
+    const body = document.querySelector(".rules-message-body")?.textContent ?? "";
+    expect(body).toContain("The approval policy changed");
+    expect(body).toContain("Current runtime context");
+  });
+
+  it("不会把用户的真实发言折叠成系统消息", () => {
+    render(
+      <MessageTimeline
+        messages={[
+          createTextMessage("向我提问2个测试问题，并验证我回答的是否正确")
+        ]}
+        historyState="ready"
+        provider="deepseek-harness"
+        onRetryMessage={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("向我提问2个测试问题，并验证我回答的是否正确")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: new RegExp(t("conversation.rulesMessageExpand")) })).not.toBeInTheDocument();
+  });
+
   it("不会把 DSH 的 system-reminder 规则形态误判为 Codex 规则", () => {
     render(
       <MessageTimeline
@@ -2262,14 +2486,20 @@ Instructions from: AGENTS.md
   });
 
   it("不会把 Codex 的 AGENTS 标题形态误判为 DSH 规则", () => {
+    // 内容形态的区分只对「不是 DSH 系统消息」的消息成立：
+    // DSH 的 system 角色消息一律收起（见上面的角色规则用例），
+    // 所以这里用 user 角色来守住跨提供者的内容误判。
     render(
       <MessageTimeline
         messages={[
-          createSystemMessage(`# AGENTS.md instructions for /Users/jackson/Code/CodingNS
+          {
+            ...createTextMessage(`# AGENTS.md instructions for /Users/jackson/Code/CodingNS
 
 <INSTRUCTIONS>
 DSH 不应折叠这条 Codex 形态规则
-</INSTRUCTIONS>`, "dsh-codex-shaped-rules")
+</INSTRUCTIONS>`),
+            id: "dsh-codex-shaped-rules"
+          }
         ]}
         historyState="ready"
         provider="deepseek-harness"

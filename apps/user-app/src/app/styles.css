@@ -4521,6 +4521,13 @@ body[data-code-terminal-dock-resizing="true"] .code-workbench-terminal-resizer::
   background: var(--bg-primary);
 }
 
+/* 合并后的会话启动信息：多条注入内容平铺，之间只用一条细分割线区分。 */
+.startup-message-entry + .startup-message-entry {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-primary);
+}
+
 /* System Message */
 .system-message {
   background: var(--bg-sidebar);

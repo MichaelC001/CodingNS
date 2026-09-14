@@ -360,6 +360,12 @@ type TimelineRenderItem =
       group: ToolMessageGroup;
     }
   | {
+      type: "prompt_group";
+      key: string;
+      /** 被合并的系统注入消息，保持它们原本的时间线顺序。 */
+      messages: SessionMessageViewModel[];
+    }
+  | {
       type: "runtime_thinking";
       key: string;
       label: string;
@@ -2981,6 +2987,74 @@ function buildTimelineRenderItems(
   return renderItems;
 }
 
+/**
+ * 把会话里多条被折叠的系统注入消息合并成一张卡片。
+ *
+ * DSH 新建会话时会注入好几条系统消息（审批策略通知、运行时快照、技能目录、
+ * 工作区规则）。它们每条都单独折一张卡，一屏里就出现好几行几乎一样的
+ * 「已折叠」提示，比不折叠还啰嗦；合并成一张卡片更接近用户真正想看的
+ * 「只有我的提问和 AI 回复」。
+ *
+ * 合并后的卡片放在第一条注入消息的位置。DSH 的注入分布在首条用户消息前后
+ * （通知在提问前、运行时快照和技能目录在提问后），所以这一步会让注入内容
+ * 相对用户消息提前，{@link validateTimelineViewModel} 的顺序校验已同步放宽。
+ *
+ * 只有一条可折叠消息时原样返回，其他提供者（Codex 的规则、Kimi 的系统提示词）
+ * 的观感因此完全不变。
+ */
+function mergeFoldedPromptCards(
+  renderItems: TimelineRenderItem[],
+  provider: ProviderId | null,
+  leadingSystemPromptMessageIds: Set<string>
+): TimelineRenderItem[] {
+  const foldedIndexes: number[] = [];
+  const foldedMessages: SessionMessageViewModel[] = [];
+
+  renderItems.forEach((item, index) => {
+    if (item.type !== "message") {
+      return;
+    }
+
+    const kind = resolveFoldedPromptKind(
+      provider,
+      item.message,
+      leadingSystemPromptMessageIds.has(item.message.id) ? "system_prompt" : null
+    );
+
+    if (kind === null) {
+      return;
+    }
+
+    foldedIndexes.push(index);
+    foldedMessages.push(item.message);
+  });
+
+  if (foldedMessages.length < 2) {
+    return renderItems;
+  }
+
+  const firstFoldedIndex = foldedIndexes[0]!;
+  const foldedIndexSet = new Set(foldedIndexes);
+  const merged: TimelineRenderItem = {
+    type: "prompt_group",
+    key: `prompt-group:${foldedMessages.map((message) => message.id).join("+")}`,
+    messages: foldedMessages
+  };
+  const nextItems: TimelineRenderItem[] = [];
+
+  renderItems.forEach((item, index) => {
+    if (index === firstFoldedIndex) {
+      nextItems.push(merged);
+    }
+
+    if (!foldedIndexSet.has(index)) {
+      nextItems.push(item);
+    }
+  });
+
+  return nextItems;
+}
+
 function sanitizeForkTimelineItems(
   session: SessionSummaryDto | null | undefined,
   sourceItems: ConversationTimelineSourceItem[]
@@ -3044,10 +3118,14 @@ function sanitizeForkTimelineItems(
 function buildTimelineViewModel(input: TimelineViewModelInput): TimelineViewModel {
   const forkSanitized = sanitizeForkTimelineItems(input.sessionSummary, input.items);
   const sanitized = removeEmptyAssistantTextMessages(forkSanitized);
-  const renderItems = buildTimelineRenderItems(sanitized.visibleItems, sanitized.visibleMessages);
   const leadingSystemPromptMessageIds = collectLeadingSystemPromptMessageIds(
     sanitized.visibleMessages,
     input.provider
+  );
+  const renderItems = mergeFoldedPromptCards(
+    buildTimelineRenderItems(sanitized.visibleItems, sanitized.visibleMessages),
+    input.provider,
+    leadingSystemPromptMessageIds
   );
   const actionStateByMessageId = buildMessageActionStateById(sanitized.visibleMessages);
 
@@ -3106,6 +3184,7 @@ function validateTimelineViewModel(
   }
 
   const flattenedRenderableMessageIds: string[] = [];
+  const groupedMessageIds = new Set<string>();
 
   for (const item of renderItems) {
     if (item.type === "message") {
@@ -3115,6 +3194,13 @@ function validateTimelineViewModel(
 
     if (item.type === "tool_group") {
       flattenedRenderableMessageIds.push(...item.group.messageIds);
+      continue;
+    }
+
+    if (item.type === "prompt_group") {
+      const ids = item.messages.map((message) => message.id);
+      flattenedRenderableMessageIds.push(...ids);
+      ids.forEach((id) => groupedMessageIds.add(id));
     }
   }
 
@@ -3130,7 +3216,12 @@ function validateTimelineViewModel(
     .filter((message) => shouldRenderTimelineMessage(visibleMessages, message.id))
     .map((message) => message.id);
 
-  if (flattenedRenderableMessageIds.join(",") !== expectedRenderableMessageIds.join(",")) {
+  // 合并卡片会把注入消息提到卡片位置，所以只比较「没被合并的消息」之间的
+  // 相对顺序；被合并的消息是否漏渲染，由上面的 missing_render_message 负责。
+  const actualUngroupedIds = flattenedRenderableMessageIds.filter((id) => !groupedMessageIds.has(id));
+  const expectedUngroupedIds = expectedRenderableMessageIds.filter((id) => !groupedMessageIds.has(id));
+
+  if (actualUngroupedIds.join(",") !== expectedUngroupedIds.join(",")) {
     issues.push("render_order_mismatch");
   }
 
@@ -3228,6 +3319,33 @@ function looksLikeGenericRulesMessage(content: string): boolean {
     && /<\/INSTRUCTIONS>/i.test(content);
 }
 
+/**
+ * 判断 DSH 在新会话开头自动注入的说明性消息。
+ *
+ * 这类消息不是用户说的话，也不是 AI 的回复，而是 DSH 自己塞进上下文的：
+ * 审批策略变化通知、技能目录、以及会话运行环境说明。它们都属于「用户没主动问」
+ * 的背景信息，应该跟工作区规则一样默认收起，避免新会话一打开就是一大段系统文字。
+ */
+function looksLikeHarnessStartupNoticeMessage(provider: ProviderId | null, content: string): boolean {
+  if (provider !== "deepseek-harness") {
+    return false;
+  }
+
+  const normalized = content.trim();
+
+  // 审批策略变化通知，例如 The approval policy changed from "ask" to "never" (changed by the user).
+  if (/^The approval policy changed from "[^"]*" to "[^"]*" \(changed by the user\)\.?$/m.test(normalized)) {
+    return true;
+  }
+
+  // 技能目录：DSH 用 system-reminder 包住 <available_skills> 清单。
+  if (/<available_skills>/i.test(normalized) && /<\/available_skills>/i.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
 function looksLikeHarnessRuntimeContextMessage(provider: ProviderId | null, content: string) {
   if (provider !== "deepseek-harness") {
     return false;
@@ -3235,9 +3353,10 @@ function looksLikeHarnessRuntimeContextMessage(provider: ProviderId | null, cont
 
   const normalized = content.trim();
 
-  return normalized.startsWith("Current runtime context. This snapshot supersedes earlier runtime-context snapshots.")
-    && normalized.includes("Current DSH file policy:")
-    && normalized.includes("Approval policy:");
+  // DSH 的运行时快照首行是稳定的；后续小节文案随版本变化，旧的
+  // "Approval policy: ask." 已经改成 "Approval prompts are disabled in this session:"，
+  // 所以只认首行，避免文案一改就整条快照摊开在时间线里。
+  return normalized.startsWith("Current runtime context. This snapshot supersedes earlier runtime-context snapshots.");
 }
 
 function looksLikeSkillContextMessage(provider: ProviderId | null, content: string) {
@@ -3250,6 +3369,55 @@ function looksLikeSkillContextMessage(provider: ProviderId | null, content: stri
   return /Base directory for this skill:/i.test(normalized)
     && /^#\s+.+/im.test(normalized)
     && /\bARGUMENTS:/i.test(normalized);
+}
+
+/**
+ * 判定一条消息该不该收成折叠卡片、用哪种卡片。
+ *
+ * 判定分两条路：
+ *
+ * 1. 按角色。DSH 把系统提示词、命令回显（例如 `preset danger-full-access`）
+ *    这些非对话内容记成 `role: "system"`，用户发言和 AI 回复分别是 `user`
+ *    和 `assistant`。系统角色的消息一律收起，这是最可靠的依据 ——
+ *    它不依赖任何文案，DSH 改了提示词措辞也不会漏。
+ * 2. 按内容。历史消息可能是在角色修正之前落库的（那时注入内容被错标成 user），
+ *    所以保留原来的文案识别作为兜底。
+ *
+ * `forcedKind` 是时间线已经算好的结论（例如 Kimi 会话开头的系统提示词）；
+ * 一旦给出就直接采用，避免同一份判定在渲染组件和分组逻辑里各算一遍后结果不一致。
+ */
+function resolveFoldedPromptKind(
+  provider: ProviderId | null,
+  message: Pick<SessionMessageViewModel, "role" | "kind" | "content">,
+  forcedKind?: FoldedPromptKind | null
+): FoldedPromptKind | null {
+  if (forcedKind) {
+    return forcedKind;
+  }
+
+  if (provider === "deepseek-harness" && message.role === "system" && message.kind === "text") {
+    return "rules";
+  }
+
+  const { content } = message;
+
+  if (looksLikeRulesMessage(provider, content)) {
+    return "rules";
+  }
+
+  if (looksLikeHarnessRuntimeContextMessage(provider, content)) {
+    return "rules";
+  }
+
+  if (looksLikeSkillContextMessage(provider, content)) {
+    return "skill_context";
+  }
+
+  if (looksLikeHarnessStartupNoticeMessage(provider, content)) {
+    return "rules";
+  }
+
+  return null;
 }
 
 function getFoldedPromptSummary(kind: FoldedPromptKind, content: string) {
@@ -3309,6 +3477,11 @@ function collectRenderItemMessageIds(renderItems: TimelineRenderItem[]): string[
 
     if (item.type === "tool_group") {
       messageIds.push(...item.group.messageIds);
+      continue;
+    }
+
+    if (item.type === "prompt_group") {
+      messageIds.push(...item.messages.map((message) => message.id));
     }
   }
 
@@ -5305,6 +5478,82 @@ function RulesMessageCard({
   );
 }
 
+/**
+ * 多张折叠卡片合并后的呈现。
+ *
+ * 结构与 {@link RulesMessageCard} 保持一致（同一套 `rules-message-*` 样式），
+ * 区别只是标题、摘要和展开后的正文：标题说明这是会话启动信息，摘要是条数，
+ * 正文按原顺序平铺每条注入内容，中间用细分割线分开。
+ */
+function StartupMessagesCard({
+  messages,
+  forceExpanded = false,
+  exportMode = false
+}: {
+  messages: SessionMessageViewModel[];
+  forceExpanded?: boolean;
+  exportMode?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const resolvedExpanded = forceExpanded || expanded;
+  const title = t("conversation.startupMessagesTitle");
+  const summary = t("conversation.startupMessagesSummary", { count: messages.length });
+  const hint = t("conversation.startupMessagesHint");
+  const actionLabel = resolvedExpanded
+    ? t("conversation.rulesMessageCollapse")
+    : t("conversation.rulesMessageExpand");
+
+  return (
+    <article
+      className="message-item system-message rules-message-row"
+      data-message-id={messages[0]?.id}
+      data-system-messages={messages.length}
+    >
+      <div className="message-content-wrapper">
+        <div className="rules-message-card">
+          {forceExpanded ? (
+            <div className="rules-message-toggle" aria-expanded={resolvedExpanded}>
+              <div className="rules-message-heading">
+                <span className="rules-message-badge">{title}</span>
+                <span className="rules-message-summary">{summary}</span>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="rules-message-toggle"
+              aria-expanded={resolvedExpanded}
+              onClick={() => setExpanded((current) => !current)}
+            >
+              <div className="rules-message-heading">
+                <span className="rules-message-badge">{title}</span>
+                <span className="rules-message-summary">{summary}</span>
+              </div>
+              <span className="rules-message-action">{actionLabel}</span>
+            </button>
+          )}
+
+          <p className="rules-message-hint">{hint}</p>
+
+          {resolvedExpanded && (
+            <div className="rules-message-body">
+              {messages.map((message) => (
+                <div key={message.id} className="startup-message-entry">
+                  <MessageMarkdownBody
+                    content={message.content}
+                    className="message-text message-content markdown-content"
+                    exportMode={exportMode}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function MessageItem({
   message,
   provider,
@@ -5338,15 +5587,7 @@ function MessageItem({
     provider === "codex" && message.kind === "text"
       ? parseTurnAbortedMessage(message.content)
       : null;
-  const promptKind: FoldedPromptKind | null =
-    foldedPromptKind ??
-    (looksLikeRulesMessage(provider, message.content)
-      ? "rules"
-      : looksLikeHarnessRuntimeContextMessage(provider, message.content)
-        ? "rules"
-      : looksLikeSkillContextMessage(provider, message.content)
-        ? "skill_context"
-        : null);
+  const promptKind = resolveFoldedPromptKind(provider, message, foldedPromptKind);
   const canCollapseThinking = isThinking && provider === "deepseek-harness" && !exportMode;
   const collapsedThinkingInProgress = canCollapseThinking && thinkingInProgress && !thinkingExpanded;
   const shouldRenderThinkingContent = !canCollapseThinking || thinkingExpanded || exportMode;
@@ -6137,6 +6378,8 @@ export function ConversationTranscriptExport({
             </article>
           ) : item.type === "runtime_thinking" ? (
             renderRuntimeThinkingItem(item)
+          ) : item.type === "prompt_group" ? (
+            <StartupMessagesCard key={item.key} messages={item.messages} forceExpanded exportMode />
           ) : item.type === "runtime_notice" ? (
             renderRuntimeNoticeItem(item)
           ) : item.type === "session_error" ? (
@@ -6409,6 +6652,15 @@ export function MessageTimeline({
         type: item.type,
         key: item.key,
         summary: item.notice.summary
+      };
+    }
+
+    if (item.type === "prompt_group") {
+      return {
+        type: item.type,
+        key: item.key,
+        messageCount: item.messages.length,
+        messageIds: item.messages.map((message) => message.id)
       };
     }
 
@@ -6954,6 +7206,10 @@ export function MessageTimeline({
       return renderRuntimeThinkingItem(item);
     }
 
+    if (item.type === "prompt_group") {
+      return <StartupMessagesCard key={item.key} messages={item.messages} />;
+    }
+
     if (item.type === "runtime_notice") {
       return renderRuntimeNoticeItem(item);
     }
@@ -7147,6 +7403,14 @@ function buildMessageSignature(
         title: item.notice.title,
         summary: item.notice.summary,
         kindLabel: item.notice.kindLabel
+      });
+    }
+
+    if (item.type === "prompt_group") {
+      return JSON.stringify({
+        type: item.type,
+        key: item.key,
+        messageIds: item.messages.map((message) => message.id)
       });
     }
 
