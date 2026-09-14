@@ -733,6 +733,7 @@ describe("WorkbenchLayout", () => {
     expect(showDesktopContextMenuMock).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({ label: t("shell.renameAction") }),
+        expect.objectContaining({ label: t("shell.copySessionLinkAction") }),
         expect.objectContaining({
           label: t("conversation.exportAction"),
           items: [
@@ -794,6 +795,99 @@ describe("WorkbenchLayout", () => {
     expect(screen.getByRole("menuitem", { name: t("conversation.exportMarkdownAction") })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: t("conversation.exportPdfAction") })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: t("conversation.exportHtmlAction") })).toBeInTheDocument();
+  });
+
+  it("使用当前 Host 配置复制会话网页链接", async () => {
+    clientConfigStore.hydrate({
+      platform: "web",
+      activeHostId: "host-current",
+      hosts: [
+        {
+          id: "host-current",
+          name: "当前 Host",
+          alias: "LAN",
+          tagColor: null,
+          baseUrl: "http://10.255.0.83:3009",
+          kind: "lan",
+          peerEnabled: false,
+          peerHostId: null,
+          createdAt: "2026-09-14T00:00:00.000Z",
+          updatedAt: "2026-09-14T00:00:00.000Z",
+          lastConnectedAt: null,
+          lastUserId: null,
+          lastUsername: null
+        }
+      ]
+    });
+    authStore.hydrate({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      expiresIn: 3600,
+      user: {
+        userId: "user-1",
+        username: "admin",
+        role: "admin"
+      }
+    });
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+    Object.defineProperty(window.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+
+    try {
+      const currentSnapshot = createWorkbenchSnapshot([
+        {
+          workspace: createWorkspace("27d21167-d8c8-4899-ae2a-7a4b1690fad0", "项目一"),
+          sessions: [
+            createSessionSummary({
+              sessionId: "1210256b-e50f-43fd-a3b3-0e9b640ea690",
+              title: "会话 Alpha",
+              workspaceId: "27d21167-d8c8-4899-ae2a-7a4b1690fad0"
+            })
+          ]
+        }
+      ]);
+
+      MockWebSocket.workbenchSnapshot = currentSnapshot;
+      global.fetch = vi.fn(async (rawInput: RequestInfo | URL) => {
+        const url = typeof rawInput === "string" ? rawInput : rawInput.toString();
+
+        if (url.endsWith("/api/workbench")) {
+          return createJsonResponse(currentSnapshot);
+        }
+
+        throw new Error(`未处理的请求: ${url}`);
+      }) as typeof fetch;
+
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: 1280
+      });
+
+      renderWorkbenchRoute("/workspaces/27d21167-d8c8-4899-ae2a-7a4b1690fad0/sessions/1210256b-e50f-43fd-a3b3-0e9b640ea690");
+
+      const sessionCard = await findSessionCardByTitle("会话 Alpha");
+      openSessionCardContextMenu(sessionCard);
+      await userEvent.click(
+        await screen.findByRole("button", { name: t("shell.copySessionLinkAction") })
+      );
+
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(
+          "http://10.255.0.83:3009/workspaces/27d21167-d8c8-4899-ae2a-7a4b1690fad0/sessions/1210256b-e50f-43fd-a3b3-0e9b640ea690"
+        );
+      });
+      expect(await screen.findByText(t("shell.sessionLinkCopied"))).toBeInTheDocument();
+    } finally {
+      if (clipboardDescriptor) {
+        Object.defineProperty(window.navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(window.navigator, "clipboard");
+      }
+    }
   });
 
   it.each(["codex", "grok"] as const)("%s 删除当前工作区会话后会调用真实删除接口并回到会话列表", async (provider) => {
