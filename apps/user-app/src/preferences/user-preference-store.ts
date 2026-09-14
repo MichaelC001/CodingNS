@@ -46,6 +46,7 @@ const PREFERENCE_PROVIDER_IDS: PreferenceProviderId[] = [
   "opencode",
   "gemini",
   "kimi",
+  "legna-code",
   "deepseek-harness",
   "grok"
 ];
@@ -155,6 +156,10 @@ function createDefaultProviders(): AccountPreferenceState["providers"] {
       defaultReasoningLevel: null
     },
     kimi: {
+      defaultModel: null,
+      defaultReasoningLevel: null
+    },
+    "legna-code": {
       defaultModel: null,
       defaultReasoningLevel: null
     },

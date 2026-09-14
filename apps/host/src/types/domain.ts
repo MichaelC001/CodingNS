@@ -1115,7 +1115,9 @@ export type PreferenceProviderId =
   | "opencode"
   | "gemini"
   | "kimi"
-  | "deepseek-harness";
+  | "legna-code"
+  | "deepseek-harness"
+  | "grok";
 export type UserPreferenceLanguage = "zh-CN" | "en-US";
 export type UserPreferenceTheme = "light" | "dark" | "sky-blue" | "eye-green";
 export type UserPreferencePermissionMode = "default" | "acceptEdits" | "bypassPermissions";

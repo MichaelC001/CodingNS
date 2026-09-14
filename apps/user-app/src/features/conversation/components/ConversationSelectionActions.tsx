@@ -6,7 +6,7 @@ import { DesktopModal } from "../../../components/DesktopModal";
 import { MobileSheet } from "../../../components/MobileSheet";
 import { ModalActions, ModalField, ModalSection } from "../../../components/ModalAtoms";
 import { getDefaultSessionPermissionMode } from "../../../preferences/default-session-permission-mode";
-import { usePreferencesSelector } from "../../../preferences/preferences-store";
+import { updatePreferences, usePreferencesSelector } from "../../../preferences/preferences-store";
 import { isPreferenceProviderId } from "../../../preferences/user-preference-store";
 import { usePlatform } from "../../../platform/platform-provider";
 import { t } from "../../../shared/i18n";
@@ -420,6 +420,18 @@ export function ConversationSelectionActions({
     setSelectedProviderConfigMode("global-default");
     setSelectedProviderPresetId(null);
   }, [preferredModelForProvider, session, sessionProviderSelection.providerConfigMode, sessionProviderSelection.providerPresetId]);
+  const handleSelectedModelChange = useCallback((modelId: string) => {
+    setSelectedModel(modelId);
+    if (isPreferenceProviderId(selectedProvider)) {
+      void updatePreferences({
+        providers: {
+          [selectedProvider]: {
+            defaultModel: modelId === PROVIDER_DEFAULT_MODEL_ID ? null : modelId
+          }
+        }
+      }).catch(() => undefined);
+    }
+  }, [selectedProvider]);
   const selectedProviderDisabledReason = useMemo(() => {
     const selectedCapabilities =
       providerCapabilitiesMap[selectedProvider]
@@ -1161,7 +1173,7 @@ export function ConversationSelectionActions({
                   }}
                   modelOptions={deploymentModelOptions}
                   selectedModelValue={selectedModel}
-                  onSelectModel={setSelectedModel}
+                  onSelectModel={handleSelectedModelChange}
                   loadingPresets={deploymentSnapshotLoading}
                   loadingModels={loadingCapabilities}
                   modelColumnDisabled={loadingCapabilities || Boolean(selectedProviderDisabledReason)}
@@ -1173,7 +1185,7 @@ export function ConversationSelectionActions({
               <select
                 value={selectedModel}
                 disabled={loadingCapabilities || Boolean(selectedProviderDisabledReason)}
-                onChange={(event) => setSelectedModel(event.target.value)}
+                onChange={(event) => handleSelectedModelChange(event.target.value)}
               >
                 {modelOptions.map((item) => (
                   <option key={item.id} value={item.id}>

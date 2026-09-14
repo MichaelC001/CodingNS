@@ -3,6 +3,9 @@ import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 
 import { DesktopModal } from "../../../components/DesktopModal";
 import { ModalActions, ModalField, ModalSection } from "../../../components/ModalAtoms";
 import { getDefaultSessionPermissionMode } from "../../../preferences/default-session-permission-mode";
+import { updatePreferences, usePreferencesSelector } from "../../../preferences/preferences-store";
+import type { AccountPreferencesProfile } from "../../../preferences/types";
+import { isPreferenceProviderId } from "../../../preferences/user-preference-store";
 import { t } from "../../../shared/i18n";
 import {
   fetchModelManagementSnapshot,
@@ -97,10 +100,10 @@ interface ParallelSessionCreateModalProps {
   readonly onCreated: (detail: ParallelSessionGroupDetailDto) => void | Promise<void>;
 }
 
-function createMemberDraft(defaultProvider: ProviderId): ParallelSessionCreateMemberDraft {
+function createMemberDraft(defaultProvider: ProviderId, preferredModel: string): ParallelSessionCreateMemberDraft {
   return {
     provider: defaultProvider,
-    model: "",
+    model: preferredModel,
     providerConfigMode: "global-default",
     providerPresetId: null,
     memberPrompt: "",
@@ -108,8 +111,33 @@ function createMemberDraft(defaultProvider: ProviderId): ParallelSessionCreateMe
   };
 }
 
-function createMemberDrafts(defaultProvider: ProviderId, count: number) {
-  return Array.from({ length: count }, () => createMemberDraft(defaultProvider));
+function createMemberDrafts(defaultProvider: ProviderId, count: number, preferredModel: string) {
+  return Array.from({ length: count }, () => createMemberDraft(defaultProvider, preferredModel));
+}
+
+function getPreferredModelForProvider(
+  provider: ProviderId,
+  providerPreferences: AccountPreferencesProfile["providers"]
+): string {
+  if (!isPreferenceProviderId(provider)) {
+    return "";
+  }
+
+  return providerPreferences[provider]?.defaultModel?.trim() ?? "";
+}
+
+function persistPreferredModel(provider: ProviderId, model: string): void {
+  if (!isPreferenceProviderId(provider)) {
+    return;
+  }
+
+  void updatePreferences({
+    providers: {
+      [provider]: {
+        defaultModel: model === PROVIDER_DEFAULT_MODEL_ID ? null : model
+      }
+    }
+  }).catch(() => undefined);
 }
 
 function resolveModelOptions(
@@ -148,6 +176,8 @@ export function ParallelSessionCreateModal({
 }: ParallelSessionCreateModalProps) {
   const modalFieldIdPrefix = useId();
   const defaultProvider = source?.defaultProvider ?? "codex";
+  const providerPreferences = usePreferencesSelector((state) => state.profile.providers);
+  const defaultProviderModel = getPreferredModelForProvider(defaultProvider, providerPreferences);
   const promptLocked = source?.kind === "group";
   const maxSelectableMemberCount = source?.kind === "group" ? Math.max(0, 4 - source.currentMemberCount) : 4;
   const countOptions = useMemo(
@@ -167,7 +197,7 @@ export function ParallelSessionCreateModal({
   const [sharedPrompt, setSharedPrompt] = useState(initialSharedPrompt);
   const [memberCount, setMemberCount] = useState(initialMemberCount);
   const [members, setMembers] = useState<ParallelSessionCreateMemberDraft[]>(() =>
-    createMemberDrafts(defaultProvider, initialMemberCount)
+    createMemberDrafts(defaultProvider, initialMemberCount, defaultProviderModel)
   );
   const [providerCapabilitiesByProvider, setProviderCapabilitiesByProvider] = useState<
     Partial<Record<ProviderId, ProviderCapabilitiesDto>>
@@ -203,7 +233,13 @@ export function ParallelSessionCreateModal({
     const nextMemberCount = source?.kind === "group" ? 1 : 2;
     setSharedPrompt(source?.kind === "group" ? source.sharedPrompt : "");
     setMemberCount(nextMemberCount);
-    setMembers(createMemberDrafts(nextDefaultProvider, nextMemberCount));
+    setMembers(
+      createMemberDrafts(
+        nextDefaultProvider,
+        nextMemberCount,
+        getPreferredModelForProvider(nextDefaultProvider, providerPreferences)
+      )
+    );
     setProviderCapabilitiesByProvider({});
     setDeploymentSnapshotsByApp({});
     setLoadingDeploymentApps({});
@@ -226,7 +262,8 @@ export function ParallelSessionCreateModal({
     source?.kind === "session" ? source.sessionId : null,
     source?.kind === "group" ? source.groupId : null,
     source?.kind === "group" ? source.sharedPrompt : null,
-    targetHostId
+    targetHostId,
+    defaultProviderModel
   ]);
 
   useEffect(() => {
@@ -243,12 +280,15 @@ export function ParallelSessionCreateModal({
       const fallbackProvider = current[0]?.provider ?? defaultProvider;
 
       while (nextMembers.length < memberCount) {
-        nextMembers.push(createMemberDraft(fallbackProvider));
+        nextMembers.push(createMemberDraft(
+          fallbackProvider,
+          getPreferredModelForProvider(fallbackProvider, providerPreferences)
+        ));
       }
 
       return nextMembers;
     });
-  }, [defaultProvider, memberCount]);
+  }, [defaultProvider, memberCount, providerPreferences]);
 
   useEffect(() => {
     if (countOptions.length === 0) {
@@ -550,8 +590,11 @@ export function ParallelSessionCreateModal({
 
         const allowedModelValues = new Set(memberConfig.modelOptions.map((option) => option.value));
         const currentModelValue = nextMember.model.trim() || PROVIDER_DEFAULT_MODEL_ID;
+        const modelLoading = normalizedSelection.providerConfigMode === "cc-switch-preset"
+          ? memberConfig.loadingModels
+          : loadingProviderCapabilities;
 
-        if (!allowedModelValues.has(currentModelValue)) {
+        if (!modelLoading && !allowedModelValues.has(currentModelValue)) {
           nextMember = {
             ...nextMember,
             model: ""
@@ -564,7 +607,7 @@ export function ParallelSessionCreateModal({
 
       return changed ? nextMembers : current;
     });
-  }, [memberConfigs, open]);
+  }, [loadingProviderCapabilities, memberConfigs, open]);
 
   if (!open || !source) {
     return null;
@@ -957,7 +1000,7 @@ export function ParallelSessionCreateModal({
                                     provider: nextProvider,
                                     providerConfigMode: "global-default",
                                     providerPresetId: null,
-                                    model: ""
+                                    model: getPreferredModelForProvider(nextProvider, providerPreferences)
                                   }
                                 : item
                             )
@@ -1007,6 +1050,7 @@ export function ParallelSessionCreateModal({
                             selectedModelValue={selectedModelValue}
                             onSelectModel={(value) => {
                               clearFeedbackForMember(index);
+                              persistPreferredModel(draft.provider, value);
                               setMembers((current) =>
                                 current.map((item, memberIndex) =>
                                   memberIndex === index
@@ -1035,6 +1079,7 @@ export function ParallelSessionCreateModal({
                           disabled={!memberProviderOptions.length || legacyModelOptions.length === 0}
                           onChange={(value) => {
                             clearFeedbackForMember(index);
+                            persistPreferredModel(draft.provider, value || PROVIDER_DEFAULT_MODEL_ID);
                             setMembers((current) =>
                               current.map((item, memberIndex) =>
                                 memberIndex === index

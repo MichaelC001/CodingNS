@@ -6,6 +6,7 @@ export type PreferenceProviderId =
   | "codex"
   | "opencode"
   | "gemini"
+  | "legna-code"
   | "kimi"
   | "deepseek-harness"
   | "grok";

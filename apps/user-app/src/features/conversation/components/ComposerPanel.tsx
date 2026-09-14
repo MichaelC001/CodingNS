@@ -25,7 +25,6 @@ import {
   createDraftCapabilities,
   getProviderDisplayName,
   getProviderFromCapabilities,
-  shouldPersistReasoningLevel,
   shouldShowSlashMenu,
   shouldSupportRunSteering,
   supportsReasoningSelector
@@ -1350,12 +1349,21 @@ export function ComposerPanel({
   const handleModelChange = useCallback((modelId: string) => {
     userSelectedModelRef.current = true;
     setSelectedModel(modelId);
+    if (isPreferenceProviderId(provider)) {
+      void updatePreferences({
+        providers: {
+          [provider]: {
+            defaultModel: modelId === PROVIDER_DEFAULT_MODEL_ID ? null : modelId
+          }
+        }
+      }).catch(() => undefined);
+    }
     persistSessionSelection({
       selectedModel: modelId === PROVIDER_DEFAULT_MODEL_ID ? null : modelId,
       providerConfigMode: currentProviderSelection.providerConfigMode,
       providerPresetId: currentProviderSelection.providerPresetId
     });
-  }, [currentProviderSelection, persistSessionSelection]);
+  }, [currentProviderSelection, persistSessionSelection, provider]);
 
   const handleAgentPresetChange = useCallback((presetId: string) => {
     setSelectedAgentPreset(presetId);
@@ -1922,7 +1930,19 @@ export function ComposerPanel({
   }, [availableModels, draftStorageId, provider, selectedModel, accountPreferredModel, initialModel]);
 
   useEffect(() => {
-    if (!shouldPersistReasoningLevel(provider) || availableReasoningLevels.length === 0) {
+    if (availableReasoningLevels.length === 0) {
+      return;
+    }
+
+    const normalizedInitialReasoningLevel = normalizeModelReasoningLevel(initialReasoningLevel);
+
+    if (
+      normalizedInitialReasoningLevel
+      && availableReasoningLevels.some((level) => level.value === normalizedInitialReasoningLevel)
+    ) {
+      if (reasoningLevel !== normalizedInitialReasoningLevel) {
+        setReasoningLevel(normalizedInitialReasoningLevel);
+      }
       return;
     }
 
@@ -1976,6 +1996,7 @@ export function ComposerPanel({
   }, [
     availableReasoningLevels,
     capabilities?.defaultReasoningLevel,
+    initialReasoningLevel,
     provider,
     reasoningLevel,
     accountPreferredReasoningLevel,
