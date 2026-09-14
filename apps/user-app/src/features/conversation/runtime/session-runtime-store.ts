@@ -1170,11 +1170,15 @@ export class SessionRuntimeStore {
       this.lastMarkSeenRequestAt = Date.now();
       void markSessionSeen(this.sessionId, { targetHostId: this.options.targetHostId })
         .then(() => {
-          this.bumpSeenWatermark(nextTargetSeenAt);
+          const effectiveSeenAt = maxIsoTimestamp(
+            nextTargetSeenAt,
+            this.state.session?.completedAt ?? null
+          ) ?? nextTargetSeenAt;
+          this.bumpSeenWatermark(effectiveSeenAt);
           this.patch({
-            session: withLastSeenAt(this.state.session, nextTargetSeenAt)
+            session: withLastSeenAt(this.state.session, effectiveSeenAt)
           });
-          this.options.onSeen?.(this.sessionId, nextTargetSeenAt);
+          this.options.onSeen?.(this.sessionId, effectiveSeenAt);
           logPerfDebug("session_seen.end", {
             sessionId: this.sessionId,
             seenWatermark: this.seenWatermark
@@ -1915,18 +1919,21 @@ export class SessionRuntimeStore {
     const latestVisibleMessage = [...this.state.messages]
       .reverse()
       .find((message) => message.role !== "user");
+    const latestVisibleAt = latestVisibleMessage?.timestamp ?? null;
+    const completedAt = this.state.session?.completedAt ?? null;
+    const targetSeenAt = maxIsoTimestamp(latestVisibleAt, completedAt);
 
-    if (!latestVisibleMessage) {
+    if (!targetSeenAt) {
       return null;
     }
 
     const lastSeenAt = this.seenWatermark;
 
     if (!lastSeenAt) {
-      return latestVisibleMessage.timestamp;
+      return targetSeenAt;
     }
 
-    return latestVisibleMessage.timestamp > lastSeenAt ? latestVisibleMessage.timestamp : null;
+    return targetSeenAt > lastSeenAt ? targetSeenAt : null;
   }
 
   private syncSeenWatermark(session: SessionSummaryDto | null): void {

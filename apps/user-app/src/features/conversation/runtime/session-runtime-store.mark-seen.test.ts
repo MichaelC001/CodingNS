@@ -379,6 +379,158 @@ describe("SessionRuntimeStore mark seen", () => {
     store.destroy();
   });
 
+  it("完成事件晚于最后一条消息时，已读水印覆盖完成时间", async () => {
+    vi.useFakeTimers();
+    const onSeen = vi.fn();
+    const store = new SessionRuntimeStore("session-1", {
+      onSeen,
+      initialSession: {
+        sessionId: "session-1",
+        workspaceId: "workspace-1",
+        provider: "opencode",
+        providerSessionId: "raw-1",
+        rawStoreRef: "opencode://raw-1",
+        title: "session-1",
+        messageCount: 1,
+        lastMessageAt: "2026-03-24T10:00:00.000Z",
+        createdAt: "2026-03-24T09:00:00.000Z",
+        updatedAt: "2026-03-24T10:00:05.000Z",
+        syncStatus: "idle",
+        syncCursor: "cursor-sync",
+        lastSyncAt: "2026-03-24T10:00:05.000Z",
+        lastErrorCode: null,
+        lastErrorDetail: null,
+        resumedAt: null,
+        runningState: "running",
+        activitySource: "runtime",
+        lastEventAt: "2026-03-24T10:00:00.000Z",
+        completedAt: null,
+        lastSeenAt: null,
+        activityState: "running"
+      }
+    });
+
+    await store.initialize();
+    emitRealtimeSubscribed();
+    emitRealtimeActivity({
+      sessionId: "session-1",
+      runningState: "completed",
+      activityResolutionSource: "authoritative_provider_event",
+      activityConfidence: "authoritative",
+      runId: "run-1",
+      detail: null,
+      interruptSource: null,
+      errorCode: null,
+      errorDetail: null,
+      hasActiveRun: false,
+      updatedAt: "2026-03-24T10:00:05.000Z",
+      watchdogTriggeredAt: null
+    });
+    emitRealtimeEnvelope({
+      type: "session.backfill",
+      sessionId: "session-1",
+      cursor: "cursor-latest",
+      messages: [
+        {
+          messageId: "assistant-1",
+          provider: "opencode",
+          providerSessionId: "raw-1",
+          role: "assistant",
+          kind: "text",
+          content: "hello",
+          timestamp: "2026-03-24T10:00:00.000Z",
+          sequence: 1,
+          rawRef: "opencode://raw#line=1",
+          toolCall: null
+        }
+      ]
+    });
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(onSeen).toHaveBeenCalledWith("session-1", "2026-03-24T10:00:05.000Z");
+    expect(store.getState().session?.lastSeenAt).toBe("2026-03-24T10:00:05.000Z");
+
+    store.destroy();
+  });
+
+  it("最后一条消息早于既有已读水印时，仍会按完成时间标记已读", async () => {
+    vi.useFakeTimers();
+    const onSeen = vi.fn();
+    const store = new SessionRuntimeStore("session-1", {
+      onSeen,
+      initialSession: {
+        sessionId: "session-1",
+        workspaceId: "workspace-1",
+        provider: "opencode",
+        providerSessionId: "raw-1",
+        rawStoreRef: "opencode://raw-1",
+        title: "session-1",
+        messageCount: 1,
+        lastMessageAt: "2026-03-24T10:00:00.000Z",
+        createdAt: "2026-03-24T09:00:00.000Z",
+        updatedAt: "2026-03-24T10:00:05.000Z",
+        syncStatus: "idle",
+        syncCursor: "cursor-sync",
+        lastSyncAt: "2026-03-24T10:00:05.000Z",
+        lastErrorCode: null,
+        lastErrorDetail: null,
+        resumedAt: null,
+        runningState: "completed",
+        activitySource: "runtime",
+        lastEventAt: "2026-03-24T10:00:05.000Z",
+        completedAt: "2026-03-24T10:00:05.000Z",
+        lastSeenAt: "2026-03-24T10:00:01.000Z",
+        activityState: "completed_unread"
+      }
+    });
+
+    mocked.getSessionRuntime.mockResolvedValueOnce({
+      sessionId: "session-1",
+      runningState: "completed",
+      hasActiveRun: false,
+      canAttach: false,
+      canInterrupt: false,
+      inRunInputMode: "none",
+      provider: "opencode",
+      providerSessionId: "raw-1",
+      detail: null,
+      interruptSource: null,
+      errorCode: null,
+      errorDetail: null,
+      updatedAt: "2026-03-24T10:00:05.000Z",
+      completedAt: "2026-03-24T10:00:05.000Z",
+      contextUsage: null
+    });
+
+    await store.initialize();
+    emitRealtimeSubscribed();
+    emitRealtimeEnvelope({
+      type: "session.backfill",
+      sessionId: "session-1",
+      cursor: "cursor-latest",
+      messages: [
+        {
+          messageId: "assistant-1",
+          provider: "opencode",
+          providerSessionId: "raw-1",
+          role: "assistant",
+          kind: "text",
+          content: "hello",
+          timestamp: "2026-03-24T10:00:00.000Z",
+          sequence: 1,
+          rawRef: "opencode://raw#line=1",
+          toolCall: null
+        }
+      ]
+    });
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(onSeen).toHaveBeenCalledWith("session-1", "2026-03-24T10:00:05.000Z");
+    expect(store.getState().session?.activityState).toBe("idle");
+
+    store.destroy();
+  });
+
   it("does not repeat mark seen when navigation session pushes an older lastSeenAt", async () => {
     vi.useFakeTimers();
     const store = new SessionRuntimeStore("session-1", {
