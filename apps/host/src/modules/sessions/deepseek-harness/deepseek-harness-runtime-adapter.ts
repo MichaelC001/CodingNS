@@ -188,7 +188,9 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
       if (permissionPreset) {
         await client.executeCommand(providerSessionId, `/permission ${permissionPreset}`);
       }
-      const selection = parseModelSelection(request.options.model);
+      const selection = hasImageAttachment(request.options)
+        ? await resolveImageModelSelection(client, providerSessionId, request.options)
+        : parseModelSelection(request.options.model);
       if (selection) {
         await selectModelWithReasoningFallback(
           client,
@@ -219,6 +221,15 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
           throw new Error("SESSION_NOT_RUNNING");
         }
 
+        const selection = await resolveImageModelSelection(client, providerSessionId!, options);
+        if (selection) {
+          await selectModelWithReasoningFallback(
+            client,
+            providerSessionId!,
+            selection,
+            options.reasoningLevel ?? undefined
+          );
+        }
         await client.prompt(
           providerSessionId!,
           await buildPromptContent(options, request.workspacePath, this.attachmentRootDir),
@@ -263,6 +274,68 @@ function parseModelSelection(value: string | null): { provider: string; model: s
   const separator = normalized.indexOf(":");
   if (separator <= 0 || separator === normalized.length - 1) return { provider: "deepseek", model: normalized };
   return { provider: normalized.slice(0, separator), model: normalized.slice(separator + 1) };
+}
+
+const DEEPSEEK_V41_FLASH_ALIASES = new Set([
+  "deepseek-v4.1-flash",
+  "deepseek-v41-flash",
+  "deepseek-v4-1-flash"
+]);
+
+function hasImageAttachment(options: RuntimeSendOptions): boolean {
+  return options.attachments.some((attachment) => attachment.kind === "image");
+}
+
+/**
+ * Harness 的 DeepSeek 目录把 V4.1 Flash 的正式模型 ID 记为 deepseek-flash。
+ * CodingNS 旧配置可能仍保存 deepseek-v4.1-flash；只有真正发送图片时才切换，
+ * 这样不会改变普通文本请求，也不会误伤第三方 provider 的同名模型。
+ */
+async function resolveImageModelSelection(
+  client: DeepSeekHarnessApiClient,
+  providerSessionId: string,
+  options: RuntimeSendOptions
+): Promise<{ provider: string; model: string } | null> {
+  if (!hasImageAttachment(options)) return null;
+
+  const configured = parseModelSelection(options.model);
+  if (configured) return normalizeDeepSeekImageModelSelection(configured) ?? configured;
+
+  try {
+    const catalog = await client.models(providerSessionId);
+    return normalizeDeepSeekImageModelSelection(readDefaultModelSelection(catalog));
+  } catch {
+    // 目录读取失败时保留原有行为，让 Harness 自己返回真实的模型错误。
+    return null;
+  }
+}
+
+function readDefaultModelSelection(input: unknown): { provider: string; model: string } | null {
+  if (!isRecord(input) || !isRecord(input.default)) return null;
+  const provider = typeof input.default.provider === "string" ? input.default.provider.trim() : "";
+  const model = typeof input.default.model === "string" ? input.default.model.trim() : "";
+  return provider && model ? { provider, model } : null;
+}
+
+function normalizeDeepSeekImageModelSelection(
+  selection: { provider: string; model: string } | null
+): { provider: string; model: string } | null {
+  if (!selection) return null;
+
+  const provider = selection.provider.trim().toLowerCase();
+  const model = selection.model.trim().toLowerCase();
+  if (
+    (provider === "deepseek" || provider === "deepseek-official")
+    && DEEPSEEK_V41_FLASH_ALIASES.has(model)
+  ) {
+    return { ...selection, model: "deepseek-flash" };
+  }
+
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function selectModelWithReasoningFallback(
