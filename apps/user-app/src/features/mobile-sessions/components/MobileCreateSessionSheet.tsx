@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import {
   ModalField,
@@ -12,6 +12,7 @@ import { MobileSheet } from "../../../components/MobileSheet";
 import { useHaptics } from "../../../shared/haptics";
 import { t } from "../../../shared/i18n";
 import {
+  cancelWorkspaceSessionScan,
   getWorkspaceSessionScanStatus,
   requestWorkspaceSessionScan,
   type ProviderId,
@@ -43,6 +44,7 @@ export function MobileCreateSessionSheet({
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [scanStatus, setScanStatus] = useState<"idle" | "scanning" | "success" | "error">("idle");
   const [scanResultCount, setScanResultCount] = useState<number | null>(null);
+  const activeScanRef = useRef<ActiveWorkspaceScan | null>(null);
   const haptics = useHaptics();
   const selectionOptions = useMemo(
     () =>
@@ -72,6 +74,22 @@ export function MobileCreateSessionSheet({
     setScanResultCount(null);
   }, [initialWorkspaceId, open, selectionOptionKey]);
 
+  useEffect(() => {
+    if (open) {
+      return;
+    }
+
+    activeScanRef.current?.controller.abort();
+    activeScanRef.current = null;
+  }, [open]);
+
+  useEffect(() => {
+    return () => {
+      activeScanRef.current?.controller.abort();
+      activeScanRef.current = null;
+    };
+  }, []);
+
   if (!open) {
     return null;
   }
@@ -85,23 +103,83 @@ export function MobileCreateSessionSheet({
     if (!selectedWorkspaceId || scanStatus === "scanning") {
       return;
     }
+
+    const targetHostId = resolveTargetHostId?.(selectedWorkspaceId) ?? null;
+    const scan: ActiveWorkspaceScan = {
+      workspaceId: selectedWorkspaceId,
+      targetHostId,
+      controller: new AbortController(),
+      cancelRequested: false
+    };
+
+    activeScanRef.current = scan;
     setScanStatus("scanning");
     setScanResultCount(null);
+
     try {
-      const targetHostId = resolveTargetHostId?.(selectedWorkspaceId) ?? null;
-      await requestWorkspaceSessionScan(selectedWorkspaceId, { targetHostId });
-      let status = await getWorkspaceSessionScanStatus(selectedWorkspaceId, { targetHostId });
-      for (let attempt = 0; attempt < 120 && (status.status === "queued" || status.status === "running"); attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 500));
-        status = await getWorkspaceSessionScanStatus(selectedWorkspaceId, { targetHostId });
+      await requestWorkspaceSessionScan(selectedWorkspaceId, {
+        targetHostId,
+        signal: scan.controller.signal
+      });
+      if (scan.controller.signal.aborted) {
+        return;
       }
+
+      let status = await getWorkspaceSessionScanStatus(selectedWorkspaceId, {
+        targetHostId,
+        signal: scan.controller.signal
+      });
+      for (let attempt = 0; attempt < 120 && (status.status === "queued" || status.status === "running"); attempt += 1) {
+        if (!(await waitForScanPoll(scan.controller.signal, 500))) {
+          return;
+        }
+        status = await getWorkspaceSessionScanStatus(selectedWorkspaceId, {
+          targetHostId,
+          signal: scan.controller.signal
+        });
+      }
+      if (scan.controller.signal.aborted) {
+        return;
+      }
+
       if (status.status !== "succeeded") {
         throw new Error(status.errorMessage ?? t("shell.workspaceSessionScanFailed"));
       }
       setScanResultCount(status.resultCount);
       setScanStatus("success");
     } catch {
-      setScanStatus("error");
+      if (!scan.cancelRequested && !scan.controller.signal.aborted) {
+        setScanStatus("error");
+      }
+    } finally {
+      if (activeScanRef.current === scan) {
+        activeScanRef.current = null;
+      }
+    }
+  }
+
+  async function handleCancelWorkspaceScan() {
+    const scan = activeScanRef.current;
+    if (!scan) {
+      return;
+    }
+
+    scan.cancelRequested = true;
+    // 先停止本地轮询和共享请求，再通知实际工作区所在 Host 取消任务。
+    scan.controller.abort();
+
+    try {
+      await cancelWorkspaceSessionScan(scan.workspaceId, {
+        targetHostId: scan.targetHostId
+      });
+    } catch {
+      // 取消请求失败时，服务端任务仍可能继续；本地不再继续轮询，避免污染其他会话。
+    } finally {
+      if (activeScanRef.current === scan) {
+        activeScanRef.current = null;
+        setScanStatus("idle");
+        setScanResultCount(null);
+      }
     }
   }
 
@@ -200,6 +278,18 @@ export function MobileCreateSessionSheet({
                 ? t("shell.workspaceSessionScanSucceeded", { count: scanResultCount ?? 0 })
                 : t("shell.workspaceSessionScanAction")}
           </button>
+          {scanStatus === "scanning" ? (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                void haptics.trigger("selection");
+                void handleCancelWorkspaceScan();
+              }}
+            >
+              {t("shell.workspaceSessionScanCancel")}
+            </button>
+          ) : null}
         </ModalActions>
         {scanStatus === "error" ? (
           <span className="mobile-create-session-scan-error">{t("shell.workspaceSessionScanFailed")}</span>
@@ -224,6 +314,34 @@ export function MobileCreateSessionSheet({
       </ModalSection>
     </MobileSheet>
   );
+}
+
+interface ActiveWorkspaceScan {
+  workspaceId: string;
+  targetHostId: string | null;
+  controller: AbortController;
+  cancelRequested: boolean;
+}
+
+function waitForScanPoll(signal: AbortSignal, delayMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, delayMs);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(false);
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function resolveInitialWorkspaceId(

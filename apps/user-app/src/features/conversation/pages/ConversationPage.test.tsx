@@ -1875,10 +1875,8 @@ describe("ConversationPage", () => {
     );
 
     await waitFor(() => {
-      expect(selectWorkspace).toHaveBeenCalledWith("workspace-2", {
-        hostId: "current",
-        workspaceId: "workspace-2"
-      });
+      // 当前 Host 不需要把 current 伪作用域写进路由或 shell；远程 Host 才透传明确的 hostId。
+      expect(selectWorkspace).toHaveBeenCalledWith("workspace-2", undefined);
       expect(screen.getByTestId("route-probe")).toHaveTextContent("/workspaces/workspace-2/sessions");
     });
   });

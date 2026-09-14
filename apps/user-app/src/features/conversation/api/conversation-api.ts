@@ -2578,7 +2578,9 @@ export function createWorkspaceDirectory(payload: CreateWorkspaceDirectoryPayloa
 export function listWorkspaceSessions(workspaceId: string, options?: ScopedRequestOptions) {
   return httpClient.request<{ items: SessionSummaryDto[] }>(
     `/api/sessions?workspaceId=${encodeURIComponent(workspaceId)}`,
-    { targetHostId: options?.targetHostId ?? undefined }
+    {
+      targetHostId: options?.targetHostId ?? undefined
+    }
   );
 }
 
@@ -2612,6 +2614,7 @@ export function requestWorkspaceSessionScan(workspaceId: string, options?: Scope
   return httpClient.request<WorkspaceDiscoveryScanResponseDto>("/api/sessions/discovery/scan", {
     method: "POST",
     targetHostId: options?.targetHostId ?? undefined,
+    signal: options?.signal,
     body: JSON.stringify({ workspaceId })
   });
 }
@@ -2619,7 +2622,10 @@ export function requestWorkspaceSessionScan(workspaceId: string, options?: Scope
 export function getWorkspaceSessionScanStatus(workspaceId: string, options?: ScopedRequestOptions) {
   return httpClient.request<WorkspaceDiscoveryScanStatusDto>(
     `/api/sessions/discovery/status?workspaceId=${encodeURIComponent(workspaceId)}`,
-    { targetHostId: options?.targetHostId ?? undefined }
+    {
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal
+    }
   );
 }
 
@@ -2628,7 +2634,8 @@ export function cancelWorkspaceSessionScan(workspaceId: string, options?: Scoped
     `/api/sessions/discovery/scan?workspaceId=${encodeURIComponent(workspaceId)}`,
     {
       method: "DELETE",
-      targetHostId: options?.targetHostId ?? undefined
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal
     }
   );
 }
@@ -2741,9 +2748,13 @@ export function createParallelGroupFromWorkspace(
   );
 }
 
-export function getParallelGroupDetail(groupId: string) {
+export function getParallelGroupDetail(groupId: string, options?: ScopedRequestOptions) {
   return httpClient.request<ParallelSessionGroupDetailDto>(
-    `/api/parallel-groups/${encodeURIComponent(groupId)}`
+    `/api/parallel-groups/${encodeURIComponent(groupId)}`,
+    {
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal
+    }
   );
 }
 
@@ -2986,6 +2997,12 @@ export function getSessionMessages(
   direction: HistoryDirection = "forward",
   options?: ScopedRequestOptions
 ) {
+  // 组件已经卸载时不应因为一个过期调用新建网络请求；同时不能把这个调用
+  // 当成共享请求的订阅者，否则会让后续正常调用继承一个已经取消的语义。
+  if (options?.signal?.aborted) {
+    return Promise.reject(new DOMException("会话历史请求已取消", "AbortError"));
+  }
+
   const search = new URLSearchParams();
 
   if (cursor) {
@@ -2997,28 +3014,86 @@ export function getSessionMessages(
 
   const targetHostId = options?.targetHostId ?? undefined;
   const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages?${search.toString()}`;
-  // 同一会话首屏可能同时被实时控制器和详情组件请求；无 AbortSignal 时共享同一个 HTTP 请求。
-  if (options?.signal) {
-    return httpClient.request<HistoryPageDto>(url, { targetHostId, signal: options.signal });
-  }
-
   const requestKey = `${targetHostId ?? "current"}:${url}`;
-  const existing = sessionMessageRequestCache.get(requestKey);
-  if (existing) {
-    return existing;
+  let entry = sessionMessageRequestCache.get(requestKey);
+
+  if (!entry) {
+    const controller = new AbortController();
+    const promise = httpClient.request<HistoryPageDto>(url, {
+      targetHostId,
+      signal: controller.signal
+    });
+    entry = {
+      promise,
+      controller,
+      hasUnscopedCaller: false,
+      activeSignals: new Set<AbortSignal>()
+    };
+    sessionMessageRequestCache.set(requestKey, entry);
+    void promise.then(
+      () => cleanupSessionMessageRequest(requestKey, entry!),
+      () => cleanupSessionMessageRequest(requestKey, entry!)
+    );
   }
 
-  const request = httpClient.request<HistoryPageDto>(url, { targetHostId });
-  sessionMessageRequestCache.set(requestKey, request);
-  void request.finally(() => {
-    if (sessionMessageRequestCache.get(requestKey) === request) {
-      sessionMessageRequestCache.delete(requestKey);
+  // 共享请求不能直接绑定第一个调用方的 AbortSignal，否则组件卸载会把其他会话的请求一起取消。
+  // 只有所有调用方都已取消，且没有未绑定 signal 的调用方时，才终止底层请求。
+  if (options?.signal) {
+    if (!options.signal.aborted) {
+      entry.activeSignals.add(options.signal);
+      const onAbort = () => {
+        entry?.activeSignals.delete(options.signal!);
+        abortSessionMessageRequestIfUnused(requestKey, entry!);
+      };
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      void entry.promise.then(
+        () => options.signal?.removeEventListener("abort", onAbort),
+        () => options.signal?.removeEventListener("abort", onAbort)
+      );
     }
-  });
-  return request;
+  } else {
+    entry.hasUnscopedCaller = true;
+  }
+
+  return entry.promise;
 }
 
-const sessionMessageRequestCache = new Map<string, Promise<HistoryPageDto>>();
+interface SessionMessageRequestEntry {
+  promise: Promise<HistoryPageDto>;
+  controller: AbortController;
+  hasUnscopedCaller: boolean;
+  activeSignals: Set<AbortSignal>;
+}
+
+const sessionMessageRequestCache = new Map<string, SessionMessageRequestEntry>();
+
+function cleanupSessionMessageRequest(key: string, entry: SessionMessageRequestEntry): void {
+  if (sessionMessageRequestCache.get(key) === entry) {
+    sessionMessageRequestCache.delete(key);
+  }
+}
+
+function abortSessionMessageRequestIfUnused(
+  key: string,
+  entry: SessionMessageRequestEntry
+): void {
+  if (!entry.hasUnscopedCaller && entry.activeSignals.size === 0 && !entry.controller.signal.aborted) {
+    entry.controller.abort(new DOMException("会话历史请求已取消", "AbortError"));
+
+    // 底层请求进入取消状态后立即移出缓存，避免会话切换期间的新调用拿到
+    // 一个注定失败的旧 Promise。已经在使用该 Promise 的调用仍会正常收到取消结果。
+    if (sessionMessageRequestCache.get(key) === entry) {
+      sessionMessageRequestCache.delete(key);
+    }
+  }
+}
+
+export function resetSessionMessageRequestCacheForTesting(): void {
+  for (const entry of sessionMessageRequestCache.values()) {
+    entry.controller.abort(new DOMException("测试清理会话历史请求", "AbortError"));
+  }
+  sessionMessageRequestCache.clear();
+}
 
 export function getSessionAttachmentBlob(sessionId: string, attachmentId: string, options?: ScopedRequestOptions) {
   return httpClient.requestBlob(

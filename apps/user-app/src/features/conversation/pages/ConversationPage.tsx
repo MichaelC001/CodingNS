@@ -1140,6 +1140,7 @@ function LiveConversationPage({
         navigationGroups={navigationGroups}
         workspaceId={branchTreeWorkspaceId}
         sessionId={sessionId}
+        targetHostId={effectiveTargetHostId}
         onClose={() => setBranchTreeOpen(false)}
         onOpenSession={(targetSession) => {
           setBranchTreeOpen(false);

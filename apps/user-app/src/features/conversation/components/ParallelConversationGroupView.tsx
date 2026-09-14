@@ -325,7 +325,9 @@ export function ParallelConversationGroupView({
       setError(null);
 
       try {
-        const nextDetail = await getParallelGroupDetail(groupId);
+        const nextDetail = await getParallelGroupDetail(groupId, {
+          targetHostId: currentTargetHostId
+        });
 
         if (cancelled) {
           return;
@@ -350,7 +352,7 @@ export function ParallelConversationGroupView({
     return () => {
       cancelled = true;
     };
-  }, [groupId]);
+  }, [currentTargetHostId, groupId]);
 
   useEffect(() => {
     const transitionSignal = readParallelGroupTransitionSignal(groupId);
@@ -853,6 +855,7 @@ function ParallelConversationMemberPane({
     steerQueuedMessage
   } = useLiveSessionController({
     sessionId,
+    targetHostId: currentTargetHostId,
     externalSession: activePaneSession,
     onSeen: (seenSessionId, seenAt) => {
       markNavigationSessionSeen(seenSessionId, seenAt);

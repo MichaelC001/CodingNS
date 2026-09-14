@@ -33,6 +33,7 @@ interface SessionBranchTreePanelProps {
   navigationGroups: WorkspaceSessionGroup[];
   workspaceId: string | null;
   sessionId: string;
+  targetHostId?: string | null;
   onClose: () => void;
   onOpenSession: (session: SessionSummaryDto) => void;
 }
@@ -973,11 +974,13 @@ function BranchCanvasTree({
 export function SessionBranchTreeExplorer({
   model,
   onOpenSession,
-  onClose
+  onClose,
+  targetHostId
 }: {
   model: SessionBranchTreeModel;
   onOpenSession: (session: SessionSummaryDto) => void;
   onClose?: (() => void) | undefined;
+  targetHostId?: string | null;
 }) {
   const layout = useMemo(() => buildBranchTreeLayout(model.root), [model.root]);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
@@ -1180,7 +1183,11 @@ export function SessionBranchTreeExplorer({
       }
     }));
 
-    void getSessionMessages(selectedSession.sessionId, null, 6, "backward")
+    const previewRequest = targetHostId
+      ? getSessionMessages(selectedSession.sessionId, null, 6, "backward", { targetHostId })
+      : getSessionMessages(selectedSession.sessionId, null, 6, "backward");
+
+    void previewRequest
       .then((response) => {
         loadingSessionIdsRef.current.delete(selectedSession.sessionId);
 
@@ -1217,7 +1224,7 @@ export function SessionBranchTreeExplorer({
     return () => {
       cancelled = true;
     };
-  }, [selectedSession?.sessionId]);
+  }, [selectedSession?.sessionId, targetHostId]);
 
   function updateMobileTransform(
     updater: (current: BranchViewportTransform) => BranchViewportTransform
@@ -1508,6 +1515,7 @@ export function SessionBranchTreePanel({
   navigationGroups,
   workspaceId,
   sessionId,
+  targetHostId,
   onClose,
   onOpenSession
 }: SessionBranchTreePanelProps) {
@@ -1551,6 +1559,7 @@ export function SessionBranchTreePanel({
         <SessionBranchTreeExplorer
           model={model}
           onOpenSession={onOpenSession}
+          targetHostId={targetHostId}
         />
       </DesktopModal>
     );
@@ -1568,6 +1577,7 @@ export function SessionBranchTreePanel({
         model={model}
         onOpenSession={onOpenSession}
         onClose={onClose}
+        targetHostId={targetHostId}
       />
     </div>,
     document.body

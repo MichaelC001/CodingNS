@@ -313,6 +313,32 @@ describe("ParallelConversationGroupView", () => {
     mockGetParallelGroupDetail.mockResolvedValue(detail);
   });
 
+  it("并行详情页挂载时只请求一次 group detail，不为成员或子 Agent 重复请求详情", async () => {
+    const detail = createDetail();
+    detail.members = [
+      detail.members[0],
+      createMember("session-2", 1, "比较版")
+    ];
+    mockGetParallelGroupDetail.mockResolvedValueOnce(detail);
+
+    render(
+      <MemoryRouter>
+        <ParallelConversationGroupView
+          groupId="parallel-group-1"
+          currentSessionId="session-1"
+        />
+      </MemoryRouter>
+    );
+
+    await screen.findByText("比较版");
+
+    expect(mockGetParallelGroupDetail).toHaveBeenCalledTimes(1);
+    expect(mockGetParallelGroupDetail).toHaveBeenCalledWith(
+      "parallel-group-1",
+      { targetHostId: undefined }
+    );
+  });
+
   it("会在 pane 头部显示工具按钮，并且在信息悬浮框里展示色板与移除入口", async () => {
     const user = userEvent.setup();
 

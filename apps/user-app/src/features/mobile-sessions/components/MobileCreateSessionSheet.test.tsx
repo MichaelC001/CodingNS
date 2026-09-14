@@ -6,7 +6,12 @@ import { t } from "../../../shared/i18n";
 import type { WorkspaceDto } from "../../conversation/api/conversation-api";
 import { MobileCreateSessionSheet } from "./MobileCreateSessionSheet";
 
-const { requestWorkspaceSessionScan, getWorkspaceSessionScanStatus } = vi.hoisted(() => ({
+const {
+  cancelWorkspaceSessionScan,
+  requestWorkspaceSessionScan,
+  getWorkspaceSessionScanStatus
+} = vi.hoisted(() => ({
+  cancelWorkspaceSessionScan: vi.fn(),
   requestWorkspaceSessionScan: vi.fn(),
   getWorkspaceSessionScanStatus: vi.fn()
 }));
@@ -17,6 +22,7 @@ vi.mock("../../conversation/api/conversation-api", async () => {
   );
   return {
     ...actual,
+    cancelWorkspaceSessionScan,
     requestWorkspaceSessionScan,
     getWorkspaceSessionScanStatus
   };
@@ -35,6 +41,7 @@ const workspace: WorkspaceDto = {
 
 describe("MobileCreateSessionSheet 扫描动作", () => {
   beforeEach(() => {
+    cancelWorkspaceSessionScan.mockReset();
     requestWorkspaceSessionScan.mockReset();
     getWorkspaceSessionScanStatus.mockReset();
   });
@@ -75,7 +82,17 @@ describe("MobileCreateSessionSheet 扫描动作", () => {
       expect(screen.getByRole("button", { name: t("shell.workspaceSessionScanSucceeded", { count: 3 }) }))
         .toBeInTheDocument();
     });
-    expect(requestWorkspaceSessionScan).toHaveBeenCalledWith(workspace.id, { targetHostId: "peer-1" });
+    expect(requestWorkspaceSessionScan).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({
+        targetHostId: "peer-1",
+        signal: expect.any(AbortSignal)
+      })
+    );
+    expect(getWorkspaceSessionScanStatus).toHaveBeenCalledWith(
+      workspace.id,
+      expect.objectContaining({ targetHostId: "peer-1", signal: expect.any(AbortSignal) })
+    );
   });
 
   it("扫描进行中会禁用按钮，重复点击不会创建第二个任务", async () => {
@@ -145,5 +162,54 @@ describe("MobileCreateSessionSheet 扫描动作", () => {
       expect(screen.getByText(t("shell.workspaceSessionScanFailed"))).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: t("shell.workspaceSessionScanAction") })).toBeInTheDocument();
+  });
+
+  it("远程工作区取消扫描时会沿用扫描开始时的 targetHostId", async () => {
+    let resolveScan: ((value: unknown) => void) | null = null;
+    requestWorkspaceSessionScan.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveScan = resolve;
+      })
+    );
+    cancelWorkspaceSessionScan.mockResolvedValue({
+      workspaceId: workspace.id,
+      taskId: "task-3",
+      status: "cancelled",
+      resultCount: null,
+      errorCode: null,
+      errorMessage: null,
+      progress: null
+    });
+
+    const user = userEvent.setup();
+    render(
+      <MobileCreateSessionSheet
+        open
+        workspaces={[workspace]}
+        initialWorkspaceId={workspace.id}
+        resolveTargetHostId={() => "peer-1"}
+        onClose={vi.fn()}
+        onSelect={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: t("shell.workspaceSessionScanAction") }));
+    const cancelButton = await screen.findByRole("button", { name: t("shell.workspaceSessionScanCancel") });
+    await user.click(cancelButton);
+
+    await waitFor(() => {
+      expect(cancelWorkspaceSessionScan).toHaveBeenCalledWith(workspace.id, {
+        targetHostId: "peer-1"
+      });
+      expect(screen.getByRole("button", { name: t("shell.workspaceSessionScanAction") })).toBeInTheDocument();
+    });
+
+    resolveScan?.({
+      workspaceId: workspace.id,
+      taskId: "task-3",
+      deduped: false,
+      taskType: "workspace.discovery.explicit_scan",
+      executionLane: "helper_process"
+    });
   });
 });
