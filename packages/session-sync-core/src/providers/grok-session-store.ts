@@ -2,7 +2,12 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, s
 import path from "node:path";
 
 import type { HistoryDirection, HistoryPage, NormalizedMessage, ProviderSessionSummary } from "../types.js";
-import { normalizeWorkspacePath, nextTimestamp, readJsonLinesTail } from "./utils.js";
+import {
+  normalizeWorkspacePath,
+  nextTimestamp,
+  readJsonLinesForDiscoveryDetailed,
+  readJsonLinesTail
+} from "./utils.js";
 import { GrokMessageAccumulator, unwrapGrokUpdate } from "./grok-message-mapper.js";
 
 export interface GrokSessionStoreOptions {
@@ -12,6 +17,12 @@ export interface GrokSessionStoreOptions {
 export class GrokSessionStoreReader {
   private static readonly TITLE_SCAN_MAX_BYTES = 128 * 1024;
   private lastReadMetrics = { bytesRead: 0, recordsParsed: 0 };
+  private lastDiscoveryReadDiagnostics = {
+    incompleteTailCount: 0,
+    invalidLineCount: 0,
+    unstableReadCount: 0,
+    missingFileCount: 0
+  };
   private readonly directories = new Map<string, { path: string | null; checkedAt: number }>();
   private readonly updatesCache = new Map<string, {
     fingerprint: string;
@@ -22,6 +33,15 @@ export class GrokSessionStoreReader {
 
   getReadMetrics(): { bytesRead: number; recordsParsed: number } {
     return { ...this.lastReadMetrics };
+  }
+
+  getDiscoveryReadDiagnostics(): {
+    incompleteTailCount: number;
+    invalidLineCount: number;
+    unstableReadCount: number;
+    missingFileCount: number;
+  } {
+    return { ...this.lastDiscoveryReadDiagnostics };
   }
 
   resolveSessionDir(providerSessionId: string, rawStoreRef: string): string {
@@ -50,7 +70,7 @@ export class GrokSessionStoreReader {
     if (storedWorkspace && normalizeWorkspacePath(storedWorkspace) !== normalizeWorkspacePath(workspacePath)) {
       throw new Error("GROK_WORKSPACE_FORBIDDEN");
     }
-    const updates = this.readUpdates(providerSessionId, rawStoreRef);
+    const updates = this.readUpdates(providerSessionId, rawStoreRef, "discovery");
     const stat = statSync(dir);
     const storedTitle = stringValue(record.title);
     const usableStoredTitle = isGeneratedGrokTitle(storedTitle) ? "" : storedTitle;
@@ -138,8 +158,18 @@ export class GrokSessionStoreReader {
     };
   }
 
-  private readUpdates(providerSessionId: string, rawStoreRef: string): { messages: NormalizedMessage[]; bytes: number } {
+  private readUpdates(
+    providerSessionId: string,
+    rawStoreRef: string,
+    mode: "history" | "discovery" = "history"
+  ): { messages: NormalizedMessage[]; bytes: number } {
     this.lastReadMetrics = { bytesRead: 0, recordsParsed: 0 };
+    this.lastDiscoveryReadDiagnostics = {
+      incompleteTailCount: 0,
+      invalidLineCount: 0,
+      unstableReadCount: 0,
+      missingFileCount: 0
+    };
     const dir = this.resolveSessionDir(providerSessionId, rawStoreRef);
     const filePath = path.join(dir, "updates.jsonl");
     if (!existsSync(filePath)) {
@@ -154,7 +184,22 @@ export class GrokSessionStoreReader {
       this.updatesCache.set(filePath, cached);
       return cached;
     }
-    const records = readJsonLinesTail(filePath, 8 * 1024 * 1024);
+    const discoveryRead = mode === "discovery"
+      ? readJsonLinesForDiscoveryDetailed(filePath, 8 * 1024 * 1024)
+      : null;
+    if (discoveryRead) {
+      this.lastDiscoveryReadDiagnostics = {
+        incompleteTailCount: discoveryRead.incompleteTailLineCount,
+        invalidLineCount: discoveryRead.invalidLineCount,
+        unstableReadCount: [
+          "changed_during_read",
+          "truncated",
+          "replaced"
+        ].includes(discoveryRead.status) ? 1 : 0,
+        missingFileCount: discoveryRead.status === "missing" ? 1 : 0
+      };
+    }
+    const records = discoveryRead?.records ?? readJsonLinesTail(filePath, 8 * 1024 * 1024);
     this.lastReadMetrics.bytesRead = Math.min(stat.size, 8 * 1024 * 1024);
     const messages: NormalizedMessage[] = [];
     const messageIndexes = new Map<string, number>();
@@ -189,7 +234,9 @@ export class GrokSessionStoreReader {
     const result = { fingerprint, messages, bytes: stat.size };
     this.updatesCache.delete(filePath);
     // 大会话不常驻缓存；小会话同时限制数量和原始文件总字节数。
-    if (result.bytes <= 8 * 1024 * 1024) this.updatesCache.set(filePath, result);
+    if (result.bytes <= 8 * 1024 * 1024 && (!discoveryRead || discoveryRead.isComplete)) {
+      this.updatesCache.set(filePath, result);
+    }
     let cachedBytes = [...this.updatesCache.values()].reduce((sum, entry) => sum + entry.bytes, 0);
     while (this.updatesCache.size > 8 || cachedBytes > 16 * 1024 * 1024) {
       const key = this.updatesCache.keys().next().value!;

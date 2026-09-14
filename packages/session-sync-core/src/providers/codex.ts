@@ -71,7 +71,7 @@ import {
   parseJsonLinesFromText,
   readFirstNonEmptyLine,
   readJsonLines,
-  readJsonLinesForDiscovery,
+  readJsonLinesForDiscoveryDetailed,
   readTrailingJsonLines,
   readJsonLinesTail,
   type RawJsonLine,
@@ -321,6 +321,10 @@ export class CodexAdapter implements ProviderAdapter {
     let skippedByMtimeSize = 0;
     let parsedFiles = 0;
     let bytesRead = 0;
+    let incompleteTailCount = 0;
+    let invalidLineCount = 0;
+    let unstableReadCount = 0;
+    let missingFileCount = 0;
 
     for (const filePath of files) {
       scannedFiles += 1;
@@ -456,7 +460,11 @@ export class CodexAdapter implements ProviderAdapter {
         scannedFiles,
         skippedByMtimeSize,
         parsedFiles,
-        bytesRead
+        bytesRead,
+        incompleteTailCount,
+        invalidLineCount,
+        unstableReadCount,
+        missingFileCount
       };
 
       return {
@@ -518,7 +526,19 @@ export class CodexAdapter implements ProviderAdapter {
       const { filePath, fileSessionId, stats, sessionIdentity } = entry;
       parsedFiles += 1;
       bytesRead += stats.size;
-      const records = readJsonLinesForDiscovery(filePath);
+      const discoveryRead = readJsonLinesForDiscoveryDetailed(filePath);
+      incompleteTailCount += discoveryRead.incompleteTailLineCount;
+      invalidLineCount += discoveryRead.invalidLineCount;
+      if (discoveryRead.status === "missing") {
+        missingFileCount += 1;
+      } else if (
+        discoveryRead.status === "changed_during_read"
+        || discoveryRead.status === "truncated"
+        || discoveryRead.status === "replaced"
+      ) {
+        unstableReadCount += 1;
+      }
+      const records = discoveryRead.records;
       const meta = records.find((record) => record.data.type === "session_meta")?.data;
       const metaPayload = (meta?.payload ?? {}) as Record<string, unknown>;
       const codexSessionId = this.resolveCodexSessionId(metaPayload, fileSessionId);
@@ -639,22 +659,33 @@ export class CodexAdapter implements ProviderAdapter {
     const sessions = [...sessionsByProviderSessionId.values()].sort((left, right) =>
       (left.lastMessageAt ?? "").localeCompare(right.lastMessageAt ?? "")
     );
+    const hasJsonlIssues =
+      incompleteTailCount > 0
+      || invalidLineCount > 0
+      || unstableReadCount > 0
+      || missingFileCount > 0;
     const diagnostic: ProviderDiscoveryDiagnostic = {
       provider: this.providerId,
-      status: "success",
+      status: hasJsonlIssues ? "partial" : "success",
       durationMs: Date.now() - startedAt,
       sessionCount: sessions.length,
-      isComplete: true,
-      errorMessage: null,
+      isComplete: !hasJsonlIssues,
+      errorMessage: hasJsonlIssues
+        ? `JSONL_DISCOVERY_PARTIAL incompleteTail=${incompleteTailCount} invalidLine=${invalidLineCount} unstable=${unstableReadCount} missing=${missingFileCount}`
+        : null,
       scannedFiles,
       skippedByMtimeSize,
       parsedFiles,
-      bytesRead
+      bytesRead,
+      incompleteTailCount,
+      invalidLineCount,
+      unstableReadCount,
+      missingFileCount
     };
 
     return {
       sessions,
-      isComplete: true,
+      isComplete: !hasJsonlIssues,
       providerDiagnostics: [diagnostic]
     };
   }

@@ -336,6 +336,10 @@ export interface ProviderDiscoveryDiagnostic {
   skippedByMtimeSize?: number;
   parsedFiles?: number;
   bytesRead?: number;
+  incompleteTailCount?: number;
+  invalidLineCount?: number;
+  unstableReadCount?: number;
+  missingFileCount?: number;
 }
 
 export interface ProviderSessionDiscovery {

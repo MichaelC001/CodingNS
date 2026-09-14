@@ -37,6 +37,57 @@ export interface RawTextLine {
   raw: string;
 }
 
+export type JsonlDiscoveryReadStatus =
+  | "stable"
+  | "incomplete_tail"
+  | "invalid_line"
+  | "changed_during_read"
+  | "truncated"
+  | "replaced"
+  | "missing";
+
+export interface JsonlDiscoveryReadOnceResult {
+  records: RawJsonLine[];
+  incompleteTailLineCount: number;
+  invalidLineCount: number;
+}
+
+export interface TextLinesDiscoveryReadOnceResult {
+  lines: RawTextLine[];
+  incompleteTailLineCount: number;
+  invalidLineCount: number;
+}
+
+export interface JsonlDiscoveryReadResult extends JsonlDiscoveryReadOnceResult {
+  isComplete: boolean;
+  status: JsonlDiscoveryReadStatus;
+  attempts: number;
+}
+
+export interface TextLinesDiscoveryReadResult extends TextLinesDiscoveryReadOnceResult {
+  isComplete: boolean;
+  status: JsonlDiscoveryReadStatus;
+  attempts: number;
+}
+
+export interface JsonlDiscoveryReadOptions {
+  maxAttempts?: number;
+  budgetMs?: number;
+  retryDelayMs?: number;
+  readFingerprint?: (filePath: string) => string | null;
+  sleep?: (delayMs: number) => void;
+  readOnce?: (filePath: string, maxWindowBytes: number) => JsonlDiscoveryReadOnceResult;
+}
+
+export interface TextLinesDiscoveryReadOptions {
+  maxAttempts?: number;
+  budgetMs?: number;
+  retryDelayMs?: number;
+  readFingerprint?: (filePath: string) => string | null;
+  sleep?: (delayMs: number) => void;
+  readOnce?: (filePath: string, maxBytes: number) => TextLinesDiscoveryReadOnceResult;
+}
+
 export function normalizeWorkspacePath(value: string): string {
   const trimmed = value.trim();
 
@@ -113,28 +164,52 @@ export function readJsonLinesForDiscovery(
   filePath: string,
   maxWindowBytes = 512 * 1024
 ): RawJsonLine[] {
-  let latest: RawJsonLine[] = [];
-
-  for (let attempt = 0; attempt < JSONL_DISCOVERY_READ_RETRY_LIMIT; attempt += 1) {
-    const before = readJsonFileFingerprint(filePath);
-    latest = readJsonLinesForDiscoveryOnce(filePath, maxWindowBytes);
-    const after = readJsonFileFingerprint(filePath);
-
-    if (before === after) {
-      return latest;
-    }
-  }
-
-  return latest;
+  return readJsonLinesForDiscoveryDetailed(filePath, maxWindowBytes).records;
 }
 
-function readJsonLinesForDiscoveryOnce(
+/**
+ * 发现阶段读取 JSONL 的详细结果。
+ *
+ * 该函数只被 provider discovery 调用。扫描本身在 helper 进程中运行，
+ * 这里的同步文件读取和极短退避不会占用 Host 主线程；详情历史仍走严格读取路径。
+ */
+export function readJsonLinesForDiscoveryDetailed(
+  filePath: string,
+  maxWindowBytes = 512 * 1024,
+  options: JsonlDiscoveryReadOptions = {}
+): JsonlDiscoveryReadResult {
+  const readOnce = options.readOnce ?? ((targetFilePath, windowBytes) =>
+    readJsonLinesForDiscoveryOnceDetailed(targetFilePath, windowBytes));
+
+  return retryDiscoveryRead(
+    filePath,
+    () => readOnce(filePath, maxWindowBytes),
+    {
+      records: [],
+      incompleteTailLineCount: 0,
+      invalidLineCount: 0
+    },
+    options
+  );
+}
+
+function readJsonLinesForDiscoveryOnceDetailed(
   filePath: string,
   maxWindowBytes: number
-): RawJsonLine[] {
+): JsonlDiscoveryReadOnceResult {
+  const diagnostics: JsonlParseDiagnostics = {
+    incompleteTailLineCount: 0,
+    invalidLineCount: 0
+  };
   const stats = statSync(filePath);
   if (stats.size <= maxWindowBytes * 2) {
-    return readJsonLines(filePath, { skipIncompleteTail: true });
+    return {
+      records: readJsonLines(filePath, {
+        skipIncompleteTail: true,
+        diagnostics
+      }),
+      ...diagnostics
+    };
   }
 
   const fd = openSync(filePath, "r");
@@ -146,16 +221,33 @@ function readJsonLinesForDiscoveryOnce(
   } finally {
     closeSync(fd);
   }
-  const tail = readTrailingJsonLines(filePath, maxWindowBytes, { skipIncompleteTail: true });
+  const tailDiagnostics: JsonlParseDiagnostics = {
+    incompleteTailLineCount: 0,
+    invalidLineCount: 0
+  };
+  const headDiagnostics: JsonlParseDiagnostics = {
+    incompleteTailLineCount: 0,
+    invalidLineCount: 0
+  };
+  const tail = readTrailingJsonLines(filePath, maxWindowBytes, {
+    skipIncompleteTail: true,
+    diagnostics: tailDiagnostics
+  });
   const headRecords = parseJsonLines(filePath, head.split(/\r?\n/), 1, {
     // 头窗口可能正好截断一条正在写入的物理行，不能把它当成损坏记录。
-    skipIncompleteTail: true
+    skipIncompleteTail: true,
+    diagnostics: headDiagnostics
   });
   const seen = new Set(headRecords.map((record) => `${record.lineNumber}:${record.partIndex}`));
-  return [
+  const records = [
     ...headRecords,
     ...tail.filter((record) => !seen.has(`${record.lineNumber}:${record.partIndex}`))
   ];
+  return {
+    records,
+    incompleteTailLineCount: tailDiagnostics.incompleteTailLineCount,
+    invalidLineCount: headDiagnostics.invalidLineCount + tailDiagnostics.invalidLineCount
+  };
 }
 
 /** 只读取 JSONL 尾部窗口，供统计和活动状态使用，禁止为摘要重新加载整份历史。 */
@@ -241,19 +333,35 @@ export function readTextLinesTailForDiscovery(
   filePath: string,
   maxBytes = 8 * 1024 * 1024
 ): RawTextLine[] {
-  let latest: RawTextLine[] = [];
+  return readTextLinesTailForDiscoveryDetailed(filePath, maxBytes).lines;
+}
 
-  for (let attempt = 0; attempt < JSONL_DISCOVERY_READ_RETRY_LIMIT; attempt += 1) {
-    const before = readJsonFileFingerprint(filePath);
-    latest = readTextLinesTail(filePath, maxBytes);
-    const after = readJsonFileFingerprint(filePath);
+export function readTextLinesTailForDiscoveryDetailed(
+  filePath: string,
+  maxBytes = 8 * 1024 * 1024,
+  options: TextLinesDiscoveryReadOptions = {}
+): TextLinesDiscoveryReadResult {
+  const readOnce = options.readOnce ?? ((targetFilePath, windowBytes) => {
+    const lines = readTextLinesTail(targetFilePath, windowBytes);
+    const tail = lines.at(-1);
+    const incompleteTailLineCount = tail && looksLikeIncompleteJson(tail.raw) ? 1 : 0;
+    return {
+      lines,
+      incompleteTailLineCount,
+      invalidLineCount: 0
+    };
+  });
 
-    if (before === after) {
-      return latest;
-    }
-  }
-
-  return latest;
+  return retryDiscoveryRead(
+    filePath,
+    () => readOnce(filePath, maxBytes),
+    {
+      lines: [],
+      incompleteTailLineCount: 0,
+      invalidLineCount: 0
+    },
+    options
+  );
 }
 
 /**
@@ -386,10 +494,18 @@ export function readTrailingJsonLines(
 
 const warnedInvalidJsonLineKeys = new Set<string>();
 const MAX_INVALID_JSON_WARNINGS = 256;
-const JSONL_DISCOVERY_READ_RETRY_LIMIT = 3;
+const JSONL_DISCOVERY_READ_RETRY_LIMIT = 5;
+const JSONL_DISCOVERY_READ_BUDGET_MS = 160;
+const JSONL_DISCOVERY_RETRY_BACKOFF_MS = [4, 8, 16, 32] as const;
 
 interface ParseJsonLinesOptions {
   skipIncompleteTail?: boolean;
+  diagnostics?: JsonlParseDiagnostics;
+}
+
+interface JsonlParseDiagnostics {
+  incompleteTailLineCount: number;
+  invalidLineCount: number;
 }
 
 function parseJsonLines(
@@ -402,7 +518,8 @@ function parseJsonLines(
     filePath,
     line,
     firstLineNumber + index,
-    options.skipIncompleteTail === true && index === lines.length - 1
+    options.skipIncompleteTail === true && index === lines.length - 1,
+    options.diagnostics
   ));
 }
 
@@ -410,7 +527,8 @@ function parseJsonLine(
   filePath: string,
   rawLine: string,
   lineNumber: number,
-  skipIncompleteTail = false
+  skipIncompleteTail = false,
+  diagnostics?: JsonlParseDiagnostics
 ): RawJsonLine[] {
   const trimmed = rawLine.trim();
 
@@ -453,15 +571,21 @@ function parseJsonLine(
   }
 
   if (skipIncompleteTail && looksLikeIncompleteJson(rawLine)) {
+    if (diagnostics) {
+      diagnostics.incompleteTailLineCount += 1;
+    }
     return [];
   }
 
+  if (diagnostics) {
+    diagnostics.invalidLineCount += 1;
+  }
   warnInvalidJsonLine(filePath, lineNumber, trimmed);
   return [];
 }
 
 /** 识别正在写入的半行，避免在下一次扫描前错误打出“损坏记录”警告。 */
-function looksLikeIncompleteJson(raw: string): boolean {
+export function isIncompleteJsonLine(raw: string): boolean {
   const trimmed = raw.trim();
 
   if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
@@ -495,6 +619,8 @@ function looksLikeIncompleteJson(raw: string): boolean {
 
   return depth > 0 || inString || escaping;
 }
+
+const looksLikeIncompleteJson = isIncompleteJsonLine;
 
 function parseJsonRecord(raw: string): Record<string, unknown> | null {
   try {
@@ -626,6 +752,166 @@ function countLinesBeforeOffset(fd: number, offset: number): number {
 function readJsonFileFingerprint(filePath: string): string {
   const stats = statSync(filePath);
   return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}`;
+}
+
+function retryDiscoveryRead<T extends JsonlDiscoveryReadOnceResult | TextLinesDiscoveryReadOnceResult>(
+  filePath: string,
+  readOnce: () => T,
+  emptyResult: T,
+  options: JsonlDiscoveryReadOptions | TextLinesDiscoveryReadOptions
+): T & { isComplete: boolean; status: JsonlDiscoveryReadStatus; attempts: number } {
+  const maxAttempts = clampDiscoveryNumber(
+    options.maxAttempts ?? JSONL_DISCOVERY_READ_RETRY_LIMIT,
+    1,
+    JSONL_DISCOVERY_READ_RETRY_LIMIT
+  );
+  const budgetMs = clampDiscoveryNumber(
+    options.budgetMs ?? JSONL_DISCOVERY_READ_BUDGET_MS,
+    0,
+    2_000
+  );
+  const fingerprintReader = options.readFingerprint ?? readJsonFileFingerprintSafe;
+  const sleep = options.sleep ?? sleepForDiscoveryRetry;
+  const startedAt = Date.now();
+  let latest: T = emptyResult;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const before = fingerprintReader(filePath);
+
+    if (!before) {
+      return createDiscoveryReadResult(latest, "missing", attempt);
+    }
+
+    try {
+      latest = readOnce();
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        return createDiscoveryReadResult(latest, "missing", attempt);
+      }
+      throw error;
+    }
+
+    const after = fingerprintReader(filePath);
+
+    if (!after) {
+      return createDiscoveryReadResult(latest, "missing", attempt);
+    }
+
+    if (before === after) {
+      return createDiscoveryReadResult(
+        latest,
+        stableDiscoveryReadStatus(latest),
+        attempt
+      );
+    }
+
+    const changedStatus = classifyChangedDiscoveryRead(before, after);
+    const elapsedMs = Date.now() - startedAt;
+
+    if (attempt >= maxAttempts || elapsedMs >= budgetMs) {
+      return createDiscoveryReadResult(latest, changedStatus, attempt);
+    }
+
+    const configuredDelay = options.retryDelayMs === undefined
+      ? JSONL_DISCOVERY_RETRY_BACKOFF_MS[attempt - 1] ?? JSONL_DISCOVERY_RETRY_BACKOFF_MS.at(-1)!
+      : Math.max(0, Math.min(64, Math.trunc(options.retryDelayMs) * 2 ** (attempt - 1)));
+    const remainingMs = Math.max(0, budgetMs - (Date.now() - startedAt));
+    if (remainingMs <= 0) {
+      return createDiscoveryReadResult(latest, changedStatus, attempt);
+    }
+
+    sleep(Math.min(configuredDelay, remainingMs));
+  }
+
+  return createDiscoveryReadResult(latest, "changed_during_read", maxAttempts);
+}
+
+function createDiscoveryReadResult<T extends JsonlDiscoveryReadOnceResult | TextLinesDiscoveryReadOnceResult>(
+  result: T,
+  status: JsonlDiscoveryReadStatus,
+  attempts: number
+): T & { isComplete: boolean; status: JsonlDiscoveryReadStatus; attempts: number } {
+  return {
+    ...result,
+    isComplete: status === "stable",
+    status,
+    attempts
+  };
+}
+
+function stableDiscoveryReadStatus(
+  result: JsonlDiscoveryReadOnceResult | TextLinesDiscoveryReadOnceResult
+): JsonlDiscoveryReadStatus {
+  if (result.incompleteTailLineCount > 0) {
+    return "incomplete_tail";
+  }
+
+  if (result.invalidLineCount > 0) {
+    return "invalid_line";
+  }
+
+  return "stable";
+}
+
+function classifyChangedDiscoveryRead(before: string, after: string): JsonlDiscoveryReadStatus {
+  const beforeIdentity = readFingerprintIdentity(before);
+  const afterIdentity = readFingerprintIdentity(after);
+
+  if (beforeIdentity && afterIdentity && beforeIdentity !== afterIdentity) {
+    return "replaced";
+  }
+
+  const beforeSize = readFingerprintSize(before);
+  const afterSize = readFingerprintSize(after);
+  if (beforeSize !== null && afterSize !== null && afterSize < beforeSize) {
+    return "truncated";
+  }
+
+  return "changed_during_read";
+}
+
+function readFingerprintIdentity(fingerprint: string): string | null {
+  const parts = fingerprint.split(":");
+  return parts.length >= 3 ? parts.slice(0, 2).join(":") : null;
+}
+
+function readFingerprintSize(fingerprint: string): number | null {
+  const parts = fingerprint.split(":");
+  const value = parts.length >= 3 ? Number(parts.at(-2)) : Number.NaN;
+  return Number.isFinite(value) ? value : null;
+}
+
+function readJsonFileFingerprintSafe(filePath: string): string | null {
+  try {
+    return readJsonFileFingerprint(filePath);
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === "object"
+    && "code" in error
+    && (error as { code?: unknown }).code === "ENOENT"
+  );
+}
+
+function clampDiscoveryNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+function sleepForDiscoveryRetry(delayMs: number): void {
+  if (delayMs <= 0) {
+    return;
+  }
+
+  const waitArray = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(waitArray, 0, 0, delayMs);
 }
 
 export function encodeCursor(index: number): string {

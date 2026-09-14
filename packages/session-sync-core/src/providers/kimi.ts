@@ -25,8 +25,9 @@ import {
   messageIdFromRawRef,
   nextTimestamp,
   normalizeWorkspacePath,
+  isIncompleteJsonLine,
   readTextLinesTail,
-  readTextLinesTailForDiscovery,
+  readTextLinesTailForDiscoveryDetailed,
   safeDate,
   sliceHistory
 } from "./utils.js";
@@ -85,6 +86,13 @@ interface KimiSessionSummaryCacheEntry {
   summary: ProviderSessionSummary | null;
 }
 
+interface KimiDiscoveryJsonlDiagnostics {
+  incompleteTailCount: number;
+  invalidLineCount: number;
+  unstableReadCount: number;
+  missingFileCount: number;
+}
+
 const SUBSCRIBE_POLL_INTERVAL_MS = 800;
 const KIMI_SESSION_SUMMARY_CACHE_LIMIT = 512;
 const KIMI_REASONING_EFFORTS = ["off", "low", "medium", "high", "xhigh", "max"];
@@ -120,6 +128,12 @@ export class KimiAdapter implements ProviderAdapter {
     let skippedByMtimeSize = 0;
     let parsedFiles = 0;
     let bytesRead = 0;
+    const jsonlDiagnostics: KimiDiscoveryJsonlDiagnostics = {
+      incompleteTailCount: 0,
+      invalidLineCount: 0,
+      unstableReadCount: 0,
+      missingFileCount: 0
+    };
 
     for (const files of this.listSessionFiles()) {
       scannedFiles += 1;
@@ -205,7 +219,13 @@ export class KimiAdapter implements ProviderAdapter {
 
       parsedFiles += 1;
       bytesRead += files.sourceSizeBytes;
-      const summary = this.buildSessionSummary(files, workspacePath, false, workspacePathByHash);
+      const summary = this.buildSessionSummary(
+        files,
+        workspacePath,
+        false,
+        workspacePathByHash,
+        jsonlDiagnostics
+      );
 
       if (!summary) {
         this.touchSessionSummaryCache(rawStoreRef, {
@@ -239,22 +259,33 @@ export class KimiAdapter implements ProviderAdapter {
     const sortedSessions = sessions.sort((left, right) =>
       (right.lastMessageAt ?? "").localeCompare(left.lastMessageAt ?? "")
     );
+    const hasJsonlIssues =
+      jsonlDiagnostics.incompleteTailCount > 0
+      || jsonlDiagnostics.invalidLineCount > 0
+      || jsonlDiagnostics.unstableReadCount > 0
+      || jsonlDiagnostics.missingFileCount > 0;
     const diagnostic: ProviderDiscoveryDiagnostic = {
       provider: this.providerId,
-      status: "success",
+      status: hasJsonlIssues ? "partial" : "success",
       durationMs: Date.now() - startedAt,
       sessionCount: sortedSessions.length,
-      isComplete: true,
-      errorMessage: null,
+      isComplete: !hasJsonlIssues,
+      errorMessage: hasJsonlIssues
+        ? `JSONL_DISCOVERY_PARTIAL incompleteTail=${jsonlDiagnostics.incompleteTailCount} invalidLine=${jsonlDiagnostics.invalidLineCount} unstable=${jsonlDiagnostics.unstableReadCount} missing=${jsonlDiagnostics.missingFileCount}`
+        : null,
       scannedFiles,
       skippedByMtimeSize,
       parsedFiles,
-      bytesRead
+      bytesRead,
+      incompleteTailCount: jsonlDiagnostics.incompleteTailCount,
+      invalidLineCount: jsonlDiagnostics.invalidLineCount,
+      unstableReadCount: jsonlDiagnostics.unstableReadCount,
+      missingFileCount: jsonlDiagnostics.missingFileCount
     };
 
     return {
       sessions: sortedSessions,
-      isComplete: true,
+      isComplete: !hasJsonlIssues,
       providerDiagnostics: [diagnostic]
     };
   }
@@ -542,20 +573,21 @@ export class KimiAdapter implements ProviderAdapter {
     files: KimiSessionFiles,
     fallbackWorkspacePath: string,
     strict: boolean,
-    workspacePathByHash: Map<string, string>
+    workspacePathByHash: Map<string, string>,
+    diagnostics?: KimiDiscoveryJsonlDiagnostics
   ): ProviderSessionSummary | null {
     const state = readJsonFileSafely(files.statePath, strict, files.sessionId, "state.json");
     const workspacePath =
       readKimiWorkspaceFromState(state) ??
       workspacePathByHash.get(files.workDirHash) ??
-      readWorkspacePathFromSessionLogs(files, strict) ??
+      readWorkspacePathFromSessionLogs(files, strict, diagnostics) ??
       fallbackWorkspacePath;
 
     if (!workspacePath.trim()) {
       return null;
     }
 
-    const messages = this.parseSessionMessages(files, strict);
+    const messages = this.parseSessionMessages(files, strict, diagnostics);
 
     const sessionTitle =
       readKimiFirstNonEmptyString(state, [
@@ -582,7 +614,11 @@ export class KimiAdapter implements ProviderAdapter {
     };
   }
 
-  private parseSessionMessages(files: KimiSessionFiles, strict: boolean): NormalizedMessage[] {
+  private parseSessionMessages(
+    files: KimiSessionFiles,
+    strict: boolean,
+    diagnostics?: KimiDiscoveryJsonlDiagnostics
+  ): NormalizedMessage[] {
     const drafts: KimiMessageDraft[] = [];
     let sourceOrder = 0;
 
@@ -591,7 +627,8 @@ export class KimiAdapter implements ProviderAdapter {
       files.contextPath,
       strict,
       files.sessionId,
-      "context.jsonl"
+      "context.jsonl",
+      diagnostics
     );
 
     for (const line of contextLines) {
@@ -608,7 +645,8 @@ export class KimiAdapter implements ProviderAdapter {
       files.wirePath,
       strict,
       files.sessionId,
-      "wire.jsonl"
+      "wire.jsonl",
+      diagnostics
     );
 
     for (const line of wireLines) {
@@ -903,11 +941,12 @@ function resolveMessageTimestamp(
 
 function readWorkspacePathFromSessionLogs(
   files: Pick<KimiSessionFiles, "sessionId" | "contextPath" | "wirePath">,
-  strict: boolean
+  strict: boolean,
+  diagnostics?: KimiDiscoveryJsonlDiagnostics
 ): string | null {
   const lines = [
-    ...readJsonLinesSafely(files.contextPath, strict, files.sessionId, "context.jsonl"),
-    ...readJsonLinesSafely(files.wirePath, strict, files.sessionId, "wire.jsonl")
+    ...readJsonLinesSafely(files.contextPath, strict, files.sessionId, "context.jsonl", diagnostics),
+    ...readJsonLinesSafely(files.wirePath, strict, files.sessionId, "wire.jsonl", diagnostics)
   ];
 
   for (const line of lines) {
@@ -990,15 +1029,38 @@ function readJsonLinesSafely(
   filePath: string | null,
   strict: boolean,
   sessionId: string,
-  fileName: string
+  fileName: string,
+  diagnostics?: KimiDiscoveryJsonlDiagnostics
 ): KimiRawLineRecord[] {
-  if (!filePath || !existsSync(filePath)) {
+  if (!filePath) {
     return [];
   }
 
+  if (!existsSync(filePath)) {
+    if (!strict && diagnostics) {
+      diagnostics.missingFileCount += 1;
+    }
+    return [];
+  }
+
+  const discoveryRead = strict
+    ? null
+    : readTextLinesTailForDiscoveryDetailed(filePath, 8 * 1024 * 1024);
+  if (discoveryRead && diagnostics) {
+    diagnostics.incompleteTailCount += discoveryRead.incompleteTailLineCount;
+    if (discoveryRead.status === "missing") {
+      diagnostics.missingFileCount += 1;
+    } else if (
+      discoveryRead.status === "changed_during_read"
+      || discoveryRead.status === "truncated"
+      || discoveryRead.status === "replaced"
+    ) {
+      diagnostics.unstableReadCount += 1;
+    }
+  }
   const lines = strict
     ? readTextLinesTail(filePath, 8 * 1024 * 1024)
-    : readTextLinesTailForDiscovery(filePath, 8 * 1024 * 1024);
+    : discoveryRead?.lines ?? [];
   const records: KimiRawLineRecord[] = [];
 
   for (const line of lines) {
@@ -1016,6 +1078,9 @@ function readJsonLinesSafely(
       });
     } catch (error) {
       if (!strict) {
+        if (diagnostics && !isIncompleteJsonLine(rawLine)) {
+          diagnostics.invalidLineCount += 1;
+        }
         continue;
       }
 

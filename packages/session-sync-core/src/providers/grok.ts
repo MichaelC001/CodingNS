@@ -7,7 +7,9 @@ import type {
   ProviderAdapter,
   ProviderArchiveUpdateResult,
   ProviderCapabilities,
+  ProviderDiscoveryDiagnostic,
   ProviderRealtimeEvent,
+  ProviderSessionDiscovery,
   ProviderSessionSummary,
   ProviderSubscription,
   ResumeSessionResult,
@@ -56,19 +58,65 @@ export class GrokAdapter implements ProviderAdapter {
     workspacePath: string,
     options?: DetectSessionsOptions
   ): Promise<ProviderSessionSummary[]> {
+    const discovery = await this.detectSessionsDetailed(workspacePath, options);
+    return discovery.sessions;
+  }
+
+  async detectSessionsDetailed(
+    workspacePath: string,
+    options?: DetectSessionsOptions
+  ): Promise<ProviderSessionDiscovery> {
+    const startedAt = Date.now();
     // 首版只回放已有 CodingNS binding，避免把用户全局 Grok 目录误导入工作区。
-    return (options?.knownSessions ?? [])
+    const readDiagnostics = {
+      incompleteTailCount: 0,
+      invalidLineCount: 0,
+      unstableReadCount: 0,
+      missingFileCount: 0
+    };
+    const sessions: ProviderSessionSummary[] = [];
+    const knownSessions = (options?.knownSessions ?? [])
       .filter((session) => session.provider === this.providerId)
       .filter((session) =>
         normalizeWorkspacePath(session.workspacePath) === normalizeWorkspacePath(workspacePath)
-      )
-      .flatMap((session) => {
-        try {
-          return [this.store.readSummary(session.providerSessionId, session.rawStoreRef, workspacePath)];
-        } catch {
-          return [];
-        }
-      });
+      );
+
+    for (const session of knownSessions) {
+      try {
+        sessions.push(this.store.readSummary(session.providerSessionId, session.rawStoreRef, workspacePath));
+      } catch {
+        // 单个 Grok 会话缺失时沿用旧行为：跳过它，保留其他 binding。
+      }
+      const currentDiagnostics = this.store.getDiscoveryReadDiagnostics();
+      readDiagnostics.incompleteTailCount += currentDiagnostics.incompleteTailCount;
+      readDiagnostics.invalidLineCount += currentDiagnostics.invalidLineCount;
+      readDiagnostics.unstableReadCount += currentDiagnostics.unstableReadCount;
+      readDiagnostics.missingFileCount += currentDiagnostics.missingFileCount;
+    }
+    const hasReadIssues =
+      readDiagnostics.incompleteTailCount > 0
+      || readDiagnostics.invalidLineCount > 0
+      || readDiagnostics.unstableReadCount > 0
+      || readDiagnostics.missingFileCount > 0;
+    const diagnostic: ProviderDiscoveryDiagnostic = {
+      provider: this.providerId,
+      status: hasReadIssues ? "partial" : "success",
+      durationMs: Date.now() - startedAt,
+      sessionCount: sessions.length,
+      isComplete: !hasReadIssues,
+      errorMessage: hasReadIssues
+        ? `JSONL_DISCOVERY_PARTIAL incompleteTail=${readDiagnostics.incompleteTailCount} invalidLine=${readDiagnostics.invalidLineCount} unstable=${readDiagnostics.unstableReadCount} missing=${readDiagnostics.missingFileCount}`
+        : null,
+      incompleteTailCount: readDiagnostics.incompleteTailCount,
+      invalidLineCount: readDiagnostics.invalidLineCount,
+      unstableReadCount: readDiagnostics.unstableReadCount,
+      missingFileCount: readDiagnostics.missingFileCount
+    };
+    return {
+      sessions,
+      isComplete: !hasReadIssues,
+      providerDiagnostics: [diagnostic]
+    };
   }
 
   async readSessionHistory(

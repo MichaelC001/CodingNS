@@ -127,7 +127,6 @@ describe("GrokRuntimeAdapter", () => {
     expect(seenArgs).toEqual([
       "agent",
       "--no-leader",
-      "--always-approve",
       "--xai-api-base-url",
       "https://api.example.test/v1",
       "stdio"

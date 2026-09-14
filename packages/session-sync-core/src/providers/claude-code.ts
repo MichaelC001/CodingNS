@@ -57,6 +57,7 @@ import {
   readFirstNonEmptyLine,
   readJsonLines,
   readJsonLinesForDiscovery,
+  readJsonLinesForDiscoveryDetailed,
   readJsonLinesTail,
   safeDate,
   sliceHistory,
@@ -193,6 +194,10 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     let skippedByMtimeSize = 0;
     let parsedFiles = 0;
     let bytesRead = 0;
+    let incompleteTailCount = 0;
+    let invalidLineCount = 0;
+    let unstableReadCount = 0;
+    let missingFileCount = 0;
 
     for (const filePath of files) {
       scannedFiles += 1;
@@ -291,7 +296,19 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
       parsedFiles += 1;
       bytesRead += stats.size;
-      const records = readJsonLinesForDiscovery(filePath);
+      const discoveryRead = readJsonLinesForDiscoveryDetailed(filePath);
+      incompleteTailCount += discoveryRead.incompleteTailLineCount;
+      invalidLineCount += discoveryRead.invalidLineCount;
+      if (discoveryRead.status === "missing") {
+        missingFileCount += 1;
+      } else if (
+        discoveryRead.status === "changed_during_read"
+        || discoveryRead.status === "truncated"
+        || discoveryRead.status === "replaced"
+      ) {
+        unstableReadCount += 1;
+      }
+      const records = discoveryRead.records;
       const typedRecords = records.map((record) => record.data);
       const detectedWorkspacePath =
         typedRecords
@@ -344,22 +361,33 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     const sortedSessions = sessions.sort((left, right) =>
       (left.lastMessageAt ?? "").localeCompare(right.lastMessageAt ?? "")
     );
+    const hasJsonlIssues =
+      incompleteTailCount > 0
+      || invalidLineCount > 0
+      || unstableReadCount > 0
+      || missingFileCount > 0;
     const diagnostic: ProviderDiscoveryDiagnostic = {
       provider: this.providerId,
-      status: "success",
+      status: hasJsonlIssues ? "partial" : "success",
       durationMs: Date.now() - startedAt,
       sessionCount: sortedSessions.length,
-      isComplete: true,
-      errorMessage: null,
+      isComplete: !hasJsonlIssues,
+      errorMessage: hasJsonlIssues
+        ? `JSONL_DISCOVERY_PARTIAL incompleteTail=${incompleteTailCount} invalidLine=${invalidLineCount} unstable=${unstableReadCount} missing=${missingFileCount}`
+        : null,
       scannedFiles,
       skippedByMtimeSize,
       parsedFiles,
-      bytesRead
+      bytesRead,
+      incompleteTailCount,
+      invalidLineCount,
+      unstableReadCount,
+      missingFileCount
     };
 
     return {
       sessions: sortedSessions,
-      isComplete: true,
+      isComplete: !hasJsonlIssues,
       providerDiagnostics: [diagnostic]
     };
   }
