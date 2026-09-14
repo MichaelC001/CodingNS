@@ -80,6 +80,10 @@ describe("provider-ui", () => {
     expect(getDraftTitle("kimi").length > 0).toBe(true);
   });
 
+  it("会给 OpenCode 草稿能力开放附件输入", () => {
+    expect(createDraftCapabilities("opencode").supportsAttachments).toBe(true);
+  });
+
   it("会默认折叠 Kimi 会话的启动提示词", () => {
     expect(shouldFoldRulesMessages(null, "kimi")).toBe(true);
   });
