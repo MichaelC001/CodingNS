@@ -1208,7 +1208,8 @@ function buildCommandInputPayloadFromOptions(
         text: prompt
       }
     ],
-    ...(reasoningLevel ? { reasoning_level: reasoningLevel, thinking: reasoningLevel } : {})
+    ...(reasoningLevel ? { reasoning_level: reasoningLevel, thinking: reasoningLevel } : {}),
+    ...(options.permissionMode ? { permission_mode: options.permissionMode } : {})
   };
 }
 

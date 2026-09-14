@@ -59,6 +59,7 @@ export class GrokRuntimeAdapter implements ProviderRuntimeAdapter {
       ? [...this.options.baseArgs]
       : [
         "agent",
+        ...buildGrokPermissionArgs(request.options.permissionMode),
         ...(this.options.includeNoLeader ? ["--no-leader"] : []),
         ...(this.options.apiBaseUrl ? ["--xai-api-base-url", this.options.apiBaseUrl] : []),
         "stdio"
@@ -212,6 +213,13 @@ export class GrokRuntimeAdapter implements ProviderRuntimeAdapter {
       await client.close();
     }
   }
+}
+
+function buildGrokPermissionArgs(permissionMode: string | null): string[] {
+  if (permissionMode === "default" || permissionMode === "acceptEdits" || permissionMode === "bypassPermissions") {
+    return ["--permission-mode", permissionMode];
+  }
+  return [];
 }
 
 async function applyGrokConfigOptions(

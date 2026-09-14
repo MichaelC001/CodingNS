@@ -88,6 +88,7 @@ export function PermissionRequestCard({
     request.kind === "user_input" &&
     request.questions.some(
       (question) =>
+        question.required !== false &&
         (answers[question.id]?.filter(Boolean).length ?? 0) === 0 &&
         !otherAnswers[question.id]?.trim()
     );
@@ -112,6 +113,28 @@ export function PermissionRequestCard({
       </header>
 
       <div className="permission-request-card-body">
+        {request.reason || request.toolName || request.cwd ? (
+          <div className="permission-request-inline-meta">
+            {request.reason ? (
+              <p>
+                <span>{t("conversation.permissionRequestReasonLabel")}</span>
+                {request.reason}
+              </p>
+            ) : null}
+            {request.toolName ? (
+              <p>
+                <span>{t("conversation.permissionRequestToolLabel")}</span>
+                {request.toolName}
+              </p>
+            ) : null}
+            {request.cwd ? (
+              <p>
+                <span>{t("conversation.permissionRequestCwdLabel")}</span>
+                {request.cwd}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {primaryPaths.length > 0 ? (
           <div className="permission-request-block">
             <ul className="permission-request-target-list">
@@ -145,6 +168,41 @@ export function PermissionRequestCard({
             <p className="permission-request-summary">{request.summary}</p>
           )
         ) : null}
+        {request.permissionProfile ? (
+          <div className="permission-request-block">
+            <div className="permission-request-block-label">
+              {t("conversation.permissionRequestPermissionsLabel")}
+            </div>
+            <div className="permission-request-permission-grid">
+              {request.permissionProfile.readPaths.length > 0 ? (
+                <div>
+                  <span>{t("conversation.permissionRequestReadLabel")}</span>
+                  <p>{request.permissionProfile.readPaths.join("\n")}</p>
+                </div>
+              ) : null}
+              {request.permissionProfile.writePaths.length > 0 ? (
+                <div>
+                  <span>{t("conversation.permissionRequestWriteLabel")}</span>
+                  <p>{request.permissionProfile.writePaths.join("\n")}</p>
+                </div>
+              ) : null}
+              {request.permissionProfile.networkEnabled !== null ? (
+                <div>
+                  <span>{t("conversation.permissionRequestNetworkLabel")}</span>
+                  <p>{request.permissionProfile.networkEnabled ? t("common.enabled") : t("common.disabled")}</p>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+        {request.detail?.trim() ? (
+          <details className="permission-request-block permission-request-detail">
+            <summary className="permission-request-block-label">
+              {t("conversation.permissionRequestDetailLabel")}
+            </summary>
+            <pre>{request.detail}</pre>
+          </details>
+        ) : null}
         {request.questions.length > 0 ? (
           <div className={`permission-request-block${request.questions.length > 1 ? " permission-request-scrollable-questions" : ""}`}>
             <div className="permission-request-block-label">
@@ -174,10 +232,7 @@ export function PermissionRequestCard({
                             onChange={() => {
                               setOtherAnswersByRequestId((current) => ({
                                 ...current,
-                                [request.id]: {
-                                  ...(current[request.id] ?? {}),
-                                  [question.id]: ""
-                                }
+                                [request.id]: withoutAnswer(current[request.id], question.id)
                               }));
                               setAnswersByRequestId((current) => ({
                                 ...current,
@@ -200,15 +255,22 @@ export function PermissionRequestCard({
                     {question.allowOther ? (
                       <label className="permission-request-question-option permission-request-question-option-other single-column">
                         <input
-                          type="radio"
+                          type={question.multiSelect ? "checkbox" : "radio"}
                           name={`${request.id}:${question.id}`}
-                          checked={Boolean(otherAnswers[question.id]?.trim())}
+                          checked={Object.prototype.hasOwnProperty.call(otherAnswers, question.id)}
                           onChange={() => {
                             setAnswersByRequestId((current) => ({
                               ...current,
                               [request.id]: {
                                 ...(current[request.id] ?? {}),
-                                [question.id]: []
+                                ...(question.multiSelect ? {} : { [question.id]: [] })
+                              }
+                            }));
+                            setOtherAnswersByRequestId((current) => ({
+                              ...current,
+                              [request.id]: {
+                                ...(current[request.id] ?? {}),
+                                [question.id]: current[request.id]?.[question.id] ?? ""
                               }
                             }));
                           }}
@@ -233,7 +295,7 @@ export function PermissionRequestCard({
                                 ...current,
                                 [request.id]: {
                                   ...(current[request.id] ?? {}),
-                                  [question.id]: []
+                                  ...(question.multiSelect ? {} : { [question.id]: [] })
                                 }
                               }));
                             }}
@@ -262,7 +324,7 @@ export function PermissionRequestCard({
                 && disableSubmit)
             }
             onClick={() => {
-              const mergedAnswers = mergeQuestionAnswers(answers, otherAnswers);
+              const mergedAnswers = mergeQuestionAnswers(answers, otherAnswers, request.questions);
               void onReply(request.id, {
                 action: action.value,
                 answers: Object.keys(mergedAnswers).length > 0 ? mergedAnswers : undefined
@@ -289,7 +351,8 @@ function toggleAnswerValue(values: string[], nextValue: string): string[] {
 
 function mergeQuestionAnswers(
   selectedAnswers: Record<string, string[]>,
-  otherAnswers: Record<string, string>
+  otherAnswers: Record<string, string>,
+  questions: SessionPermissionRequestDto["questions"]
 ): Record<string, string[]> {
   const merged: Record<string, string[]> = {};
 
@@ -305,11 +368,27 @@ function mergeQuestionAnswers(
     const normalized = value.trim();
 
     if (normalized) {
-      merged[questionId] = [normalized];
+      const question = questions.find((item) => item.id === questionId);
+      merged[questionId] = question?.multiSelect
+        ? [...(merged[questionId] ?? []), normalized]
+        : [normalized];
     }
   }
 
   return merged;
+}
+
+function withoutAnswer(
+  answers: Record<string, string> | undefined,
+  questionId: string
+): Record<string, string> {
+  if (!answers || !Object.prototype.hasOwnProperty.call(answers, questionId)) {
+    return answers ?? {};
+  }
+
+  const next = { ...answers };
+  delete next[questionId];
+  return next;
 }
 
 function resolvePermissionActionClassName(tone: SessionPermissionRequestDto["actions"][number]["tone"]) {

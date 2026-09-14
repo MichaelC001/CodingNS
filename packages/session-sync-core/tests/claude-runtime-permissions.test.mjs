@@ -178,6 +178,8 @@ rl.once("line", () => {
     assert.notEqual(settingsFlagIndex, -1);
     const settings = JSON.parse(readFileSync(settingsPathCapture, "utf8"));
     assert.ok(settings.hooks?.PreToolUse);
+    assert.ok(settings.hooks?.PermissionRequest);
+    assert.ok(settings.hooks?.Elicitation);
     assert.deepEqual(
       settings.hooks.PreToolUse.map((entry) => entry.matcher),
       ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "AskUserQuestion", "ExitPlanMode"]
@@ -361,6 +363,7 @@ rl.once("line", () => {
       Object.prototype.hasOwnProperty.call(settings.hooks, "PermissionRequest"),
       false
     );
+    assert.ok(settings.hooks?.Elicitation);
   } finally {
     rmSync(rootDir, { recursive: true, force: true });
   }

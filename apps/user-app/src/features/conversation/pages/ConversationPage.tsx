@@ -23,6 +23,7 @@ import {
   ModalListItem
 } from "../../../components/ModalAtoms";
 import { getDefaultSessionPermissionMode } from "../../../preferences/default-session-permission-mode";
+import type { PreferenceReasoningLevel } from "../../../preferences/types";
 import { useHaptics } from "../../../shared/haptics";
 import { emitPerfDebugProbe, logPerfDebug } from "../../../shared/debug/perf-debug";
 import { t } from "../../../shared/i18n";
@@ -178,6 +179,7 @@ export function ConversationPage() {
       sessionId={sessionId}
       bootstrapMessages={liveBootstrapMessages}
       initialComposerModel={liveComposerBootstrap.initialModel}
+      initialComposerReasoningLevel={liveComposerBootstrap.initialReasoningLevel}
       initialComposerProviderConfigMode={liveComposerBootstrap.providerConfigMode}
       initialComposerProviderPresetId={liveComposerBootstrap.providerPresetId}
       initialToolPanel={toolPanel}
@@ -189,6 +191,7 @@ function LiveConversationPageGuard(props: {
   sessionId: string;
   bootstrapMessages: HistoryMessageDto[];
   initialComposerModel: string | null;
+  initialComposerReasoningLevel: PreferenceReasoningLevel | null;
   initialComposerProviderConfigMode: "global-default" | "cc-switch-preset";
   initialComposerProviderPresetId: string | null;
   initialToolPanel: MobileConversationToolPanel | null;
@@ -337,6 +340,7 @@ function LiveConversationPage({
   sessionId,
   bootstrapMessages,
   initialComposerModel,
+  initialComposerReasoningLevel,
   initialComposerProviderConfigMode,
   initialComposerProviderPresetId,
   initialToolPanel
@@ -344,6 +348,7 @@ function LiveConversationPage({
   sessionId: string;
   bootstrapMessages: HistoryMessageDto[];
   initialComposerModel: string | null;
+  initialComposerReasoningLevel: PreferenceReasoningLevel | null;
   initialComposerProviderConfigMode: "global-default" | "cc-switch-preset";
   initialComposerProviderPresetId: string | null;
   initialToolPanel: MobileConversationToolPanel | null;
@@ -1083,6 +1088,7 @@ function LiveConversationPage({
                 capabilities={capabilities}
                 draftStorageId={sessionId}
                 initialModel={composerInitialModel}
+                initialReasoningLevel={initialComposerReasoningLevel}
                 workspaceId={(session ?? navigationSession)?.workspaceId ?? null}
                 initialProviderConfigMode={composerInitialProviderConfigMode}
                 initialProviderPresetId={composerInitialProviderPresetId}
@@ -1748,6 +1754,7 @@ function DraftConversationPage({
                       composer: {
                         sessionId: created.sessionId,
                         initialModel: options?.model ?? null,
+                        reasoningLevel: options?.reasoningLevel ?? null,
                         providerConfigMode: options?.providerConfigMode ?? "global-default",
                         providerPresetId: options?.providerPresetId ?? null
                       },
@@ -3808,12 +3815,14 @@ function parseLiveComposerBootstrap(
   state: unknown
 ): {
   initialModel: string | null;
+  initialReasoningLevel: PreferenceReasoningLevel | null;
   providerConfigMode: "global-default" | "cc-switch-preset";
   providerPresetId: string | null;
 } {
   if (!state || typeof state !== "object") {
     return {
       initialModel: null,
+      initialReasoningLevel: null,
       providerConfigMode: "global-default",
       providerPresetId: null
     };
@@ -3824,6 +3833,7 @@ function parseLiveComposerBootstrap(
   if (!composer || typeof composer !== "object") {
     return {
       initialModel: null,
+      initialReasoningLevel: null,
       providerConfigMode: "global-default",
       providerPresetId: null
     };
@@ -3831,12 +3841,14 @@ function parseLiveComposerBootstrap(
 
   const composerSessionId = (composer as { sessionId?: unknown }).sessionId;
   const initialModel = (composer as { initialModel?: unknown }).initialModel;
+  const reasoningLevel = (composer as { reasoningLevel?: unknown }).reasoningLevel;
   const providerConfigMode = (composer as { providerConfigMode?: unknown }).providerConfigMode;
   const providerPresetId = (composer as { providerPresetId?: unknown }).providerPresetId;
 
   if (composerSessionId !== sessionId) {
     return {
       initialModel: null,
+      initialReasoningLevel: null,
       providerConfigMode: "global-default",
       providerPresetId: null
     };
@@ -3846,6 +3858,7 @@ function parseLiveComposerBootstrap(
     typeof initialModel === "string"
       ? (initialModel.trim() || null)
       : null;
+  const normalizedInitialReasoningLevel = normalizeComposerReasoningLevel(reasoningLevel);
   const normalizedProviderPresetId =
     typeof providerPresetId === "string"
       ? (providerPresetId.trim() || null)
@@ -3857,10 +3870,28 @@ function parseLiveComposerBootstrap(
 
   return {
     initialModel: normalizedInitialModel,
+    initialReasoningLevel: normalizedInitialReasoningLevel,
     providerConfigMode: normalizedProviderConfigMode,
     providerPresetId:
       normalizedProviderConfigMode === "cc-switch-preset" ? normalizedProviderPresetId : null
   };
+}
+
+function normalizeComposerReasoningLevel(value: unknown): PreferenceReasoningLevel | null {
+  if (
+    value === "off"
+    || value === "minimal"
+    || value === "low"
+    || value === "medium"
+    || value === "high"
+    || value === "xhigh"
+    || value === "max"
+    || value === "ultra"
+  ) {
+    return value;
+  }
+
+  return null;
 }
 
 function isHistoryMessageDto(value: unknown): value is HistoryMessageDto {

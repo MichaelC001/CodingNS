@@ -132,4 +132,27 @@ describe("GrokRuntimeAdapter", () => {
       "stdio"
     ]);
   });
+
+  it.each(["default", "acceptEdits", "bypassPermissions"])("把权限模式透传为 Grok CLI 参数：%s", async (permissionMode) => {
+    let seenArgs = null;
+    const adapter = new GrokRuntimeAdapter({
+      commandPath: process.execPath,
+      spawnFactory: (command, args, options) => {
+        seenArgs = args;
+        return spawn(command, [fixture, ...args], options);
+      }
+    });
+    const launch = await adapter.startSession({
+      sessionId: "codingns-session",
+      workspaceId: "workspace",
+      workspacePath: path.dirname(fixture),
+      provider: "grok",
+      providerSessionId: null,
+      rawStoreRef: null,
+      options: { content: "你好", permissionMode, attachments: [] }
+    }, { updateSessionBinding() {}, async emit() {} });
+    await launch.completed;
+    expect(seenArgs).toContain("--permission-mode");
+    expect(seenArgs[seenArgs.indexOf("--permission-mode") + 1]).toBe(permissionMode);
+  });
 });

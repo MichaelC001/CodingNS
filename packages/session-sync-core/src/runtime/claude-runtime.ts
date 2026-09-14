@@ -743,17 +743,32 @@ function createClaudeHookSettingsFile(input: {
   const debugLogPath = join(tmpdir(), "codingns-claude-hook-bridge.log");
   const command = buildClaudeHookBridgeCommand(input, tempDir, debugLogPath);
   const preToolUseMatchers = resolveClaudePreToolUseHookMatchers(input.permissionMode);
+  const hook = () => ({
+    type: "command" as const,
+    command
+  });
   const settings = {
     hooks: {
       PreToolUse: preToolUseMatchers.map((matcher) => ({
         matcher,
-        hooks: [
-          {
-            type: "command",
-            command
-          }
-        ]
-      }))
+        hooks: [hook()]
+      })),
+      ...(input.permissionMode === "bypassPermissions"
+        ? {}
+        : {
+            PermissionRequest: [
+              {
+                matcher: "*",
+                hooks: [hook()]
+              }
+            ]
+          }),
+      Elicitation: [
+        {
+          matcher: "*",
+          hooks: [hook()]
+        }
+      ]
     }
   };
   const settingsJson = JSON.stringify(settings);
@@ -771,9 +786,9 @@ function createClaudeHookSettingsFile(input: {
 }
 
 export function resolveClaudePreToolUseHookMatchers(permissionMode: string | null): string[] {
-  return permissionMode === "bypassPermissions"
-    ? ["AskUserQuestion", "ExitPlanMode"]
-    : ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "AskUserQuestion", "ExitPlanMode"];
+  if (permissionMode === "bypassPermissions") return ["AskUserQuestion", "ExitPlanMode"];
+  if (permissionMode === "acceptEdits") return ["Bash", "AskUserQuestion", "ExitPlanMode"];
+  return ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "AskUserQuestion", "ExitPlanMode"];
 }
 
 function buildClaudeHookBridgeCommand(input: {

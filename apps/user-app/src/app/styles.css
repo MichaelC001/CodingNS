@@ -32188,6 +32188,12 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   color: var(--text-secondary, #5f6b7a);
 }
 
+.permission-request-inline-meta p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .permission-request-reason span,
 .permission-request-inline-meta span,
 .permission-request-block-label {
@@ -32216,6 +32222,11 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   word-break: break-word;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.permission-request-detail summary {
+  cursor: pointer;
+  list-style-position: inside;
 }
 
 .permission-request-target-list {

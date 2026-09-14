@@ -655,6 +655,14 @@ export class SessionRuntimeStore {
     });
   }
 
+  /** 删除 Host 已确认不存在的旧请求，避免重启后缓存卡片持续触发 404。 */
+  discardPermissionRequest(requestId: string): void {
+    if (!this.state.permissionRequests.some((item) => item.id === requestId)) return;
+    this.patch({
+      permissionRequests: this.state.permissionRequests.filter((item) => item.id !== requestId)
+    });
+  }
+
   reconnect(): void {
     this.realtimeClient?.reconnectNow();
   }
@@ -1628,7 +1636,7 @@ export class SessionRuntimeStore {
       });
 
       this.patch({
-        permissionRequests: response.items
+        permissionRequests: mergePermissionRequests(this.state.permissionRequests, response.items)
       });
     } catch {
       return;
@@ -6286,6 +6294,12 @@ function upsertPermissionRequest(
   current: SessionPermissionRequestDto[],
   incoming: SessionPermissionRequestDto
 ): SessionPermissionRequestDto[] {
+  const existing = current.find((item) => item.id === incoming.id);
+
+  if (existing && shouldKeepPermissionRequest(existing, incoming)) {
+    return current;
+  }
+
   const next = current.filter((item) => item.id !== incoming.id);
   next.push(incoming);
   next.sort((left, right) => {
@@ -6296,6 +6310,31 @@ function upsertPermissionRequest(
     return right.createdAt.localeCompare(left.createdAt);
   });
   return next;
+}
+
+function mergePermissionRequests(
+  current: SessionPermissionRequestDto[],
+  incoming: SessionPermissionRequestDto[]
+): SessionPermissionRequestDto[] {
+  return incoming.reduce(upsertPermissionRequest, current);
+}
+
+function shouldKeepPermissionRequest(
+  current: SessionPermissionRequestDto,
+  incoming: SessionPermissionRequestDto
+): boolean {
+  const currentUpdatedAt = Date.parse(current.updatedAt);
+  const incomingUpdatedAt = Date.parse(incoming.updatedAt);
+
+  if (
+    Number.isFinite(currentUpdatedAt)
+    && Number.isFinite(incomingUpdatedAt)
+    && incomingUpdatedAt < currentUpdatedAt
+  ) {
+    return true;
+  }
+
+  return current.status !== "pending" && incoming.status === "pending";
 }
 
 function pickFreshestSessionSummary(

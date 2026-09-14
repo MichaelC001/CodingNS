@@ -305,7 +305,8 @@ export class ButlerRuntimeStore {
       hasOlderMessages: this.state.hasOlderMessages,
       runtimeHasActiveRun: this.state.runtimeHasActiveRun,
       runtimeCanInterrupt: this.state.runtimeCanInterrupt,
-      contextUsage: this.state.contextUsage
+      contextUsage: this.state.contextUsage,
+      permissionRequests: this.state.permissionRequests
     } satisfies Pick<
       ButlerRuntimeState,
       | "activeProvider"
@@ -322,6 +323,7 @@ export class ButlerRuntimeStore {
       | "runtimeHasActiveRun"
       | "runtimeCanInterrupt"
       | "contextUsage"
+      | "permissionRequests"
     >;
 
     // 切换 provider 必须先清空页面状态，避免不同 provider 的上下文串味。
@@ -340,6 +342,7 @@ export class ButlerRuntimeStore {
       runtimeHasActiveRun: null,
       runtimeCanInterrupt: null,
       contextUsage: null,
+      permissionRequests: [],
       capabilities: createButlerFallbackCapabilities(providerId)
     });
 
@@ -789,6 +792,7 @@ export class ButlerRuntimeStore {
       }
 
       this.selectedControlSessionId = controlSession.id;
+      const isSameRuntimeSession = this.state.controlSession?.session.sessionId === controlSession.session.sessionId;
 
       const [historyPage, runtime, permissionResponse] = await Promise.all([
         // Butler 对话页打开时必须先展示最新一页；长会话如果从 forward 读第一页，
@@ -840,7 +844,9 @@ export class ButlerRuntimeStore {
         runtimeHasActiveRun: resolvedRuntime.hasActiveRun,
         runtimeCanInterrupt: resolvedRuntime.canInterrupt,
         contextUsage: runtime.contextUsage,
-        permissionRequests: permissionResponse.items
+        permissionRequests: isSameRuntimeSession
+          ? mergePermissionRequests(this.state.permissionRequests, permissionResponse.items)
+          : permissionResponse.items
       });
       logPerfDebug("butler.runtime.reload_control_session.end", {
         workspaceId: this.workspaceId,
@@ -1591,6 +1597,12 @@ function upsertPermissionRequest(
   current: SessionPermissionRequestDto[],
   incoming: SessionPermissionRequestDto
 ): SessionPermissionRequestDto[] {
+  const existing = current.find((item) => item.id === incoming.id);
+
+  if (existing && shouldKeepPermissionRequest(existing, incoming)) {
+    return current;
+  }
+
   const next = current.filter((item) => item.id !== incoming.id);
   next.push(incoming);
   next.sort((left, right) => {
@@ -1601,6 +1613,31 @@ function upsertPermissionRequest(
     return right.createdAt.localeCompare(left.createdAt);
   });
   return next;
+}
+
+function mergePermissionRequests(
+  current: SessionPermissionRequestDto[],
+  incoming: SessionPermissionRequestDto[]
+): SessionPermissionRequestDto[] {
+  return incoming.reduce(upsertPermissionRequest, current);
+}
+
+function shouldKeepPermissionRequest(
+  current: SessionPermissionRequestDto,
+  incoming: SessionPermissionRequestDto
+): boolean {
+  const currentUpdatedAt = Date.parse(current.updatedAt);
+  const incomingUpdatedAt = Date.parse(incoming.updatedAt);
+
+  if (
+    Number.isFinite(currentUpdatedAt)
+    && Number.isFinite(incomingUpdatedAt)
+    && incomingUpdatedAt < currentUpdatedAt
+  ) {
+    return true;
+  }
+
+  return current.status !== "pending" && incoming.status === "pending";
 }
 
 function buildButlerVisibleMessages(

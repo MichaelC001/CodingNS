@@ -51,6 +51,7 @@ export interface SessionPermissionRequestQuestionView {
   allowOther: boolean;
   secret: boolean;
   multiSelect: boolean;
+  required?: boolean;
   options: SessionPermissionRequestQuestionOptionView[];
 }
 
@@ -126,6 +127,7 @@ interface SessionPermissionRequestInternalRecord extends SessionPermissionReques
     | {
         kind: "deepseek-harness";
         requestType: "approval" | "question";
+        protocol: "legacy" | "remote";
         approvalId: string | null;
         respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
       }
@@ -136,6 +138,10 @@ interface SessionPermissionRequestInternalRecord extends SessionPermissionReques
         respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
       };
 }
+
+type DeepSeekHarnessRequest = Omit<SessionPermissionRequestInternalRecord, "source"> & {
+  source: Extract<SessionPermissionRequestInternalRecord["source"], { kind: "deepseek-harness" }>;
+};
 
 interface ClaudePreToolUseDecision {
   action: "allow" | "deny" | "ask";
@@ -160,6 +166,11 @@ interface ClaudeHookPermissionPayload {
   question?: string;
   message?: string;
   title?: string;
+  mcp_server_name?: string;
+  mode?: string;
+  url?: string;
+  elicitation_id?: string;
+  requested_schema?: unknown;
   permission_suggestions?: unknown;
   reason?: string;
   hook_event_name?: string;
@@ -228,7 +239,11 @@ export class SessionPermissionRequestService {
       workspaceId: string;
       workspacePath: string;
       transcriptPath: string | null;
-    }) => Promise<{ sessionId: string; rawStoreRef: string } | null>
+    }) => Promise<{ sessionId: string; rawStoreRef: string } | null>,
+    private readonly recoverDeepSeekHarnessSession?: (input: {
+      sessionId: string;
+      providerSessionId: string;
+    }) => Promise<void>
   ) {}
 
   async dispose(): Promise<void> {
@@ -253,6 +268,15 @@ export class SessionPermissionRequestService {
     userId: string
   ): Promise<SessionPermissionRequestView[]> {
     const session = this.sessionHistoryService.getSession(sessionId, userId);
+
+    if (session.provider === "deepseek-harness" && session.providerSessionId) {
+      const recover = this.recoverDeepSeekHarnessSession;
+      if (recover) {
+        await recover({ sessionId, providerSessionId: session.providerSessionId }).catch(() => {
+          // DSH 恢复失败不应阻塞请求列表；前端仍可看到本地快照并稍后重试。
+        });
+      }
+    }
 
     if (session.provider === "opencode") {
       await this.startOpenCodeWatchers(session);
@@ -382,18 +406,27 @@ export class SessionPermissionRequestService {
 
     if (request.source.kind === "deepseek-harness") {
       const action = normalizeText(input.action);
-      const accepted = action !== "deny" && action !== "reject" && action !== "cancel";
-      await request.source.respond(accepted
-        ? {
-            ok: true,
-            value: request.source.requestType === "question"
-              ? buildDeepSeekHarnessQuestionResponse(request, input.answers ?? {})
-              : buildDeepSeekHarnessApprovalResponse({
-                  providerSessionId: request.providerSessionId,
-                  approvalId: request.source.approvalId ?? request.requestKey
-                }, "allowed-once")
-          }
-        : { ok: false, error: { code: "cancelled", message: "用户拒绝了请求" } });
+
+      const allowedActions = request.source.requestType === "question"
+        ? new Set(["answer", "cancel"])
+        : new Set(["allow", "deny", "cancel"]);
+
+      if (!action || !allowedActions.has(action)) {
+        throw new AppError({
+          statusCode: 400,
+          errorCode: "INVALID_INPUT",
+          detail: request.source.requestType === "question"
+            ? "Harness 问题请求只支持 answer 或 cancel"
+            : "Harness 权限申请只支持 allow、deny 或 cancel",
+          field: "action"
+        });
+      }
+
+      const accepted = action === "answer" || action === "allow";
+      await request.source.respond(buildDeepSeekHarnessReply(
+        request as DeepSeekHarnessRequest,
+        { ...input, action }
+      ));
       return await this.markResolved(request, accepted ? "approved" : "declined");
     }
 
@@ -456,13 +489,38 @@ export class SessionPermissionRequestService {
     sessionId: string;
     providerSessionId: string;
     rpcId: string;
+    protocol?: "legacy" | "remote";
     type: "approval" | "question";
     payload: unknown;
     respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
   }): Promise<void> {
     const payload = toRecord(input.payload) ?? {};
+    const nestedRequest = toRecord(payload.request);
+    const requestPayload = nestedRequest
+      ? { ...payload, ...nestedRequest }
+      : payload;
     const requestId = `harness-${input.rpcId}`;
-    const questions = input.type === "question" ? normalizeHarnessQuestions(payload.questions) : [];
+    const existing = this.requestsById.get(requestId);
+
+    if (existing) {
+      // Remote `$events` 断线重连会用同一个 eventId 重放请求。请求记录本身
+      // 必须保持不变，但回写函数已经属于新连接，需要替换成新的 respond，
+      // 否则用户看到的是同一张卡片，提交时却仍写入已经断开的旧连接。
+      if (
+        existing.status === "pending"
+        && existing.sessionId === input.sessionId
+        && existing.source.kind === "deepseek-harness"
+        && existing.source.requestType === input.type
+      ) {
+        existing.source.protocol = input.protocol ?? "legacy";
+        existing.source.respond = input.respond;
+      }
+      return;
+    }
+
+    const questions = input.type === "question"
+      ? normalizeHarnessQuestions(requestPayload.questions ?? [requestPayload])
+      : [];
     const now = nowIso();
     const request: SessionPermissionRequestInternalRecord = {
       id: requestId,
@@ -475,10 +533,10 @@ export class SessionPermissionRequestService {
       title: input.type === "question" ? "Harness 请求补充信息" : "Harness 请求执行确认",
       summary: input.type === "question"
         ? questions[0]?.question ?? "Agent 需要用户回答问题"
-        : normalizeText(payload.reason) ?? normalizeText(payload.toolName) ?? "Agent 需要执行确认",
+        : normalizeText(requestPayload.reason) ?? normalizeText(requestPayload.toolName) ?? "Agent 需要执行确认",
       detail: stringifyPayload(payload),
-      reason: normalizeText(payload.reason),
-      toolName: normalizeText(payload.toolName),
+      reason: normalizeText(requestPayload.reason),
+      toolName: normalizeText(requestPayload.toolName),
       command: null,
       cwd: null,
       paths: [],
@@ -494,8 +552,9 @@ export class SessionPermissionRequestService {
       source: {
         kind: "deepseek-harness",
         requestType: input.type,
+        protocol: input.protocol ?? "legacy",
         approvalId: input.type === "approval"
-          ? normalizeText(payload.approvalId) ?? input.rpcId
+          ? normalizeText(requestPayload.approvalId) ?? input.rpcId
           : null,
         respond: input.respond
       }
@@ -998,10 +1057,7 @@ export class SessionPermissionRequestService {
         accepted: true,
         ignored: true,
         sessionId: null,
-        bridgeResponse: buildClaudePreToolUseBridgeResponse(
-          "ask",
-          "未匹配到工作区，回退 Claude 原生征询"
-        )
+        bridgeResponse: null
       };
     }
 
@@ -1038,10 +1094,7 @@ export class SessionPermissionRequestService {
         accepted: true,
         ignored: true,
         sessionId: null,
-        bridgeResponse: buildClaudePreToolUseBridgeResponse(
-          "ask",
-          "未匹配到会话绑定，回退 Claude 原生征询"
-        )
+        bridgeResponse: null
       };
     }
 
@@ -1084,11 +1137,10 @@ export class SessionPermissionRequestService {
       accepted: true,
       ignored: false,
       sessionId: binding.sessionId,
-      bridgeResponse: buildClaudeAskUserQuestionBridgeResponse(
+      bridgeResponse: buildClaudeElicitationBridgeResponse(
         decision.action,
         decision.answers ?? {},
         normalized.questions,
-        payload,
         decision.action === "allow"
           ? "用户已提供补充信息"
           : resolvedByTimeout
@@ -1325,7 +1377,8 @@ export class SessionPermissionRequestService {
       workspacePath?: string | null;
     }
   ): Promise<void> {
-    const permission = toRecord(rawPermission);
+    const rawRecord = toRecord(rawPermission);
+    const permission = toRecord(rawRecord?.permission) ?? rawRecord;
     const providerSessionId = normalizeText(permission?.sessionID);
     const requestKey = normalizeText(permission?.id);
 
@@ -1352,6 +1405,11 @@ export class SessionPermissionRequestService {
       createdAt: extractOpenCodePermissionCreatedAt(permission) ?? nowIso()
     });
     const existing = this.findRequestByKey("opencode", providerSessionId, requestKey);
+
+    if (existing && existing.status !== "pending") {
+      return;
+    }
+
     const record: SessionPermissionRequestInternalRecord = {
       ...(existing ?? normalized),
       ...normalized,
@@ -1957,7 +2015,7 @@ export function normalizeClaudeElicitationRequest(input: {
     requestKey,
     kind: "user_input",
     status: "pending",
-    title: normalizeText(input.payload.title) || "Claude 需要你补充信息",
+    title: normalizeText(input.payload.title) || normalizeText(input.payload.mcp_server_name) || "Claude 需要你补充信息",
     summary: questions[0]?.question ?? "Claude 需要你补充信息后才能继续",
     detail: rawPayload,
     reason: normalizeText(input.payload.reason) || null,
@@ -2683,7 +2741,7 @@ function readClaudeAskUserQuestionOptions(value: unknown): SessionPermissionRequ
 }
 
 function readClaudeElicitationQuestions(
-  payload: Pick<ClaudeHookPermissionPayload, "options" | "prompt" | "question" | "message" | "title">
+  payload: Pick<ClaudeHookPermissionPayload, "options" | "prompt" | "question" | "message" | "title" | "mode" | "requested_schema">
 ): SessionPermissionRequestQuestionView[] {
   const options = readClaudeAskUserQuestionOptions(payload.options);
   const questionText =
@@ -2692,17 +2750,58 @@ function readClaudeElicitationQuestions(
     normalizeText(payload.message) ||
     "请补充 Claude 继续执行所需的信息";
 
-  return [
-    {
-      id: "elicitation",
-      header: normalizeText(payload.title) || "补充信息",
-      question: questionText,
-      allowOther: true,
-      secret: false,
-      multiSelect: false,
-      options
-    }
-  ];
+  const schemaQuestions = readClaudeElicitationSchemaQuestions(payload.requested_schema, questionText);
+
+  if (schemaQuestions.length > 0) {
+    return schemaQuestions;
+  }
+
+  return [{
+    id: "elicitation",
+    header: normalizeText(payload.title) || "补充信息",
+    question: questionText,
+    allowOther: true,
+    secret: false,
+    multiSelect: false,
+    ...(payload.mode === "url" ? { required: false } : {}),
+    options
+  }];
+}
+
+function readClaudeElicitationSchemaQuestions(
+  value: unknown,
+  fallbackQuestion: string
+): SessionPermissionRequestQuestionView[] {
+  const schema = toRecord(value);
+  const properties = toRecord(schema?.properties);
+
+  if (!properties) {
+    return [];
+  }
+
+  const required = new Set(readStringArray(schema?.required));
+
+  return Object.entries(properties)
+    .map(([id, property], index) => {
+      const record = toRecord(property) ?? {};
+      const title = normalizeText(record.title) || id;
+      const description = normalizeText(record.description);
+      const enumValues = Array.isArray(record.enum) ? record.enum : [];
+      const options = readClaudeAskUserQuestionOptions(enumValues);
+      const type = normalizeText(record.type)?.toLowerCase();
+      const format = normalizeText(record.format)?.toLowerCase();
+
+      return {
+        id,
+        header: title || `字段 ${index + 1}`,
+        question: description || fallbackQuestion,
+        allowOther: options.length === 0,
+        secret: format === "password" || format === "secret",
+        multiSelect: type === "array",
+        required: required.has(id),
+        options
+      };
+    });
 }
 
 export function buildClaudeAskUserQuestionAnswers(
@@ -2727,6 +2826,46 @@ export function buildClaudeAskUserQuestionAnswers(
       })
       .filter((entry): entry is readonly [string, string] => entry !== null)
   );
+}
+
+export function buildClaudeElicitationBridgeResponse(
+  action: "allow" | "deny" | "ask",
+  answers: Record<string, string[]>,
+  questions: SessionPermissionRequestQuestionView[],
+  _reason: string
+): Record<string, unknown> {
+  const elicitationAction = action === "allow" ? "accept" : action === "deny" ? "decline" : "cancel";
+
+  if (elicitationAction !== "accept") {
+    return {
+      hookSpecificOutput: {
+        hookEventName: "Elicitation",
+        action: elicitationAction
+      }
+    };
+  }
+
+  return {
+    hookSpecificOutput: {
+      hookEventName: "Elicitation",
+      action: elicitationAction,
+      content: Object.fromEntries(
+        questions
+          .map((question) => {
+            const values = Array.isArray(answers[question.id])
+              ? answers[question.id].map((value) => normalizeText(value)).filter((value): value is string => Boolean(value))
+              : [];
+
+            if (values.length === 0) {
+              return null;
+            }
+
+            return [question.id, question.multiSelect ? values : values[0]] as const;
+          })
+          .filter((entry): entry is readonly [string, string | string[]] => entry !== null)
+      )
+    }
+  };
 }
 
 export function resolveClaudeBlockingRequestTimeoutMs(
@@ -2777,6 +2916,76 @@ export function buildDeepSeekHarnessApprovalResponse(
     approvalId: request.approvalId,
     outcome
   };
+}
+
+function buildDeepSeekHarnessReply(
+  request: DeepSeekHarnessRequest,
+  input: SessionPermissionReplyInput
+): { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } } {
+  const accepted = input.action !== "deny" && input.action !== "reject" && input.action !== "cancel";
+
+  if (request.source.protocol === "remote") {
+    if (request.source.requestType === "question") {
+      return accepted
+        ? {
+            ok: true,
+            value: {
+              answers: buildDeepSeekHarnessQuestionAnswers(request.questions, input.answers ?? {})
+            }
+          }
+        : {
+            ok: false,
+            error: {
+              code: "ASK_CANCELLED",
+              message: "用户取消了本次问题"
+            }
+          };
+    }
+
+    return {
+      ok: true,
+      value: input.action === "cancel" ? "cancelled" : accepted ? "allowed-once" : "rejected"
+    };
+  }
+
+  if (accepted) {
+    return {
+      ok: true,
+      value: request.source.requestType === "question"
+        ? buildDeepSeekHarnessQuestionResponse(request, input.answers ?? {})
+        : buildDeepSeekHarnessApprovalResponse({
+            providerSessionId: request.providerSessionId,
+            approvalId: request.source.approvalId ?? request.requestKey
+          }, "allowed-once")
+    };
+  }
+
+  return {
+    ok: false,
+    error: { code: "cancelled", message: "用户拒绝了请求" }
+  };
+}
+
+function buildDeepSeekHarnessQuestionAnswers(
+  questions: SessionPermissionRequestQuestionView[],
+  answers: Record<string, string[]>
+): Array<{ id: string; selected: string[]; custom?: string }> {
+  return questions.map((question) => {
+    const values = Array.isArray(answers[question.id])
+      ? answers[question.id]
+        .map((value) => normalizeText(value))
+        .filter((value): value is string => Boolean(value))
+      : [];
+    const optionLabels = new Set(question.options.map((option) => option.label));
+    const selected = values.filter((value) => optionLabels.has(value));
+    const custom = values.find((value) => !optionLabels.has(value));
+
+    return {
+      id: question.id,
+      selected,
+      ...(custom ? { custom } : {})
+    };
+  });
 }
 
 function readClaudeAllowedPrompts(
@@ -3398,22 +3607,16 @@ function normalizeHarnessQuestions(value: unknown): SessionPermissionRequestQues
   if (!Array.isArray(value)) return [];
   return value.map((item, index) => {
     const record = toRecord(item) ?? {};
-    const options = Array.isArray(record.options)
-      ? record.options.map((option) => {
-        const optionRecord = toRecord(option);
-        return {
-          label: normalizeText(optionRecord?.label ?? option) ?? "选项",
-          description: normalizeText(optionRecord?.description)
-        };
-      })
-      : [];
+    const options = readQuestionOptions(record.options ?? record.choices ?? record.answers);
+    const required = readBoolean(record.required);
     return {
-      id: normalizeText(record.id) ?? `question-${index + 1}`,
-      header: normalizeText(record.header) ?? "需要确认",
-      question: normalizeText(record.question ?? record.text) ?? "请提供所需信息",
-      allowOther: record.allowOther !== false,
-      secret: record.secret === true,
-      multiSelect: record.multiSelect === true,
+      id: normalizeText(record.id ?? record.name) ?? `question-${index + 1}`,
+      header: normalizeText(record.header ?? record.title) ?? "需要确认",
+      question: normalizeText(record.question ?? record.text ?? record.prompt ?? record.message) ?? "请提供所需信息",
+      allowOther: readBoolean(record.allowOther ?? record.allow_other) ?? options.length === 0,
+      secret: readBoolean(record.secret ?? record.isSecret) ?? false,
+      multiSelect: readBoolean(record.multiSelect ?? record.multi_select) ?? false,
+      ...(required === null ? {} : { required }),
       options
     };
   });
@@ -3423,25 +3626,35 @@ function normalizeGrokQuestions(value: unknown): SessionPermissionRequestQuestio
   if (!Array.isArray(value)) return [];
   return value.map((item, index) => {
     const record = toRecord(item) ?? {};
-    const options = Array.isArray(record.options)
-      ? record.options.map((option) => {
-        const optionRecord = toRecord(option);
-        return {
-          label: normalizeText(optionRecord?.label ?? option) ?? "选项",
-          description: normalizeText(optionRecord?.description)
-        };
-      })
-      : [];
+    const options = readQuestionOptions(record.options ?? record.choices ?? record.answers);
     return {
       id: normalizeText(record.id) ?? `question-${index + 1}`,
       header: normalizeText(record.header) ?? "需要回答",
       question: normalizeText(record.question) ?? "请提供所需信息",
       allowOther: true,
       secret: false,
-      multiSelect: record.multiSelect === true,
+      multiSelect: readBoolean(record.multiSelect ?? record.multi_select) ?? false,
       options
     };
   });
+}
+
+function readQuestionOptions(value: unknown): SessionPermissionRequestQuestionOptionView[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((option) => {
+      const record = toRecord(option);
+      const label = normalizeText(record?.label ?? record?.value ?? record?.text ?? option);
+
+      return label
+        ? {
+            label,
+            description: normalizeText(record?.description ?? record?.detail)
+          }
+        : null;
+    })
+    .filter((option): option is SessionPermissionRequestQuestionOptionView => option !== null);
 }
 
 function normalizeText(value: unknown): string | null {

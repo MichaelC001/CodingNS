@@ -52,7 +52,7 @@ const OPENCODE_ORDER_DEBUG_FILE_PATH = resolveOpenCodeOrderDebugFilePath();
 interface OpenCodeRuntimeOptions {
   baseUrl?: string;
   baseUrlResolver?: (
-    input?: { refresh?: boolean; workspacePath?: string | null; runtimeHomeDir?: string | null }
+    input?: { refresh?: boolean; workspacePath?: string | null; runtimeHomeDir?: string | null; permissionMode?: string | null }
   ) => Promise<string> | string;
   acquireManagedServerLease?: (
     workspacePath: string,
@@ -76,6 +76,7 @@ interface OpenCodeRuntimeState {
   readonly rawStoreRef: string;
   readonly workspacePath: string;
   readonly runtimeHomeDir: string | null;
+  readonly permissionMode: string | null;
   readonly runStartedAtMs: number;
   sequence: number;
   terminalStatus: RuntimeRunState | null;
@@ -104,7 +105,8 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
   ): Promise<ProviderRuntimeLaunchResult> {
     const providerSessionId = await this.createSession(
       request.workspacePath,
-      request.runtimeHomeDir ?? null
+      request.runtimeHomeDir ?? null,
+      request.options.permissionMode
     );
     const rawStoreRef = buildSessionRawStoreRef(providerSessionId);
 
@@ -154,6 +156,7 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
         rawStoreRef,
         workspacePath: request.workspacePath,
         runtimeHomeDir: request.runtimeHomeDir?.trim() || null,
+        permissionMode: request.options.permissionMode ?? null,
         runStartedAtMs,
         sequence: Math.max(0, request.sequenceBase ?? 0),
         terminalStatus: null,
@@ -202,6 +205,13 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     signal: AbortSignal
   ): Promise<void> {
     const eventStreamPromise = this.consumeEventStream(state, signal);
+    // 事件流和首个 prompt 会并行解析 server 地址。解析失败时，事件流
+    // 可能先于下面的 await 抛错；如果不立即挂上拒绝处理，Node 会把它
+    // 判定为 unhandledRejection，进而让 Host 直接退出。后续仍然 await
+    // 原 Promise，以便保留原有的错误处理和失败事件上报逻辑。
+    void eventStreamPromise.catch(() => {
+      return;
+    });
     const promptStartedAt = nextTimestamp();
 
     try {
@@ -299,7 +309,8 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     const response = await this.fetchResponse("/event", {
       signal,
       workspacePath: state.workspacePath,
-      runtimeHomeDir: state.runtimeHomeDir
+      runtimeHomeDir: state.runtimeHomeDir,
+      permissionMode: state.permissionMode
     });
 
     if (!response.body) {
@@ -699,7 +710,8 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
 
   private async createSession(
     workspacePath: string,
-    runtimeHomeDir: string | null
+    runtimeHomeDir: string | null,
+    permissionMode: string | null
   ): Promise<string> {
     const response = await this.fetchJson<{ id?: unknown }>("/session", {
       method: "POST",
@@ -713,7 +725,8 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
         directory: workspacePath
       }),
       workspacePath,
-      runtimeHomeDir
+      runtimeHomeDir,
+      permissionMode
     });
     const sessionId = ensureText(response.id).trim();
 
@@ -721,7 +734,7 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       throw new Error("PROVIDER_SESSION_ID_REQUIRED");
     }
 
-    await this.assertSessionDirectory(sessionId, workspacePath, runtimeHomeDir);
+    await this.assertSessionDirectory(sessionId, workspacePath, runtimeHomeDir, permissionMode);
 
     return sessionId;
   }
@@ -729,13 +742,15 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
   private async assertSessionDirectory(
     providerSessionId: string,
     expectedWorkspacePath: string,
-    runtimeHomeDir: string | null
+    runtimeHomeDir: string | null,
+    permissionMode: string | null
   ): Promise<void> {
     const response = await this.fetchJson<OpenCodeServerSession>(
       `/session/${encodeURIComponent(providerSessionId)}`,
       {
         workspacePath: expectedWorkspacePath,
-        runtimeHomeDir
+        runtimeHomeDir,
+        permissionMode
       }
     );
     const actualWorkspacePath = ensureText(response.directory).trim();
@@ -904,10 +919,11 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
   private async resolveBaseUrl(
     refresh = false,
     workspacePath?: string | null,
-    runtimeHomeDir?: string | null
+    runtimeHomeDir?: string | null,
+    permissionMode?: string | null
   ): Promise<string> {
     const resolved = this.options.baseUrlResolver
-      ? await this.options.baseUrlResolver({ refresh, workspacePath, runtimeHomeDir })
+      ? await this.options.baseUrlResolver({ refresh, workspacePath, runtimeHomeDir, permissionMode })
       : this.options.baseUrl?.trim();
 
     if (!resolved) {
@@ -938,6 +954,7 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       timeoutErrorMessage?: string;
       workspacePath?: string;
       runtimeHomeDir?: string | null;
+      permissionMode?: string | null;
     } = {}
   ): Promise<Response> {
     return this.fetchResponseWithRetry(pathname, input, false);
@@ -954,6 +971,7 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       timeoutErrorMessage?: string;
       workspacePath?: string;
       runtimeHomeDir?: string | null;
+      permissionMode?: string | null;
     },
     refresh: boolean,
     timeoutState: TimeoutRetryState = createTimeoutRetryState()
@@ -963,7 +981,8 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       `${await this.resolveBaseUrl(
         refresh,
         input.workspacePath,
-        input.runtimeHomeDir ?? null
+        input.runtimeHomeDir ?? null,
+        input.permissionMode ?? null
       )}/`
     );
 
@@ -1050,6 +1069,7 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       timeoutErrorMessage?: string;
       workspacePath?: string;
       runtimeHomeDir?: string | null;
+      permissionMode?: string | null;
     } = {}
   ): Promise<T> {
     const response = await this.fetchResponse(pathname, input);

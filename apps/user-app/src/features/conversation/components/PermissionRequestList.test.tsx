@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { t } from "../../../shared/i18n";
 import { PermissionRequestList } from "./PermissionRequestList";
 
 vi.mock("../capability/provider-ui", () => ({
@@ -228,6 +229,120 @@ describe("PermissionRequestList", () => {
         }
       });
     });
+  });
+
+  it("多选问题可以同时提交选项和其他答案", async () => {
+    const user = userEvent.setup();
+    const onReply = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <PermissionRequestList
+        requests={[{
+          id: "permission-ask-multi-1",
+          sessionId: "session-1",
+          provider: "deepseek-harness",
+          providerSessionId: "harness-session-1",
+          requestKey: "question-1",
+          kind: "user_input",
+          status: "pending",
+          title: "DSH 需要你选择工作范围",
+          summary: "请选择工作范围",
+          detail: null,
+          reason: null,
+          toolName: null,
+          command: null,
+          cwd: null,
+          paths: [],
+          permissionProfile: null,
+          questions: [{
+            id: "scope",
+            header: "工作范围",
+            question: "这次需要哪些范围？",
+            allowOther: true,
+            secret: false,
+            multiSelect: true,
+            options: [
+              { label: "代码", description: null },
+              { label: "文档", description: null }
+            ]
+          }],
+          actions: [{
+            value: "answer",
+            label: "提交回答",
+            tone: "primary",
+            description: null
+          }],
+          rawPayload: null,
+          createdAt: "2026-06-13T09:00:00.000Z",
+          updatedAt: "2026-06-13T09:00:00.000Z",
+          resolvedAt: null
+        }]}
+        replyingRequestId={null}
+        onReply={onReply}
+      />
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: /代码/ }));
+    await user.type(screen.getByPlaceholderText(t("conversation.permissionRequestQuestionOtherPlaceholder")), "配置");
+    await user.click(screen.getByRole("button", { name: "提交回答" }));
+
+    await waitFor(() => {
+      expect(onReply).toHaveBeenCalledWith("permission-ask-multi-1", {
+        action: "answer",
+        answers: {
+          scope: ["代码", "配置"]
+        }
+      });
+    });
+  });
+
+  it("权限申请会展示来源、读写范围、网络状态和可展开详情", () => {
+    render(
+      <PermissionRequestList
+        requests={[{
+          id: "permission-profile-1",
+          sessionId: "session-1",
+          provider: "grok",
+          providerSessionId: "grok-session-1",
+          requestKey: "request-1",
+          kind: "permissions",
+          status: "pending",
+          title: "Grok 请求扩大权限",
+          summary: "需要访问项目资源",
+          detail: "{\"source\":\"grok\"}",
+          reason: "需要访问项目资源",
+          toolName: "workspace",
+          command: null,
+          cwd: "/tmp/workspace",
+          paths: ["/tmp/workspace/src"],
+          permissionProfile: {
+            readPaths: ["/tmp/workspace/src"],
+            writePaths: ["/tmp/workspace/output"],
+            networkEnabled: true
+          },
+          questions: [],
+          actions: [{
+            value: "allow-once",
+            label: "允许一次",
+            tone: "primary",
+            description: null
+          }],
+          rawPayload: null,
+          createdAt: "2026-06-13T09:00:00.000Z",
+          updatedAt: "2026-06-13T09:00:00.000Z",
+          resolvedAt: null
+        }]}
+        replyingRequestId={null}
+        onReply={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("需要访问项目资源")).toBeInTheDocument();
+    expect(screen.getByText("workspace")).toBeInTheDocument();
+    expect(screen.getByText("/tmp/workspace")).toBeInTheDocument();
+    expect(screen.getByText("/tmp/workspace/output")).toBeInTheDocument();
+    expect(screen.getByText(t("common.enabled"))).toBeInTheDocument();
+    expect(screen.getByText("{\"source\":\"grok\"}")).toBeInTheDocument();
   });
 
   it("plan 审批摘要会按 markdown 渲染", () => {

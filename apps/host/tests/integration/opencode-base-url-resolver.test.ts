@@ -412,7 +412,7 @@ describe("OpenCodeBaseUrlResolver", () => {
     );
   });
 
-  it("工作区 runtimeHomeDir 存在 opencode 配置时，会把 MCP 配置注入托管 serve 进程环境", async () => {
+  it("工作区 runtimeHomeDir 存在 opencode 配置时，会把 MCP 和安全上下文上限注入托管 serve 进程环境", async () => {
     vi.resetModules();
 
     const runtimeHomeDir = mkdtempSync(path.join(tmpdir(), "codingns-opencode-runtime-"));
@@ -420,6 +420,19 @@ describe("OpenCodeBaseUrlResolver", () => {
     writeFileSync(
       path.join(runtimeHomeDir, "opencode.json"),
       JSON.stringify({
+        provider: {
+          openai: {
+            models: {
+              "gpt-5.5": {
+                limit: {
+                  context: 262144,
+                  input: 922000,
+                  output: 32768
+                }
+              }
+            }
+          }
+        },
         mcp: {
           "codingns-workspace-office": {
             type: "local",
@@ -467,8 +480,23 @@ describe("OpenCodeBaseUrlResolver", () => {
 
       expect(options.env?.OPENCODE_CONFIG_CONTENT).toBeTruthy();
       const parsed = JSON.parse(options.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as {
+        provider?: {
+          openai?: {
+            models?: {
+              "gpt-5.5"?: {
+                limit?: Record<string, number>;
+              };
+            };
+          };
+        };
         mcp?: Record<string, { command?: string[] }>;
+        permission?: Record<string, string>;
       };
+      expect(parsed.provider?.openai?.models?.["gpt-5.5"]?.limit).toMatchObject({
+        context: 262144,
+        input: 262144,
+        output: 32768
+      });
       expect(parsed.mcp?.["codingns-workspace-office"]?.command).toEqual([
         process.execPath,
         "/mock/codingns.mjs",
@@ -478,6 +506,7 @@ describe("OpenCodeBaseUrlResolver", () => {
         "--auth-file",
         "/tmp/workspace-auth.json"
       ]);
+      expect(parsed.permission?.edit).toBe("allow");
 
       queueMicrotask(() => {
         for (const handler of stdoutHandlers) {
@@ -506,7 +535,8 @@ describe("OpenCodeBaseUrlResolver", () => {
     await expect(
       resolver.resolve({
         workspacePath: "/Users/jackson/Code/CodingNS",
-        runtimeHomeDir
+        runtimeHomeDir,
+        permissionMode: "acceptEdits"
       })
     ).resolves.toBe("http://127.0.0.1:4321");
   });

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
@@ -31,6 +32,7 @@ interface ResolveBaseUrlInput {
   refresh?: boolean;
   workspacePath?: string | null;
   runtimeHomeDir?: string | null;
+  permissionMode?: string | null;
 }
 
 interface OpenCodeServeProcessRecord {
@@ -123,7 +125,7 @@ export class OpenCodeBaseUrlResolver {
       return inflight;
     }
 
-    const task = this.discoverAvailableBaseUrl(input.workspacePath ?? null, input.runtimeHomeDir ?? null);
+    const task = this.discoverAvailableBaseUrl(input.workspacePath ?? null, input.runtimeHomeDir ?? null, input.permissionMode ?? null);
     const wrappedTask = task.finally(() => {
       if (this.inflightByWorkspaceKey.get(scopeKey) === wrappedTask) {
         this.inflightByWorkspaceKey.delete(scopeKey);
@@ -195,7 +197,8 @@ export class OpenCodeBaseUrlResolver {
 
   private async discoverAvailableBaseUrl(
     workspacePath: string | null,
-    runtimeHomeDir: string | null
+    runtimeHomeDir: string | null,
+    permissionMode: string | null
   ): Promise<string> {
     const workspaceKey = normalizeResolverScopeKey(workspacePath, runtimeHomeDir);
     const candidates = await this.collectCandidateBaseUrls(workspacePath, runtimeHomeDir);
@@ -214,7 +217,8 @@ export class OpenCodeBaseUrlResolver {
     if (workspacePath || process.platform === "win32") {
       const managedCandidate = await this.ensureManagedServerBaseUrl(
         workspacePath ?? process.cwd(),
-        runtimeHomeDir
+        runtimeHomeDir,
+        permissionMode
       );
 
       if (await this.probeBaseUrl(managedCandidate)) {
@@ -279,7 +283,8 @@ export class OpenCodeBaseUrlResolver {
 
   private async ensureManagedServerBaseUrl(
     workspacePath: string,
-    runtimeHomeDir: string | null
+    runtimeHomeDir: string | null,
+    permissionMode: string | null
   ): Promise<string> {
     const workspaceKey = normalizeResolverScopeKey(workspacePath, runtimeHomeDir);
     const managedServerProcess = this.managedServerProcessByWorkspaceKey.get(workspaceKey) ?? null;
@@ -301,7 +306,7 @@ export class OpenCodeBaseUrlResolver {
       throw new Error("SERVER_UNAVAILABLE");
     }
 
-    const task = this.startManagedServer(workspacePath, runtimeHomeDir);
+    const task = this.startManagedServer(workspacePath, runtimeHomeDir, permissionMode);
     const wrappedTask = task.finally(() => {
       if (this.managedServerInflightByWorkspaceKey.get(workspaceKey) === wrappedTask) {
         this.managedServerInflightByWorkspaceKey.delete(workspaceKey);
@@ -313,7 +318,8 @@ export class OpenCodeBaseUrlResolver {
 
   private async startManagedServer(
     workspacePath: string,
-    runtimeHomeDir: string | null
+    runtimeHomeDir: string | null,
+    permissionMode: string | null
   ): Promise<string> {
     const commandPath = this.commandPath?.trim();
     const workspaceKey = normalizeResolverScopeKey(workspacePath, runtimeHomeDir);
@@ -328,7 +334,11 @@ export class OpenCodeBaseUrlResolver {
       ...process.env
     };
     delete env.OPENCODE_SERVER_PASSWORD;
-    const runtimeConfigContent = readOpenCodeRuntimeConfigContent(runtimeHomeDir);
+    const runtimeConfigContent = readOpenCodeRuntimeConfigContent(
+      runtimeHomeDir,
+      permissionMode,
+      workspacePath
+    );
 
     if (runtimeConfigContent) {
       env.OPENCODE_CONFIG_CONTENT = runtimeConfigContent;
@@ -721,7 +731,11 @@ function normalizeWorkspaceCompareValue(value: string | null | undefined): strin
   return /^[a-z]:(?:\/|$)/i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
-function readOpenCodeRuntimeConfigContent(runtimeHomeDir: string | null): string | null {
+function readOpenCodeRuntimeConfigContent(
+  runtimeHomeDir: string | null,
+  permissionMode: string | null = null,
+  workspacePath: string | null = null
+): string | null {
   const normalizedRuntimeHomeDir = runtimeHomeDir?.trim() ?? "";
 
   if (!normalizedRuntimeHomeDir) {
@@ -730,21 +744,185 @@ function readOpenCodeRuntimeConfigContent(runtimeHomeDir: string | null): string
 
   const configPath = path.join(normalizedRuntimeHomeDir, "opencode.json");
 
-  if (!fs.existsSync(configPath) || !fs.statSync(configPath).isFile()) {
+  let config: Record<string, unknown> = {};
+  let hasConfig = false;
+
+  if (fs.existsSync(configPath) && fs.statSync(configPath).isFile()) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+        hasConfig = true;
+      }
+    } catch {
+      // 配置损坏时仍允许本次显式权限模式生成最小配置，避免权限设置静默失效。
+    }
+  }
+
+  try {
+    // OpenCode 的 overflow 判断在模型同时存在 limit.input 时会优先使用
+    // limit.input，而不是 limit.context。模型目录通常会补一个远大于用户
+    // 显式 context 的 input（例如 922K vs 256K），导致界面已经 100% 后
+    // 仍不会自动压缩。把各配置源里显式声明的 context 转成安全的 input
+    // 上限，保持自动压缩阈值和用户看到的上下文上限一致。
+    applyOpenCodeContextInputOverrides(config, workspacePath);
+    hasConfig = hasConfig || Object.keys(config).length > 0;
+    const permission = createOpenCodePermissionConfig(permissionMode);
+    if (permission) {
+      const current = config.permission && typeof config.permission === "object" && !Array.isArray(config.permission)
+        ? config.permission as Record<string, unknown>
+        : {};
+      config.permission = { ...current, ...permission };
+    }
+    if (!hasConfig && !permission) return null;
+    return JSON.stringify(config);
+  } catch {
+    return null;
+  }
+}
+
+function applyOpenCodeContextInputOverrides(
+  config: Record<string, unknown>,
+  workspacePath: string | null
+): void {
+  const sources = [
+    readOpenCodeConfigFile(path.join(os.homedir(), ".config", "opencode", "opencode.json")),
+    readOpenCodeConfigFile(path.join(os.homedir(), ".opencode.json")),
+    workspacePath ? readOpenCodeConfigFile(path.join(workspacePath, "opencode.json")) : null,
+    readOpenCodeConfigFileFromContent(process.env.OPENCODE_CONFIG_CONTENT),
+    config
+  ];
+  const contextByModel = new Map<string, { context: number; input: number | null }>();
+
+  for (const source of sources) {
+    collectOpenCodeContextLimits(source, contextByModel);
+  }
+
+  if (contextByModel.size === 0) {
+    return;
+  }
+
+  const provider = isRecord(config.provider) ? config.provider : {};
+  const providerOverrides: Record<string, unknown> = {};
+
+  for (const [key, limit] of contextByModel) {
+    const separator = key.indexOf("\0");
+    const providerId = key.slice(0, separator);
+    const modelId = key.slice(separator + 1);
+    const providerConfig = isRecord(provider[providerId]) ? provider[providerId] : {};
+    const models = isRecord(providerConfig.models) ? providerConfig.models : {};
+    const modelConfig = isRecord(models[modelId]) ? models[modelId] : {};
+    const currentLimit = isRecord(modelConfig.limit) ? modelConfig.limit : {};
+    const safeInput = limit.input === null
+      ? limit.context
+      : Math.min(limit.context, limit.input);
+
+    const currentProviderOverride = isRecord(providerOverrides[providerId])
+      ? providerOverrides[providerId]
+      : {};
+    const currentModelOverrides = isRecord(currentProviderOverride.models)
+      ? currentProviderOverride.models
+      : {};
+    providerOverrides[providerId] = {
+      ...currentProviderOverride,
+      models: {
+        ...currentModelOverrides,
+        [modelId]: {
+          ...modelConfig,
+          limit: {
+            ...currentLimit,
+            input: safeInput
+          }
+        }
+      }
+    };
+  }
+
+  config.provider = {
+    ...provider,
+    ...providerOverrides
+  };
+}
+
+function collectOpenCodeContextLimits(
+  config: Record<string, unknown> | null,
+  result: Map<string, { context: number; input: number | null }>
+): void {
+  if (!config || !isRecord(config.provider)) {
+    return;
+  }
+
+  for (const [providerId, providerValue] of Object.entries(config.provider)) {
+    if (!isRecord(providerValue) || !isRecord(providerValue.models)) {
+      continue;
+    }
+
+    for (const [modelId, modelValue] of Object.entries(providerValue.models)) {
+      if (!isRecord(modelValue) || !isRecord(modelValue.limit)) {
+        continue;
+      }
+
+      const context = readPositiveNumber(modelValue.limit.context);
+      if (context === null) {
+        continue;
+      }
+
+      const input = readPositiveNumber(modelValue.limit.input);
+      result.set(`${providerId}\0${modelId}`, { context, input });
+    }
+  }
+}
+
+function readOpenCodeConfigFile(filePath: string): Record<string, unknown> | null {
+  if (!filePath) {
     return null;
   }
 
   try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as unknown;
-
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
       return null;
     }
 
-    return JSON.stringify(parsed);
+    return readOpenCodeConfigFileFromContent(fs.readFileSync(filePath, "utf8"));
   } catch {
     return null;
   }
+}
+
+function readOpenCodeConfigFileFromContent(content: string | undefined): Record<string, unknown> | null {
+  if (!content?.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readPositiveNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  return null;
+}
+
+function createOpenCodePermissionConfig(permissionMode: string | null): Record<string, "allow"> | null {
+  if (permissionMode === "acceptEdits") return { edit: "allow" };
+  if (permissionMode === "bypassPermissions") return { "*": "allow" };
+  return null;
 }
 
 function isOpenCodeServeCommand(command: string, commandPath: string | null): boolean {

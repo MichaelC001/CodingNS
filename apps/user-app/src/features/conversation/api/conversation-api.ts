@@ -1150,6 +1150,7 @@ export interface SessionPermissionRequestQuestionDto {
   allowOther: boolean;
   secret: boolean;
   multiSelect?: boolean;
+  required?: boolean;
   options: SessionPermissionRequestQuestionOptionDto[];
 }
 

@@ -100,6 +100,7 @@ interface ComposerPanelProps {
   placeholder?: string;
   draftStorageId?: string;
   initialModel?: string | null;
+  initialReasoningLevel?: ReasoningLevel | null;
   workspaceId?: string | null;
   initialProviderConfigMode?: SessionProviderConfigMode;
   initialProviderPresetId?: string | null;
@@ -606,6 +607,7 @@ export function ComposerPanel({
   placeholder,
   draftStorageId,
   initialModel = null,
+  initialReasoningLevel = null,
   workspaceId = null,
   initialProviderConfigMode = "global-default",
   initialProviderPresetId = null,
@@ -635,7 +637,9 @@ export function ComposerPanel({
   const [mentionSelections, setMentionSelections] = useState<ComposerMentionSelection[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [selectedAgentPreset, setSelectedAgentPreset] = useState<string>("");
-  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>("medium");
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningLevel>(
+    () => normalizeModelReasoningLevel(initialReasoningLevel) ?? "medium"
+  );
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentSheetOpen, setAttachmentSheetOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -695,6 +699,7 @@ export function ComposerPanel({
   const attachmentDraftCacheRef = useRef(new Map<string, StoredComposerDraftAttachment>());
   const quickPhraseMutationVersionRef = useRef(0);
   const appliedInitialModelKeyRef = useRef<string | null>(null);
+  const appliedInitialReasoningKeyRef = useRef<string | null>(null);
   const userSelectedModelRef = useRef(false);
   const userSelectedReasoningLevelRef = useRef(false);
   const mentionRequestIdRef = useRef(0);
@@ -1840,8 +1845,24 @@ export function ComposerPanel({
 
   useEffect(() => {
     userSelectedModelRef.current = false;
+    appliedInitialReasoningKeyRef.current = null;
     appliedInitialModelKeyRef.current = null;
   }, [draftStorageId, provider]);
+
+  useEffect(() => {
+    const normalizedInitialReasoningLevel = normalizeModelReasoningLevel(initialReasoningLevel);
+    const initialReasoningKey = `${draftStorageId ?? "default"}:${provider}:${normalizedInitialReasoningLevel ?? ""}`;
+
+    if (appliedInitialReasoningKeyRef.current === initialReasoningKey) {
+      return;
+    }
+
+    appliedInitialReasoningKeyRef.current = initialReasoningKey;
+
+    if (normalizedInitialReasoningLevel && reasoningLevel !== normalizedInitialReasoningLevel) {
+      setReasoningLevel(normalizedInitialReasoningLevel);
+    }
+  }, [draftStorageId, initialReasoningLevel, provider, reasoningLevel]);
 
   useEffect(() => {
     if (!availableModels.length) {

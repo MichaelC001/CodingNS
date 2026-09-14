@@ -5,6 +5,7 @@ import {
 
 import {
   buildClaudeAskUserQuestionAnswers,
+  buildClaudeElicitationBridgeResponse,
   buildDeepSeekHarnessApprovalResponse,
   buildDeepSeekHarnessQuestionResponse,
   normalizeClaudeElicitationRequest,
@@ -216,6 +217,80 @@ describe("session-permission-request-service normalizers", () => {
       question: "请选择本轮要使用的环境"
     });
     expect(request.actions.map((action) => action.value)).toEqual(["submit"]);
+  });
+
+  it("会按 Claude Elicitation 的 requested_schema 展示字段并返回官方 content 格式", () => {
+    const request = normalizeClaudeElicitationRequest({
+      provider: "claude-code",
+      sessionId: "session-elicitation-schema-1",
+      providerSessionId: "claude-session-elicitation-schema-1",
+      createdAt: "2026-06-13T10:00:00.000Z",
+      payload: {
+        hook_event_name: "Elicitation",
+        session_id: "claude-session-elicitation-schema-1",
+        cwd: "/tmp/workspace",
+        mcp_server_name: "codingns-login",
+        message: "请填写登录信息",
+        mode: "form",
+        requested_schema: {
+          type: "object",
+          required: ["token"],
+          properties: {
+            username: {
+              type: "string",
+              title: "用户名",
+              description: "登录账号"
+            },
+            token: {
+              type: "string",
+              title: "访问令牌",
+              format: "password"
+            }
+          }
+        }
+      }
+    });
+
+    expect(request.questions).toEqual([
+      {
+        id: "username",
+        header: "用户名",
+        question: "登录账号",
+        allowOther: true,
+        secret: false,
+        multiSelect: false,
+        required: false,
+        options: []
+      },
+      {
+        id: "token",
+        header: "访问令牌",
+        question: "请填写登录信息",
+        allowOther: true,
+        secret: true,
+        multiSelect: false,
+        required: true,
+        options: []
+      }
+    ]);
+    expect(buildClaudeElicitationBridgeResponse(
+      "allow",
+      {
+        username: ["alice"],
+        token: ["secret-token"]
+      },
+      request.questions,
+      "用户已提供补充信息"
+    )).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "Elicitation",
+        action: "accept",
+        content: {
+          username: "alice",
+          token: "secret-token"
+        }
+      }
+    });
   });
 
   it("问题回答不设置超时，但计划审批和普通权限仍保留原有超时", () => {

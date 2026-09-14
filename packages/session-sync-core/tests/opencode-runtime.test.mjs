@@ -1565,6 +1565,53 @@ test("OpenCodeRuntimeAdapter 会把网络失败收口成 SERVER_UNAVAILABLE", as
   );
 });
 
+test("OpenCodeRuntimeAdapter 继续会话时 resolver 失败不会产生未处理拒绝", async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+
+  try {
+    const adapter = new OpenCodeRuntimeAdapter({
+      baseUrlResolver: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        throw new Error("SERVER_UNAVAILABLE");
+      }
+    });
+
+    const launch = await adapter.continueSession(
+      {
+        sessionId: "local-session-continue-unavailable",
+        workspaceId: "workspace-1",
+        workspacePath: "/Users/jackson/Code/CodingNS",
+        provider: "opencode",
+        providerSessionId: "ses_continue_unavailable",
+        rawStoreRef: "opencode://ses_continue_unavailable",
+        options: {
+          content: "继续发送",
+          clientRequestId: null,
+          model: null,
+          reasoningLevel: null,
+          permissionMode: null,
+          providerPrompt: null,
+          attachments: []
+        }
+      },
+      {
+        updateSessionBinding() {},
+        async emit() {}
+      }
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(unhandled.length, 0);
+    await launch.completed;
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("OpenCodeRuntimeAdapter 对 GET 请求只有连续超时达到阈值后才会收口成 SERVER_TIMEOUT", async (context) => {
   const originalFetch = globalThis.fetch;
   let getAttempts = 0;

@@ -108,6 +108,7 @@ vi.mock("../components/ComposerPanel", () => ({
         content: string,
         options?: {
           model?: string | null;
+          reasoningLevel?: string | null;
           attachments?: Array<{
             id: string;
             kind: "image";
@@ -153,6 +154,17 @@ vi.mock("../components/ComposerPanel", () => ({
           }}
         >
           发送指定模型
+        </button>
+        <button
+          type="button"
+          data-testid="composer-send-with-reasoning"
+          onClick={() => {
+            void composerProps.onSend?.("使用超高思维强度继续处理", {
+              reasoningLevel: "xhigh"
+            });
+          }}
+        >
+          发送超高思维强度
         </button>
         <button
           type="button"
@@ -1131,6 +1143,23 @@ describe("ConversationPage", () => {
     });
   });
 
+  it("草稿会话创建真实会话后，会把刚才选中的思维强度继续传给 live Composer", async () => {
+    renderDraftConversationPage();
+
+    fireEvent.click(await screen.findByTestId("composer-send-with-reasoning"));
+
+    await waitFor(() => {
+      expect(mockStartLiveSession).toHaveBeenCalledWith(
+        expect.objectContaining({ reasoningLevel: "xhigh" }),
+        { targetHostId: null }
+      );
+    });
+
+    await waitFor(() => {
+      expect(readLatestComposerProps()?.initialReasoningLevel).toBe("xhigh");
+    });
+  });
+
   it("草稿会话如果只切了配置文件默认模型，真实会话也会继续使用该配置文件", async () => {
     renderDraftConversationPage();
 
@@ -2006,6 +2035,7 @@ function readLatestComposerProps(): {
   isSubmitting?: boolean;
   isRunning?: boolean;
   initialModel?: string | null;
+  initialReasoningLevel?: string | null;
   initialProviderConfigMode?: "global-default" | "cc-switch-preset";
   initialProviderPresetId?: string | null;
 } | null {
@@ -2016,6 +2046,7 @@ function readLatestComposerProps(): {
     isSubmitting?: boolean;
     isRunning?: boolean;
     initialModel?: string | null;
+    initialReasoningLevel?: string | null;
     initialProviderConfigMode?: "global-default" | "cc-switch-preset";
     initialProviderPresetId?: string | null;
   } | undefined) ?? null;
