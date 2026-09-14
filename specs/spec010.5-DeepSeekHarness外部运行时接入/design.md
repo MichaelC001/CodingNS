@@ -112,7 +112,8 @@ Harness 在 CodingNS 中以 `deepseek-harness` Provider 路由出现，但这个
 
 覆盖需求：1、2、3、4、5、6、7
 
-- `DeepSeekHarnessSidecarManager`：只管理 CodingNS 自己启动的 sidecar，不扫描或接管用户手工进程。启动自己的 sidecar 之前，它会回收一次"失去 Host 归属"的 sidecar：进程命令行必须是 `dsh web --host <loopback> --port <n> --no-open` 这个 CodingNS 专有形态，并且父进程已经是 1（原来的 Host 已经不在了）。两个条件缺一不可，用户手动启动的 `dsh` 进程不会命中。原因见 [tasks.md](./tasks.md) 的 2026-09-14 孤儿 sidecar 回收记录：这些孤儿会一直占着 DSH 的会话写入租约，让新 Host 打不开旧会话。
+- `DeepSeekHarnessSidecarManager`：只管理 CodingNS 自己启动的 sidecar，不扫描或接管用户手工进程。它优先复用 Host 数据目录下租约文件里记着的 sidecar：进程还活着、一次性认证 URL 还能换到 cookie、模型目录探测能打通，就直接接管，不新建进程。没有可接管的才自己拉起，拉起前回收一次"失去 Host 归属"的孤儿：进程命令行必须是 `dsh web --host <loopback> --port <n> --no-open` 这个 CodingNS 专有形态，并且父进程已经是 1（原来的 Host 已经不在了）；两个条件缺一不可，用户手动启动的 `dsh` 进程不会命中。租约按 Host 数据目录隔离，开发 Host 和安装版 Host 各管各的。原因见 [tasks.md](./tasks.md) 的 2026-09-14 孤儿 sidecar 记录：DSH 的会话写入租约按进程存活持有、不做超时抢占，孤儿会一直占着它让新 Host 打不开旧会话；而每次都回收重建又会随 Host 重启次数不断累积进程。
+- `dsh-sidecar-guard.cjs`：由 manager 通过 `NODE_OPTIONS=--require` 注入 `dsh web` 进程，决定 sidecar 何时自行收尾。租约里还有活着的 Host 就继续服务（覆盖多 Host 共用和重启接管）；名单空了才开始倒计时，宽限期内没有新 Host 登记就退出，把端口和会话租约让出来。拿不到租约时退回"发起进程消失即退出"，没注入任何信息时完全不装。
 - `DeepSeekHarnessApiClient`：只暴露经过 DTO 校验的最小方法，不把 Harness 内部 TypeScript 类型泄漏到通用模块。
 - `DeepSeekHarnessEventBridge`：每个 sidecar 实例最多维护一组 mux/host 订阅，再按 session id 分发。
 - `DeepSeekHarnessProviderAdapter`：接入现有 `ProviderRegistry`，明确实现和拒绝每个 ProviderAdapter 方法。
