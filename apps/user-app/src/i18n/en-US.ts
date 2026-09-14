@@ -477,10 +477,8 @@ export const enUS = {
     providerManagementInstallMissing: "Not detected",
     providerManagementInstallUnknown: "Unknown",
     providerManagementVersionLocation: "Version location",
-    providerManagementRuntimeReady: "Ready",
     providerManagementRuntimeDegraded: "Limited",
     providerManagementRuntimeReadOnly: "Read-only",
-    providerManagementRuntimeVersion: "Runtime version",
     providerManagementProtocolVersion: "Protocol version",
     providerManagementLimitations: "Current limitations",
     providerManagementStateEnabled:
@@ -494,7 +492,9 @@ export const enUS = {
     providerManagementDisableSuccess: "{provider} has been disabled.",
     providerManagementCapabilityStreaming: "Streaming output",
     providerManagementCapabilityToolCalls: "Tool calls",
-    providerManagementCapabilityAssistant: "Assistant service",
+    providerManagementCapabilityAssistant: "Session interaction",
+    providerManagementCapabilityAssistantHint:
+      "Whether plan approval, question prompts, and other interactive steps are supported.",
     providerManagementCapabilityFork: "Session fork",
     providerManagementCapabilitySkill: "Skill usage",
     providerManagementCapabilityAvailable: "Available",

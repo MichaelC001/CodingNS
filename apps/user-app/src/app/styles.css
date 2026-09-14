@@ -25508,15 +25508,23 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   width: 100%;
 }
 
+/* 桌面端这个模态框按能力矩阵的内容需要给足宽度（表格 840px + 卡片内边距）；
+   视口不够时收窄，由卡片内部的表格压列，而不是出现横向滚动。 */
+.workbench-modal-card.desktop-modal-card.settings-provider-modal {
+  width: min(880px, calc(100% - 32px));
+}
+
 .settings-provider-modal .workbench-modal-header {
   padding-bottom: 0;
   border-bottom: 0;
 }
 
+/* 这个模态框在 PC 上不该出现横向滚动：真有多余宽度也在内部裁掉，不生成横向滚动条。 */
 .settings-provider-modal-body {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  overflow-x: hidden;
 }
 
 .settings-provider-modal-layout {
@@ -25566,7 +25574,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 
 .settings-provider-matrix-shell {
   width: 100%;
-  overflow-x: auto;
+  min-width: 0;
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--border-primary) 78%, rgba(255, 255, 255, 0.18));
   background:
@@ -25580,28 +25588,29 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
     0 10px 24px rgba(15, 23, 42, 0.04);
 }
 
+/* 列宽按比例分：provider 25%、5 个能力列各 8.6%、状态 21%、开关 11%。
+   表格始终等于容器宽度，任何视口下都不会横向溢出。 */
 .settings-provider-matrix-table {
   width: 100%;
-  min-width: 760px;
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
 }
 
 .settings-provider-matrix-provider-col {
-  width: 200px;
+  width: 25%;
 }
 
 .settings-provider-matrix-capability-col {
-  width: 64px;
+  width: 8.6%;
 }
 
 .settings-provider-matrix-status-col {
-  width: 190px;
+  width: 21%;
 }
 
 .settings-provider-matrix-toggle-col {
-  width: 84px;
+  width: 11%;
 }
 
 .settings-provider-matrix-table thead th {
@@ -25632,6 +25641,23 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .settings-provider-matrix-table tbody tr:last-child td,
 .settings-provider-matrix-table tbody tr:last-child th {
   border-bottom: none;
+}
+
+/* 外壳不再裁剪内容，圆角要交给四角单元格自己收口。 */
+.settings-provider-matrix-table thead th:first-child {
+  border-top-left-radius: 13px;
+}
+
+.settings-provider-matrix-table thead th:last-child {
+  border-top-right-radius: 13px;
+}
+
+.settings-provider-matrix-table tbody tr:last-child th:first-child {
+  border-bottom-left-radius: 13px;
+}
+
+.settings-provider-matrix-table tbody tr:last-child td:last-child {
+  border-bottom-right-radius: 13px;
 }
 
 .settings-provider-matrix-provider {
@@ -25677,6 +25703,15 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   flex-direction: column;
   align-items: center;
   gap: 5px;
+}
+
+.settings-provider-matrix-status-headline {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .settings-provider-matrix-runtime {
@@ -25738,7 +25773,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .settings-provider-matrix-limitations-tooltip {
   position: absolute;
   right: calc(100% + 8px);
-  top: 50%;
+  top: calc(100% + 6px);
   z-index: 5;
   width: min(300px, calc(100vw - 48px));
   padding: 10px 12px;
@@ -25751,7 +25786,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   line-height: 1.45;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-50%) translateX(4px);
+  transform: translateX(4px);
   transition:
     opacity var(--transition-fast),
     transform var(--transition-fast);
@@ -25762,7 +25797,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .settings-provider-matrix-limitations:hover .settings-provider-matrix-limitations-tooltip,
 .settings-provider-matrix-limitations:focus-within .settings-provider-matrix-limitations-tooltip {
   opacity: 1;
-  transform: translateY(-50%) translateX(0);
+  transform: translateX(0);
   visibility: visible;
 }
 
@@ -25854,10 +25889,6 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 
 .settings-provider-matrix-switch input[type="checkbox"]:disabled + .settings-provider-matrix-switch-track {
   opacity: 0.56;
-}
-
-.settings-provider-modal-actions {
-  justify-content: flex-end;
 }
 
 .settings-provider-visually-hidden {
@@ -26578,8 +26609,13 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
     flex-direction: column;
   }
 
+  /* 手机屏宽固定，塞不下 7 列；表格保持内容宽度在卡片内部滚动，桌面端不受影响。 */
+  .settings-provider-matrix-shell {
+    overflow-x: auto;
+  }
+
   .settings-provider-matrix-table {
-    min-width: 700px;
+    min-width: 832px;
   }
 
   .settings-provider-matrix-table thead th,

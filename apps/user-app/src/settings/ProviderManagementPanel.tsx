@@ -3,7 +3,7 @@ import { FiInfo } from "react-icons/fi";
 
 import { DesktopModal } from "../components/DesktopModal";
 import { MobileSheet } from "../components/MobileSheet";
-import { ModalActions, ModalEmptyState, ModalSection, ModalTag } from "../components/ModalAtoms";
+import { ModalEmptyState, ModalSection, ModalTag } from "../components/ModalAtoms";
 import type { ProviderCatalogEntryDto } from "../features/conversation/api/conversation-api";
 import { updateProviderCatalogEntry } from "../features/conversation/api/conversation-api";
 import { useAuthSelector } from "../features/auth/store/auth-store";
@@ -33,6 +33,7 @@ const PRODUCT_CAPABILITY_COLUMNS: Array<{
     | "settings.providerManagementCapabilityAssistant"
     | "settings.providerManagementCapabilityFork"
     | "settings.providerManagementCapabilitySkill";
+  hintKey?: "settings.providerManagementCapabilityAssistantHint";
 }> = [
   {
     key: "streamingOutput",
@@ -44,7 +45,8 @@ const PRODUCT_CAPABILITY_COLUMNS: Array<{
   },
   {
     key: "assistantService",
-    labelKey: "settings.providerManagementCapabilityAssistant"
+    labelKey: "settings.providerManagementCapabilityAssistant",
+    hintKey: "settings.providerManagementCapabilityAssistantHint"
   },
   {
     key: "sessionFork",
@@ -66,7 +68,8 @@ export function ProviderManagementPanel() {
   const { items, loading } = useProviderCatalog(modalOpen && Boolean(accessToken));
   const capabilityColumns = PRODUCT_CAPABILITY_COLUMNS.map((column) => ({
     ...column,
-    label: t(column.labelKey)
+    label: t(column.labelKey),
+    hint: column.hintKey ? t(column.hintKey) : undefined
   }));
 
   useEffect(() => {
@@ -171,6 +174,18 @@ export function ProviderManagementPanel() {
         heading={t("settings.providerManagementMatrixTitle")}
         description={t("settings.providerManagementMatrixDescription")}
         className="settings-provider-modal-section"
+        actions={(
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!accessToken || loading || pendingProvider !== null}
+            onClick={() => {
+              void handleRefresh();
+            }}
+          >
+            {loading ? t("common.loading") : t("settings.providerManagementRefresh")}
+          </button>
+        )}
       >
         {loading && providerItems.length === 0 ? (
           <ModalEmptyState
@@ -183,18 +198,6 @@ export function ProviderManagementPanel() {
           <ModalEmptyState
             title={t("settings.providerManagementEmpty")}
             description={t("settings.providerManagementEmptyDescription")}
-            action={(
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={!accessToken}
-                  onClick={() => {
-                  void handleRefresh();
-                  }}
-                >
-                  {t("settings.providerManagementRefresh")}
-              </button>
-            )}
           />
         ) : null}
 
@@ -213,7 +216,7 @@ export function ProviderManagementPanel() {
                 <tr>
                   <th scope="col">{t("settings.providerManagementTableProvider")}</th>
                   {capabilityColumns.map((column) => (
-                    <th key={column.key} scope="col">
+                    <th key={column.key} scope="col" title={column.hint}>
                       {column.label}
                     </th>
                   ))}
@@ -254,11 +257,16 @@ export function ProviderManagementPanel() {
                     ))}
                     <td className="settings-provider-matrix-status-cell">
                       <div className="settings-provider-matrix-status">
-                        <ModalTag tone={entry.enabled ? "success" : "default"}>
-                          {entry.enabled
-                            ? t("settings.providerManagementStatusEnabled")
-                            : t("settings.providerManagementStatusDisabled")}
-                        </ModalTag>
+                        <div className="settings-provider-matrix-status-headline">
+                          <ModalTag tone={entry.enabled ? "success" : "default"}>
+                            {entry.enabled
+                              ? t("settings.providerManagementStatusEnabled")
+                              : t("settings.providerManagementStatusDisabled")}
+                          </ModalTag>
+                          {entry.capabilities.limitations.length > 0 ? (
+                            <ProviderLimitations limitations={entry.capabilities.limitations} />
+                          ) : null}
+                        </div>
                         <ProviderRuntimeStatus capabilities={entry.capabilities} />
                       </div>
                     </td>
@@ -292,19 +300,6 @@ export function ProviderManagementPanel() {
           </div>
         ) : null}
       </ModalSection>
-
-      <ModalActions className="settings-provider-modal-actions">
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={!accessToken || loading || pendingProvider !== null}
-          onClick={() => {
-            void handleRefresh();
-          }}
-        >
-          {loading ? t("common.loading") : t("settings.providerManagementRefresh")}
-        </button>
-      </ModalActions>
     </div>
   );
 
@@ -390,12 +385,10 @@ function ProviderRuntimeStatus({
 }: {
   capabilities: ProviderCatalogEntryDto["capabilities"];
 }) {
-  const hasRuntimeDetails = Boolean(
-    capabilities.runtimeStatus
-      || capabilities.runtimeVersion
-      || capabilities.protocolVersion
-      || capabilities.limitations.length > 0
-  );
+  const runtimeAlert = capabilities.runtimeStatus === "degraded" || capabilities.runtimeStatus === "read-only"
+    ? capabilities.runtimeStatus
+    : null;
+  const hasRuntimeDetails = Boolean(runtimeAlert || capabilities.protocolVersion);
 
   if (!hasRuntimeDetails) {
     return null;
@@ -403,23 +396,13 @@ function ProviderRuntimeStatus({
 
   return (
     <div className="settings-provider-matrix-runtime">
-      {capabilities.runtimeStatus ? (
-        <ModalTag tone={resolveRuntimeStatusTone(capabilities.runtimeStatus)}>
-          {resolveRuntimeStatusLabel(capabilities.runtimeStatus)}
-        </ModalTag>
-      ) : null}
-      {capabilities.runtimeVersion ? (
-        <span className="settings-provider-matrix-runtime-meta">
-          {t("settings.providerManagementRuntimeVersion")}: {capabilities.runtimeVersion}
-        </span>
+      {runtimeAlert ? (
+        <ModalTag tone="warning">{resolveRuntimeStatusLabel(runtimeAlert)}</ModalTag>
       ) : null}
       {capabilities.protocolVersion ? (
         <span className="settings-provider-matrix-runtime-meta">
           {t("settings.providerManagementProtocolVersion")}: {capabilities.protocolVersion}
         </span>
-      ) : null}
-      {capabilities.limitations.length > 0 ? (
-        <ProviderLimitations limitations={capabilities.limitations} />
       ) : null}
     </div>
   );
@@ -452,23 +435,13 @@ function ProviderLimitations({ limitations }: { limitations: string[] }) {
   );
 }
 
-function resolveRuntimeStatusLabel(
-  status: NonNullable<ProviderCatalogEntryDto["capabilities"]["runtimeStatus"]>
-): string {
+function resolveRuntimeStatusLabel(status: "degraded" | "read-only"): string {
   switch (status) {
-    case "ready":
-      return t("settings.providerManagementRuntimeReady");
     case "degraded":
       return t("settings.providerManagementRuntimeDegraded");
     case "read-only":
       return t("settings.providerManagementRuntimeReadOnly");
   }
-}
-
-function resolveRuntimeStatusTone(
-  status: NonNullable<ProviderCatalogEntryDto["capabilities"]["runtimeStatus"]>
-): "default" | "success" | "warning" {
-  return status === "ready" ? "success" : "warning";
 }
 
 function replaceProviderEntry(

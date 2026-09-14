@@ -88,11 +88,26 @@ describe("ProviderManagementPanel", () => {
     ).toBeInTheDocument();
     expect(
       within(dialog).getByRole("columnheader", {
+        name: t("settings.providerManagementCapabilityAssistant")
+      })
+    ).toHaveAttribute("title", t("settings.providerManagementCapabilityAssistantHint"));
+    expect(
+      within(dialog).getByRole("columnheader", {
         name: t("settings.providerManagementTableStatus")
       })
     ).toBeInTheDocument();
     expect(dialog.querySelector(".settings-provider-matrix-provider-note")).toBeNull();
     expect(dialog.querySelector(".settings-provider-matrix-status-text")).toBeNull();
+
+    const matrixSection = within(dialog)
+      .getByText(t("settings.providerManagementMatrixTitle"))
+      .closest(".modal-section");
+    expect(matrixSection).not.toBeNull();
+    expect(
+      (matrixSection as HTMLElement).querySelector(".modal-section-actions button")
+    ).toHaveTextContent(t("settings.providerManagementRefresh"));
+    expect(dialog.querySelector(".settings-provider-modal-actions")).toBeNull();
+    expect(matrixSection?.querySelector(".settings-provider-matrix-shell")).not.toBeNull();
 
     const opencodeRow = within(dialog).getByText("OpenCode").closest("tr");
     expect(opencodeRow).not.toBeNull();
@@ -189,6 +204,8 @@ describe("ProviderManagementPanel", () => {
   });
 
   it("展示外部运行时状态、版本和能力限制", async () => {
+    const codexEntry = createProviderCatalogEntry("codex", true);
+
     global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method ?? "GET").toUpperCase();
@@ -196,6 +213,15 @@ describe("ProviderManagementPanel", () => {
       if (url.endsWith("/api/providers/catalog") && method === "GET") {
         return createJsonResponse({
           items: [
+            {
+              ...codexEntry,
+              capabilities: {
+                ...codexEntry.capabilities,
+                runtimeStatus: "ready",
+                runtimeVersion: "1.8.0",
+                protocolVersion: "2"
+              }
+            },
             createProviderCatalogEntry("grok", true)
           ]
         });
@@ -214,8 +240,8 @@ describe("ProviderManagementPanel", () => {
     });
 
     expect(within(dialog).getByText(t("settings.providerManagementRuntimeDegraded"))).toBeInTheDocument();
-    expect(within(dialog).getByText("运行版本: 0.1.0-test")).toBeInTheDocument();
-    expect(within(dialog).getByText("协议版本: 1")).toBeInTheDocument();
+    expect(within(dialog).queryByText("运行正常")).toBeNull();
+    expect(within(dialog).queryByText(/运行版本[:：]/)).toBeNull();
     expect(dialog.querySelector(".settings-provider-matrix-runtime-label")).toBeNull();
     const limitationsTrigger = within(dialog).getByRole("button", {
       name: t("settings.providerManagementLimitations")
@@ -225,6 +251,21 @@ describe("ProviderManagementPanel", () => {
     expect(within(dialog).getByRole("tooltip")).toHaveTextContent(
       "首版不支持 CodingNS 权限桥接、附件、Token Usage、原生 Fork、删除和分享。"
     );
+
+    const grokRow = within(dialog).getByText("Grok Build").closest("tr");
+    expect(grokRow).not.toBeNull();
+    expect(
+      (grokRow as HTMLTableRowElement).querySelector(".settings-provider-matrix-runtime-meta")
+    ).toHaveTextContent(`${t("settings.providerManagementProtocolVersion")}: 1`);
+    const statusHeadline = (grokRow as HTMLTableRowElement)
+      .querySelector(".settings-provider-matrix-status-headline");
+    expect(statusHeadline).not.toBeNull();
+    expect(
+      within(statusHeadline as HTMLElement).getByText(t("settings.providerManagementStatusEnabled"))
+    ).toBeInTheDocument();
+    expect(within(statusHeadline as HTMLElement).getByRole("button", {
+      name: t("settings.providerManagementLimitations")
+    })).toBeInTheDocument();
   });
 });
 
