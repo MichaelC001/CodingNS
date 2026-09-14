@@ -652,6 +652,201 @@ describe("SessionHistoryService background tasks", () => {
     service.dispose();
   });
 
+  it("DSH 会话用路由名 provider 和别名模型时也能补写计费绑定", async () => {
+    // 复现线上问题：DSH 默认模型是 glor:deepseek-v4.1-flash，provider 是运行时
+    // 路由名，模型是价格表里 deepseek-flash 的历史写法。修复前这里推断不出收费
+    // 策略，绑定永远为空，费用一直显示“缺少本次会话的计费上下文”。
+    const priceBook = {
+      version: "models.dev-2026-09-14",
+      source: "models.dev" as const,
+      fetchedAt: "2026-09-14T00:01:00.000Z",
+      entries: [
+        { provider: "deepseek-harness", model: "deepseek-flash", inputUsdPerToken: 1.5e-7, outputUsdPerToken: 6e-7 },
+        { provider: "deepseek-harness", model: "deepseek-v4-pro", inputUsdPerToken: 4.35e-7, outputUsdPerToken: 8.7e-7 }
+      ]
+    };
+    const stats = {
+      provider: "deepseek-harness",
+      capturedAt: "2026-09-14T00:02:00.000Z",
+      metrics: {
+        costUsd: {
+          value: 0.00075,
+          source: "derived-provider-metrics",
+          semantic: "priced-final-events",
+          watermark: { kind: "source-timestamp", value: "2026-09-14T00:02:00.000Z" },
+          pricing: {
+            kind: "catalog-estimate",
+            coverage: "complete",
+            pricingProfileId: "direct-api",
+            priceBookVersion: "models.dev-2026-09-14",
+            breakdown: [{
+              provider: "deepseek-harness",
+              model: "deepseek-flash",
+              inputTokens: 1_000,
+              outputTokens: 1_000,
+              reasoningTokens: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              costUsd: 0.00075
+            }],
+            priceBook: [{
+              provider: "deepseek-harness",
+              model: "deepseek-flash",
+              inputUsdPerToken: 1.5e-7,
+              outputUsdPerToken: 6e-7
+            }],
+            priceBookSource: "models.dev"
+          }
+        }
+      }
+    } as unknown as ProviderSessionStats;
+    const statsRead = vi.fn(async () => stats);
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.sessionStatsSnapshotRead) {
+            return await statsRead(input, context.signal);
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const providerPriceBookService: Pick<
+      ProviderPriceBookService,
+      "getCurrentPriceBook" | "getPriceBook"
+    > = {
+      getCurrentPriceBook: vi.fn(() => priceBook),
+      getPriceBook: vi.fn(() => priceBook)
+    };
+    const service = createSessionHistoryService(taskManager, providerPriceBookService);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    // DSH 走 sidecar transport 而不是文件 helper，这个测试只关心绑定回填决策，
+    // 所以直接替换 provider 读取，避免拉起真实 sidecar。
+    const dshReadStats = vi.fn(async () => stats);
+    (service.instance as unknown as {
+      sessionSyncService: { readSessionStats: typeof dshReadStats };
+    }).sessionSyncService = { readSessionStats: dshReadStats };
+    seedSession(service.database.db, {
+      sessionId: "session-dsh-alias-model",
+      workspaceId: "workspace-1",
+      provider: "deepseek-harness",
+      providerSessionId: "provider-dsh-alias-model",
+      rawStoreRef: "harness://v/provider-dsh-alias-model",
+      title: "DSH 别名模型会话",
+      messageCount: 1,
+      lastMessageAt: "2026-09-14T00:02:00.000Z",
+      createdAt: "2026-09-14T00:00:00.000Z",
+      updatedAt: "2026-09-14T00:00:00.000Z"
+    });
+    // 绑定创建时没能固定计费元数据，selectedModel 记录的是运行时的路由名 + 别名模型。
+    service.database.db.prepare(
+      `UPDATE session_bindings
+       SET selected_model = ?, billing_started_at = NULL, pricing_profile_id = NULL, price_book_version = NULL
+       WHERE session_id = ?`
+    ).run("glor:deepseek-v4.1-flash", "session-dsh-alias-model");
+
+    await service.instance.requestSessionStatsRefresh(
+      "session-dsh-alias-model",
+      "test.dsh_alias_model"
+    )?.promise;
+
+    expect(service.database.db.prepare(
+      `SELECT billing_started_at, pricing_profile_id, price_book_version
+       FROM session_bindings
+       WHERE session_id = ?`
+    ).get("session-dsh-alias-model")).toEqual({
+      billing_started_at: "2026-09-14T00:00:00.000Z",
+      pricing_profile_id: "direct-api",
+      price_book_version: "models.dev-2026-09-14"
+    });
+
+    service.dispose();
+  });
+
+  it("完全没有价格的 DSH 会话不会被写上一个算不出费用的绑定", async () => {
+    const priceBook = {
+      version: "models.dev-2026-09-14",
+      source: "models.dev" as const,
+      fetchedAt: "2026-09-14T00:01:00.000Z",
+      entries: [
+        { provider: "deepseek-harness", model: "deepseek-flash", inputUsdPerToken: 1.5e-7, outputUsdPerToken: 6e-7 }
+      ]
+    };
+    const stats = {
+      provider: "deepseek-harness",
+      capturedAt: "2026-09-14T00:02:00.000Z",
+      metrics: {
+        costUsd: {
+          value: 0,
+          source: "derived-provider-metrics",
+          semantic: "unavailable",
+          watermark: { kind: "captured-at", value: "2026-09-14T00:02:00.000Z" },
+          pricing: { kind: "catalog-estimate", coverage: "unavailable", unavailableReason: "billing-context-missing" }
+        }
+      }
+    } as unknown as ProviderSessionStats;
+    const statsRead = vi.fn(async () => stats);
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.sessionStatsSnapshotRead) {
+            return await statsRead(input, context.signal);
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const providerPriceBookService: Pick<
+      ProviderPriceBookService,
+      "getCurrentPriceBook" | "getPriceBook"
+    > = {
+      getCurrentPriceBook: vi.fn(() => priceBook),
+      getPriceBook: vi.fn(() => priceBook)
+    };
+    const service = createSessionHistoryService(taskManager, providerPriceBookService);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    const dshReadStats = vi.fn(async () => stats);
+    (service.instance as unknown as {
+      sessionSyncService: { readSessionStats: typeof dshReadStats };
+    }).sessionSyncService = { readSessionStats: dshReadStats };
+    seedSession(service.database.db, {
+      sessionId: "session-dsh-unpriced",
+      workspaceId: "workspace-1",
+      provider: "deepseek-harness",
+      providerSessionId: "provider-dsh-unpriced",
+      rawStoreRef: "harness://v/provider-dsh-unpriced",
+      title: "DSH 无价格会话",
+      messageCount: 1,
+      lastMessageAt: "2026-09-14T00:02:00.000Z",
+      createdAt: "2026-09-14T00:00:00.000Z",
+      updatedAt: "2026-09-14T00:00:00.000Z"
+    });
+    service.database.db.prepare(
+      `UPDATE session_bindings
+       SET selected_model = ?, billing_started_at = NULL, pricing_profile_id = NULL, price_book_version = NULL
+       WHERE session_id = ?`
+    ).run("glor:totally-unknown-model", "session-dsh-unpriced");
+
+    await service.instance.requestSessionStatsRefresh(
+      "session-dsh-unpriced",
+      "test.dsh_unpriced"
+    )?.promise;
+
+    expect(service.database.db.prepare(
+      `SELECT billing_started_at, pricing_profile_id, price_book_version
+       FROM session_bindings
+       WHERE session_id = ?`
+    ).get("session-dsh-unpriced")).toEqual({
+      billing_started_at: null,
+      pricing_profile_id: null,
+      price_book_version: null
+    });
+
+    service.dispose();
+  });
+
   it("显式历史读取成功后不会隐式请求统计刷新", async () => {
     const service = createSessionHistoryService();
     seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
