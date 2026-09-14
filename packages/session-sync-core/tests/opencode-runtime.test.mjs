@@ -1,11 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { OpenCodeRuntimeAdapter } from "../dist/index.js";
 
 test("OpenCodeRuntimeAdapter 会创建会话、发送消息并消费 SSE 事件", async (context) => {
   const originalFetch = globalThis.fetch;
   const requests = [];
+  const fixtureDir = mkdtempSync(join(tmpdir(), "codingns-opencode-runtime-"));
+  const imagePath = join(fixtureDir, "demo.png");
+  writeFileSync(imagePath, Buffer.from("image"));
 
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -92,6 +98,7 @@ test("OpenCodeRuntimeAdapter 会创建会话、发送消息并消费 SSE 事件"
 
   context.after(() => {
     globalThis.fetch = originalFetch;
+    rmSync(fixtureDir, { recursive: true, force: true });
   });
 
   const bindings = [];
@@ -124,7 +131,16 @@ test("OpenCodeRuntimeAdapter 会创建会话、发送消息并消费 SSE 事件"
         reasoningLevel: "high",
         permissionMode: null,
         providerPrompt: null,
-        attachments: []
+        attachments: [
+          {
+            id: "attachment-1",
+            kind: "image",
+            fileName: "demo.png",
+            mimeType: "image/png",
+            fileSize: 5,
+            filePath: imagePath
+          }
+        ]
       }
     },
     sink
@@ -151,8 +167,15 @@ test("OpenCodeRuntimeAdapter 会创建会话、发送消息并消费 SSE 事件"
     (request) => request.method === "POST" && request.url.endsWith("/session/ses_test_runtime/message")
   );
   assert.ok(messageRequest);
-  assert.equal(JSON.parse(messageRequest.body).parts[0].text, "请回一句测试成功");
-  assert.deepEqual(JSON.parse(messageRequest.body).model, {
+  const messageBody = JSON.parse(messageRequest.body);
+  assert.equal(messageBody.parts[0].text, "请回一句测试成功");
+  assert.deepEqual(messageBody.parts[1], {
+    type: "file",
+    mime: "image/png",
+    filename: "demo.png",
+    url: "data:image/png;base64,aW1hZ2U="
+  });
+  assert.deepEqual(messageBody.model, {
     providerID: "openai",
     modelID: "gpt-5"
   });

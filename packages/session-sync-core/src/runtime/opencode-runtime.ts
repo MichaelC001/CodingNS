@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -774,18 +775,29 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     signal: AbortSignal
   ): Promise<void> {
     const content = request.options.providerPrompt?.trim() || request.options.content.trim();
+    const attachmentParts = await Promise.all(
+      request.options.attachments.map(async (attachment) => ({
+        type: "file",
+        mime: attachment.mimeType,
+        filename: attachment.fileName,
+        url: `data:${attachment.mimeType};base64,${(await readFile(attachment.filePath)).toString("base64")}`
+      }))
+    );
 
-    if (!content) {
+    if (!content && attachmentParts.length === 0) {
       throw new Error("INVALID_INPUT");
     }
 
     const body: Record<string, unknown> = {
       ...createOpenCodeMessagePermissionOptions(request.options.permissionMode),
       parts: [
-        {
-          type: "text",
-          text: content
-        }
+        ...(content
+          ? [{
+              type: "text",
+              text: content
+            }]
+          : []),
+        ...attachmentParts
       ]
     };
     const model = parseModelSelection(request.options.model);

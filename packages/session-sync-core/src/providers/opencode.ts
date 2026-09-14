@@ -699,7 +699,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       supportsInterrupt: true,
       supportsStructuredToolCalls: true,
       supportsTokenUsage: false,
-      supportsAttachments: false,
+      supportsAttachments: true,
       supportsPermissionPrompt: false,
       supportsCheckpoint: false,
       supportsTodo: true,
@@ -712,7 +712,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       supportsNativeAgents: true,
       limitations: [
         "当前 OpenCode 先以 server 为主链路；server 不可达时只对历史读取做 sqlite 只读兜底。",
-        "附件上传、权限回复和分享管理还没有接到当前 UI。"
+        "权限回复和分享管理还没有接到当前 UI。"
       ]
     };
   }

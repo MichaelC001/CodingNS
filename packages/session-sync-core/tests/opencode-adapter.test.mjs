@@ -18,6 +18,7 @@ test("OpenCodeAdapter 会暴露 OpenCode 已接入后的能力边界", () => {
   assert.equal(capabilities.canSendMessage, true);
   assert.equal(capabilities.supportsStructuredToolCalls, true);
   assert.equal(capabilities.supportsInterrupt, true);
+  assert.equal(capabilities.supportsAttachments, true);
   assert.equal(capabilities.supportsAsyncPrompt, true);
   assert.equal(capabilities.supportsNativeAgents, true);
   assert.equal(capabilities.inRunInputMode, "none");
