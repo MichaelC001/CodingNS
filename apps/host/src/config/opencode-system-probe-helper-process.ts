@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { readlinkSync } from "node:fs";
 import readline from "node:readline";
 
+import { terminateChildProcess } from "../shared/utils/child-process-lifecycle.js";
+
 interface OpenCodeListeningSocket {
   hostname: string;
   port: number;
@@ -316,9 +318,7 @@ async function runCommand(
       callback();
     };
     const timer = setTimeout(() => {
-      if (!child.killed) {
-        child.kill("SIGTERM");
-      }
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
 
       finish(() => {
         reject(new Error(`COMMAND_TIMEOUT:${command}`));

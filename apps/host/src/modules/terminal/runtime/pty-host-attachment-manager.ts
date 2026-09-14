@@ -3,6 +3,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 
 import { AppError } from "../../../shared/errors/app-error.js";
+import { terminateProcessById } from "../../../shared/utils/child-process-lifecycle.js";
 import {
   loadNodePty,
   resolveLoadedNodePtyPackageRoot,
@@ -34,6 +35,7 @@ export declare interface PtyHostAttachmentManager {
 export class PtyHostAttachmentManager extends EventEmitter {
   private readonly attachments = new Map<string, HostAttachmentRecord>();
   private readonly requestedClose = new Set<string>();
+  private readonly pendingProcessTerminations = new Set<Promise<void>>();
 
   start(
     attachmentId: string,
@@ -131,12 +133,15 @@ export class PtyHostAttachmentManager extends EventEmitter {
     this.requestedClose.add(attachmentId);
 
     if (runtime.closeStrategy === "process-kill" && runtime.processId) {
-      try {
-        process.kill(runtime.processId);
-        return;
-      } catch {
-        // 进程已经结束时退回到 node-pty 默认关闭逻辑。
-      }
+      const termination = terminateProcessById(runtime.processId).catch(() => {
+        // 进程已经结束或权限不足时退回到 node-pty 默认关闭逻辑。
+        runtime.pty.kill();
+      });
+      this.pendingProcessTerminations.add(termination);
+      void termination.finally(() => {
+        this.pendingProcessTerminations.delete(termination);
+      });
+      return;
     }
 
     runtime.pty.kill();
@@ -154,6 +159,10 @@ export class PtyHostAttachmentManager extends EventEmitter {
     for (const attachmentId of this.attachments.keys()) {
       this.close(attachmentId);
     }
+  }
+
+  async waitForPendingClosures(): Promise<void> {
+    await Promise.all([...this.pendingProcessTerminations]);
   }
 }
 

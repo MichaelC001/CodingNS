@@ -1,5 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
+import {
+  isChildProcessAlive,
+  terminateChildProcess
+} from "./child-process-lifecycle.js";
 
 export type GrokRpcId = string | number;
 
@@ -93,7 +97,7 @@ export class GrokAcpClient {
   }
 
   isAlive(): boolean {
-    return !this.closed && !this.process.killed && this.process.exitCode === null;
+    return !this.closed && isChildProcessAlive(this.process);
   }
 
   /**
@@ -152,17 +156,7 @@ export class GrokAcpClient {
       pending.reject(this.closeError);
     }
     this.pending.clear();
-    if (!this.process.killed) {
-      this.process.kill();
-    }
-    await new Promise<void>((resolve) => {
-      if (this.process.exitCode !== null || this.process.signalCode !== null) {
-        resolve();
-        return;
-      }
-      this.process.once("close", () => resolve());
-      setTimeout(resolve, 1_500);
-    });
+    await terminateChildProcess(this.process);
   }
 
   private async handleLine(line: string): Promise<void> {
@@ -258,7 +252,7 @@ export class GrokAcpClient {
     if (error.message.startsWith("GROK_ACP_PROTOCOL_ERROR")) {
       this.closed = true;
       this.lines.close();
-      if (!this.process.killed) this.process.kill();
+      void terminateChildProcess(this.process, { graceMs: 250, killWaitMs: 250 });
     }
   }
 }

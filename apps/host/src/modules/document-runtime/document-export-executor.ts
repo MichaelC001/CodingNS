@@ -8,6 +8,7 @@ import type { HostConfig } from "../../config/env.js";
 import { AppError } from "../../shared/errors/app-error.js";
 import { resolveAvailableCommandPath } from "../../shared/utils/command-availability.js";
 import { resolveCommandLaunch } from "../../shared/utils/command-launch.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 import { createId } from "../../shared/utils/id.js";
 import { nowIso } from "../../shared/utils/time.js";
 import type { OfficeArtifactRepository } from "../../storage/repositories/office-artifact-repository.js";
@@ -1034,7 +1035,7 @@ async function runCommand(input: {
     let onAbort: (() => void) | null = null;
     if (input.signal) {
       onAbort = () => {
-        child.kill("SIGTERM");
+        void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
         reject(input.signal?.reason ?? new TaskCancelledError("文档导出任务已取消"));
       };
       input.signal.addEventListener("abort", onAbort, { once: true });

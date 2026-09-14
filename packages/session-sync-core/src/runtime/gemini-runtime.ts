@@ -23,6 +23,10 @@ import type {
   ProviderRuntimeRunRequest,
   RuntimeEventInput
 } from "./types.js";
+import {
+  isChildProcessAlive,
+  terminateChildProcess
+} from "./child-process-lifecycle.js";
 
 interface GeminiRuntimeOptions {
   homeDir: string;
@@ -529,18 +533,14 @@ export class GeminiRuntimeAdapter implements ProviderRuntimeAdapter {
       rawStoreRef: activeRawStoreRef,
       interrupt: async () => {
         interrupted = true;
-
-        if (!proc.killed) {
-          proc.kill("SIGINT");
-        }
-
-        setTimeout(() => {
-          if (!proc.killed) {
-            proc.kill("SIGTERM");
-          }
-        }, INTERRUPT_KILL_TIMEOUT_MS).unref?.();
+        await terminateChildProcess(proc, {
+          initialSignal: "SIGINT",
+          graceMs: INTERRUPT_KILL_TIMEOUT_MS,
+          killSignal: "SIGKILL",
+          killWaitMs: 750
+        });
       },
-      isAlive: () => !proc.killed && proc.exitCode === null,
+      isAlive: () => isChildProcessAlive(proc),
       completed
     };
   }

@@ -36,6 +36,7 @@ import type {
   ProviderRuntimeLaunchResult,
   ProviderRuntimeRunRequest
 } from "./types.js";
+import { terminateChildProcess } from "./child-process-lifecycle.js";
 
 interface ClaudeRuntimeOptions {
   homeDir: string;
@@ -345,9 +346,7 @@ export class ClaudeRuntimeAdapter implements ProviderRuntimeAdapter {
       fatalWriteErrorCode = "CLAUDE_CLI_STDIN_WRITE_FAILED";
       stderrBuffer = `${stderrBuffer}\n${fatalWriteError}`.trim();
 
-      if (!proc.killed) {
-        proc.kill("SIGTERM");
-      }
+      void terminateChildProcess(proc, { graceMs: 250, killWaitMs: 250 });
     });
 
     const completedPromise = new Promise<void>((resolve) => {
@@ -358,9 +357,7 @@ export class ClaudeRuntimeAdapter implements ProviderRuntimeAdapter {
           proc.stdin.end();
         }
 
-        if (!proc.killed) {
-          proc.kill("SIGTERM");
-        }
+        void terminateChildProcess(proc, { graceMs: 250, killWaitMs: 250 });
       };
       const emitRuntimeError = async (detail: string, errorCode = "CLAUDE_RUNTIME_ERROR") => {
         if (completed) {
@@ -503,7 +500,7 @@ export class ClaudeRuntimeAdapter implements ProviderRuntimeAdapter {
         if (!proc.stdin.destroyed) {
           proc.stdin.end();
         }
-        proc.kill("SIGTERM");
+        await terminateChildProcess(proc);
       }
     };
   }

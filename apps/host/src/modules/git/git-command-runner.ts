@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { AppError } from "../../shared/errors/app-error.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 import { GitCommandHelperClient } from "./git-command-helper-client.js";
 
 const GIT_COMMAND_SPAWN_RETRY_LIMIT = 1;
@@ -123,7 +124,7 @@ export class GitCommandRunner {
       };
 
       const timer = setTimeout(() => {
-        child.kill("SIGTERM");
+        void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
         finish(() => {
           console.error("[git-command-timeout]", {
             workspaceId: options.workspaceId ?? null,
@@ -149,9 +150,7 @@ export class GitCommandRunner {
 
       if (signal) {
         onAbort = () => {
-          if (!child.killed) {
-            child.kill("SIGTERM");
-          }
+          void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
 
           finish(() => {
             reject(

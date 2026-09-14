@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { AppError } from "../../shared/errors/app-error.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 
 export interface PluginProcessRunResult {
   exitCode: number;
@@ -57,7 +58,7 @@ export class PluginProcessRunner {
       let settled = false;
 
       const cleanupAbortListener = bindAbortSignal(input.signal, () => {
-        child.kill("SIGKILL");
+        void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
         if (!settled) {
           settled = true;
           reject(new AppError({
@@ -69,7 +70,7 @@ export class PluginProcessRunner {
       });
 
       const timer = setTimeout(() => {
-        child.kill("SIGKILL");
+        void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
         if (!settled) {
           settled = true;
           reject(new AppError({

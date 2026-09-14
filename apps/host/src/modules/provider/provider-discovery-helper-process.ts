@@ -12,6 +12,7 @@ import {
 } from "@codingns/session-sync-core";
 
 import { resolveCommandLaunch } from "../../shared/utils/command-launch.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 import type { ProviderSessionDiscoveryHelperConfig } from "./provider-discovery-helper-client.js";
 import {
   discoverWorkspaceSessionsInRuntime,
@@ -317,9 +318,7 @@ async function readCodexAppServerState(
         signal.removeEventListener("abort", onAbort);
       }
 
-      if (!child.killed) {
-        child.kill("SIGTERM");
-      }
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
     }
 
     function finishWithError(error: Error): void {
@@ -508,9 +507,7 @@ async function readOpenCodeCliModels(
         signal.removeEventListener("abort", onAbort);
       }
 
-      if (!child.killed) {
-        child.kill("SIGTERM");
-      }
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
     }
 
     function finishWithError(error: Error): void {
@@ -661,7 +658,7 @@ async function readCodexRateLimits(
       clearTimeout(timeout);
       stdout.close();
       if (signal && onAbort) signal.removeEventListener("abort", onAbort);
-      if (!child.killed) child.kill("SIGTERM");
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
     }
     function finishWithError(error: Error): void {
       if (settled) return;
@@ -747,9 +744,7 @@ async function consumeCodexRateLimitResetCredit(
       if (signal && onAbort) {
         signal.removeEventListener("abort", onAbort);
       }
-      if (!child.killed) {
-        child.kill("SIGTERM");
-      }
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
     }
 
     function finishWithError(error: Error): void {

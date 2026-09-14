@@ -11,6 +11,7 @@ import {
   terminalDebugNowMs
 } from "../../shared/utils/terminal-debug-log.js";
 import { nowIso } from "../../shared/utils/time.js";
+import { terminateProcessById } from "../../shared/utils/child-process-lifecycle.js";
 import type {
   TerminalInstance,
   TerminalOutputChunk,
@@ -295,11 +296,7 @@ export class TerminalService extends EventEmitter {
         updatedAt: failedAt
       });
       if (runtimeSession.agentPid) {
-        try {
-          process.kill(runtimeSession.agentPid);
-        } catch {
-          // agent 已退出时忽略。
-        }
+        await terminateProcessById(runtimeSession.agentPid).catch(() => undefined);
       }
       const failedTerminal = this.getTerminalOrThrow(terminal.id);
       this.emit("status", failedTerminal);
@@ -562,7 +559,7 @@ export class TerminalService extends EventEmitter {
     this.flushPendingActivity();
     await this.terminalLogSpooler?.dispose();
     this.runtimeManager.closeAllAttachments();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await this.runtimeManager.waitForPendingClosures();
   }
 
   async readTerminalHistory(

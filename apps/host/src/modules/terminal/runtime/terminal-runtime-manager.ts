@@ -274,6 +274,10 @@ export class TerminalRuntimeManager extends EventEmitter {
     this.attachmentManager.closeAll();
   }
 
+  async waitForPendingClosures(): Promise<void> {
+    await this.attachmentManager.waitForPendingClosures();
+  }
+
   private handleAttachmentExit(event: HostAttachmentExitEvent): void {
     void this.handleAttachmentExitAsync(event);
   }

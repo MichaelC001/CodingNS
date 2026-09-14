@@ -4,6 +4,7 @@ import readline from "node:readline";
 
 import { resolveAvailableCommandPath } from "../../shared/utils/command-availability.js";
 import { resolveCommandLaunch } from "../../shared/utils/command-launch.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 import type {
   TailscaleHelperBackendState,
   TailscaleHelperSnapshot
@@ -277,7 +278,6 @@ async function runTailscaleCommand(
     let loginUrl: string | null = null;
     let settled = false;
     let killedAfterUrl = false;
-    let forceKillTimer: NodeJS.Timeout | null = null;
 
     const maybeCaptureLoginUrl = (content: string) => {
       if (!options.captureLoginUrl || loginUrl) {
@@ -291,12 +291,7 @@ async function runTailscaleCommand(
 
         if (!child.killed) {
           killedAfterUrl = true;
-          child.kill("SIGTERM");
-          forceKillTimer = setTimeout(() => {
-            if (!settled && !child.killed) {
-              child.kill("SIGKILL");
-            }
-          }, 1000);
+          void terminateChildProcess(child, { termGraceMs: 1_000, killWaitMs: 250 });
         }
       }
     };
@@ -307,10 +302,6 @@ async function runTailscaleCommand(
       }
 
       settled = true;
-
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
 
       reject(error);
     });
@@ -333,10 +324,6 @@ async function runTailscaleCommand(
       }
 
       settled = true;
-
-      if (forceKillTimer) {
-        clearTimeout(forceKillTimer);
-      }
 
       const stdout = stdoutChunks.join("");
       const stderr = stderrChunks.join("");

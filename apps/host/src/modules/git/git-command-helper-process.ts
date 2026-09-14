@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
+
 const GIT_COMMAND_SPAWN_RETRY_LIMIT = 1;
 const GIT_COMMAND_SPAWN_RETRY_DELAY_MS = 50;
 
@@ -169,7 +171,7 @@ async function runGitCommand(
     };
 
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
       finish(() => {
         logHelperWarn("git-command-timeout", {
           workspaceId: options.workspaceId ?? null,
@@ -193,9 +195,7 @@ async function runGitCommand(
 
     if (signal) {
       onAbort = () => {
-        if (!child.killed) {
-          child.kill("SIGTERM");
-        }
+        void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
 
         finish(() => {
           reject(createGitCommandCancelledError(signal.reason));

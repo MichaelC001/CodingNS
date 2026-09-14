@@ -36,6 +36,10 @@ import type {
   ProviderRuntimeRunRequest,
   RuntimeEventInput
 } from "./types.js";
+import {
+  isChildProcessAlive,
+  terminateChildProcess
+} from "./child-process-lifecycle.js";
 
 interface KimiRuntimeOptions {
   homeDir: string;
@@ -503,29 +507,14 @@ export class KimiRuntimeAdapter implements ProviderRuntimeAdapter {
       rawStoreRef: context.rawStoreRef,
       interrupt: async () => {
         interrupted = true;
-
-        if (proc.killed) {
-          return;
-        }
-
-        proc.kill("SIGINT");
-
-        await new Promise<void>((resolve) => {
-          const timeout = setTimeout(() => {
-            if (!proc.killed) {
-              proc.kill("SIGKILL");
-            }
-
-            resolve();
-          }, INTERRUPT_KILL_TIMEOUT_MS);
-
-          proc.once("close", () => {
-            clearTimeout(timeout);
-            resolve();
-          });
+        await terminateChildProcess(proc, {
+          initialSignal: "SIGINT",
+          graceMs: INTERRUPT_KILL_TIMEOUT_MS,
+          killSignal: "SIGKILL",
+          killWaitMs: 750
         });
       },
-      isAlive: () => !proc.killed,
+      isAlive: () => isChildProcessAlive(proc),
       submitDuringRun: transport === "command" ? undefined : submitDuringRun,
       completed
     };
@@ -1296,11 +1285,9 @@ async function captureKimiCliOutput(
       resolve(value);
     };
     const timeout = setTimeout(() => {
-      if (!proc.killed) {
-        proc.kill("SIGTERM");
-      }
-
-      finalize(`${stdoutBuffer}\n${stderrBuffer}`.trim());
+      void terminateChildProcess(proc, { graceMs: 250, killWaitMs: 250 }).finally(() => {
+        finalize(`${stdoutBuffer}\n${stderrBuffer}`.trim());
+      });
     }, Math.max(200, input.timeoutMs));
 
     proc.stdout.setEncoding("utf8");

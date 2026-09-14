@@ -42,6 +42,7 @@ import type {
   ProviderRuntimeRunRequest,
   RuntimeSendOptions
 } from "./types.js";
+import { terminateChildProcess } from "./child-process-lifecycle.js";
 
 interface CodexThread {
   id?: string | null;
@@ -2154,9 +2155,7 @@ function createCodexAppServerTransport(options: CodexRuntimeOptions): CodexAppSe
         child.stdin.end();
       }
 
-      if (!child.killed) {
-        child.kill("SIGTERM");
-      }
+      void terminateChildProcess(child, { graceMs: 250, killWaitMs: 250 });
     }
   };
 }

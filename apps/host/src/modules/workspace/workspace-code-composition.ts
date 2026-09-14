@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { WorkspaceCodeCompositionSummary } from "./workspace-service.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 
 const WORKSPACE_CODE_SCAN_LIMIT = 20_000;
 const GIT_CODE_SCAN_TIMEOUT_MS = 15_000;
@@ -435,9 +436,7 @@ async function runGitCommandWithSignal(
     };
 
     const timer = setTimeout(() => {
-      if (!child.killed) {
-        child.kill("SIGTERM");
-      }
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
 
       finish(() => {
         resolve({
@@ -449,9 +448,7 @@ async function runGitCommandWithSignal(
 
     if (signal) {
       onAbort = () => {
-        if (!child.killed) {
-          child.kill("SIGTERM");
-        }
+        void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
 
         finish(() => {
           reject(signal.reason ?? new Error("workspace code composition aborted"));

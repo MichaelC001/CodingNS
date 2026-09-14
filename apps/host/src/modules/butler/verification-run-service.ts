@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { AppError } from "../../shared/errors/app-error.js";
 import { resolveCommandLaunch } from "../../shared/utils/command-launch.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 import { createId } from "../../shared/utils/id.js";
 import { nowIso } from "../../shared/utils/time.js";
 import { createTaskManager, type TaskManager } from "../tasks/task-manager.js";
@@ -972,7 +973,7 @@ async function runCommandExecution(
       input.signal?.removeEventListener("abort", handleAbort);
     };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
       finish(() => {
         cleanupAbort();
         reject(new Error(`VERIFICATION_COMMAND_TIMEOUT:${input.command}`));
@@ -981,7 +982,7 @@ async function runCommandExecution(
     timer.unref?.();
 
     const handleAbort = () => {
-      child.kill("SIGTERM");
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
       finish(() => {
         cleanupAbort();
         reject(input.signal?.reason ?? new TaskCancelledError("验证执行已取消"));

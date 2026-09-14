@@ -8,6 +8,7 @@ import {
   buildCodexTurnRequestMetadata
 } from "@codingns/session-sync-core";
 import { resolveCommandLaunch } from "../../shared/utils/command-launch.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 import {
   buildCodexAppServerArgsWithWorkspaceOfficeMcp
 } from "./workspace-office-mcp-config.js";
@@ -800,9 +801,7 @@ function closeTransportForRecord(transport: TransportRecord, error: Error | null
   if (!transport.child.stdin.destroyed) {
     transport.child.stdin.end();
   }
-  if (!transport.child.killed) {
-    transport.child.kill("SIGTERM");
-  }
+  void terminateChildProcess(transport.child, { termGraceMs: 250, killWaitMs: 250 });
 }
 
 export const __internal__ = {

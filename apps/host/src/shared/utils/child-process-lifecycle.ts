@@ -14,6 +14,12 @@ interface TerminateChildProcessOptions {
   killWaitMs?: number;
 }
 
+export interface TerminateProcessByIdOptions {
+  processGroupId?: number | null;
+  termGraceMs?: number;
+  killWaitMs?: number;
+}
+
 /**
  * 向子进程组发送信号。
  *
@@ -39,10 +45,6 @@ export function signalChildProcessGroup(
       // 进程组可能已经先于 child 句柄被回收；仍然尝试单进程信号，
       // 避免测试替身或短暂竞态下遗漏最后一个可回收的 child。
     }
-  }
-
-  if (child.killed) {
-    return false;
   }
 
   try {
@@ -144,6 +146,51 @@ export async function terminateChildProcess(
   await forcedExit;
 }
 
+/**
+ * 回收已经脱离当前 ChildProcess 句柄的进程。
+ *
+ * 这类 PID 主要来自终端端口探测或恢复记录。调用方必须先排除当前 Host
+ * 进程及其所在进程组；Unix 优先按进程组回收，Windows 只回退到单进程。
+ */
+export async function terminateProcessById(
+  processId: number,
+  options: TerminateProcessByIdOptions = {}
+): Promise<void> {
+  if (!Number.isInteger(processId) || processId <= 0) {
+    return;
+  }
+
+  const processGroupId = process.platform === "win32"
+    ? null
+    : Number.isInteger(options.processGroupId) && (options.processGroupId ?? 0) > 0
+      ? options.processGroupId ?? null
+      : null;
+  const isAlive = () => isProcessTargetAlive(processId, processGroupId);
+
+  if (!isAlive()) {
+    return;
+  }
+
+  const termGraceMs = normalizeTimeout(
+    options.termGraceMs,
+    HELPER_PROCESS_TERM_GRACE_MS
+  );
+  const killWaitMs = normalizeTimeout(
+    options.killWaitMs,
+    HELPER_PROCESS_KILL_WAIT_MS
+  );
+
+  signalProcessTarget(processId, processGroupId, "SIGTERM");
+  await waitForProcessTargetExit(isAlive, termGraceMs);
+
+  if (!isAlive()) {
+    return;
+  }
+
+  signalProcessTarget(processId, processGroupId, "SIGKILL");
+  await waitForProcessTargetExit(isAlive, killWaitMs);
+}
+
 function hasChildProcessExited(child: ChildProcess): boolean {
   return child.exitCode !== null && child.exitCode !== undefined
     || child.signalCode !== null && child.signalCode !== undefined;
@@ -153,4 +200,70 @@ function normalizeTimeout(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.max(1, Math.floor(value))
     : fallback;
+}
+
+function signalProcessTarget(
+  processId: number,
+  processGroupId: number | null,
+  signal: NodeJS.Signals
+): void {
+  try {
+    if (processGroupId && process.platform !== "win32") {
+      process.kill(-processGroupId, signal);
+      return;
+    }
+
+    process.kill(processId, signal);
+  } catch (error) {
+    if (isProcessMissingError(error)) {
+      return;
+    }
+    throw error;
+  }
+}
+
+function isProcessTargetAlive(processId: number, processGroupId: number | null): boolean {
+  try {
+    process.kill(
+      processGroupId && process.platform !== "win32" ? -processGroupId : processId,
+      0
+    );
+    return true;
+  } catch (error) {
+    if (isProcessMissingError(error)) {
+      return false;
+    }
+
+    if (isProcessPermissionError(error)) {
+      return true;
+    }
+
+    throw error;
+  }
+}
+
+async function waitForProcessTargetExit(
+  isAlive: () => boolean,
+  timeoutMs: number
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline && isAlive()) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now())));
+      timer.unref?.();
+    });
+  }
+}
+
+function isProcessMissingError(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && (error as NodeJS.ErrnoException).code === "ESRCH";
+}
+
+function isProcessPermissionError(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && (error as NodeJS.ErrnoException).code === "EPERM";
 }

@@ -4,6 +4,7 @@ import { AppError } from "../../shared/errors/app-error.js";
 import Database from "../../shared/runtime/better-sqlite3.js";
 import { resolveAvailableCommandPath } from "../../shared/utils/command-availability.js";
 import { resolveCommandLaunch } from "../../shared/utils/command-launch.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 
 export type ModelSwitchAppId = "claude-code" | "codex" | "gemini" | "opencode";
 export type ModelSwitchAppStatus = "ready" | "unconfigured" | "unavailable" | "error";
@@ -267,7 +268,7 @@ export class CcSwitchAdapter {
       const output = createBoundedOutputCollector();
       let settled = false;
       const timer = setTimeout(() => {
-        child.kill("SIGTERM");
+        void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
       }, this.timeoutMs);
 
       const finish = (callback: () => void) => {

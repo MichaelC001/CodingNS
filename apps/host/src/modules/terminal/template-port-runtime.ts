@@ -2,6 +2,10 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 import type { TerminalTemplateRuntimeStatus } from "../../types/domain.js";
+import {
+  terminateChildProcess,
+  terminateProcessById
+} from "../../shared/utils/child-process-lifecycle.js";
 
 interface PortProcessInfo {
   processId: number;
@@ -74,14 +78,11 @@ export async function terminateRuntimeProcess(processInfo: PortProcessInfo): Pro
       return;
     }
 
-    signalPosixProcessGroup(processGroupId, "SIGTERM");
-    await waitForProcessGroupExit(processGroupId, 1500);
-
-    if (isProcessGroupAlive(processGroupId)) {
-      signalPosixProcessGroup(processGroupId, "SIGKILL");
-      await waitForProcessGroupExit(processGroupId, 1500);
-    }
-
+    await terminateProcessById(processInfo.processId, {
+      processGroupId,
+      termGraceMs: 1_500,
+      killWaitMs: 1_500
+    });
     return;
   }
 
@@ -93,13 +94,10 @@ export async function terminateRuntimeProcess(processInfo: PortProcessInfo): Pro
     return;
   }
 
-  process.kill(processInfo.processId, "SIGTERM");
-  await waitForProcessExit(processInfo.processId, 1500);
-
-  if (isProcessAlive(processInfo.processId)) {
-    process.kill(processInfo.processId, "SIGKILL");
-    await waitForProcessExit(processInfo.processId, 1500);
-  }
+  await terminateProcessById(processInfo.processId, {
+    termGraceMs: 1_500,
+    killWaitMs: 1_500
+  });
 }
 
 async function findPortProcess(port: number, signal?: AbortSignal): Promise<PortProcessInfo | null> {
@@ -308,9 +306,7 @@ async function runProcess(command: string, args: string[], signal?: AbortSignal)
 
     if (signal) {
       onAbort = () => {
-        if (!child.killed) {
-          child.kill("SIGTERM");
-        }
+        void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
 
         finish(() => {
           reject(signal.reason ?? new Error("template runtime discovery aborted"));
@@ -387,72 +383,6 @@ async function lookupPosixProcess(
     processName,
     processCommandLine: commandLine
   };
-}
-
-function isProcessAlive(processId: number): boolean {
-  try {
-    process.kill(processId, 0);
-    return true;
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      (error as NodeJS.ErrnoException).code === "ESRCH"
-    ) {
-      return false;
-    }
-
-    throw error;
-  }
-}
-
-function isProcessGroupAlive(processGroupId: number): boolean {
-  try {
-    process.kill(-processGroupId, 0);
-    return true;
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      (error as NodeJS.ErrnoException).code === "ESRCH"
-    ) {
-      return false;
-    }
-
-    throw error;
-  }
-}
-
-function signalPosixProcessGroup(processGroupId: number, signal: NodeJS.Signals): void {
-  process.kill(-processGroupId, signal);
-}
-
-async function waitForProcessExit(processId: number, timeoutMs: number): Promise<void> {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    if (!isProcessAlive(processId)) {
-      return;
-    }
-
-    await new Promise((resolve) => {
-      setTimeout(resolve, 100);
-    });
-  }
-}
-
-async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<void> {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    if (!isProcessGroupAlive(processGroupId)) {
-      return;
-    }
-
-    await new Promise((resolve) => {
-      setTimeout(resolve, 100);
-    });
-  }
 }
 
 interface WindowsProcessInfo {

@@ -6,6 +6,7 @@ import type { ProviderCapabilities, ProviderModelOption } from "@codingns/sessio
 
 import { resolveAvailableCommandPath } from "../../shared/utils/command-availability.js";
 import { resolveCommandLaunch } from "../../shared/utils/command-launch.js";
+import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
 
 interface ClaudeSettingsShape {
   env?: Record<string, unknown>;
@@ -609,7 +610,7 @@ function runClaudeInitialize(
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      void terminateChildProcess(child, { termGraceMs: 250, killWaitMs: 250 });
     }, input.timeoutMs);
     const finish = (callback: () => void) => {
       if (settled) {
