@@ -144,72 +144,6 @@ describe("observability routes", () => {
       updatedAt: timestamp,
       removedAt: null
     });
-    hosted.services.database.db
-      .prepare(
-        `INSERT INTO session_discovery_diagnostics (
-           id,
-           workspace_id,
-           trigger_source,
-           provider,
-           is_complete,
-           status,
-           duration_ms,
-           session_count,
-           scanned_files,
-           skipped_by_fingerprint,
-           parsed_files,
-           bytes_read,
-           created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        "diag-1",
-        "workspace-1",
-        "session_history.workspace_discovery.scan",
-        "codex",
-        1,
-        "ok",
-        40,
-        3,
-        6,
-        4,
-        2,
-        1200,
-        "2026-06-10T10:00:00.000Z"
-      );
-    hosted.services.database.db
-      .prepare(
-        `INSERT INTO session_discovery_diagnostics (
-           id,
-           workspace_id,
-           trigger_source,
-           provider,
-           is_complete,
-           status,
-           duration_ms,
-           session_count,
-           scanned_files,
-           skipped_by_fingerprint,
-           parsed_files,
-           bytes_read,
-           created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        "diag-2",
-        "workspace-1",
-        "session_history.workspace_discovery.scan",
-        "claude-code",
-        0,
-        "partial",
-        55,
-        1,
-        8,
-        1,
-        7,
-        4096,
-        "2026-06-10T11:00:00.000Z"
-      );
 
     const diagnosticsResponse = await hosted.app.inject({
       method: "GET",
@@ -229,14 +163,7 @@ describe("observability routes", () => {
       }>;
     };
 
-    expect(diagnosticsSnapshot.workspaceDiscoveryDiagnostics).toHaveLength(1);
-    expect(diagnosticsSnapshot.workspaceDiscoveryDiagnostics[0]).toMatchObject({
-      provider: "claude-code",
-      scannedFiles: 8,
-      skippedByFingerprint: 1,
-      parsedFiles: 7,
-      bytesRead: 4096
-    });
+    expect(diagnosticsSnapshot.workspaceDiscoveryDiagnostics).toEqual([]);
 
     const heartbeatResponse = await hosted.app.inject({
       method: "POST",

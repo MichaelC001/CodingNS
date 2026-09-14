@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resolveHostConfig } from "../../src/config/env.js";
+import Database from "../../src/shared/runtime/better-sqlite3.js";
 import { createDatabaseClient } from "../../src/storage/sqlite/client.js";
 
 const tempDirs: string[] = [];
@@ -990,20 +991,33 @@ describe("sqlite 启动引导", () => {
     );
   });
 
-  it("初始化数据库时会创建 session_source_index 和 session_discovery_diagnostics 表", async () => {
+  it("初始化数据库时保留来源索引，并迁移删除旧诊断快照表", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-session-source-index-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
+
+    const legacyDb = new Database(databasePath);
+    legacyDb.exec(`
+      CREATE TABLE session_discovery_diagnostics (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO session_discovery_diagnostics (id, workspace_id, created_at)
+      VALUES ('legacy-diagnostic', 'workspace-1', '2026-06-10T10:00:00.000Z');
+    `);
+    legacyDb.close();
 
     const client = createDatabaseClient(databasePath);
     const sourceIndexColumns = client.db
       .prepare("PRAGMA table_info(session_source_index)")
       .all() as Array<{ name: string }>;
-    const diagnosticsColumns = client.db
-      .prepare("PRAGMA table_info(session_discovery_diagnostics)")
-      .all() as Array<{ name: string }>;
-
-    client.close();
+    const diagnosticsTable = client.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_discovery_diagnostics'")
+      .get() as { name?: string } | undefined;
+    const migration = client.db
+      .prepare("SELECT version, name FROM host_schema_migrations WHERE version = 1")
+      .get() as { version: number; name: string } | undefined;
 
     expect(sourceIndexColumns.map((column) => column.name)).toEqual(
       expect.arrayContaining([
@@ -1030,23 +1044,18 @@ describe("sqlite 启动引导", () => {
         "updated_at"
       ])
     );
-    expect(diagnosticsColumns.map((column) => column.name)).toEqual(
-      expect.arrayContaining([
-        "id",
-        "workspace_id",
-        "trigger_source",
-        "provider",
-        "is_complete",
-        "status",
-        "duration_ms",
-        "session_count",
-        "scanned_files",
-        "skipped_by_fingerprint",
-        "parsed_files",
-        "bytes_read",
-        "created_at"
-      ])
-    );
+    expect(diagnosticsTable).toBeUndefined();
+    expect(migration).toEqual({ version: 1, name: "drop_session_discovery_diagnostics" });
+
+    client.close();
+    const reopened = createDatabaseClient(databasePath);
+    expect(reopened.db
+      .prepare("SELECT COUNT(*) AS count FROM host_schema_migrations WHERE version = 1")
+      .get()).toEqual({ count: 1 });
+    expect(reopened.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_discovery_diagnostics'")
+      .get()).toBeUndefined();
+    reopened.close();
   });
 
   it("事务助手会话快照允许使用全局事务工作台 ID，不再要求真实 workspace 外键", async () => {

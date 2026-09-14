@@ -17,7 +17,6 @@ import { SessionBindingRepository } from "../../src/storage/repositories/session
 import { SessionChangedFileRepository } from "../../src/storage/repositories/session-changed-file-repository.js";
 import { SessionIndexRepository } from "../../src/storage/repositories/session-index-repository.js";
 import { SessionMessageAttachmentRepository } from "../../src/storage/repositories/session-message-attachment-repository.js";
-import { SessionDiscoveryDiagnosticsRepository } from "../../src/storage/repositories/session-discovery-diagnostics-repository.js";
 import { SessionStateRepository } from "../../src/storage/repositories/session-state-repository.js";
 import { SessionStatusSnapshotRepository } from "../../src/storage/repositories/session-status-snapshot-repository.js";
 import { WorkspaceRepository } from "../../src/storage/repositories/workspace-repository.js";
@@ -306,96 +305,15 @@ describe("SessionHistoryService background tasks", () => {
     service.dispose();
   });
 
-  it("diagnostics 全局维护任务会处理旧工作区且不进入普通列表路径", async () => {
+  it("诊断维护入口保持兼容，但不再访问已删除的诊断表", async () => {
     const taskManager = createTaskManager();
     const service = createSessionHistoryService(taskManager);
-    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
-    service.workspaceRepository.create({
-      id: "workspace-old",
-      ownerUserId: "user-1",
-      name: "旧工作区",
-      path: "/tmp/workspace-old",
-      repoRoot: "/tmp/workspace-old",
-      favorite: false,
-      createdAt: "2000-01-01T00:00:00.000Z",
-      updatedAt: "2000-01-01T00:00:00.000Z",
-      removedAt: null
-    });
-    const diagnosticsRepository = new SessionDiscoveryDiagnosticsRepository(service.database.db);
-    diagnosticsRepository.insert({
-      id: "old-workspace-diagnostic",
-      workspaceId: "workspace-old",
-      triggerSource: "session_history.workspace_discovery.scan",
-      provider: "codex",
-      isComplete: true,
-      status: "success",
-      durationMs: 1,
-      sessionCount: 0,
-      scannedFiles: 0,
-      skippedByFingerprint: 0,
-      parsedFiles: 0,
-      bytesRead: 0,
-      createdAt: "2000-01-01T00:00:00.000Z"
-    });
-
-    const handle = service.instance.requestSessionDiscoveryDiagnosticsMaintenance();
-    await expect(handle.promise).resolves.toMatchObject({
-      deletedCount: 1,
-      maxDeletesPerPass: 1_000
-    });
-    expect(diagnosticsRepository.listByWorkspaceId("workspace-old", 20)).toHaveLength(0);
-    expect(service.instance.observeBackgroundTaskMetrics().taskTypes[
-      HOST_TASK_TYPES.sessionDiscoveryDiagnosticsMaintenance
-    ]?.counters.finished).toBe(1);
-
-    service.dispose();
-  });
-
-  it("diagnostics 全局维护遇到 SQLITE_BUSY 会退避重试", async () => {
-    const taskManager = createTaskManager();
-    const service = createSessionHistoryService(taskManager);
-    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
-    const diagnosticsRepository = new SessionDiscoveryDiagnosticsRepository(service.database.db);
-    diagnosticsRepository.insert({
-      id: "maintenance-busy-old",
-      workspaceId: "workspace-1",
-      triggerSource: "session_history.explicit_workspace_scan",
-      provider: "codex",
-      isComplete: true,
-      status: "success",
-      durationMs: 1,
-      sessionCount: 0,
-      scannedFiles: 0,
-      skippedByFingerprint: 0,
-      parsedFiles: 0,
-      bytesRead: 0,
-      createdAt: "2000-01-01T00:00:00.000Z"
-    });
-
-    const originalTransaction = service.database.db.transaction.bind(service.database.db);
-    let transactionAttempts = 0;
-    vi.spyOn(service.database.db, "transaction").mockImplementation(((fn: (...args: unknown[]) => unknown) => {
-      const wrapped = originalTransaction(fn as Parameters<typeof originalTransaction>[0]);
-
-      return ((...args: unknown[]) => {
-        transactionAttempts += 1;
-        if (transactionAttempts === 1) {
-          const error = new Error("database is locked") as Error & { code: string };
-          error.code = "SQLITE_BUSY";
-          throw error;
-        }
-
-        return wrapped(...args);
-      }) as ReturnType<typeof originalTransaction>;
-    }) as typeof service.database.db.transaction);
 
     await expect(service.instance.requestSessionDiscoveryDiagnosticsMaintenance().promise)
-      .resolves.toMatchObject({
-        deletedCount: 1,
-        maxDeletesPerPass: 1_000
-      });
-    expect(transactionAttempts).toBe(2);
-    expect(diagnosticsRepository.listByWorkspaceId("workspace-1", 10)).toHaveLength(0);
+      .resolves.toEqual({ deletedCount: 0, maxDeletesPerPass: 0 });
+    expect(service.database.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_discovery_diagnostics'")
+      .get()).toBeUndefined();
 
     service.dispose();
   });
