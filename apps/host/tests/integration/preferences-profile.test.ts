@@ -63,7 +63,15 @@ const DEFAULT_PROFILE_RESPONSE = {
       defaultModel: null,
       defaultReasoningLevel: null
     },
+    "legna-code": {
+      defaultModel: null,
+      defaultReasoningLevel: null
+    },
     "deepseek-harness": {
+      defaultModel: null,
+      defaultReasoningLevel: null
+    },
+    grok: {
       defaultModel: null,
       defaultReasoningLevel: null
     }

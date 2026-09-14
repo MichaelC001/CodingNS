@@ -2428,7 +2428,7 @@ describe("ComposerPanel", () => {
     }));
   });
 
-  it("切换模型时只上报当前会话选择，不改账号默认模型", async () => {
+  it("切换模型时同时上报当前会话选择和账号默认模型", async () => {
     const onSessionSelectionChange = vi.fn().mockResolvedValue(undefined);
 
     render(
@@ -2449,7 +2449,13 @@ describe("ComposerPanel", () => {
         providerPresetId: null
       });
     });
-    expect(preferenceStoreMock.updatePreferences).not.toHaveBeenCalled();
+    expect(preferenceStoreMock.updatePreferences).toHaveBeenCalledWith({
+      providers: {
+        codex: {
+          defaultModel: "gpt-5.4"
+        }
+      }
+    });
   });
 
   it("切换模型后立即发送时，会先等待会话选择写入完成", async () => {

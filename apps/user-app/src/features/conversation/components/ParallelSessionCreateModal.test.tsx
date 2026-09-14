@@ -14,9 +14,25 @@ const mockListProviderCatalog = vi.fn();
 const mockGetProviderCapabilities = vi.fn();
 const mockFetchModelManagementSnapshot = vi.fn();
 const mockGetDefaultSessionPermissionMode = vi.fn(() => "bypassPermissions");
+const mockProviderPreferences = {
+  codex: { defaultModel: null, defaultReasoningLevel: null },
+  "claude-code": { defaultModel: null, defaultReasoningLevel: null },
+  opencode: { defaultModel: null, defaultReasoningLevel: null },
+  gemini: { defaultModel: null, defaultReasoningLevel: null },
+  kimi: { defaultModel: null, defaultReasoningLevel: null },
+  "legna-code": { defaultModel: null, defaultReasoningLevel: null },
+  "deepseek-harness": { defaultModel: null, defaultReasoningLevel: null },
+  grok: { defaultModel: null, defaultReasoningLevel: null }
+};
 
 vi.mock("../../../preferences/default-session-permission-mode", () => ({
   getDefaultSessionPermissionMode: () => mockGetDefaultSessionPermissionMode()
+}));
+
+vi.mock("../../../preferences/preferences-store", () => ({
+  updatePreferences: vi.fn(() => Promise.resolve()),
+  usePreferencesSelector: (selector: (state: unknown) => unknown) =>
+    selector({ profile: { providers: mockProviderPreferences } })
 }));
 
 vi.mock("../api/conversation-api", async () => {
@@ -56,6 +72,7 @@ vi.mock("../../settings/api/model-switch-api", async () => {
 describe("ParallelSessionCreateModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockProviderPreferences.codex.defaultModel = null;
     mockFetchModelManagementSnapshot.mockResolvedValue({
       scannedAt: "2026-04-25T10:00:00.000Z",
       items: [
@@ -345,6 +362,20 @@ describe("ParallelSessionCreateModal", () => {
         ])
       })
     );
+  });
+
+  it("并行新建成员会回填当前供应商已保存的模型", async () => {
+    const user = userEvent.setup();
+    mockProviderPreferences.codex.defaultModel = "codex-fast";
+
+    renderModal();
+
+    const [modelTrigger] = await screen.findAllByRole("button", {
+      name: t("shell.parallelCreateModelLabel")
+    });
+    await user.click(modelTrigger);
+
+    expect(await screen.findByRole("option", { name: "Codex Fast" })).toBeInTheDocument();
   });
 
   it("供应商只有一个 preset 时会隐藏配置文件列，只显示模型列表", async () => {
