@@ -54,6 +54,15 @@ function modelDirectory() {
         name: "DeepSeek",
         models: [
           {
+            // DSH 目录里 V4.1 Flash 的正式 ID，也是 DSH 自己的默认模型。
+            id: "deepseek-flash",
+            name: "DeepSeek-V41-Flash",
+            reasoning: {
+              efforts: [{ id: "off" }, { id: "high" }, { id: "max" }],
+              defaultEffort: "high"
+            }
+          },
+          {
             id: "deepseek-v4-flash",
             name: "DeepSeek-V4-Flash",
             reasoning: {
@@ -293,6 +302,14 @@ describe("DeepSeekHarnessAdapter", () => {
     await expect(adapter.getSessionCapabilities("h1")).resolves.toMatchObject({
       modelOptions: [
         {
+          // DSH 的商品名是 DeepSeek-V41-Flash，按模型名显示才找得到。
+          id: "deepseek-official:deepseek-flash",
+          name: "deepseek-flash",
+          providerName: "DeepSeek",
+          supportedReasoningEfforts: ["off", "high", "max"],
+          defaultReasoningEffort: "high"
+        },
+        {
           id: "deepseek-official:deepseek-v4-flash",
           name: "DeepSeek-V4-Flash",
           providerName: "DeepSeek",
@@ -312,9 +329,57 @@ describe("DeepSeekHarnessAdapter", () => {
 
     const providerCapabilities = await adapter.getSessionCapabilities("");
     expect(providerCapabilities.modelOptions).toContainEqual(
-      expect.objectContaining({ id: "deepseek-official:deepseek-v4-flash" })
+      expect.objectContaining({ id: "deepseek-official:deepseek-flash", name: "deepseek-flash" })
     );
     expect(t.calls.at(-1)).toEqual({ method: "llm.models", payload: {} });
+  });
+
+  it("deepseek-flash 不绑定某一家供应商：谁提供了就按模型名显示它那一项", async () => {
+    const t = transport();
+    const baseCall = t.call;
+    t.call = async (method, payload) => {
+      if (method === "session.models" || method === "llm.models") {
+        return {
+          groups: [
+            // 官方和第三方网关都提供 deepseek-flash，两边都应各自出现一条。
+            { id: "deepseek-official", name: "DeepSeek", models: [{ id: "deepseek-flash", name: "DeepSeek-V41-Flash" }] },
+            { id: "custom-gateway", name: "自定义供应商", models: [{ id: "deepseek-flash", name: "DeepSeek-V41-Flash" }] }
+          ]
+        };
+      }
+      return baseCall(method, payload);
+    };
+
+    const capabilities = await new DeepSeekHarnessAdapter({ transport: t, harnessVersion: "0.1.5-rc.2" }).getSessionCapabilities("");
+    expect(capabilities.modelOptions).toEqual([
+      expect.objectContaining({ id: "deepseek-official:deepseek-flash", name: "deepseek-flash", providerName: "DeepSeek" }),
+      expect.objectContaining({ id: "custom-gateway:deepseek-flash", name: "deepseek-flash", providerName: "自定义供应商" })
+    ]);
+  });
+
+  it("目录里没有 deepseek-flash 时不凭空补条目，避免造出服务端不认识的模型", async () => {
+    const t = transport();
+    const baseCall = t.call;
+    t.call = async (method, payload) => {
+      if (method === "session.models" || method === "llm.models") {
+        return {
+          groups: [
+            {
+              id: "deepseek-official",
+              name: "DeepSeek",
+              models: [{ id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" }]
+            }
+          ]
+        };
+      }
+      return baseCall(method, payload);
+    };
+
+    const capabilities = await new DeepSeekHarnessAdapter({ transport: t, harnessVersion: "0.1.5-rc.2" }).getSessionCapabilities("");
+    expect(capabilities.modelOptions).toEqual([
+      expect.objectContaining({ id: "deepseek-official:deepseek-v4-pro", name: "DeepSeek-V4-Pro" })
+    ]);
+    expect(capabilities.modelOptions?.some((option) => option.id.includes("deepseek-flash"))).toBe(false);
   });
 
   it("保留自定义模型供应商名称，避免同名模型在选择器中混淆", async () => {

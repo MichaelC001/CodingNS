@@ -1435,7 +1435,7 @@ function parseHarnessModelOptions(input: unknown): ProviderModelOption[] {
       if (!options.has(id)) {
         options.set(id, {
           id,
-          name: ensureText(model.name).trim() || modelId,
+          name: resolveHarnessModelDisplayName(modelId, ensureText(model.name).trim()),
           providerName,
           ...(supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {}),
           ...(defaultReasoningEffort ? { defaultReasoningEffort } : {})
@@ -1446,6 +1446,28 @@ function parseHarnessModelOptions(input: unknown): ProviderModelOption[] {
 
   return [...options.values()];
 }
+
+/** 官方对外的 Flash 模型名。它是模型名，不是某一家供应商的专属 ID。 */
+const DEEPSEEK_FLASH_MODEL_ID = "deepseek-flash";
+
+/**
+ * 决定模型在列表里显示成什么名字。
+ *
+ * `deepseek-flash` 是官方对外的**模型名**，任何供应商都可能提供它，所以这里
+ * 不针对某一家写死：目录里谁提供了这个模型名，那一项就按模型名显示。
+ *
+ * 为什么要改：DSH 目录里 V4.1 Flash 的条目 ID 本来就是 `deepseek-flash`，
+ * 但商品名是 `DeepSeek-V41-Flash`，用户按模型名在列表里找不出这一项，
+ * 会以为这个模型没被列出来。这里直接沿用目录里的 ID 作为显示名，
+ * 不再额外补一条 —— 补一条会和原条目撞同一个 ID，前端不去重就会出两行。
+ *
+ * 其余模型保持目录给的展示名不变。
+ */
+function resolveHarnessModelDisplayName(modelId: string, catalogName: string): string {
+  if (modelId === DEEPSEEK_FLASH_MODEL_ID) return DEEPSEEK_FLASH_MODEL_ID;
+  return catalogName || modelId;
+}
+
 function createAcceptedMessage(providerSessionId: string, content: string, timestamp: string): NormalizedMessage { const messageId = randomUUID(); return { messageId, provider: "deepseek-harness", providerSessionId, role: "user", kind: "text", content, toolCall: null, timestamp, sequence: Number.MAX_SAFE_INTEGER, rawRef: `synthetic://deepseek-harness/${providerSessionId}/${messageId}` }; }
 function asRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function readNonNegativeNumber(value: unknown): number | null {
