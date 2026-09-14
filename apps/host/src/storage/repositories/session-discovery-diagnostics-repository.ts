@@ -22,7 +22,9 @@ export class SessionDiscoveryDiagnosticsRepository {
   private readonly listByWorkspaceIdStatement: Database.Statement<any[], any>;
   private readonly insertStatement: Database.Statement<any[], any>;
   private readonly deleteExpiredStatement: Database.Statement<any[], any>;
+  private readonly deleteExpiredGlobalStatement: Database.Statement<any[], any>;
   private readonly deleteOverflowStatement: Database.Statement<any[], any>;
+  private readonly listOverflowWorkspaceIdsStatement: Database.Statement<any[], any>;
 
   constructor(private readonly db: Database.Database) {
     this.listByWorkspaceIdStatement = this.db.prepare(
@@ -73,6 +75,16 @@ export class SessionDiscoveryDiagnosticsRepository {
          LIMIT ?
        )`
     );
+    this.deleteExpiredGlobalStatement = this.db.prepare(
+      `DELETE FROM session_discovery_diagnostics
+       WHERE rowid IN (
+         SELECT rowid
+         FROM session_discovery_diagnostics
+         WHERE created_at < ?
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?
+       )`
+    );
     this.deleteOverflowStatement = this.db.prepare(
       `DELETE FROM session_discovery_diagnostics
        WHERE rowid IN (
@@ -89,6 +101,14 @@ export class SessionDiscoveryDiagnosticsRepository {
          ORDER BY created_at ASC, id ASC
          LIMIT ?
        )`
+    );
+    this.listOverflowWorkspaceIdsStatement = this.db.prepare(
+      `SELECT workspace_id
+       FROM session_discovery_diagnostics
+       GROUP BY workspace_id
+       HAVING COUNT(*) > ?
+       ORDER BY MIN(created_at) ASC
+       LIMIT ?`
     );
   }
 
@@ -166,6 +186,54 @@ export class SessionDiscoveryDiagnosticsRepository {
     return prune() as number;
   }
 
+  /**
+   * 在全局维护任务中分批清理所有工作区的诊断。
+   *
+   * 这里不绑定某一个工作区，也不执行 VACUUM；每轮最多删除 maxDeletesPerPass
+   * 条记录，调用方可以在低峰期重复入队，逐步处理历史工作区。
+   */
+  pruneGlobalBatch(options: SessionDiscoveryDiagnosticsPruneOptions = {}): number {
+    const nowMs = resolveNowMs(options.now);
+    const retentionMs = normalizeRetentionMs(options.retentionMs);
+    const maxRows = normalizeMaxRows(options.maxRowsPerWorkspace);
+    const maxDeletes = normalizeMaxDeletes(options.maxDeletesPerPass);
+    const cutoff = new Date(nowMs - retentionMs).toISOString();
+    const prune = this.db.transaction(() => {
+      let deletedCount = Number(
+        this.deleteExpiredGlobalStatement.run(cutoff, maxDeletes).changes ?? 0
+      );
+      let remainingDeletes = maxDeletes - deletedCount;
+
+      if (remainingDeletes <= 0) {
+        return deletedCount;
+      }
+
+      const workspaceRows = this.listOverflowWorkspaceIdsStatement.all(
+        maxRows,
+        remainingDeletes
+      ) as Array<{ workspace_id: string }>;
+
+      for (const row of workspaceRows) {
+        const result = this.deleteOverflowStatement.run(
+          row.workspace_id,
+          row.workspace_id,
+          maxRows,
+          remainingDeletes
+        );
+        deletedCount += Number(result.changes ?? 0);
+        remainingDeletes = maxDeletes - deletedCount;
+
+        if (remainingDeletes <= 0) {
+          break;
+        }
+      }
+
+      return deletedCount;
+    });
+
+    return prune() as number;
+  }
+
   private insertRecord(record: SessionDiscoveryDiagnosticRecord): void {
     this.insertStatement.run(
       record.id,
@@ -194,11 +262,17 @@ export class SessionDiscoveryDiagnosticsRepository {
     const maxDeletes = normalizeMaxDeletes(options.maxDeletesPerPass);
     const cutoff = new Date(nowMs - retentionMs).toISOString();
     const expired = this.deleteExpiredStatement.run(workspaceId, cutoff, maxDeletes);
+    const remainingDeletes = Math.max(0, maxDeletes - Number(expired.changes ?? 0));
+
+    if (remainingDeletes <= 0) {
+      return Number(expired.changes ?? 0);
+    }
+
     const overflow = this.deleteOverflowStatement.run(
       workspaceId,
       workspaceId,
       maxRows,
-      maxDeletes
+      remainingDeletes
     );
     return Number(expired.changes ?? 0) + Number(overflow.changes ?? 0);
   }

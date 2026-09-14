@@ -359,6 +359,23 @@ export class SessionController {
     );
   };
 
+  readonly maintainSessionDiscoveryDiagnostics = async (
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> => {
+    requireUserId(request);
+    const handle = this.sessionHistoryService.requestSessionDiscoveryDiagnosticsMaintenance(
+      "session_controller.session_discovery_diagnostics_maintenance"
+    );
+    reply.status(202).send({
+      taskId: handle.taskId,
+      taskType: handle.taskType,
+      key: handle.key,
+      executionLane: handle.executionLane,
+      deduped: handle.deduped
+    });
+  };
+
   readonly readMessages = async (
     request: FastifyRequest<{
       Params: SessionParams;

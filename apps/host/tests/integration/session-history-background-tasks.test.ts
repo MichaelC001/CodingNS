@@ -17,6 +17,7 @@ import { SessionBindingRepository } from "../../src/storage/repositories/session
 import { SessionChangedFileRepository } from "../../src/storage/repositories/session-changed-file-repository.js";
 import { SessionIndexRepository } from "../../src/storage/repositories/session-index-repository.js";
 import { SessionMessageAttachmentRepository } from "../../src/storage/repositories/session-message-attachment-repository.js";
+import { SessionDiscoveryDiagnosticsRepository } from "../../src/storage/repositories/session-discovery-diagnostics-repository.js";
 import { SessionStateRepository } from "../../src/storage/repositories/session-state-repository.js";
 import { SessionStatusSnapshotRepository } from "../../src/storage/repositories/session-status-snapshot-repository.js";
 import { WorkspaceRepository } from "../../src/storage/repositories/workspace-repository.js";
@@ -90,7 +91,7 @@ describe("SessionHistoryService background tasks", () => {
     service.dispose();
   });
 
-  it("显式扫描使用 helper_process 处理器并在同一任务完成 Host 索引回写", async () => {
+  it("显式扫描使用 helper_process 处理器，并由独立 Host 任务完成索引回写", async () => {
     const taskManager = createTaskManager(null, {
       helper_process: {
         execute: async (definition, input, context) => {
@@ -132,11 +133,269 @@ describe("SessionHistoryService background tasks", () => {
     const status = service.instance.getExplicitWorkspaceScanStatus("workspace-1", "user-1");
     expect(status.status).toBe("succeeded");
     expect(status.resultCount).toBe(0);
+    const metrics = service.instance.observeBackgroundTaskMetrics();
+    expect(metrics.taskTypes[HOST_TASK_TYPES.workspaceDiscoveryPersistence]?.counters.started).toBe(1);
+    expect(metrics.taskTypes[HOST_TASK_TYPES.workspaceDiscoveryPersistence]?.counters.finished).toBe(1);
     expect(service.instance.listWorkspaceDiscoveryDiagnostics("workspace-1", "user-1", 10)[0])
       .toMatchObject({
         provider: "codex",
         triggerSource: "session_history.explicit_workspace_scan"
       });
+
+    service.dispose();
+  });
+
+  it("Host 回写失败时显式扫描失败且保留旧索引", async () => {
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.workspaceDiscoveryExplicitScan) {
+            return definition.postProcess
+              ? await definition.postProcess(input, createTestDiscovery(), context)
+              : createTestDiscovery();
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "existing-session",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "existing-provider-session",
+      rawStoreRef: "codex://existing-session",
+      title: "旧索引必须保留",
+      messageCount: 3,
+      lastMessageAt: "2026-04-12T09:00:00.000Z",
+      createdAt: "2026-04-12T08:00:00.000Z",
+      updatedAt: "2026-04-12T09:00:00.000Z"
+    });
+
+    vi.spyOn(service.database.db, "transaction").mockImplementation(() => {
+      throw new Error("Host persistence failed");
+    });
+
+    service.instance.requestExplicitWorkspaceScan("workspace-1", "user-1");
+    await waitUntil(() => service.instance.getExplicitWorkspaceScanStatus("workspace-1", "user-1").status === "failed");
+
+    expect(service.instance.getExplicitWorkspaceScanStatus("workspace-1", "user-1")).toMatchObject({
+      status: "failed",
+      errorMessage: "Host persistence failed"
+    });
+    expect(service.instance.listWorkspaceSessions("workspace-1", "user-1")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: "existing-session",
+          title: "旧索引必须保留"
+        })
+      ])
+    );
+    expect(taskManager.peek(HOST_TASK_TYPES.workspaceDiscoveryPersistence, "workspace-1"))
+      .toMatchObject({ status: "failed" });
+
+    service.dispose();
+  });
+
+  it("取消显式扫描时会同时取消 Host 回写任务", async () => {
+    let persistenceSignal: AbortSignal | null = null;
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.workspaceDiscoveryExplicitScan) {
+            return definition.postProcess
+              ? await definition.postProcess(input, createTestDiscovery(), context)
+              : createTestDiscovery();
+          }
+
+          return await definition.run(input, context);
+        }
+      },
+      host_background: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.workspaceDiscoveryPersistence) {
+            persistenceSignal = context.signal;
+            return await new Promise<never>((_resolve, reject) => {
+              const rejectOnAbort = () => reject(context.signal.reason ?? new Error("回写已取消"));
+
+              if (context.signal.aborted) {
+                rejectOnAbort();
+                return;
+              }
+
+              context.signal.addEventListener("abort", rejectOnAbort, { once: true });
+            });
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+
+    service.instance.requestExplicitWorkspaceScan("workspace-1", "user-1");
+    await waitUntil(() => persistenceSignal !== null);
+
+    service.instance.cancelExplicitWorkspaceScan("workspace-1", "user-1");
+    await waitUntil(() => service.instance.getExplicitWorkspaceScanStatus("workspace-1", "user-1").status === "cancelled");
+
+    expect(persistenceSignal?.aborted).toBe(true);
+    expect(service.instance.getExplicitWorkspaceScanStatus("workspace-1", "user-1"))
+      .toMatchObject({ status: "cancelled" });
+    expect(taskManager.peek(HOST_TASK_TYPES.workspaceDiscoveryPersistence, "workspace-1"))
+      .toMatchObject({ status: "cancelled" });
+
+    service.dispose();
+  });
+
+  it("Host 回写任务超时会留下 timeout 状态并发出取消信号", async () => {
+    vi.useFakeTimers();
+    let persistenceSignal: AbortSignal | null = null;
+    const taskManager = createTaskManager(null, {
+      host_background: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.workspaceDiscoveryPersistence) {
+            persistenceSignal = context.signal;
+            return await new Promise<never>((_resolve, reject) => {
+              const rejectOnAbort = () => reject(context.signal.reason ?? new Error("回写超时"));
+
+              if (context.signal.aborted) {
+                rejectOnAbort();
+                return;
+              }
+
+              context.signal.addEventListener("abort", rejectOnAbort, { once: true });
+            });
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+
+    const handle = taskManager.enqueue(HOST_TASK_TYPES.workspaceDiscoveryPersistence, {
+      key: "workspace-1",
+      source: "test.persistence.timeout",
+      input: {
+        workspaceId: "workspace-1",
+        userId: "user-1",
+        refreshStateMode: "deferred",
+        allowCleanup: false,
+        triggerSource: "test.persistence.timeout",
+        discovery: createTestDiscovery()
+      } as never
+    });
+    const taskResult = handle.promise.then(
+      () => null,
+      (error: unknown) => error
+    );
+    await Promise.resolve();
+    expect(persistenceSignal).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    await expect(taskResult).resolves.toMatchObject({ name: "TaskTimeoutError" });
+    expect(persistenceSignal?.aborted).toBe(true);
+    expect(taskManager.peek(HOST_TASK_TYPES.workspaceDiscoveryPersistence, "workspace-1"))
+      .toMatchObject({ status: "timeout" });
+
+    service.dispose();
+  });
+
+  it("diagnostics 全局维护任务会处理旧工作区且不进入普通列表路径", async () => {
+    const taskManager = createTaskManager();
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    service.workspaceRepository.create({
+      id: "workspace-old",
+      ownerUserId: "user-1",
+      name: "旧工作区",
+      path: "/tmp/workspace-old",
+      repoRoot: "/tmp/workspace-old",
+      favorite: false,
+      createdAt: "2000-01-01T00:00:00.000Z",
+      updatedAt: "2000-01-01T00:00:00.000Z",
+      removedAt: null
+    });
+    const diagnosticsRepository = new SessionDiscoveryDiagnosticsRepository(service.database.db);
+    diagnosticsRepository.insert({
+      id: "old-workspace-diagnostic",
+      workspaceId: "workspace-old",
+      triggerSource: "session_history.workspace_discovery.scan",
+      provider: "codex",
+      isComplete: true,
+      status: "success",
+      durationMs: 1,
+      sessionCount: 0,
+      scannedFiles: 0,
+      skippedByFingerprint: 0,
+      parsedFiles: 0,
+      bytesRead: 0,
+      createdAt: "2000-01-01T00:00:00.000Z"
+    });
+
+    const handle = service.instance.requestSessionDiscoveryDiagnosticsMaintenance();
+    await expect(handle.promise).resolves.toMatchObject({
+      deletedCount: 1,
+      maxDeletesPerPass: 1_000
+    });
+    expect(diagnosticsRepository.listByWorkspaceId("workspace-old", 20)).toHaveLength(0);
+    expect(service.instance.observeBackgroundTaskMetrics().taskTypes[
+      HOST_TASK_TYPES.sessionDiscoveryDiagnosticsMaintenance
+    ]?.counters.finished).toBe(1);
+
+    service.dispose();
+  });
+
+  it("diagnostics 全局维护遇到 SQLITE_BUSY 会退避重试", async () => {
+    const taskManager = createTaskManager();
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    const diagnosticsRepository = new SessionDiscoveryDiagnosticsRepository(service.database.db);
+    diagnosticsRepository.insert({
+      id: "maintenance-busy-old",
+      workspaceId: "workspace-1",
+      triggerSource: "session_history.explicit_workspace_scan",
+      provider: "codex",
+      isComplete: true,
+      status: "success",
+      durationMs: 1,
+      sessionCount: 0,
+      scannedFiles: 0,
+      skippedByFingerprint: 0,
+      parsedFiles: 0,
+      bytesRead: 0,
+      createdAt: "2000-01-01T00:00:00.000Z"
+    });
+
+    const originalTransaction = service.database.db.transaction.bind(service.database.db);
+    let transactionAttempts = 0;
+    vi.spyOn(service.database.db, "transaction").mockImplementation(((fn: (...args: unknown[]) => unknown) => {
+      const wrapped = originalTransaction(fn as Parameters<typeof originalTransaction>[0]);
+
+      return ((...args: unknown[]) => {
+        transactionAttempts += 1;
+        if (transactionAttempts === 1) {
+          const error = new Error("database is locked") as Error & { code: string };
+          error.code = "SQLITE_BUSY";
+          throw error;
+        }
+
+        return wrapped(...args);
+      }) as ReturnType<typeof originalTransaction>;
+    }) as typeof service.database.db.transaction);
+
+    await expect(service.instance.requestSessionDiscoveryDiagnosticsMaintenance().promise)
+      .resolves.toMatchObject({
+        deletedCount: 1,
+        maxDeletesPerPass: 1_000
+      });
+    expect(transactionAttempts).toBe(2);
+    expect(diagnosticsRepository.listByWorkspaceId("workspace-1", 10)).toHaveLength(0);
 
     service.dispose();
   });
@@ -1543,6 +1802,23 @@ describe("SessionHistoryService background tasks", () => {
   }
 });
 
+function createTestDiscovery() {
+  return {
+    sessions: [{
+      provider: "codex" as const,
+      providerSessionId: "test-provider-session",
+      title: "测试会话",
+      workspacePath: "/tmp/test-workspace",
+      rawStoreRef: "codex://test-provider-session",
+      isArchived: false,
+      lastMessageAt: "2026-04-12T11:00:00.000Z",
+      messageCount: 1
+    }],
+    isComplete: true,
+    providerDiagnostics: []
+  };
+}
+
 function seedWorkspace(
   workspaceRepository: WorkspaceRepository,
   db: ReturnType<typeof createDatabaseClient>["db"],
@@ -1591,15 +1867,17 @@ function seedSession(
   db.prepare(
     `INSERT INTO session_bindings (
        session_id,
+       user_id,
        workspace_id,
        provider,
        provider_session_id,
        raw_store_ref,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     input.sessionId,
+    "user-1",
     input.workspaceId,
     input.provider,
     input.providerSessionId,

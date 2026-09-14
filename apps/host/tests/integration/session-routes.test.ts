@@ -96,6 +96,38 @@ describe("session routes", () => {
     expect(requestExplicitWorkspaceScan).toHaveBeenCalledWith("workspace-1", "user-1");
   });
 
+  it("diagnostics 维护入口只入队全局 TaskManager 任务", async () => {
+    const requestSessionDiscoveryDiagnosticsMaintenance = vi.fn(() => ({
+      taskId: "maintenance-task-1",
+      taskType: "session.discovery_diagnostics_maintenance",
+      key: "global",
+      executionLane: "host_background" as const,
+      deduped: false,
+      promise: Promise.resolve({ deletedCount: 0, maxDeletesPerPass: 1000 }),
+      cancel: vi.fn()
+    }));
+    const app = await createSessionApp({
+      sessionHistoryService: { requestSessionDiscoveryDiagnosticsMaintenance }
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/sessions/discovery/diagnostics/maintenance"
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      taskId: "maintenance-task-1",
+      taskType: "session.discovery_diagnostics_maintenance",
+      key: "global",
+      executionLane: "host_background",
+      deduped: false
+    });
+    expect(requestSessionDiscoveryDiagnosticsMaintenance).toHaveBeenCalledWith(
+      "session_controller.session_discovery_diagnostics_maintenance"
+    );
+  });
+
   afterEach(async () => {
     while (apps.length > 0) {
       const app = apps.pop();

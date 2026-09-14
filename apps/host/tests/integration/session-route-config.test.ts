@@ -18,6 +18,7 @@ function createSessionControllerMock() {
     startWorkspaceDiscoveryScan: vi.fn(),
     getWorkspaceDiscoveryScanStatus: vi.fn(),
     cancelWorkspaceDiscoveryScan: vi.fn(),
+    maintainSessionDiscoveryDiagnostics: vi.fn(),
     getDetail: vi.fn(),
     getChangedFiles: vi.fn(),
     readMessages: vi.fn(),

@@ -367,11 +367,11 @@ describe("provider control in SessionHistoryService", { timeout: 30_000 }, () =>
       errorCode: "PROVIDER_DISABLED"
     });
 
-    await expect(service.instance.resumeSession("session-disabled")).rejects.toMatchObject({
+    await expect(service.instance.resumeSession("session-disabled", "user-1")).rejects.toMatchObject({
       errorCode: "PROVIDER_DISABLED"
     });
 
-    await expect(service.instance.sendMessage("session-disabled", "继续", null)).rejects.toMatchObject({
+    await expect(service.instance.sendMessage("session-disabled", "user-1", "继续", null)).rejects.toMatchObject({
       errorCode: "PROVIDER_DISABLED"
     });
 
@@ -438,6 +438,83 @@ describe("provider control in SessionHistoryService", { timeout: 30_000 }, () =>
     expect(service.instance.requestSessionStatsRefresh("session-disabled-history")).toBeNull();
     expect(helperCalls).toBe(0);
 
+    service.dispose();
+  });
+
+  it("禁用 provider 后标题刷新不会读取标题或历史目录", async () => {
+    const service = createSessionHistoryHarness();
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "session-disabled-title",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "codex-session-title",
+      rawStoreRef: "codex://session-title",
+      title: "停用 provider 的标题",
+      messageCount: 1,
+      lastMessageAt: "2026-04-26T09:00:00.000Z",
+      createdAt: "2026-04-26T09:00:00.000Z",
+      updatedAt: "2026-04-26T09:00:00.000Z"
+    });
+    service.providerControlRepository.upsert({
+      providerId: "codex",
+      enabled: false,
+      updatedAt: "2026-04-26T10:00:00.000Z"
+    });
+
+    const serviceInternals = service.instance as unknown as {
+      providerDiscoveryHelperClient: { readSessionTitle: (...args: unknown[]) => Promise<string> };
+      sessionSyncService: {
+        readHistory: (...args: unknown[]) => Promise<unknown>;
+      };
+    };
+    const readSessionTitle = vi.spyOn(serviceInternals.providerDiscoveryHelperClient, "readSessionTitle")
+      .mockResolvedValue("不应读取的标题");
+    const readHistory = vi.spyOn(serviceInternals.sessionSyncService, "readHistory")
+      .mockResolvedValue({ messages: [] });
+
+    await service.instance.syncSessionTitle("session-disabled-title");
+
+    expect(readSessionTitle).not.toHaveBeenCalled();
+    expect(readHistory).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it("禁用 provider 后状态刷新不会读取 provider 活动文件", async () => {
+    const service = createSessionHistoryHarness();
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "session-disabled-state",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "codex-session-state",
+      rawStoreRef: "codex://session-state",
+      title: "停用 provider 的状态会话",
+      messageCount: 1,
+      lastMessageAt: "2026-04-26T09:00:00.000Z",
+      createdAt: "2026-04-26T09:00:00.000Z",
+      updatedAt: "2026-04-26T09:00:00.000Z"
+    });
+    service.providerControlRepository.upsert({
+      providerId: "codex",
+      enabled: false,
+      updatedAt: "2026-04-26T10:00:00.000Z"
+    });
+
+    const serviceInternals = service.instance as unknown as {
+      sessionSyncService: {
+        readSessionActivity: (...args: unknown[]) => Promise<unknown>;
+      };
+    };
+    const readSessionActivity = vi.spyOn(serviceInternals.sessionSyncService, "readSessionActivity")
+      .mockResolvedValue(null);
+
+    const refreshed = await service.instance.refreshRuntimeFallbackSession("session-disabled-state", "user-1");
+    expect(refreshed).toMatchObject({
+      sessionId: "session-disabled-state"
+    });
+    expect(refreshed.runningState).toBeNull();
+    expect(readSessionActivity).not.toHaveBeenCalled();
     service.dispose();
   });
 });
@@ -567,15 +644,17 @@ function seedSession(
   db.prepare(
     `INSERT INTO session_bindings (
        session_id,
+       user_id,
        workspace_id,
        provider,
        provider_session_id,
        raw_store_ref,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     input.sessionId,
+    "user-1",
     input.workspaceId,
     input.provider,
     input.providerSessionId,

@@ -62,6 +62,7 @@ import type {
 import type { SessionBindingRepository } from "../../storage/repositories/session-binding-repository.js";
 import {
   DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE,
+  DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_PRUNE_BATCH_SIZE,
   DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
   SessionDiscoveryDiagnosticsRepository
 } from "../../storage/repositories/session-discovery-diagnostics-repository.js";
@@ -127,7 +128,8 @@ import { createTaskManager, TaskManager } from "../tasks/task-manager.js";
 import {
   HOST_TASK_TYPES,
   type TaskHandle,
-  type TaskMetricsSnapshot
+  type TaskMetricsSnapshot,
+  type TaskRunContext
 } from "../tasks/task-types.js";
 import { CodexAppServerHelperClient } from "./codex-app-server-helper-client.js";
 import { CodexSessionTitleGenerator } from "./codex-session-title-generator.js";
@@ -301,6 +303,20 @@ interface ExplicitWorkspaceScanTaskInput {
   enabledProviders: string[];
   claudeExtraProjectRoots: string[];
   refreshStateMode: "deferred";
+}
+
+interface WorkspaceDiscoveryPersistenceTaskInput {
+  workspaceId: string;
+  userId: string;
+  refreshStateMode: "inline" | "deferred";
+  allowCleanup: boolean;
+  triggerSource: string;
+  discovery: ProviderSessionDiscovery;
+}
+
+export interface SessionDiscoveryDiagnosticsMaintenanceResult {
+  deletedCount: number;
+  maxDeletesPerPass: number;
 }
 
 interface SessionStatsSnapshotReadTaskInput {
@@ -645,6 +661,23 @@ export class SessionHistoryService {
     return this.taskManager.observe();
   }
 
+  /**
+   * 请求一次全局 diagnostics 维护。该入口只清理历史诊断，不在普通列表请求中执行，
+   * 也不负责压缩 SQLite 文件；需要继续处理时由外部维护调度再次入队。
+   */
+  requestSessionDiscoveryDiagnosticsMaintenance(
+    source = "session_history.discovery_diagnostics_maintenance"
+  ): TaskHandle<SessionDiscoveryDiagnosticsMaintenanceResult> {
+    return this.taskManager.enqueue<{}, SessionDiscoveryDiagnosticsMaintenanceResult>(
+      HOST_TASK_TYPES.sessionDiscoveryDiagnosticsMaintenance,
+      {
+        key: "global",
+        source,
+        input: {}
+      }
+    );
+  }
+
   listWorkspaceDiscoveryDiagnostics(
     workspaceId: string,
     userId: string,
@@ -880,6 +913,51 @@ export class SessionHistoryService {
       });
     }
 
+    if (!this.taskManager.has(HOST_TASK_TYPES.workspaceDiscoveryPersistence)) {
+      this.taskManager.register<WorkspaceDiscoveryPersistenceTaskInput, SessionListItem[]>({
+        taskType: HOST_TASK_TYPES.workspaceDiscoveryPersistence,
+        executionLane: "host_background",
+        concurrency: 1,
+        timeoutMs: 45_000,
+        queueWaitTimeoutMs: 15_000,
+        run: async (input, context) => {
+          context.reportProgress({
+            phase: "host_sqlite_persist",
+            label: "正在分批回写会话索引"
+          });
+          const result = await this.runDiscoverWorkspaceSessions(
+            input.workspaceId,
+            input.userId,
+            input.refreshStateMode,
+            context.signal,
+            context.taskId,
+            input.allowCleanup,
+            input.discovery,
+            input.triggerSource
+          );
+          context.reportProgress({
+            phase: "host_sqlite_persist",
+            label: "会话索引回写完成",
+            current: 1,
+            total: 1,
+            percent: 100
+          });
+          return result;
+        }
+      });
+    }
+
+    if (!this.taskManager.has(HOST_TASK_TYPES.sessionDiscoveryDiagnosticsMaintenance)) {
+      this.taskManager.register<{}, SessionDiscoveryDiagnosticsMaintenanceResult>({
+        taskType: HOST_TASK_TYPES.sessionDiscoveryDiagnosticsMaintenance,
+        executionLane: "host_background",
+        concurrency: 1,
+        timeoutMs: 10_000,
+        queueWaitTimeoutMs: 15_000,
+        run: async (_, context) => await this.runSessionDiscoveryDiagnosticsMaintenance(context)
+      });
+    }
+
     if (!this.taskManager.has(HOST_TASK_TYPES.workspaceDiscoveryScan)) {
       this.taskManager.register<{
         config: ProviderSessionDiscoveryHelperConfig;
@@ -913,17 +991,22 @@ export class SessionHistoryService {
         timeoutMs: 30_000,
         helperProcessHandler: "session.workspace_discovery",
         postProcess: async (input, discovery, context) => {
-          const discoveryResult = discovery as unknown as ProviderSessionDiscovery;
-          return await this.runDiscoverWorkspaceSessions(
-            input.workspaceId,
-            input.userId,
-            input.refreshStateMode,
-            context.signal,
-            context.taskId,
-            false,
-            discoveryResult,
-            SESSION_DISCOVERY_TRIGGER_SOURCES.explicit
-          );
+          const persistHandle = this.taskManager.enqueue<
+            WorkspaceDiscoveryPersistenceTaskInput,
+            SessionListItem[]
+          >(HOST_TASK_TYPES.workspaceDiscoveryPersistence, {
+            key: input.workspaceId,
+            source: "session_history.explicit_workspace_scan.persist",
+            input: {
+              workspaceId: input.workspaceId,
+              userId: input.userId,
+              refreshStateMode: input.refreshStateMode,
+              allowCleanup: false,
+              triggerSource: SESSION_DISCOVERY_TRIGGER_SOURCES.explicit,
+              discovery: discovery as unknown as ProviderSessionDiscovery
+            }
+          });
+          return await awaitTaskHandleWithSignal(persistHandle, context.signal);
         },
         // helper_process 任务的主逻辑由 helperProcessHandler 执行，run 仅作为无 helper 执行器的兼容兜底。
         run: async () => {
@@ -3466,6 +3549,29 @@ export class SessionHistoryService {
           throw mapSessionProviderError(error);
         });
       })();
+
+      if (!precomputedDiscovery) {
+        // 扫描和 SQLite 回写使用不同任务记录。这样回写阶段有自己的耗时、取消和失败状态，
+        // 不会把大事务隐藏在 helper 任务的 postProcess 里。
+        throwIfAborted(signal);
+        const persistHandle = this.taskManager.enqueue<
+          WorkspaceDiscoveryPersistenceTaskInput,
+          SessionListItem[]
+        >(HOST_TASK_TYPES.workspaceDiscoveryPersistence, {
+          key: workspaceId,
+          source: `${triggerSource}.persist`,
+          input: {
+            workspaceId,
+            userId,
+            refreshStateMode,
+            allowCleanup,
+            triggerSource,
+            discovery: rawDiscovery
+          }
+        });
+        return await awaitTaskHandleWithSignal(persistHandle, signal);
+      }
+
       // helper 只负责执行扫描，Host 仍必须以当前启用列表为最终边界，
       // 防止旧缓存、测试替身或异常 helper 把已停用 provider 的结果写回索引。
       const enabledProviderSet = new Set(enabledProviders);
@@ -6876,6 +6982,64 @@ export class SessionHistoryService {
     }
   }
 
+  private async runSessionDiscoveryDiagnosticsMaintenance(
+    context: TaskRunContext
+  ): Promise<SessionDiscoveryDiagnosticsMaintenanceResult> {
+    const startedAt = Date.now();
+    const maxDeletesPerPass = DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_PRUNE_BATCH_SIZE;
+    context.reportProgress({
+      phase: "session_discovery_diagnostics_maintenance",
+      label: "正在分批清理会话发现诊断"
+    });
+
+    let deletedCount = 0;
+    let retryCount = 0;
+
+    while (true) {
+      throwIfAborted(context.signal);
+
+      try {
+        deletedCount = this.sessionDiscoveryDiagnosticsRepository.pruneGlobalBatch({
+          now: new Date(),
+          retentionMs: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
+          maxRowsPerWorkspace: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE,
+          maxDeletesPerPass
+        });
+        break;
+      } catch (error) {
+        if (!isSqliteBusyError(error) || retryCount >= SQLITE_BUSY_RETRY_LIMIT) {
+          throw error;
+        }
+
+        retryCount += 1;
+        await delayWithSignal(SQLITE_BUSY_RETRY_DELAY_MS * retryCount, context.signal);
+      }
+    }
+
+    throwIfAborted(context.signal);
+    context.reportProgress({
+      phase: "session_discovery_diagnostics_maintenance",
+      label: "会话发现诊断清理完成",
+      detail: `本轮删除 ${deletedCount} 条`,
+      current: deletedCount,
+      total: maxDeletesPerPass,
+      percent: maxDeletesPerPass > 0
+        ? Math.min(100, Math.round((deletedCount / maxDeletesPerPass) * 100))
+        : 100
+    });
+    console.info("[session-discovery-diagnostics-maintenance]", {
+      deletedCount,
+      maxDeletesPerPass,
+      retryCount,
+      durationMs: Date.now() - startedAt
+    });
+
+    return {
+      deletedCount,
+      maxDeletesPerPass
+    };
+  }
+
   private async refreshSessionState(
     sessionId: string,
     userId: string
@@ -8428,6 +8592,26 @@ function rememberDeliveredHistoryMessage(
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
+  });
+}
+
+function delayWithSignal(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new Error("任务已取消"));
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new Error("任务已取消"));
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
