@@ -134,8 +134,6 @@ function startTask(task: QueuedHelperTask): void {
 
 async function runTask(task: QueuedHelperTask): Promise<void> {
   const { payload, controller } = task;
-  const startedAt = Date.now();
-  const startRss = process.memoryUsage.rss();
 
   try {
     const result = await runTaskHelperProcessHandler(payload.handler, payload.input, controller.signal);
@@ -153,13 +151,7 @@ async function runTask(task: QueuedHelperTask): Promise<void> {
       error: error instanceof Error ? error.message : "helper task failed"
     });
   } finally {
-    const endRss = process.memoryUsage.rss();
-    if (endRss >= 256 * 1024 * 1024 || endRss - startRss >= 64 * 1024 * 1024) {
-      process.stderr.write(
-        `[task-helper] handler=${payload.handler} durationMs=${Date.now() - startedAt} `
-        + `rssStart=${startRss} rssEnd=${endRss}\n`
-      );
-    }
+    // 不输出逐请求性能采样，避免正常 helper 任务持续刷屏；错误仍通过协议结果返回。
     activeRequests.delete(payload.id);
     runningCountByBucket.set(
       task.schedulingBucket,
