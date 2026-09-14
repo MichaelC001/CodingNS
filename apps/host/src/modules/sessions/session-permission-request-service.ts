@@ -509,6 +509,7 @@ export class SessionPermissionRequestService {
       if (
         existing.status === "pending"
         && existing.sessionId === input.sessionId
+        && existing.providerSessionId === input.providerSessionId
         && existing.source.kind === "deepseek-harness"
         && existing.source.requestType === input.type
       ) {
