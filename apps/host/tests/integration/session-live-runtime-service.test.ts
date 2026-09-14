@@ -3653,6 +3653,76 @@ describe("SessionLiveRuntimeService", () => {
     );
   });
 
+  it("provider 已先结束时 interrupt 收到 ACTIVE_RUN_NOT_FOUND 也按幂等成功处理", async () => {
+    const {
+      service,
+      sessionHistoryService,
+      sessionStateRepository,
+      sessionStatusSnapshotRepository
+    } = createService();
+    const providerRuntimeService = {
+      isRunHealthy: vi.fn(() => true),
+      getSnapshot: vi.fn(() => ({
+        sessionId: "session-1",
+        workspaceId: "workspace-1",
+        provider: "codex",
+        providerSessionId: "thread-1",
+        rawStoreRef: "/tmp/.codex/thread-1.jsonl",
+        runningState: "running",
+        attachedClients: 1,
+        startedAt: "2026-03-26T10:00:00.000Z",
+        lastEventAt: "2026-03-26T10:00:01.000Z",
+        completedAt: null,
+        detail: null,
+        errorCode: null,
+        supportsInterrupt: true
+      })),
+      interrupt: vi.fn().mockRejectedValue(new Error("ACTIVE_RUN_NOT_FOUND"))
+    };
+    Object.defineProperty(service, "providerRuntimeService", {
+      value: providerRuntimeService,
+      configurable: true
+    });
+    sessionHistoryService.getSession.mockReturnValue({
+      sessionId: "session-1",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "thread-1",
+      rawStoreRef: "/tmp/.codex/thread-1.jsonl",
+      runningState: "running"
+    });
+    sessionStateRepository.findBySessionAndUser.mockReturnValue({
+      sessionId: "session-1",
+      userId: "user-1",
+      runningState: "running",
+      activitySource: "runtime",
+      favorite: false,
+      lastEventAt: "2026-03-26T10:00:01.000Z",
+      completedAt: null,
+      lastSeenAt: null,
+      updatedAt: "2026-03-26T10:00:01.000Z"
+    });
+    sessionStatusSnapshotRepository.findBySessionId.mockReturnValue({
+      sessionId: "session-1",
+      syncStatus: "idle",
+      syncCursor: "cursor-1",
+      lastSyncAt: "2026-03-26T10:00:01.000Z",
+      lastErrorCode: null,
+      lastErrorDetail: null,
+      resumedAt: null,
+      updatedAt: "2026-03-26T10:00:01.000Z"
+    });
+
+    await expect(service.interruptSession("session-1", "user-1")).resolves.toMatchObject({
+      sessionId: "session-1",
+      interrupted: true,
+      detail: "当前会话已停止，已自动同步状态"
+    });
+    expect(sessionStateRepository.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ runningState: "interrupted" })
+    );
+  });
+
   it("stale running 会话回刷后仍未收口时，会直接把数据库状态修正为 interrupted", async () => {
     const {
       service,
@@ -5295,13 +5365,10 @@ describe("SessionLiveRuntimeService", () => {
     expect(result.sessionId).toBe("session-1");
     expect(result.bridgeResponse).toMatchObject({
       hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "allow",
-        permissionDecisionReason: "用户已提供补充信息",
-        updatedInput: {
-          answers: {
-            "请选择要继续操作的环境": "开发环境"
-          }
+        hookEventName: "Elicitation",
+        action: "accept",
+        content: {
+          elicitation: "开发环境"
         }
       }
     });

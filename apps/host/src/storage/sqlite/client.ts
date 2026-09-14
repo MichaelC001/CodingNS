@@ -4,9 +4,11 @@ import path from "node:path";
 import type { BetterSqliteDatabase } from "../../shared/runtime/better-sqlite3.js";
 import Database from "../../shared/runtime/better-sqlite3.js";
 import { installSlowQueryDiagnostics } from "./slow-query-diagnostics.js";
+import { SqliteWriteQueue } from "./write-queue.js";
 
 export interface DatabaseClient {
   db: BetterSqliteDatabase;
+  writeQueue: SqliteWriteQueue;
   close: () => void;
 }
 
@@ -16,6 +18,9 @@ export function createDatabaseClient(databasePath: string): DatabaseClient {
   }
 
   const db = new Database(databasePath);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  db.pragma("busy_timeout = 5000");
   const schemaPath = new URL("./schema.sql", import.meta.url);
   const schema = fs.readFileSync(schemaPath, "utf8");
 
@@ -91,6 +96,7 @@ export function createDatabaseClient(databasePath: string): DatabaseClient {
 
   return {
     db,
+    writeQueue: new SqliteWriteQueue(),
     close: () => db.close()
   };
 }

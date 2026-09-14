@@ -894,7 +894,8 @@ export function createServer(config: HostConfig) {
     providerRuntimeStateService,
     claudeModelOptionsService,
     providerPriceBookService,
-    repositories.sessionStatsSnapshotRepository
+    repositories.sessionStatsSnapshotRepository,
+    database.writeQueue
   );
   sessionCleanupService.configureDeleteExecutor((sessionId, userId) =>
     sessionHistoryService.deleteSession(sessionId, userId)
@@ -1086,7 +1087,8 @@ export function createServer(config: HostConfig) {
     workspaceSessionRuntimeContextService,
     deepSeekHarnessRuntimeAdapter,
     providerPriceBookService,
-    grokRuntimeAdapter
+    grokRuntimeAdapter,
+    database.writeQueue
   );
   sessionHistoryService.registerLiveActivityObservationResolver((sessionId) =>
     sessionLiveRuntimeService.resolveLiveActivityObservation(sessionId)
@@ -1118,7 +1120,9 @@ export function createServer(config: HostConfig) {
     sessionActivityAuthorityService,
     null,
     null,
-    providerPriceBookService
+    providerPriceBookService,
+    null,
+    database.writeQueue
   );
   // [待移除] Butler 停用期间不把 Butler 运行时挂进历史会话的活动状态解析链。
   if (BUTLER_FEATURE_ENABLED) {
@@ -1142,7 +1146,9 @@ export function createServer(config: HostConfig) {
     sessionActivityAuthorityService,
     null,
     null,
-    providerPriceBookService
+    providerPriceBookService,
+    null,
+    database.writeQueue
   );
   // [待移除] Butler 停用期间不再解析跟进运行时的活动状态。
   if (BUTLER_FEATURE_ENABLED) {

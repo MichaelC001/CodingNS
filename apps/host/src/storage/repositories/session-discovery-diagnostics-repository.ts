@@ -81,7 +81,7 @@ export class SessionDiscoveryDiagnosticsRepository {
          SELECT rowid
          FROM session_discovery_diagnostics
          WHERE created_at < ?
-         ORDER BY created_at ASC, id ASC
+         -- rowid 与插入顺序一致，避免在数百万行上做全表排序。
          LIMIT ?
        )`
     );

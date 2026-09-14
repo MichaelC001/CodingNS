@@ -41,6 +41,7 @@ import type { SessionIndexRepository } from "../../storage/repositories/session-
 import type { SessionSendQueueRepository } from "../../storage/repositories/session-send-queue-repository.js";
 import type { SessionStateRepository } from "../../storage/repositories/session-state-repository.js";
 import type { SessionStatusSnapshotRepository } from "../../storage/repositories/session-status-snapshot-repository.js";
+import type { SqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
 import type {
   SessionActivityConfidence,
   SessionInterruptSource,
@@ -421,6 +422,7 @@ export class SessionLiveRuntimeService {
   private readonly pendingSendDebugTracesBySessionId = new Map<string, PendingSessionSendDebugTrace[]>();
   private readonly runtimePersistenceQueues = new Map<string, Promise<void>>();
   private readonly sessionPermissionRuntimeStates = new Map<string, SessionPermissionRuntimeState>();
+  private readonly sqliteWriteQueue: SqliteWriteQueue | null;
 
   constructor(
     private readonly sessionHistoryService: SessionHistoryService,
@@ -445,8 +447,10 @@ export class SessionLiveRuntimeService {
       ProviderPriceBookService,
       "getCurrentPriceBook" | "requestRefreshIfStale"
     > | null = null,
-    private readonly grokRuntimeAdapter: ProviderRuntimeAdapter | null = null
+    private readonly grokRuntimeAdapter: ProviderRuntimeAdapter | null = null,
+    sqliteWriteQueue: SqliteWriteQueue | null = null
   ) {
+    this.sqliteWriteQueue = sqliteWriteQueue;
     this.sessionActivityAuthorityService = sessionActivityAuthorityService;
     this.sessionPermissionRequestService = new SessionPermissionRequestService(
       sessionHistoryService,
@@ -459,13 +463,21 @@ export class SessionLiveRuntimeService {
       },
       async (input) => {
         return this.resolveActiveClaudePermissionSession(input);
-      }
+      },
+      deepSeekHarnessRuntimeAdapter && "recoverPermissionRequests" in deepSeekHarnessRuntimeAdapter
+        ? async ({ sessionId, providerSessionId }) => {
+            await (deepSeekHarnessRuntimeAdapter as ProviderRuntimeAdapter & {
+              recoverPermissionRequests(sessionId: string, providerSessionId: string): Promise<void>;
+            }).recoverPermissionRequests(sessionId, providerSessionId);
+          }
+        : undefined
     );
     const harnessPermissionAdapter = this.deepSeekHarnessRuntimeAdapter as (ProviderRuntimeAdapter & {
       setPermissionRequestHandler?: (handler: (input: {
         sessionId: string;
         providerSessionId: string;
         rpcId: string;
+        protocol: "legacy" | "remote";
         type: "approval" | "question";
         payload: unknown;
         respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
@@ -1362,7 +1374,7 @@ export class SessionLiveRuntimeService {
       };
     }
 
-    const interrupted = await this.providerRuntimeService.interrupt(runtimeSessionId).catch((error) => {
+    const interrupted = await this.providerRuntimeService.interrupt(runtimeSessionId).catch(async (error) => {
       if (error instanceof Error && error.message === "INTERRUPT_NOT_SUPPORTED") {
         throw new AppError({
           statusCode: 400,
@@ -1370,6 +1382,22 @@ export class SessionLiveRuntimeService {
           detail: "当前 provider 不支持中断",
           field: "sessionId"
         });
+      }
+
+      // interrupt 与 provider 终态事件可能同时到达。运行已经不存在时，
+      // 这是幂等成功，不应再映射成 502 的 provider I/O 错误。
+      if (
+        ((error instanceof Error
+          && (error.message === "ACTIVE_RUN_NOT_FOUND" || error.message === "RUN_NOT_FOUND"))
+          || (typeof error === "object"
+            && error !== null
+            && "code" in error
+            && (error.code === "ACTIVE_RUN_NOT_FOUND" || error.code === "RUN_NOT_FOUND")))
+      ) {
+        await this.forceInterruptInactiveSession(sessionId);
+        return {
+          detail: "当前会话已停止，已自动同步状态"
+        };
       }
 
       throw mapSessionProviderError(error);
@@ -1934,55 +1962,10 @@ export class SessionLiveRuntimeService {
       this.clearExternalRuntimeInterruptSuppression(input.sessionId);
     }
 
-    const userIds = this.authUserRepository.listIds();
-
-    if (userIds.length === 0) {
-      return;
-    }
-
-    const existingIndex = this.sessionIndexRepository.findIndexRecordBySessionId(input.sessionId);
-
-    if (existingIndex) {
-      const nextLastMessageAt =
-        existingIndex.lastMessageAt && existingIndex.lastMessageAt.localeCompare(input.timestamp) >= 0
-          ? existingIndex.lastMessageAt
-          : input.timestamp;
-
-      this.sessionIndexRepository.upsert({
-        ...existingIndex,
-        lastMessageAt: nextLastMessageAt,
-        updatedAt: input.timestamp
-      });
-    }
-
-    for (const userId of userIds) {
-      const current = this.sessionStateRepository.findBySessionAndUser(input.sessionId, userId);
-
-      if (current?.lastEventAt && current.lastEventAt.localeCompare(input.timestamp) > 0) {
-        continue;
-      }
-
-      this.sessionStateRepository.upsert({
-        sessionId: input.sessionId,
-        userId,
-        runningState: input.runningState,
-        activitySource: "runtime",
-        favorite: current?.favorite ?? false,
-        lastEventAt: input.timestamp,
-        completedAt: isTerminalSessionRunningState(input.runningState) ? input.timestamp : null,
-        lastSeenAt: current?.lastSeenAt ?? null,
-        updatedAt: nowIso()
-      });
-    }
-
-    this.upsertSnapshot(input.sessionId, {
-      syncStatus: input.runningState === "failed" ? "error" : "idle",
-      syncCursor: this.sessionStatusSnapshotRepository.findBySessionId(input.sessionId)?.syncCursor ?? null,
-      lastSyncAt: input.timestamp,
-      lastErrorCode: input.runningState === "failed" ? "CLAUDE_HOOK_STOP_FAILURE" : null,
-      lastErrorDetail: input.runningState === "failed" ? (input.detail ?? "Claude hook failed") : null,
-      resumedAt: this.sessionStatusSnapshotRepository.findBySessionId(input.sessionId)?.resumedAt ?? null
-    });
+    await (this.sqliteWriteQueue?.enqueue(
+      "session.external_runtime.persist",
+      () => this.persistExternalRuntimeUpdateState(input)
+    ) ?? this.persistExternalRuntimeUpdateState(input));
 
     this.sessionActivityAuthorityService.observe({
       sessionId: input.sessionId,
@@ -2045,6 +2028,64 @@ export class SessionLiveRuntimeService {
       input.sessionId,
       "session_live_runtime.external_runtime"
     );
+  }
+
+  private persistExternalRuntimeUpdateState(input: {
+    sessionId: string;
+    runningState: ExternalRuntimeStatus;
+    detail: string | null;
+    timestamp: string;
+  }): void {
+    const userIds = this.authUserRepository.listIds();
+
+    if (userIds.length === 0) {
+      return;
+    }
+
+    const existingIndex = this.sessionIndexRepository.findIndexRecordBySessionId(input.sessionId);
+
+    if (existingIndex) {
+      const nextLastMessageAt =
+        existingIndex.lastMessageAt && existingIndex.lastMessageAt.localeCompare(input.timestamp) >= 0
+          ? existingIndex.lastMessageAt
+          : input.timestamp;
+
+      this.sessionIndexRepository.upsert({
+        ...existingIndex,
+        lastMessageAt: nextLastMessageAt,
+        updatedAt: input.timestamp
+      });
+    }
+
+    for (const userId of userIds) {
+      const current = this.sessionStateRepository.findBySessionAndUser(input.sessionId, userId);
+
+      if (current?.lastEventAt && current.lastEventAt.localeCompare(input.timestamp) > 0) {
+        continue;
+      }
+
+      this.sessionStateRepository.upsert({
+        sessionId: input.sessionId,
+        userId,
+        runningState: input.runningState,
+        activitySource: "runtime",
+        favorite: current?.favorite ?? false,
+        lastEventAt: input.timestamp,
+        completedAt: isTerminalSessionRunningState(input.runningState) ? input.timestamp : null,
+        lastSeenAt: current?.lastSeenAt ?? null,
+        updatedAt: nowIso()
+      });
+    }
+
+    const currentSnapshot = this.sessionStatusSnapshotRepository.findBySessionId(input.sessionId);
+    this.upsertSnapshot(input.sessionId, {
+      syncStatus: input.runningState === "failed" ? "error" : "idle",
+      syncCursor: currentSnapshot?.syncCursor ?? null,
+      lastSyncAt: input.timestamp,
+      lastErrorCode: input.runningState === "failed" ? "CLAUDE_HOOK_STOP_FAILURE" : null,
+      lastErrorDetail: input.runningState === "failed" ? (input.detail ?? "Claude hook failed") : null,
+      resumedAt: currentSnapshot?.resumedAt ?? null
+    });
   }
 
   private async startRuntimeRun(
@@ -3342,6 +3383,14 @@ export class SessionLiveRuntimeService {
     scope: string,
     operation: () => void
   ): Promise<void> {
+    if (this.sqliteWriteQueue) {
+      await this.sqliteWriteQueue.enqueue(
+        `session.runtime.${scope}`,
+        operation
+      );
+      return;
+    }
+
     await this.runRuntimeSqliteOperation(sessionId, scope, operation);
   }
 
@@ -3452,33 +3501,12 @@ export class SessionLiveRuntimeService {
 
   private async forceInterruptInactiveSession(sessionId: string): Promise<void> {
     const timestamp = nowIso();
-    const currentSnapshot = this.sessionStatusSnapshotRepository.findBySessionId(sessionId);
-
-    for (const userId of this.authUserRepository.listIds()) {
-      const current = this.sessionStateRepository.findBySessionAndUser(sessionId, userId);
-
-      if (!current || !isPendingSessionRunningState(current.runningState)) {
-        continue;
-      }
-
-      this.sessionStateRepository.upsert({
-        ...current,
-        runningState: "interrupted",
-        activitySource: "runtime",
-        completedAt: timestamp,
-        updatedAt: timestamp
-      });
-    }
+    await (this.sqliteWriteQueue?.enqueue(
+      "session.interrupt.reconcile",
+      () => this.persistInactiveInterruptState(sessionId, timestamp)
+    ) ?? this.persistInactiveInterruptState(sessionId, timestamp));
 
     this.clearExternalRuntimeSnapshot(sessionId);
-    this.upsertSnapshot(sessionId, {
-      syncStatus: "idle",
-      syncCursor: currentSnapshot?.syncCursor ?? null,
-      lastSyncAt: timestamp,
-      lastErrorCode: null,
-      lastErrorDetail: null,
-      resumedAt: currentSnapshot?.resumedAt ?? null
-    });
     this.sessionActivityAuthorityService.observe({
       sessionId,
       runId: null,
@@ -3831,6 +3859,35 @@ export class SessionLiveRuntimeService {
       sessionId,
       clientRequestId,
       attachments
+    });
+  }
+
+  private persistInactiveInterruptState(sessionId: string, timestamp: string): void {
+    const currentSnapshot = this.sessionStatusSnapshotRepository.findBySessionId(sessionId);
+
+    for (const userId of this.authUserRepository.listIds()) {
+      const current = this.sessionStateRepository.findBySessionAndUser(sessionId, userId);
+
+      if (!current || !isPendingSessionRunningState(current.runningState)) {
+        continue;
+      }
+
+      this.sessionStateRepository.upsert({
+        ...current,
+        runningState: "interrupted",
+        activitySource: "runtime",
+        completedAt: timestamp,
+        updatedAt: timestamp
+      });
+    }
+
+    this.upsertSnapshot(sessionId, {
+      syncStatus: "idle",
+      syncCursor: currentSnapshot?.syncCursor ?? null,
+      lastSyncAt: timestamp,
+      lastErrorCode: null,
+      lastErrorDetail: null,
+      resumedAt: currentSnapshot?.resumedAt ?? null
     });
   }
 
@@ -4924,6 +4981,14 @@ function createProviderRuntimeAdapters(
 
   if ("dispose" in claudeAdapter && typeof claudeAdapter.dispose === "function") {
     disposables.push(claudeAdapter);
+  }
+
+  if (options.deepSeekHarnessRuntimeAdapter
+    && "dispose" in options.deepSeekHarnessRuntimeAdapter
+    && typeof options.deepSeekHarnessRuntimeAdapter.dispose === "function") {
+    disposables.push(options.deepSeekHarnessRuntimeAdapter as ProviderRuntimeAdapter & {
+      dispose(): void | Promise<void>;
+    });
   }
 
   return {

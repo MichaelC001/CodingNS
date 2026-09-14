@@ -71,6 +71,7 @@ import { SessionSourceIndexRepository } from "../../storage/repositories/session
 import type { SessionStateRepository } from "../../storage/repositories/session-state-repository.js";
 import type { SessionStatusSnapshotRepository } from "../../storage/repositories/session-status-snapshot-repository.js";
 import { SessionStatsSnapshotRepository } from "../../storage/repositories/session-stats-snapshot-repository.js";
+import type { SqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
 import type { WorkspaceRepository } from "../../storage/repositories/workspace-repository.js";
 import type { ParallelSessionGroupRepository } from "../../storage/repositories/parallel-session-group-repository.js";
 import type { ParallelSessionMemberRepository } from "../../storage/repositories/parallel-session-member-repository.js";
@@ -469,6 +470,7 @@ const SESSION_TRANSACTION_HOTSPOT_THRESHOLD_MS = 150;
 const WORKSPACE_STATE_REFRESH_COOLDOWN_MS = 1_500;
 const SQLITE_BUSY_RETRY_LIMIT = 3;
 const SQLITE_BUSY_RETRY_DELAY_MS = 100;
+const SESSION_DISCOVERY_DIAGNOSTICS_MIN_INTERVAL_MS = 30_000;
 
 export class SessionHistoryService {
   private readonly providerRegistry: ProviderRegistry;
@@ -502,6 +504,7 @@ export class SessionHistoryService {
     "getCurrentPriceBook" | "getPriceBook"
   > | null;
   private readonly sessionStatsSnapshotRepository: SessionStatsSnapshotRepository;
+  private readonly sqliteWriteQueue: SqliteWriteQueue | null;
   private readonly codexSessionTitleGenerator: CodexSessionTitleGenerator;
   private readonly sessionProviderConfigService: Pick<
     SessionProviderConfigService,
@@ -512,6 +515,7 @@ export class SessionHistoryService {
   private readonly workspaceDiscoveryStatuses = new Map<string, WorkspaceDiscoveryStatus>();
   private readonly sessionSourceIndexRepairScopes = new Map<string, SessionSourceIndexRepairScope>();
   private readonly workspaceStateRefreshStatuses = new Map<string, WorkspaceStateRefreshStatus>();
+  private readonly lastDiscoveryDiagnosticsAt = new Map<string, number>();
   private readonly providerCapabilityCache = new Map<string, ProviderCapabilityCacheEntry>();
   private readonly streamingDeltaSuppressionDebugState = new Map<string, string>();
   private readonly helperHistorySourceStates = new Map<string, HelperHistorySourceState>();
@@ -560,7 +564,8 @@ export class SessionHistoryService {
       ProviderPriceBookService,
       "getCurrentPriceBook" | "getPriceBook"
     > | null = null,
-    sessionStatsSnapshotRepository: SessionStatsSnapshotRepository | null = null
+    sessionStatsSnapshotRepository: SessionStatsSnapshotRepository | null = null,
+    sqliteWriteQueue: SqliteWriteQueue | null = null
   ) {
     this.sessionActivityAuthorityService = sessionActivityAuthorityService;
     this.sessionForkRepository = sessionForkRepository ?? new SessionForkRepository(db);
@@ -582,6 +587,7 @@ export class SessionHistoryService {
       ?? new ProviderRuntimeStateService(config);
     this.providerPriceBookService = providerPriceBookService;
     this.sessionStatsSnapshotRepository = sessionStatsSnapshotRepository ?? new SessionStatsSnapshotRepository(db);
+    this.sqliteWriteQueue = sqliteWriteQueue;
     this.codexSessionTitleGenerator = new CodexSessionTitleGenerator({
       hostDataRootDir: dirname(config.databasePath),
       codexHomeDir: config.codexHomeDir
@@ -2909,14 +2915,14 @@ export class SessionHistoryService {
     let closed = false;
     let polling = false;
 
-    this.upsertSnapshot(sessionId, {
+    await this.enqueueSqliteWrite("session.subscribe.snapshot_start", () => this.upsertSnapshot(sessionId, {
       syncStatus: "syncing",
       syncCursor: current?.syncCursor ?? cursor,
       lastSyncAt: current?.lastSyncAt ?? null,
       lastErrorCode: current?.lastErrorCode ?? null,
       lastErrorDetail: current?.lastErrorDetail ?? null,
       resumedAt: current?.resumedAt ?? null
-    });
+    }));
 
     try {
       if (currentCursor === null) {
@@ -3051,7 +3057,7 @@ export class SessionHistoryService {
 
     await this.syncSessionTitleFromProvider(sessionId, binding);
     const snapshot = this.sessionStatusSnapshotRepository.findBySessionId(sessionId);
-    this.upsertSnapshot(sessionId, {
+    await this.enqueueSqliteWrite("session.subscribe.snapshot_idle", () => this.upsertSnapshot(sessionId, {
       syncStatus: "idle",
       syncCursor: page.cursor,
       lastSyncAt: nowIso(),
@@ -3061,7 +3067,7 @@ export class SessionHistoryService {
         snapshot?.lastErrorDetail ?? null
       ),
       resumedAt: snapshot?.resumedAt ?? null
-    });
+    }));
 
     return {
       type: "session.delta",
@@ -3741,7 +3747,8 @@ export class SessionHistoryService {
             workspacePath: workspace.path,
             phase: "pass1"
           }
-        }
+        },
+        this.sqliteWriteQueue
       );
       persistPass1DurationMs = Date.now() - persistPass1StartedAt;
       persistPass1BatchCount = persistPass1Stats.batchCount;
@@ -3827,7 +3834,8 @@ export class SessionHistoryService {
             workspacePath: workspace.path,
             phase: "pass2"
           }
-        }
+        },
+        this.sqliteWriteQueue
       );
       persistPass2DurationMs = Date.now() - persistPass2StartedAt;
       persistPass2BatchCount = persistPass2Stats.batchCount;
@@ -6113,7 +6121,8 @@ export class SessionHistoryService {
           userId,
           phase: "cleanup_hidden"
         }
-      }
+      },
+      this.sqliteWriteQueue
     );
   }
 
@@ -6910,7 +6919,8 @@ export class SessionHistoryService {
           workspacePath,
           phase: "source_index"
         }
-      }
+      },
+      this.sqliteWriteQueue
     );
   }
 
@@ -6937,13 +6947,28 @@ export class SessionHistoryService {
           bytesRead: Math.max(0, entry.bytesRead ?? 0),
           createdAt: timestamp
         };
+      }).filter((record) => {
+        const key = `${record.workspaceId}:${record.provider}`;
+        const nowMs = Date.parse(record.createdAt);
+        const lastPersistedAt = this.lastDiscoveryDiagnosticsAt.get(key) ?? 0;
+
+        if (Number.isFinite(nowMs) && nowMs - lastPersistedAt < SESSION_DISCOVERY_DIAGNOSTICS_MIN_INTERVAL_MS) {
+          return false;
+        }
+
+        this.lastDiscoveryDiagnosticsAt.set(key, Number.isFinite(nowMs) ? nowMs : Date.now());
+        return true;
       });
+
+      if (records.length === 0) {
+        return;
+      }
 
       let retryCount = 0;
       let prunedCount = 0;
       while (true) {
         try {
-          prunedCount = this.sessionDiscoveryDiagnosticsRepository.insertAndPrune(
+          const persist = () => this.sessionDiscoveryDiagnosticsRepository.insertAndPrune(
             records,
             workspaceId,
             {
@@ -6952,6 +6977,12 @@ export class SessionHistoryService {
               maxRowsPerWorkspace: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE
             }
           );
+          prunedCount = this.sqliteWriteQueue
+            ? await this.sqliteWriteQueue.enqueue(
+              "session.discovery_diagnostics.persist",
+              persist
+            )
+            : persist();
           break;
         } catch (error) {
           if (!isSqliteBusyError(error) || retryCount >= SQLITE_BUSY_RETRY_LIMIT) {
@@ -6999,12 +7030,18 @@ export class SessionHistoryService {
       throwIfAborted(context.signal);
 
       try {
-        deletedCount = this.sessionDiscoveryDiagnosticsRepository.pruneGlobalBatch({
+        const prune = () => this.sessionDiscoveryDiagnosticsRepository.pruneGlobalBatch({
           now: new Date(),
           retentionMs: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_RETENTION_MS,
           maxRowsPerWorkspace: DEFAULT_SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE,
           maxDeletesPerPass
         });
+        deletedCount = this.sqliteWriteQueue
+          ? await this.sqliteWriteQueue.enqueue(
+            "session.discovery_diagnostics.maintenance",
+            prune
+          )
+          : prune();
         break;
       } catch (error) {
         if (!isSqliteBusyError(error) || retryCount >= SQLITE_BUSY_RETRY_LIMIT) {
@@ -7256,6 +7293,14 @@ export class SessionHistoryService {
       ...input,
       updatedAt: nowIso()
     });
+  }
+
+  private async enqueueSqliteWrite<T>(scope: string, operation: () => T): Promise<T> {
+    if (this.sqliteWriteQueue) {
+      return await this.sqliteWriteQueue.enqueue(scope, operation);
+    }
+
+    return operation();
   }
 
   private markSessionError(sessionId: string, errorCode: string, error: unknown): void {
@@ -9525,7 +9570,8 @@ async function runBatchedTransactions<TItem>(
     scope: string;
     thresholdMs?: number;
     detail?: Record<string, unknown>;
-  }
+  },
+  writeQueue: SqliteWriteQueue | null = null
 ): Promise<{
   batchCount: number;
   maxBatchMs: number;
@@ -9541,7 +9587,14 @@ async function runBatchedTransactions<TItem>(
 
     while (true) {
       try {
-        transaction(batch);
+        if (writeQueue) {
+          await writeQueue.enqueue(
+            logOptions?.scope ?? "session_history.batch_write",
+            () => transaction(batch)
+          );
+        } else {
+          transaction(batch);
+        }
         break;
       } catch (error) {
         if (!isSqliteBusyError(error) || retryCount >= SQLITE_BUSY_RETRY_LIMIT) {

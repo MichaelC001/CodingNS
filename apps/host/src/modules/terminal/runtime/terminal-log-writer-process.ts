@@ -34,6 +34,7 @@ interface PreparedActiveLogFile {
 }
 
 interface PersistBatchCommitInput {
+  segmentId: string;
   terminalId: string;
   fileId: string;
   fileStatus: string;
@@ -108,12 +109,13 @@ const createSegmentStatement = db.prepare(
      byte_length,
      created_at
    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   + ` ON CONFLICT(id) DO NOTHING`
 );
 const updateFileStatement = db.prepare(
   `UPDATE terminal_log_files
    SET status = ?,
-       end_seq = ?,
-       size_bytes = ?,
+       end_seq = CASE WHEN end_seq IS NULL OR end_seq < ? THEN ? ELSE end_seq END,
+       size_bytes = CASE WHEN size_bytes < ? THEN ? ELSE size_bytes END,
        updated_at = ?
    WHERE id = ?`
 );
@@ -169,7 +171,7 @@ const preparePersistBatchTransaction = db.transaction((
 });
 const commitPersistBatchTransaction = db.transaction((input: PersistBatchCommitInput) => {
   createSegmentStatement.run(
-    randomUUID(),
+    input.segmentId,
     input.terminalId,
     input.fileId,
     input.startSeq,
@@ -183,6 +185,8 @@ const commitPersistBatchTransaction = db.transaction((input: PersistBatchCommitI
   updateFileStatement.run(
     input.fileStatus,
     input.endSeq,
+    input.endSeq,
+    input.appendResult.endOffset,
     input.appendResult.endOffset,
     input.timestamp,
     input.fileId
@@ -286,6 +290,7 @@ async function handlePersistRequest(payload: PersistRequest): Promise<void> {
     () => commitPersistBatchTransaction({
       terminalId: payload.terminalId,
       fileId: prepareResult.value.id,
+      segmentId: payload.id,
       fileStatus: prepareResult.value.status,
       startSeq: payload.startSeq,
       endSeq: payload.endSeq,
