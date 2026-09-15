@@ -65,8 +65,13 @@ function copyBundledSessionSyncCore() {
 
   fs.mkdirSync(targetRoot, { recursive: true });
   fs.cpSync(sourceDistRoot, path.join(targetRoot, "dist"), { recursive: true });
-  fs.copyFileSync(
-    path.join(sourceRoot, "package.json"),
-    path.join(targetRoot, "package.json")
-  );
+  const sourcePackageJson = readJson(path.join(sourceRoot, "package.json"));
+
+  // libsql 由外层 CodingNS 包统一安装；重复放在 bundled 私有包的 dependencies 中，
+  // npm 全局安装时会留下空目录，导致 postinstall 无法加载真正的运行时。
+  if (sourcePackageJson.dependencies?.libsql) {
+    delete sourcePackageJson.dependencies.libsql;
+  }
+
+  writeJson(path.join(targetRoot, "package.json"), sourcePackageJson);
 }
