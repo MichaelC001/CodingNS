@@ -69,7 +69,92 @@ const COMMAND_CODE_PROJECTS_DIRNAME = "projects";
 const COMMAND_CODE_MAX_TITLE_LENGTH = 48;
 const COMMAND_CODE_POLL_INTERVAL_MS = 300;
 const COMMAND_CODE_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
-export const COMMAND_CODE_REASONING_EFFORTS = ["low", "medium", "high"] as const;
+/** Command Code CLI 接受的 effort 值；具体模型支持哪些值由模型目录决定。 */
+export const COMMAND_CODE_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * Command Code 内置目录中的模型 effort 能力。
+ *
+ * CLI 的 --list-models 目前只输出模型 ID，不输出这部分元数据，因此这里按
+ * Command Code 随 CLI 发布的模型目录保存已知模型。未知模型不填该字段，避免
+ * 把“尚未发现”误报成“支持全部等级”。
+ */
+const COMMAND_CODE_MODEL_REASONING_EFFORTS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["deepseek/deepseek-v4-pro", ["high", "max"]],
+  ["deepseek/deepseek-v4-flash", ["high", "max"]],
+  ["deepseek/deepseek-v4-flash-vision-exp", ["high", "max"]],
+  ["deepseek/deepseek-v4-flash-fast", ["low", "high", "max"]],
+  ["deepseek/deepseek-v4.1-flash", ["low", "high", "max"]],
+  ["moonshotai/kimi-k3", ["low", "high", "max"]],
+  ["moonshotai/kimi-k2.7-code", []],
+  ["moonshotai/kimi-k2.7-code-highspeed", []],
+  ["moonshotai/kimi-k2.6", []],
+  ["moonshotai/kimi-k2.5", []],
+  ["zai-org/glm-5.3", ["low", "high", "max"]],
+  ["z-ai/glm-5.3-flash", ["low", "high", "max"]],
+  ["zai-org/glm-5.2", ["high", "max"]],
+  ["zai-org/glm-5.2-fast", []],
+  ["zai-org/glm-5.1", []],
+  ["zai-org/glm-5", []],
+  ["minimaxai/minimax-m2.7", []],
+  ["minimaxai/minimax-m2.5", []],
+  ["xiaomi/mimo-v2.5-pro", []],
+  ["xiaomi/mimo-v2.5", []],
+  ["qwen/qwen3.7-max", []],
+  ["qwen/qwen3.7-plus", []],
+  ["qwen/qwen3.7-flash", []],
+  ["qwen/qwen3.6-max-preview", []],
+  ["qwen/qwen3.6-plus", []],
+  ["meituan/longcat-2.0:free", []],
+  ["stepfun/step-3.7-flash", []],
+  ["stepfun/step-3.5-flash", []],
+  ["tencent/hy3-paid", []],
+  ["nvidia/nemotron-3-ultra-550b-a55b", []],
+  ["thinkingmachines/inkling", []],
+  ["thinkingmachines/inkling-small", []],
+  ["poolside/laguna-s-2.1-free", []],
+  ["inclusionai/ling-3.0-flash-free", []],
+  ["inclusionai/ling-3.0-flash-sante:free", []],
+  ["tencent/hy4-preview", ["low", "medium", "high"]],
+  ["sakana/fugu-ultra", ["high", "xhigh"]],
+  ["xai/grok-4.5", ["low", "medium", "high"]],
+  ["xai/grok-4.6", ["low", "medium", "high", "xhigh"]],
+  ["qwen/qwen3.8-max-0902", ["low", "medium", "xhigh"]],
+  ["qwen/qwen3.8-max", ["low", "medium", "xhigh"]],
+  ["qwen/qwen3.8-27b", ["low", "medium", "xhigh"]],
+  ["qwen/qwen3.8-flash", ["low", "medium", "xhigh"]],
+  ["claude-sonnet-5", ["low", "medium", "high", "xhigh", "max"]],
+  ["claude-sonnet-4-6", ["low", "medium", "high", "xhigh", "max"]],
+  ["claude-fable-5-1", ["low", "medium", "high", "xhigh", "max"]],
+  ["claude-fable-5", ["low", "medium", "high", "xhigh", "max"]],
+  ["claude-opus-5", ["low", "medium", "high", "xhigh", "max"]],
+  ["claude-opus-4-8", ["low", "medium", "high", "xhigh", "max"]],
+  ["claude-opus-4-7", ["low", "medium", "high", "xhigh", "max"]],
+  ["claude-haiku-4-5-20251001", []],
+  ["gpt-6-astra", ["low", "medium", "high", "xhigh", "max"]],
+  ["gpt-5.6-sol", ["low", "medium", "high", "xhigh", "max"]],
+  ["gpt-5.6-terra", ["low", "medium", "high", "xhigh", "max"]],
+  ["gpt-5.6-luna", ["low", "medium", "high", "xhigh", "max"]],
+  ["gpt-5.5", ["low", "medium", "high", "xhigh"]],
+  ["gpt-5.4", ["low", "medium", "high", "xhigh"]],
+  ["gpt-5.3-codex", ["low", "medium", "high", "xhigh"]],
+  ["gpt-5.4-mini", ["low", "medium", "high"]],
+  ["google/gemini-3.8-flash", ["low", "medium", "high"]],
+  ["google/gemini-3.7-flash", ["low", "medium", "high"]],
+  ["google/gemini-3.6-flash", ["low", "medium", "high"]],
+  ["google/gemini-3.5-flash", ["low", "medium", "high"]],
+  ["google/gemini-3.5-flash-lite", ["low", "medium", "high"]],
+  ["google/gemini-3.1-flash-lite", ["low", "medium", "high"]],
+  ["meta/muse-spark-1.1", ["low", "medium", "high", "xhigh"]],
+  ["meta/muse-spark-1.2", ["low", "medium", "high", "xhigh"]],
+  ["meta/muse-spark-1.2-contributor", ["low", "medium", "high", "xhigh"]],
+  ["meta/muse-spark-1.3", ["low", "medium", "high", "xhigh", "max"]],
+  ["meta/muse-spark-1.3-contributor", ["low", "medium", "high", "xhigh"]],
+  ["minimaxai/minimax-m3", ["low", "medium", "high"]],
+  ["minimaxai/minimax-m3-free", ["low", "medium", "high"]],
+  ["minimax/minimax-m3-free", ["low", "medium", "high"]],
+  ["minimax/minimax-m2.7-free", []]
+]);
 const execFile = promisify(nodeExecFile);
 
 export interface CommandCodeAdapterOptions {
@@ -373,10 +458,14 @@ export class CommandCodeAdapter implements ProviderAdapter {
     const fallback = this.getProviderCapabilities();
 
     try {
-      const modelIds = this.options.listModels
-        ? await this.options.listModels(workspacePath)
-        : await this.readCliModelList(workspacePath);
-      const modelOptions = buildCommandCodeModelOptions(modelIds);
+      const [modelIds, status] = await Promise.all([
+        this.options.listModels
+          ? this.options.listModels(workspacePath)
+          : this.readCliModelList(workspacePath),
+        this.readCliStatus(workspacePath)
+      ]);
+      const defaultModel = readStatusText(status, "model");
+      const modelOptions = buildCommandCodeModelOptions(modelIds, defaultModel);
 
       return {
         ...fallback,
@@ -939,22 +1028,34 @@ export function parseCommandCodeModelList(output: string): string[] {
   return models;
 }
 
-function buildCommandCodeModelOptions(modelIds: readonly string[]): ProviderModelOption[] {
-  const supportedReasoningEfforts = [...COMMAND_CODE_REASONING_EFFORTS];
+function buildCommandCodeModelOptions(
+  modelIds: readonly string[],
+  defaultModel: string | null = null
+): ProviderModelOption[] {
+  const defaultEfforts = getCommandCodeModelReasoningEfforts(defaultModel);
+  const defaultOption: ProviderModelOption = {
+    id: "provider-default",
+    name: "跟随 Command Code 默认模型",
+    usesProviderDefault: true,
+    ...(defaultEfforts ? { supportedReasoningEfforts: [...defaultEfforts] } : {})
+  };
 
   return [
-    {
-      id: "provider-default",
-      name: "跟随 Command Code 默认模型",
-      usesProviderDefault: true,
-      supportedReasoningEfforts
-    },
-    ...modelIds.map((modelId) => ({
-      id: modelId,
-      name: modelId,
-      supportedReasoningEfforts
-    }))
+    defaultOption,
+    ...modelIds.map((modelId) => {
+      const supportedEfforts = getCommandCodeModelReasoningEfforts(modelId);
+      return {
+        id: modelId,
+        name: modelId,
+        ...(supportedEfforts ? { supportedReasoningEfforts: [...supportedEfforts] } : {})
+      };
+    })
   ];
+}
+
+function getCommandCodeModelReasoningEfforts(modelId: string | null | undefined): readonly string[] | undefined {
+  const normalized = modelId?.trim().toLowerCase();
+  return normalized ? COMMAND_CODE_MODEL_REASONING_EFFORTS.get(normalized) : undefined;
 }
 
 function readArchivedFlag(filePath: string): boolean {

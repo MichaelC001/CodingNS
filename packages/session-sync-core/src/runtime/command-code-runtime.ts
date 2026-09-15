@@ -13,6 +13,8 @@ import type {
   RuntimeRunState
 } from "./types.js";
 
+const COMMAND_CODE_RUNTIME_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
 export interface CommandCodeRuntimeOptions {
   commandPath?: string;
   homeDir?: string;
@@ -444,8 +446,9 @@ function buildCommandCodeArgs(
   if (options.permissionMode === "bypassPermissions") args.push("--yolo");
   else if (options.permissionMode && options.permissionMode !== "default") args.push("--permission-mode", options.permissionMode);
   if (options.model && options.model !== "provider-default") args.push("--model", options.model);
-  if (options.reasoningLevel === "low" || options.reasoningLevel === "medium" || options.reasoningLevel === "high") {
-    args.push("--effort", options.reasoningLevel);
+  const reasoningLevel = options.reasoningLevel?.trim().toLowerCase();
+  if (reasoningLevel && COMMAND_CODE_RUNTIME_REASONING_EFFORTS.has(reasoningLevel)) {
+    args.push("--effort", reasoningLevel);
   }
   if (options.enableAskUserQuestion === true || request.runtimeEnv?.CMD_TOOLS_ASK_USER_QUESTION_ENABLE === "true") {
     args.push("--tools-enable", "ask_user_question");

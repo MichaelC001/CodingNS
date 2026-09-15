@@ -217,7 +217,6 @@ const PROVIDER_METADATA: Record<BuiltinProviderId, ProviderMetadata> = {
     icon: commandCodeIcon,
     defaultRunInputMode: "none",
     reasoningLevelPersists: true,
-    defaultReasoningEfforts: ["low", "medium", "high"],
     defaultReasoningLevel: null,
     supportsInterrupt: true,
     supportsAttachments: false,
