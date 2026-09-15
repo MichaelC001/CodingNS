@@ -110,6 +110,38 @@ test("postinstall 只校验当前预编译依赖", () => {
   assert.match(source, /libsql/);
 });
 
+test("Windows 安装回放使用 npm tarball 并避开 Bash 4 专属语法", () => {
+  const repositoryRoot = path.resolve(workspaceRoot, "..");
+  const prepareSource = fs.readFileSync(
+    path.join(repositoryRoot, "scripts", "prepare-windows-install-replay.sh"),
+    "utf8"
+  );
+  const runSource = fs.readFileSync(
+    path.join(repositoryRoot, "scripts", "run-windows-install-replay.sh"),
+    "utf8"
+  );
+  const workflowSource = fs.readFileSync(
+    path.join(repositoryRoot, ".github", "workflows", "windows-install-replay.yml"),
+    "utf8"
+  );
+
+  assert.match(prepareSource, /npm pack/);
+  assert.match(prepareSource, /codingns-package\.tgz/);
+  assert.doesNotMatch(prepareSource, /mapfile/);
+  assert.match(runSource, /CODINGNS_PACKAGE_SPEC="\$PACKAGE_SPEC"/);
+  assert.match(workflowSource, /codingns-package\.tgz/);
+});
+
+test("Android 发布 workflow 不再请求已废弃的 tools SDK 包", () => {
+  const repositoryRoot = path.resolve(workspaceRoot, "..");
+  const workflowSource = fs.readFileSync(
+    path.join(repositoryRoot, ".github", "workflows", "desktop-release.yml"),
+    "utf8"
+  );
+
+  assert.match(workflowSource, /uses: android-actions\/setup-android@v3[\s\S]*packages: "platform-tools"/);
+});
+
 test("Codex 平台包优先使用 codex-package.json 声明的新版入口", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codingns-codex-layout-"));
   const targetTriple = "aarch64-apple-darwin";

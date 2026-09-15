@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PACKAGE_STAGE_DIR="${1:?缺少 staging 包目录参数}"
+PACKAGE_SPEC="${1:?缺少 npm 包 tarball 参数}"
 DATA_DIR="${2:?缺少安装数据目录参数}"
 OUTPUT_LOG_PATH="${3:-$DATA_DIR/install-output.log}"
 SERVICE_PORT="${CODINGNS_WINDOWS_REPLAY_PORT:-3102}"
@@ -25,7 +25,7 @@ require_path() {
 }
 
 main() {
-  require_path "$PACKAGE_STAGE_DIR" "staging 包目录"
+  require_path "$PACKAGE_SPEC" "npm 包 tarball"
 
   rm -rf "$DATA_DIR"
   mkdir -p "$(dirname "$OUTPUT_LOG_PATH")"
@@ -42,7 +42,7 @@ main() {
     printf 'y\n'
   } | env \
     CODINGNS_INSTALL_INPUT_FD="0" \
-    CODINGNS_PACKAGE_SPEC="$PACKAGE_STAGE_DIR" \
+    CODINGNS_PACKAGE_SPEC="$PACKAGE_SPEC" \
     CODINGNS_REGISTRY_PROBE_SPEC="@openai/codex-sdk" \
     bash "$REPO_DIR/install.sh" 2>&1 | tee "$OUTPUT_LOG_PATH"
 

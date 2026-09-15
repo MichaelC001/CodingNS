@@ -31,6 +31,7 @@ const manifest = {
   schemaVersion: 1,
   preparedAt: new Date().toISOString(),
   codingnsPackageDir: "codingns-package",
+  codingnsPackageTarball: "codingns-package.tgz",
   runtimePackages: ["@lydell/node-pty", "libsql"]
 };
 
@@ -75,6 +76,23 @@ main() {
   log_info "构建 CodingNS 独立服务包"
   pnpm --dir "$REPO_DIR" run build:standalone
   node "$REPO_DIR/packages/codingns/scripts/create-publish-staging.mjs" "$PACKAGE_STAGE_DIR"
+
+  log_info "把发布暂存目录打成 npm tarball，按真实发布包进行安装回放"
+  npm pack "$PACKAGE_STAGE_DIR" \
+    --pack-destination "$OUTPUT_DIR" \
+    --ignore-scripts \
+    --json > "$OUTPUT_DIR/npm-pack.json"
+
+  local package_tarball=""
+  local package_tarball_count=""
+  package_tarball="$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+  package_tarball_count="$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.tgz' -print | wc -l | tr -d '[:space:]')"
+  if [[ "$package_tarball_count" -ne 1 || -z "$package_tarball" ]]; then
+    printf '[windows-replay] npm pack 未生成唯一 tarball：%s\n' "$package_tarball_count" >&2
+    exit 1
+  fi
+
+  mv "$package_tarball" "$OUTPUT_DIR/codingns-package.tgz"
 
   write_stage_metadata "$PACKAGE_STAGE_DIR"
   write_manifest "$OUTPUT_DIR"

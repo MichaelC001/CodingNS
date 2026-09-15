@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/run-windows-install-replay.sh \
-            "$RUNNER_TEMP/windows-install-replay/codingns-package" \
+            "$RUNNER_TEMP/windows-install-replay/codingns-package.tgz" \
             "$RUNNER_TEMP/codingns-replay-data" \
             "$RUNNER_TEMP/windows-install-replay/install-output.log"
 
