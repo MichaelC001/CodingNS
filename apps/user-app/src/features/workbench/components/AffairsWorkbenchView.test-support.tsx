@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState, type ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, vi } from "vitest";
 
 import { t } from "../../../shared/i18n";
@@ -931,20 +932,22 @@ export function renderWorkbenchWithCustomNavigationGroups(initialState: AffairsV
     const [state, setState] = useState(initialState);
 
     return (
-      <AffairsWorkbenchProvider
-        workspaceId="workspace-1"
-        workspaceName="事务工作区"
-        navigationGroups={groups}
-        state={state}
-        onStateChange={setState}
-      >
-        <div style={{ display: "flex", gap: 12 }}>
-          <AffairsSectionMenu />
-          <AffairsSidebarPanel />
-          <AffairsWorkbenchView workspaceId="workspace-1" />
-          <AffairsAuxiliaryPanel workspaceId="workspace-1" />
-        </div>
-      </AffairsWorkbenchProvider>
+      <MemoryRouter initialEntries={["/workspaces/workspace-1/chats"]}>
+        <AffairsWorkbenchProvider
+          workspaceId="workspace-1"
+          workspaceName="事务工作区"
+          navigationGroups={groups}
+          state={state}
+          onStateChange={setState}
+        >
+          <div style={{ display: "flex", gap: 12 }}>
+            <AffairsSectionMenu />
+            <AffairsSidebarPanel />
+            <AffairsWorkbenchView workspaceId="workspace-1" />
+            <AffairsAuxiliaryPanel workspaceId="workspace-1" />
+          </div>
+        </AffairsWorkbenchProvider>
+      </MemoryRouter>
     );
   }
 

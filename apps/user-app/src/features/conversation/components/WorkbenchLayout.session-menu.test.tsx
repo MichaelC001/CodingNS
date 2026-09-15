@@ -235,13 +235,13 @@ describe("WorkbenchLayout", () => {
     const subagentTitle = screen.getByText("子代理探索");
     expect(subagentTitle).toBeInTheDocument();
     expect(subagentTitle.closest(".workbench-subsession-list")).not.toBeNull();
-    expect(screen.getByText("Banach")).toBeInTheDocument();
+    expect(screen.getAllByText(t("shell.subagentBadge")).length).toBeGreaterThan(0);
     const subagentCard = getSessionCardByTitle("子代理探索");
     await userEvent.click(within(subagentCard).getByRole("button", { name: t("shell.subagentExpand") }));
     const nestedSubagentTitle = screen.getByText("子代理深挖");
     expect(nestedSubagentTitle).toBeInTheDocument();
     expect(nestedSubagentTitle.closest(".workbench-subsession-list")).not.toBeNull();
-    expect(screen.getByText("Turing")).toBeInTheDocument();
+    expect(screen.getAllByText(t("shell.subagentBadge")).length).toBeGreaterThan(1);
 
     const betaCard = await findSessionCardByTitle("会话 Beta");
 
@@ -366,7 +366,7 @@ describe("WorkbenchLayout", () => {
     expect(within(dialog).getByText("已归档父会话")).toBeInTheDocument();
     expect(within(dialog).getByText("已归档子代理")).toBeInTheDocument();
     expect(within(dialog).getByText("已归档消息分叉")).toBeInTheDocument();
-    expect(within(dialog).getByText("Banach")).toBeInTheDocument();
+    expect(within(dialog).getByText(t("shell.subagentBadge"))).toBeInTheDocument();
     expect(within(dialog).getByText(t("shell.sessionForkMessage"))).toBeInTheDocument();
   });
 
@@ -386,7 +386,7 @@ describe("WorkbenchLayout", () => {
         return createJsonResponse(snapshot);
       }
 
-      if (url.includes("/api/affairs/lightweight-sessions")) {
+      if (url.includes("/affairs/lightweight-sessions")) {
         return createJsonResponse({
           items: [
             createSessionSummary({
@@ -415,6 +415,51 @@ describe("WorkbenchLayout", () => {
         name: new RegExp(`^${t("shell.archiveFolderLabel")}(?:\\s+1)?$`)
       })
     ).toBeInTheDocument();
+  });
+
+  it("聊天分类不显示绑定父会话的临时轻量会话", async () => {
+    const snapshot = createWorkbenchSnapshot([
+      {
+        workspace: createWorkspace("workspace-1", "项目一"),
+        sessions: []
+      }
+    ]);
+    MockWebSocket.workbenchSnapshot = snapshot;
+
+    global.fetch = vi.fn(async (rawInput: RequestInfo | URL) => {
+      const url = typeof rawInput === "string" ? rawInput : rawInput.toString();
+
+      if (url.endsWith("/api/workbench")) {
+        return createJsonResponse(snapshot);
+      }
+
+      if (url.includes("/affairs/lightweight-sessions")) {
+        return createJsonResponse({
+          items: [
+            createSessionSummary({
+              sessionId: "lightweight-live-1",
+              title: "普通轻量会话",
+              workspaceId: "workspace-1",
+              isArchived: false
+            }),
+            createSessionSummary({
+              sessionId: "temporary-session-1",
+              title: "临时追问会话",
+              workspaceId: "workspace-1",
+              parentSessionId: "parent-session-1",
+              isArchived: false
+            })
+          ]
+        });
+      }
+
+      throw new Error(`未处理的请求: ${url}`);
+    }) as typeof fetch;
+
+    renderWorkbenchRoute("/workspaces/workspace-1/chats/lightweight-live-1");
+
+    expect(await findSessionCardByTitle("普通轻量会话")).toBeInTheDocument();
+    expect(screen.queryByText("临时追问会话")).not.toBeInTheDocument();
   });
 
   it("轻量会话收藏后只显示一条收藏记录，并从聊天分类移除", async () => {
@@ -456,7 +501,7 @@ describe("WorkbenchLayout", () => {
         return createJsonResponse(snapshot);
       }
 
-      if (url.includes("/api/affairs/lightweight-sessions/lightweight-live-1/favorite") && init?.method === "PATCH") {
+      if (url.includes("/affairs/lightweight-sessions/lightweight-live-1/favorite") && init?.method === "PATCH") {
         const payload = JSON.parse(String(init?.body ?? "{}")) as { favorite?: boolean };
         const favorite = payload.favorite === true;
         workspace1LightweightSessions = [
@@ -472,7 +517,7 @@ describe("WorkbenchLayout", () => {
         return createJsonResponse(workspace1LightweightSessions[0]);
       }
 
-      if (url.includes("/api/affairs/lightweight-sessions")) {
+      if (url.includes("/affairs/lightweight-sessions")) {
         if (url.includes("workspace-2")) {
           return createJsonResponse({
             items: workspace2LightweightSessions

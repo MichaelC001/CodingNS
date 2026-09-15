@@ -936,7 +936,7 @@ export function mockAffairsLibraryFetch() {
       });
     }
 
-    if (url.includes("/api/affairs/lightweight-sessions")) {
+    if (url.includes("/affairs/lightweight-sessions")) {
       return createJsonResponse({ items: [] });
     }
 

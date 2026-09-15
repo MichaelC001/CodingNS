@@ -84,7 +84,7 @@ describe("AffairsWorkbenchView conversation list", () => {
       })
     ]));
 
-    const conversationSidebar = await screen.findByRole("heading", { name: "对话" });
+    const conversationSidebar = await screen.findByRole("heading", { name: t("shell.affairsConversationSidebarTitle") });
     const sidebarSection = conversationSidebar.closest(".affairs-sidebar-block");
     expect(sidebarSection).not.toBeNull();
     await waitFor(() => {
@@ -161,6 +161,32 @@ describe("AffairsWorkbenchView conversation list", () => {
     expect(within(sidebar as HTMLElement).queryByText("轻量会话")).not.toBeInTheDocument();
     expect(within(sidebar as HTMLElement).queryByText("Agent 会话")).not.toBeInTheDocument();
     expect(sidebar?.querySelectorAll(".affairs-conversation-session-card")).toHaveLength(2);
+  });
+
+  it("事务对话侧栏不显示绑定父会话的临时轻量会话", async () => {
+    const { lightweightSession } = mockAffairsConversationSidebarSessions();
+    conversationApiMock.listAffairsLightweightSessions.mockResolvedValue({
+      items: [
+        lightweightSession,
+        {
+          ...lightweightSession,
+          sessionId: "temporary-session-1",
+          parentSessionId: "parent-session-1",
+          title: "临时追问会话"
+        }
+      ]
+    });
+
+    renderWorkbenchWithCustomNavigationGroups({
+      ...createState(),
+      primarySection: "conversation",
+      selectedNodeId: "conversation:draft:lightweight:codex"
+    }, navigationGroupsWithBoundLibraryWorkspace);
+
+    expect(await screen.findByText("事务轻量会话")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText("临时追问会话")).not.toBeInTheDocument();
+    });
   });
 
   it("事务会话列表在网页端右键菜单会包含完整操作", async () => {
