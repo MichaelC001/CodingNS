@@ -10311,8 +10311,8 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 
 .conversation-temporary-session-modal {
   display: grid;
-  grid-template-columns: minmax(180px, 30%) minmax(0, 1fr);
-  min-height: min(620px, 68vh);
+  grid-template-columns: minmax(156px, 34%) minmax(0, 1fr);
+  min-height: min(460px, 58vh);
   gap: 0;
 }
 
@@ -10334,14 +10334,14 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   right: 0;
   z-index: 120;
   display: flex;
-  width: min(720px, calc(100vw - 28px));
-  max-height: min(720px, calc(100vh - 84px));
+  width: min(580px, calc(100vw - 28px));
+  max-height: min(560px, calc(100vh - 84px));
   flex-direction: column;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--panel-border));
-  border-radius: 16px;
+  border-radius: 14px;
   background: color-mix(in srgb, var(--panel-bg-strong) 96%, var(--accent) 4%);
-  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.22), 0 2px 8px rgba(15, 23, 42, 0.1);
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.2), 0 2px 8px rgba(15, 23, 42, 0.09);
 }
 
 .conversation-temporary-session-popover::before {
@@ -10409,8 +10409,8 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 }
 
 .conversation-temporary-session-popover .conversation-temporary-session-modal {
-  min-height: min(560px, calc(100vh - 150px));
-  max-height: min(640px, calc(100vh - 150px));
+  min-height: min(420px, calc(100vh - 150px));
+  max-height: min(500px, calc(100vh - 150px));
   padding: 14px 16px 16px;
 }
 
@@ -10434,6 +10434,28 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   justify-content: space-between;
   padding: 0 0 var(--space-3);
   border-bottom: 1px solid var(--panel-border);
+}
+
+.conversation-temporary-session-list-heading {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.conversation-temporary-session-count {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--panel-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .conversation-temporary-session-list {
@@ -10515,7 +10537,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 
 .conversation-temporary-session-timeline {
   flex: 1 1 auto;
-  min-height: 280px;
+  min-height: 190px;
   overflow: hidden;
 }
 
