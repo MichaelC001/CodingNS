@@ -738,6 +738,65 @@ test("OpenCodeAdapter 的历史分页支持 backward 读取", async () => {
   }
 });
 
+test("OpenCodeAdapter session 未变化时不会重复请求完整历史", async (context) => {
+  const fixture = createOpenCodeFixture();
+  const originalFetch = globalThis.fetch;
+  let historyRequests = 0;
+
+  globalThis.fetch = async () => {
+    historyRequests += 1;
+    return jsonResponse({}, 503);
+  };
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+    fixture.dispose();
+  });
+
+  const adapter = new OpenCodeAdapter({
+    dbPath: fixture.dbPath,
+    baseUrl: "http://127.0.0.1:41827"
+  });
+  const initialPage = await adapter.readSessionHistory(
+    "ses_demo",
+    "opencode://session/ses_demo",
+    null,
+    2,
+    "backward"
+  );
+  historyRequests = 0;
+
+  await adapter.readSessionHistory(
+    "ses_demo",
+    "opencode://session/ses_demo",
+    initialPage.cursor,
+    20,
+    "forward"
+  );
+  assert.equal(historyRequests, 1);
+
+  await adapter.readSessionHistory(
+    "ses_demo",
+    "opencode://session/ses_demo",
+    initialPage.cursor,
+    20,
+    "forward"
+  );
+  assert.equal(historyRequests, 1);
+
+  const db = new DatabaseSync(fixture.dbPath);
+  db.prepare("UPDATE session SET time_updated = ? WHERE id = ?").run(1_700_000_030_000, "ses_demo");
+  db.close();
+
+  await adapter.readSessionHistory(
+    "ses_demo",
+    "opencode://session/ses_demo",
+    initialPage.cursor,
+    20,
+    "forward"
+  );
+  assert.equal(historyRequests, 2);
+});
+
 test("OpenCodeAdapter 只会保留真正的 reasoning 内容，不会把 step 事件伪装成思考", async (context) => {
   const originalFetch = globalThis.fetch;
 

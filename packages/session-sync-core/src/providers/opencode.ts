@@ -187,6 +187,10 @@ const OPENCODE_DISCOVERY_CACHE_LIMIT = 32;
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly providerId: ProviderId = "opencode";
   private readonly discoveryCache = new Map<string, OpenCodeDiscoveryCacheEntry>();
+  private readonly sessionHistoryVersions = new Map<
+    string,
+    { sourceVersion: string; cursor: string }
+  >();
   private readonly contextModelCache = new Map<
     string,
     { expiresAt: number; value: OpenCodeContextModelSnapshot | null }
@@ -323,9 +327,36 @@ export class OpenCodeAdapter implements ProviderAdapter {
     direction: HistoryDirection = "forward"
   ): Promise<HistoryPage> {
     const sessionId = this.resolveSessionId(providerSessionId, rawStoreRef);
+    const sourceVersion = direction === "forward" && cursor !== null
+      ? this.readSessionSourceVersion(sessionId)
+      : null;
+
+    if (
+      sourceVersion !== null
+      && this.sessionHistoryVersions.get(sessionId)?.sourceVersion === sourceVersion
+      && this.sessionHistoryVersions.get(sessionId)?.cursor === cursor
+    ) {
+      return {
+        messages: [],
+        cursor,
+        nextCursor: null,
+        total: 0
+      };
+    }
+
     const serverMessages = await this.tryReadSessionMessagesFromServer(sessionId);
     const messages = serverMessages ?? this.readSessionMessagesFromSqlite(sessionId);
-    return sliceHistory(messages, cursor, limit, direction);
+
+    const page = sliceHistory(messages, cursor, limit, direction);
+
+    if (sourceVersion !== null) {
+      this.sessionHistoryVersions.set(sessionId, {
+        sourceVersion,
+        cursor: page.cursor ?? (cursor as string)
+      });
+    }
+
+    return page;
   }
 
   async readSessionStats(
@@ -1581,6 +1612,19 @@ export class OpenCodeAdapter implements ProviderAdapter {
       return run(db);
     } finally {
       db?.close();
+    }
+  }
+
+  private readSessionSourceVersion(sessionId: string): string | null {
+    try {
+      const row = this.withReadonlyDb((db) => db.prepare(
+        "SELECT time_updated, time_created FROM session WHERE id = ? LIMIT 1"
+      ).get(sessionId) as { time_updated?: unknown; time_created?: unknown } | undefined);
+      const timestamp = firstValidNumber(row?.time_updated, row?.time_created);
+      return timestamp === null ? null : String(timestamp);
+    } catch {
+      // 数据库不可用时继续走原有读取路径，不能因为优化探测失败而丢历史。
+      return null;
     }
   }
 
