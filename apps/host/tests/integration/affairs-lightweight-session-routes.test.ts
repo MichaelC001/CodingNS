@@ -106,7 +106,9 @@ describe("affairs lightweight session routes", () => {
       url: "/api/workspaces/workspace-1/affairs/lightweight-sessions",
       payload: {
         provider: "codex",
-        content: "请总结今天的重点"
+        content: "请总结今天的重点",
+        parentSessionId: "parent-1",
+        anchorMessageId: "message-7"
       }
     });
     expect(startResponse.statusCode).toBe(201);
@@ -114,7 +116,9 @@ describe("affairs lightweight session routes", () => {
       workspaceId: "affairs-global",
       userId: "user-1",
       provider: "codex",
-      content: "请总结今天的重点"
+      content: "请总结今天的重点",
+      parentSessionId: "parent-1",
+      anchorMessageId: "message-7"
     }));
 
     const sendResponse = await app.inject({

@@ -14,7 +14,7 @@ const {
   mockListAffairsLightweightSessions,
   mockGetAffairsLightweightSessionMessages,
   mockStartLiveSession,
-  mockStartAffairsLightweightSession,
+  mockStartAffairsLightweightSessionStream,
   mockGetSessionDetail,
   mockNavigate,
   mockSelectWorkspace
@@ -26,7 +26,7 @@ const {
   mockListAffairsLightweightSessions: vi.fn(),
   mockGetAffairsLightweightSessionMessages: vi.fn(),
   mockStartLiveSession: vi.fn(),
-  mockStartAffairsLightweightSession: vi.fn(),
+  mockStartAffairsLightweightSessionStream: vi.fn(),
   mockGetSessionDetail: vi.fn(),
   mockNavigate: vi.fn(),
   mockSelectWorkspace: vi.fn()
@@ -75,7 +75,7 @@ vi.mock("../api/conversation-api", () => ({
   listAffairsLightweightSessions: mockListAffairsLightweightSessions,
   getAffairsLightweightSessionMessages: mockGetAffairsLightweightSessionMessages,
   startLiveSession: mockStartLiveSession,
-  startAffairsLightweightSession: mockStartAffairsLightweightSession,
+  startAffairsLightweightSessionStream: mockStartAffairsLightweightSessionStream,
   sendLiveMessage: vi.fn()
 }));
 
@@ -93,6 +93,7 @@ vi.mock("../../settings/api/model-switch-api", async () => {
 
 vi.mock("../capability/provider-ui", () => ({
   SESSION_PROVIDER_PICKER_IDS: ["codex", "claude-code"],
+  LIGHTWEIGHT_SESSION_PROVIDER_IDS: ["codex", "claude-code"],
   orderProviderIds: (providers: string[]) => providers,
   createDraftCapabilities: (provider: string) => ({
     provider,
@@ -105,7 +106,9 @@ vi.mock("../capability/provider-ui", () => ({
       }
     ]
   }),
-  getProviderDisplayName: (provider: string) => provider === "claude-code" ? "Claude Code" : "Codex"
+  getProviderDisplayName: (provider: string) => provider === "claude-code" ? "Claude Code" : "Codex",
+  supportsReasoningSelector: () => false,
+  shouldFoldRulesMessages: () => false
 }));
 
 vi.mock("./WorkbenchLayout", () => ({
@@ -114,6 +117,7 @@ vi.mock("./WorkbenchLayout", () => ({
     requestNavigationRefresh: vi.fn(),
     selectWorkspace: mockSelectWorkspace,
     upsertNavigationSession: vi.fn(),
+    navigationGroups: [],
     currentTargetHostId: "peer-host-1",
     currentWorkspaceRef: {
       hostId: "peer-host-1",
@@ -206,7 +210,7 @@ describe("ConversationSelectionActions", () => {
         provider: "codex"
       }
     });
-    mockStartAffairsLightweightSession.mockResolvedValue({
+    mockStartAffairsLightweightSessionStream.mockResolvedValue({
       sessionId: "temporary-session",
       session: {
         sessionId: "temporary-session",
@@ -341,7 +345,7 @@ describe("ConversationSelectionActions", () => {
     });
 
     expect(screen.getByRole("dialog", { name: t("conversation.temporarySessionTitle") })).toBeInTheDocument();
-    expect(screen.getByDisplayValue(/保留这段文字/)).toBeInTheDocument();
+    expect(screen.getByText("保留这段文字")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: t("conversation.copyAction") })).not.toBeInTheDocument();
   });
 
@@ -439,6 +443,10 @@ describe("ConversationSelectionActions", () => {
     expect(mockListProviderCatalog).toHaveBeenCalledWith({
       targetHostId: "peer-host-1"
     });
+    fireEvent.change(
+      within(dialog).getByPlaceholderText(t("conversation.temporarySessionPromptPlaceholder")),
+      { target: { value: "请解释这段内容" } }
+    );
     fireEvent.click(within(dialog).getByRole("button", { name: t("conversation.temporarySessionCreateAction") }));
 
     await act(async () => {
@@ -446,14 +454,15 @@ describe("ConversationSelectionActions", () => {
       await Promise.resolve();
     });
 
-    expect(mockStartAffairsLightweightSession).toHaveBeenCalledWith(
+    expect(mockStartAffairsLightweightSessionStream).toHaveBeenCalledWith(
       "workspace-1",
       expect.objectContaining({
         sourceWorkspaceId: "workspace-1",
         parentSessionId: "session-1",
         provider: "codex"
       }),
-      { targetHostId: "peer-host-1" }
+      expect.any(Function),
+      expect.objectContaining({ targetHostId: "peer-host-1", signal: expect.any(AbortSignal) })
     );
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockSelectWorkspace).not.toHaveBeenCalled();

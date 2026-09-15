@@ -416,6 +416,25 @@ describe("MessageTimeline", () => {
     expect(revealWorkspaceFileMock).not.toHaveBeenCalled();
   });
 
+  it("在锚点消息旁显示临时会话标记并转发点击事件", async () => {
+    const onTemporarySessionAnchorClick = vi.fn();
+    const anchor = { sessionId: "temporary-1", title: "解释这条消息", ordinal: 1 } as const;
+
+    render(
+      <MessageTimeline
+        messages={[createTextMessage("主会话消息")]}
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        temporarySessionAnchorsByMessageId={new Map([["message-1", [anchor]]])}
+        onTemporarySessionAnchorClick={onTemporarySessionAnchorClick}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "解释这条消息" }));
+    expect(onTemporarySessionAnchorClick).toHaveBeenCalledWith(anchor);
+  });
+
   it("不渲染没有正文或附件的助手文本消息", () => {
     render(
       <MessageTimeline

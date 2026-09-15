@@ -83,6 +83,8 @@ describe("AffairsLightweightSessionService", () => {
       userId: "user-1",
       provider: "codex",
       content: "看看附件",
+      parentSessionId: "parent-1",
+      anchorMessageId: "message-7",
       clientRequestId: "client-attachment-1",
       attachments: [
         {
@@ -106,6 +108,8 @@ describe("AffairsLightweightSessionService", () => {
       expect.objectContaining({ kind: "image", fileName: "demo.png", mimeType: "image/png" }),
       expect.objectContaining({ kind: "file", fileName: "note.txt", mimeType: "text/plain" })
     ]);
+    expect(result.session.parentSessionId).toBe("parent-1");
+    expect(result.session.anchorMessageId).toBe("message-7");
     const userInput = requestPayload.input.find((item: any) => item.role === "user");
     expect(userInput.content).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "input_image", image_url: "data:image/png;base64,aW1n" }),
