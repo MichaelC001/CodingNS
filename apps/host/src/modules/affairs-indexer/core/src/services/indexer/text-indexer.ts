@@ -456,7 +456,10 @@ export class TextIndexer {
     const inFlight = new Set<Promise<FileProcessResult>>();
     const trackInFlight = (task: Promise<FileProcessResult>): void => {
       inFlight.add(task);
-      task.finally(() => {
+      // 成功和失败都只负责移除任务，避免 finally 派生出无人消费的 rejected Promise。
+      task.then(() => {
+        inFlight.delete(task);
+      }, () => {
         inFlight.delete(task);
       });
     };

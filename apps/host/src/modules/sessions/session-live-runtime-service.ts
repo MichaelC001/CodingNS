@@ -1730,8 +1730,11 @@ export class SessionLiveRuntimeService {
     }
 
     this.deadRuntimeReconciliationSessions.add(snapshot.sessionId);
-    void this.reconcileDeadRuntimeSession(snapshot).finally(() => {
+    void this.reconcileDeadRuntimeSession(snapshot).then(() => {
       this.deadRuntimeReconciliationSessions.delete(snapshot.sessionId);
+    }, (error) => {
+      this.deadRuntimeReconciliationSessions.delete(snapshot.sessionId);
+      console.warn(`[session-live-runtime] 残留运行态回收失败: ${String(error)}`);
     });
   }
 
@@ -2675,11 +2678,13 @@ export class SessionLiveRuntimeService {
       })
       .then(() => this.persistRuntimeEvent(sessionId, workspaceId, userId, event));
 
-    const queuedTask = task.finally(() => {
+    // 清理链无论任务成败都兑现，避免 finally 产生无人消费的 rejected Promise。
+    const cleanup = () => {
       if (this.runtimePersistenceQueues.get(sessionId) === queuedTask) {
         this.runtimePersistenceQueues.delete(sessionId);
       }
-    });
+    };
+    const queuedTask = task.then(cleanup, cleanup);
 
     this.runtimePersistenceQueues.set(sessionId, queuedTask);
 

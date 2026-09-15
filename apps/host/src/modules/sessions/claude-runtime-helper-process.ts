@@ -155,12 +155,20 @@ async function handleLaunch(
       supportsInterrupt: typeof launch.interrupt === "function"
     });
 
-    void launch.completed.finally(() => {
+    void launch.completed.then(() => {
       activeRuns.delete(request.sessionId);
       emit({
         type: "completed",
         sessionId: request.sessionId
       });
+    }, () => {
+      activeRuns.delete(request.sessionId);
+      emit({
+        type: "completed",
+        sessionId: request.sessionId
+      });
+    }).catch((error) => {
+      console.warn(`[claude-runtime-helper] 收尾通知失败: ${String(error)}`);
     });
   } catch (error) {
     emitError({

@@ -132,7 +132,9 @@ export class PtyHostAttachmentManager extends EventEmitter {
         runtime.pty.kill();
       });
       this.pendingProcessTerminations.add(termination);
-      void termination.finally(() => {
+      void termination.then(() => {
+        this.pendingProcessTerminations.delete(termination);
+      }, () => {
         this.pendingProcessTerminations.delete(termination);
       });
       return;

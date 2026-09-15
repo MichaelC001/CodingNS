@@ -393,6 +393,21 @@ export class ClaudeRuntimeAdapter implements ProviderRuntimeAdapter {
           detail
         });
       };
+
+      const settleRuntimeTurn = (settlement: Promise<void>, after?: () => void): void => {
+        const finish = () => {
+          try {
+            after?.();
+          } finally {
+            resolve();
+          }
+        };
+
+        void settlement.then(finish, finish).catch((error) => {
+          console.warn(`[session-sync-core] Claude 收尾失败: ${String(error)}`);
+        });
+      };
+
       const handleControlLine = (parsed: Record<string, unknown>) => {
         const result = readClaudeResultOutcome(parsed);
 
@@ -406,10 +421,7 @@ export class ClaudeRuntimeAdapter implements ProviderRuntimeAdapter {
           ? emitRuntimeComplete("complete", result.detail)
           : emitRuntimeError(result.detail, result.errorCode);
 
-        void settle.finally(() => {
-          shutdownProcessAfterTurn();
-          resolve();
-        });
+        settleRuntimeTurn(settle, shutdownProcessAfterTurn);
 
         return true;
       };
@@ -454,7 +466,7 @@ export class ClaudeRuntimeAdapter implements ProviderRuntimeAdapter {
         stopBindingRefreshTimer();
         stdinClosed = true;
         hookSettings?.cleanup();
-        void emitRuntimeError(error.message, "CLAUDE_CLI_SPAWN_FAILED").finally(resolve);
+        settleRuntimeTurn(emitRuntimeError(error.message, "CLAUDE_CLI_SPAWN_FAILED"));
       });
 
       proc.on("close", (code, signal) => {
@@ -463,25 +475,25 @@ export class ClaudeRuntimeAdapter implements ProviderRuntimeAdapter {
         hookSettings?.cleanup();
 
         if (fatalWriteError) {
-          void emitRuntimeError(
+          settleRuntimeTurn(emitRuntimeError(
             fatalWriteError,
             fatalWriteErrorCode ?? "CLAUDE_CLI_STDIN_WRITE_FAILED"
-          ).finally(resolve);
+          ));
           return;
         }
 
         if (interrupted || signal === "SIGTERM" || signal === "SIGINT") {
-          void emitRuntimeComplete("interrupted", "claude process interrupted").finally(resolve);
+          settleRuntimeTurn(emitRuntimeComplete("interrupted", "claude process interrupted"));
           return;
         }
 
         if (code === 0) {
-          void emitRuntimeComplete("complete", "claude turn completed").finally(resolve);
+          settleRuntimeTurn(emitRuntimeComplete("complete", "claude turn completed"));
           return;
         }
 
         const detail = stderrBuffer.trim() || `claude exited with code ${String(code)}`;
-        void emitRuntimeError(detail, "CLAUDE_CLI_EXIT_NON_ZERO").finally(resolve);
+        settleRuntimeTurn(emitRuntimeError(detail, "CLAUDE_CLI_EXIT_NON_ZERO"));
       });
     });
 

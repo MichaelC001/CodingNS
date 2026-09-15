@@ -1286,7 +1286,10 @@ async function captureKimiCliOutput(
       resolve(value);
     };
     const timeout = setTimeout(() => {
-      void terminateChildProcess(proc, { graceMs: 250, killWaitMs: 250 }).finally(() => {
+      void terminateChildProcess(proc, { graceMs: 250, killWaitMs: 250 }).then(() => {
+        finalize(`${stdoutBuffer}\n${stderrBuffer}`.trim());
+      }, (error) => {
+        console.warn(`[session-sync-core] Kimi 超时回收进程失败: ${String(error)}`);
         finalize(`${stdoutBuffer}\n${stderrBuffer}`.trim());
       });
     }, Math.max(200, input.timeoutMs));
