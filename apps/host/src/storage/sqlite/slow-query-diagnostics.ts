@@ -29,6 +29,8 @@ export function installSlowQueryDiagnostics(db: SqliteDatabase, thresholdMs = 10
     configurable: true,
     value: function (this: SqliteDatabase, ...args: Parameters<typeof prepare>) {
       const statement = Reflect.apply(prepare, this, args);
+      // libsql 的 Statement 运行时没有 better-sqlite3 的 source 属性，SQL 必须在 prepare 时保存。
+      const source = typeof args[0] === "string" ? args[0] : "";
       for (const method of ["run", "get", "all"] as const) {
         const execute = statement[method];
         Object.defineProperty(statement, method, {
@@ -38,7 +40,12 @@ export function installSlowQueryDiagnostics(db: SqliteDatabase, thresholdMs = 10
             try {
               return Reflect.apply(execute, this, parameters);
             } finally {
-              reportSlowQuery(statement.source, method, startedAt);
+              // 诊断只能观测，不能因为诊断异常覆盖真实查询结果。
+              try {
+                reportSlowQuery(source, method, startedAt);
+              } catch (error) {
+                console.warn("[sqlite.slow] 诊断失败", error);
+              }
             }
           }
         });

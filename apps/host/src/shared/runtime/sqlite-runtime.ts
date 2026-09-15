@@ -25,14 +25,29 @@ const DatabaseCompat = class extends (RuntimeDatabase as new (...args: any[]) =>
 };
 const Database = DatabaseCompat as unknown as SqliteConstructor;
 
-export type SqliteDatabase = Libsql.Database;
-export type SqliteStatement<
+/** 只暴露 libsql 运行时实际支持、且 Host 当前使用的数据库能力。 */
+export interface SqliteDatabase {
+  // 各仓储自行约束参数和结果；运行时只保证标准的变长绑定调用形态。
+  prepare(sql: string): SqliteStatement<any[], any>;
+  transaction(fn: (...parameters: any[]) => any): (...parameters: any[]) => any;
+  exec(sql: string): void;
+  pragma(source: string, options?: { simple?: boolean }): unknown;
+  close(): void;
+}
+
+export interface SqliteStatement<
   BindParameters extends unknown[] = unknown[],
   Result = unknown
-> = Omit<Libsql.Statement<BindParameters>, "get" | "all"> & {
+> {
+  run(...params: BindParameters): SqliteRunResult;
   get(...params: BindParameters): Result;
   all(...params: BindParameters): Result[];
-};
+}
+
+export interface SqliteRunResult {
+  changes: number;
+  lastInsertRowid: number | bigint;
+}
 
 function stripMetadata(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
