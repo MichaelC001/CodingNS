@@ -1,17 +1,13 @@
-import { accessSync, chmodSync, constants, existsSync } from "node:fs";
-import path from "node:path";
 import { EventEmitter } from "node:events";
 
 import { AppError } from "../../../shared/errors/app-error.js";
 import type { TerminalInstance } from "../../../types/domain.js";
 import {
   loadNodePty,
-  resolveLoadedNodePtyPackageRoot,
   type IPty
 } from "./node-pty-loader.js";
 
 const { spawn } = loadNodePty();
-let hasEnsuredPtySpawnHelper = false;
 
 export interface TerminalRuntimeExitEvent {
   terminalId: string;
@@ -37,8 +33,6 @@ export class PtyRuntimeManager extends EventEmitter {
 
   start(terminal: TerminalInstance, env: Record<string, string>): number | null {
     try {
-      ensurePtySpawnHelperExecutable();
-
       const ptyProcess = spawn(terminal.shell, [], {
         cols: 120,
         rows: 30,
@@ -137,56 +131,4 @@ function normalizeProcessId(processId: number | undefined): number | null {
   }
 
   return processId;
-}
-
-function ensurePtySpawnHelperExecutable(): void {
-  if (hasEnsuredPtySpawnHelper || process.platform !== "darwin") {
-    return;
-  }
-
-  const helperPath = resolvePtySpawnHelperPath();
-
-  if (!helperPath) {
-    hasEnsuredPtySpawnHelper = true;
-    return;
-  }
-
-  try {
-    accessSync(helperPath, constants.X_OK);
-    hasEnsuredPtySpawnHelper = true;
-    return;
-  } catch {
-    // 文件存在但不可执行时，自动修复权限。
-  }
-
-  try {
-    chmodSync(helperPath, 0o755);
-    hasEnsuredPtySpawnHelper = true;
-  } catch (error) {
-    throw new AppError({
-      statusCode: 502,
-      errorCode: "PTY_START_FAILED",
-      detail:
-        error instanceof Error
-          ? `node-pty spawn-helper 权限修复失败: ${error.message}`
-          : "node-pty spawn-helper 权限修复失败"
-    });
-  }
-}
-
-function resolvePtySpawnHelperPath(): string | null {
-  const packageRoot = resolveLoadedNodePtyPackageRoot();
-
-  if (!packageRoot) {
-    return null;
-  }
-
-  const helperPath = path.join(
-    packageRoot,
-    "prebuilds",
-    `${process.platform}-${process.arch}`,
-    "spawn-helper"
-  );
-
-  return existsSync(helperPath) ? helperPath : null;
 }

@@ -1,17 +1,13 @@
-import { accessSync, chmodSync, constants, existsSync } from "node:fs";
-import path from "node:path";
 import { EventEmitter } from "node:events";
 
 import { AppError } from "../../../shared/errors/app-error.js";
 import { terminateProcessById } from "../../../shared/utils/child-process-lifecycle.js";
 import {
   loadNodePty,
-  resolveLoadedNodePtyPackageRoot,
   type IPty
 } from "./node-pty-loader.js";
 
 const { spawn } = loadNodePty();
-let hasEnsuredPtySpawnHelper = false;
 
 export interface HostAttachmentExitEvent {
   attachmentId: string;
@@ -50,8 +46,6 @@ export class PtyHostAttachmentManager extends EventEmitter {
     }
   ): number | null {
     try {
-      ensurePtySpawnHelperExecutable();
-
       const ptyProcess = spawn(input.command, input.args, {
         cols: input.cols ?? 120,
         rows: input.rows ?? 30,
@@ -134,7 +128,7 @@ export class PtyHostAttachmentManager extends EventEmitter {
 
     if (runtime.closeStrategy === "process-kill" && runtime.processId) {
       const termination = terminateProcessById(runtime.processId).catch(() => {
-        // 进程已经结束或权限不足时退回到 node-pty 默认关闭逻辑。
+        // 进程已经结束或权限不足时退回到 @lydell/node-pty 默认关闭逻辑。
         runtime.pty.kill();
       });
       this.pendingProcessTerminations.add(termination);
@@ -172,56 +166,4 @@ function normalizeProcessId(processId: number | undefined): number | null {
   }
 
   return processId;
-}
-
-function ensurePtySpawnHelperExecutable(): void {
-  if (hasEnsuredPtySpawnHelper || process.platform !== "darwin") {
-    return;
-  }
-
-  const helperPath = resolvePtySpawnHelperPath();
-
-  if (!helperPath) {
-    hasEnsuredPtySpawnHelper = true;
-    return;
-  }
-
-  try {
-    accessSync(helperPath, constants.X_OK);
-    hasEnsuredPtySpawnHelper = true;
-    return;
-  } catch {
-    // 文件存在但不可执行时，自动修复权限。
-  }
-
-  try {
-    chmodSync(helperPath, 0o755);
-    hasEnsuredPtySpawnHelper = true;
-  } catch (error) {
-    throw new AppError({
-      statusCode: 502,
-      errorCode: "PTY_START_FAILED",
-      detail:
-        error instanceof Error
-          ? `node-pty spawn-helper 权限修复失败: ${error.message}`
-          : "node-pty spawn-helper 权限修复失败"
-    });
-  }
-}
-
-function resolvePtySpawnHelperPath(): string | null {
-  const packageRoot = resolveLoadedNodePtyPackageRoot();
-
-  if (!packageRoot) {
-    return null;
-  }
-
-  const helperPath = path.join(
-    packageRoot,
-    "prebuilds",
-    `${process.platform}-${process.arch}`,
-    "spawn-helper"
-  );
-
-  return existsSync(helperPath) ? helperPath : null;
 }
