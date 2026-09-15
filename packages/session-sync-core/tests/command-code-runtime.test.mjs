@@ -195,6 +195,45 @@ test("CommandCodeRuntimeAdapter 会把思考强度传给 CLI", async () => {
   }
 });
 
+test("CommandCodeRuntimeAdapter 会把附件目录授权给 CLI", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-attachments-"));
+  const scriptPath = createRuntimeFixture(homeDir);
+  const captured = [];
+
+  try {
+    const adapter = new CommandCodeRuntimeAdapter({
+      commandPath: process.execPath,
+      spawnFactory: (command, args, options) => {
+        captured.push(args);
+        return spawn(command, [scriptPath, ...args], options);
+      }
+    });
+    await (await adapter.startSession(createRequest({
+      options: {
+        ...createRequest().options,
+        attachments: [
+          {
+            id: "attachment-1",
+            kind: "image",
+            fileName: "screenshot.png",
+            mimeType: "image/png",
+            fileSize: 128,
+            filePath: "/tmp/session-attachments/session-1/screenshot.png"
+          }
+        ]
+      }
+    }), { updateSessionBinding() {}, async emit() {} })).completed;
+
+    const addDirIndex = captured[0].indexOf("--add-dir");
+    assert.deepEqual(captured[0].slice(addDirIndex, addDirIndex + 2), [
+      "--add-dir",
+      "/tmp/session-attachments/session-1"
+    ]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("CommandCodeRuntimeAdapter 收到 SIGINT 后报告 interrupted", async () => {
   const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-interrupt-"));
   const scriptPath = createRuntimeFixture(homeDir, "interrupt");

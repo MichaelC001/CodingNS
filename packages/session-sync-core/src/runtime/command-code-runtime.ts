@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { messageIdFromRawRef, stringifyStructuredValue } from "../providers/utils.js";
 import type { NormalizedMessage } from "../types.js";
@@ -437,6 +437,10 @@ function buildCommandCodeArgs(
   };
   const prompt = options.providerPrompt?.trim() || options.content.trim();
   const args = ["-p", prompt, "--output-format", "json", "--skip-onboarding"];
+  const attachmentDirectories = Array.from(
+    new Set(options.attachments.map((attachment) => dirname(attachment.filePath)))
+  );
+  args.push(...attachmentDirectories.flatMap((directory) => ["--add-dir", directory]));
   if (mode === "continue") {
     if (options.continue === true) args.push("--continue");
     else args.push("--resume", request.providerSessionId!.trim());

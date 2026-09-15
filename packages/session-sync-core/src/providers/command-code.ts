@@ -674,7 +674,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
       supportsInterrupt: true,
       supportsStructuredToolCalls: true,
       supportsTokenUsage: true,
-      supportsAttachments: false,
+      supportsAttachments: true,
       supportsPermissionPrompt: true,
       supportsPermissionRequests: true,
       supportsCheckpoint: true,
