@@ -147,7 +147,7 @@ function createTimelineLayersState(): TimelineLayersState {
 
 function createHistoryMessage(overrides: {
   messageId: string;
-  provider: "codex" | "claude-code" | "opencode";
+  provider: "codex" | "claude-code" | "opencode" | "pi";
   providerSessionId: string;
   role: "user" | "assistant" | "tool" | "system";
   content: string;
@@ -1213,6 +1213,55 @@ describe("SessionRuntimeStore", () => {
     expect(historyMerged.timeline.activeRuntimeOverlayKeys).toEqual([]);
     expect(historyMerged.messages.map((item) => item.id)).toEqual([
       "assistant-history-real-1"
+    ]);
+  });
+
+  it("Pi runtime assistant 切到 JSONL 历史后不会把回复渲染两遍", () => {
+    const runtimeFirst = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "assistant-pi-runtime-1",
+        sessionId: "session-1",
+        role: "assistant",
+        kind: "text",
+        content: "程序员去面试，面试官问：你最大的缺点是什么？",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T10:00:01.000Z",
+        sequence: 12,
+        rawRef: "/tmp/pi/session-1.jsonl#pi-event=8&kind=text&index=0",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    const historyMerged = applyTimelineEventToLayers(runtimeFirst.timeline, "session-1", {
+      type: "history.merge",
+      source: "realtime_delta",
+      replaceSnapshotSeed: false,
+      messages: [
+        createHistoryMessage({
+          messageId: "assistant-pi-history-1",
+          provider: "pi",
+          providerSessionId: "pi-session-1",
+          role: "assistant",
+          kind: "text",
+          content: "程序员去面试，面试官问：你最大的缺点是什么？",
+          timestamp: "2026-09-16T10:00:02.000Z",
+          sequence: 1001,
+          rawRef: "pi:///tmp/pi/session-1.jsonl#line=8&part=0"
+        })
+      ]
+    });
+
+    expect(historyMerged.validationIssues).toEqual([]);
+    expect(historyMerged.timeline.runtimeOverlayMessages).toHaveLength(0);
+    expect(historyMerged.messages.map((item) => item.id)).toEqual([
+      "assistant-pi-history-1"
     ]);
   });
 
