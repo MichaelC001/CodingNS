@@ -3683,7 +3683,7 @@ function formatSessionStatValue(
   }
 
   if (metric.endsWith("Tokens")) {
-    return formatSessionStatsTokenCount(value);
+    return formatSessionStatsTokenCount(value, tokenDisplayUnit);
   }
 
   return formatTokenCount(value);
@@ -3811,6 +3811,7 @@ function SessionStatsIndicators({
   const codexTriggerRef = useRef<HTMLButtonElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltipStyle, setTooltipStyle] = useState<CSSProperties | null>(null);
+  const [rateLimitClock, setRateLimitClock] = useState(() => Date.now());
   const tooltipId = useId();
   const platform = usePlatform();
   const isMobile = platform.isMobile || platform.isNativeMobile;
@@ -3848,12 +3849,15 @@ function SessionStatsIndicators({
   const codexRemainingPercent = activeRateLimits
     ? resolveCodexRemainingPercent(activeRateLimits)
     : null;
+  const rateLimitWindows = activeRateLimits
+    ? resolveRateLimitWindows(activeRateLimits)
+    : [];
   const codexPlanTypeLabel = activeRateLimits
     ? formatCodexPlanType(activeRateLimits.planType)
     : null;
   const codexRateLimitLabel = codexRemainingPercent === null
     ? t("conversation.codexRateLimitLoading")
-    : t("conversation.codexRateLimitAriaLabel").replace("{value}", String(codexRemainingPercent));
+    : t("conversation.codexRateLimitAriaLabel").replace("{value}", formatRateLimitPercent(codexRemainingPercent));
 
   const updateTooltipStyle = useCallback(() => {
     const trigger = activeIndicator === "cache"
@@ -3932,6 +3936,16 @@ function SessionStatsIndicators({
       window.removeEventListener("scroll", updateTooltipStyle, true);
     };
   }, [open, updateTooltipStyle]);
+
+  useEffect(() => {
+    if (!open || activeIndicator !== "codex" || rateLimitWindows.length === 0) {
+      return;
+    }
+
+    setRateLimitClock(Date.now());
+    const timer = globalThis.setInterval(() => setRateLimitClock(Date.now()), 60_000);
+    return () => globalThis.clearInterval(timer);
+  }, [activeIndicator, open, rateLimitWindows.length]);
 
   const handleIndicatorClick = (indicator: SessionStatsIndicator) => {
     const isCurrentIndicator = activeIndicator === indicator;
@@ -4107,9 +4121,13 @@ function SessionStatsIndicators({
                 <section className="composer-codex-rate-limit-tooltip">
                   <div className="composer-codex-rate-limit-tooltip-heading">
                     <div className="composer-context-tooltip-title">{t(commandCodeRateLimits ? "conversation.commandCodeRateLimitTitle" : "conversation.codexRateLimitTitle")}</div>
-                    <strong>{codexRemainingPercent}%</strong>
+                    <strong className={commandCodeRateLimits ? "is-plan" : undefined}>
+                      {commandCodeRateLimits && codexPlanTypeLabel
+                        ? t("conversation.codexRateLimitPlanCompact").replace("{type}", codexPlanTypeLabel)
+                        : `${formatRateLimitPercent(codexRemainingPercent)}%`}
+                    </strong>
                   </div>
-                  {codexPlanTypeLabel ? (
+                  {codexPlanTypeLabel && !commandCodeRateLimits ? (
                     <div className="composer-codex-rate-limit-tooltip-plan">
                       {t("conversation.codexRateLimitPlan").replace(
                         "{type}",
@@ -4117,11 +4135,39 @@ function SessionStatsIndicators({
                       )}
                     </div>
                   ) : null}
-                  {resolveCodexNextReset(activeRateLimits) ? (
-                    <div className="composer-codex-rate-limit-tooltip-meta">
-                      {t("conversation.codexRateLimitNextReset").replace("{time}", formatCodexResetTime(resolveCodexNextReset(activeRateLimits)!))}
-                    </div>
-                  ) : null}
+                  <div className="composer-codex-rate-limit-tooltip-windows">
+                    {rateLimitWindows.map((entry) => {
+                      const remainingPercent = roundRateLimitPercent(entry.window.remainingPercent);
+                      const windowStateClassName = getCodexRateLimitStateClassName(remainingPercent);
+                      return (
+                        <div
+                          className={`composer-codex-rate-limit-tooltip-window${entry.key === "monthly" ? " is-monthly" : ""}`}
+                          key={entry.key}
+                        >
+                          <div className="composer-codex-rate-limit-tooltip-window-heading">
+                            <span>{t(entry.labelKey)}</span>
+                            {entry.window.resetsAt ? (
+                              <span className="composer-codex-rate-limit-tooltip-countdown">
+                                {formatRateLimitCountdown(entry.window.resetsAt, rateLimitClock)}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div
+                            className={`composer-codex-rate-limit-tooltip-window-progress ${windowStateClassName}`}
+                            role="progressbar"
+                            aria-label={`${t(entry.labelKey)} ${formatRateLimitPercent(remainingPercent)}%`}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={remainingPercent}
+                          >
+                            <span style={{ width: `${remainingPercent}%` }}>
+                              <strong>{formatRateLimitPercent(remainingPercent)}%</strong>
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                   {activeRateLimits.resetCredits ? (
                     <div className="composer-codex-rate-limit-tooltip-actions">
                       <span>{t("conversation.codexRateLimitCredits").replace("{count}", String(activeRateLimits.resetCredits.availableCount))}</span>
@@ -4690,40 +4736,53 @@ function formatTokenCount(value: number): string {
 }
 
 function resolveCodexRemainingPercent(rateLimits: CodexRateLimitsDto): number | null {
-  const windows = [rateLimits.primary, rateLimits.secondary].filter(
+  const windows = [rateLimits.primary, rateLimits.secondary, rateLimits.monthly].filter(
     (window): window is NonNullable<CodexRateLimitsDto["primary"]> => Boolean(window)
   );
   return windows.length > 0
-    ? Math.min(...windows.map((window) => window.remainingPercent))
+    ? roundRateLimitPercent(Math.min(...windows.map((window) => window.remainingPercent)))
     : null;
 }
 
-function resolveCodexNextReset(rateLimits: CodexRateLimitsDto): number | null {
-  return [rateLimits.primary, rateLimits.secondary]
-    .map((window) => window?.resetsAt)
-    .filter((value): value is number => typeof value === "number")
-    .sort((left, right) => left - right)[0] ?? null;
+function resolveRateLimitWindows(rateLimits: CodexRateLimitsDto): Array<{
+  key: string;
+  labelKey: "conversation.codexRateLimitWindowFiveHour" | "conversation.codexRateLimitWindowWeekly" | "conversation.codexRateLimitWindowMonthly";
+  window: NonNullable<CodexRateLimitsDto["primary"]>;
+}> {
+  return [
+    ["five-hour", "conversation.codexRateLimitWindowFiveHour", rateLimits.primary],
+    ["weekly", "conversation.codexRateLimitWindowWeekly", rateLimits.secondary],
+    ["monthly", "conversation.codexRateLimitWindowMonthly", rateLimits.monthly]
+  ].flatMap(([key, labelKey, window]) => window ? [{ key, labelKey, window }] : []) as Array<{
+    key: string;
+    labelKey: "conversation.codexRateLimitWindowFiveHour" | "conversation.codexRateLimitWindowWeekly" | "conversation.codexRateLimitWindowMonthly";
+    window: NonNullable<CodexRateLimitsDto["primary"]>;
+  }>;
 }
 
 function getCodexRateLimitStateClassName(remainingPercent: number): string {
-  if (remainingPercent <= 20) {
+  if (remainingPercent <= 10) {
     return "is-critical";
   }
 
-  if (remainingPercent <= 50) {
+  if (remainingPercent < 60) {
     return "is-warning";
   }
 
   return "is-normal";
 }
 
-function formatCodexResetTime(timestampSeconds: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(timestampSeconds * 1000));
+function formatRateLimitCountdown(timestampSeconds: number, nowMs = Date.now()): string {
+  const remainingMinutes = Math.max(0, Math.ceil((timestampSeconds * 1000 - nowMs) / 60_000));
+  const days = Math.floor(remainingMinutes / (24 * 60));
+  const hours = Math.floor((remainingMinutes % (24 * 60)) / 60);
+  const minutes = remainingMinutes % 60;
+  const hourText = t("conversation.codexRateLimitCountdownHours").replace("{count}", String(hours));
+  const minuteText = t("conversation.codexRateLimitCountdownMinutes").replace("{count}", String(minutes));
+  if (days > 0) {
+    return `${t("conversation.codexRateLimitCountdownDays").replace("{count}", String(days))}${hourText}${minuteText}`;
+  }
+  return `${hourText}${minuteText}`;
 }
 
 function formatCodexPlanType(planType: string | null): string | null {
@@ -4738,10 +4797,24 @@ function formatCodexPlanType(planType: string | null): string | null {
     team: "conversation.codexRateLimitPlanTeam",
     business: "conversation.codexRateLimitPlanBusiness",
     enterprise: "conversation.codexRateLimitPlanEnterprise",
-    free: "conversation.codexRateLimitPlanFree"
+    free: "conversation.codexRateLimitPlanFree",
+    go: "conversation.codexRateLimitPlanGo",
+    "individual-go": "conversation.codexRateLimitPlanGo",
+    goat: "conversation.codexRateLimitPlanGoat",
+    "individual-goat": "conversation.codexRateLimitPlanGoat",
+    max: "conversation.codexRateLimitPlanMax",
+    "individual-max": "conversation.codexRateLimitPlanMax"
   };
   const knownLabelKey = knownLabelKeys[normalized];
   return knownLabelKey
     ? t(knownLabelKey)
     : normalized.replace(/(^|[\s_-])\S/g, (character) => character.toUpperCase());
+}
+
+function roundRateLimitPercent(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function formatRateLimitPercent(value: number): string {
+  return roundRateLimitPercent(value).toFixed(2);
 }
