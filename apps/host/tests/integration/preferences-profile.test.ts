@@ -74,6 +74,14 @@ const DEFAULT_PROFILE_RESPONSE = {
     grok: {
       defaultModel: null,
       defaultReasoningLevel: null
+    },
+    "command-code": {
+      defaultModel: null,
+      defaultReasoningLevel: null
+    },
+    pi: {
+      defaultModel: null,
+      defaultReasoningLevel: null
     }
   },
   updatedAt: null
@@ -227,6 +235,10 @@ describe("偏好 profile 接口", () => {
           "deepseek-harness": {
             defaultModel: "deepseek-official:deepseek-v4-pro",
             defaultReasoningLevel: "off"
+          },
+          pi: {
+            defaultModel: "anthropic/claude-sonnet-4-5",
+            defaultReasoningLevel: "high"
           }
         }
       }
@@ -248,6 +260,10 @@ describe("偏好 profile 接口", () => {
         "deepseek-harness": {
           defaultModel: "deepseek-official:deepseek-v4-pro",
           defaultReasoningLevel: "off"
+        },
+        pi: {
+          defaultModel: "anthropic/claude-sonnet-4-5",
+          defaultReasoningLevel: "high"
         }
       },
       updatedAt: expect.any(String)
@@ -287,6 +303,10 @@ describe("偏好 profile 接口", () => {
         "deepseek-harness": {
           defaultModel: "deepseek-official:deepseek-v4-pro",
           defaultReasoningLevel: "off"
+        },
+        pi: {
+          defaultModel: "anthropic/claude-sonnet-4-5",
+          defaultReasoningLevel: "high"
         }
       },
       updatedAt: expect.any(String)
