@@ -90,6 +90,18 @@ describe("OpenCode model capabilities", () => {
         name: "deepseek/deepseek-reasoner"
       }
     ]);
+
+    const secondResponse = await hosted.app.inject({
+      method: "GET",
+      url: `/api/providers/opencode/capabilities?workspaceId=${workspaceId}`,
+      headers: {
+        authorization: `Bearer ${accessToken}`
+      }
+    });
+
+    expect(secondResponse.statusCode).toBe(200);
+    expect(secondResponse.json().modelOptions).toEqual(response.json().modelOptions);
+    expect(requestedDirectories).toEqual([fixture.workspaceDir]);
   });
 
   it("OpenCode server 不可达时会回退到 CLI 的多供应商模型列表", async () => {

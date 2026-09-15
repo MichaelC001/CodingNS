@@ -83,6 +83,31 @@ describe("SessionProviderPicker", () => {
     expect(mockGetProviderCapabilities).not.toHaveBeenCalled();
   });
 
+  it("同一工作区并发挂载多个入口时只发起一次能力请求", async () => {
+    let resolveCapabilities: ((value: ProviderCapabilitiesDto) => void) | null = null;
+    mockGetProviderCapabilities.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCapabilities = resolve;
+      })
+    );
+
+    render(
+      <>
+        <SessionProviderPicker workspaceId="workspace-picker-inflight" providers={["gemini"]} onSelect={() => undefined} />
+        <SessionProviderPicker workspaceId="workspace-picker-inflight" providers={["gemini"]} onSelect={() => undefined} />
+      </>
+    );
+
+    await waitFor(() => {
+      expect(mockGetProviderCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    resolveCapabilities?.(createUnavailableCapabilities("gemini", "未检测到 Gemini CLI"));
+    await waitFor(() => {
+      expect(screen.getAllByText("未检测到 Gemini CLI")).toHaveLength(2);
+    });
+  });
+
 
   it("PeerHOST 下 provider catalog 和能力请求都会带 targetHostId", async () => {
     mockGetProviderCapabilities.mockResolvedValue(

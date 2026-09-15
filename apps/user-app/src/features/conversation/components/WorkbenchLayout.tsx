@@ -255,10 +255,7 @@ import {
   type ButlerOverviewDto
 } from "../../butler/api/butler-api";
 import { BUTLER_FEATURE_ENABLED } from "../../butler/butler-feature-status";
-import {
-  clearSessionProviderPickerCapabilityCache,
-  SessionProviderPicker
-} from "./SessionProviderPicker";
+import { SessionProviderPicker } from "./SessionProviderPicker";
 import { WorkbenchHostSwitcher } from "../../workbench/components/WorkbenchHostSwitcher";
 import { SkillManagementPanel } from "../../../settings/SkillManagementPanel";
 import {
@@ -13611,10 +13608,6 @@ export function WorkbenchLayout({
     const client = new WorkbenchRealtimeClient({
       targetHostId: null,
       onConnectionChange: (connectionState) => {
-        if (connectionState === "connected") {
-          clearSessionProviderPickerCapabilityCache();
-        }
-
         if (connectionState === "reconnect_failed" && !hasNavigationDataRef.current) {
           setNavigationError(t("shell.navigationLoadFailed"));
           showToastRef.current({

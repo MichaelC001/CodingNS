@@ -369,6 +369,7 @@ interface WorkspaceStateRefreshStatus {
 
 interface ProviderCapabilityCacheEntry {
   refreshedAt: number;
+  runtimeStateUpdatedAt: string | null;
   value: ProviderCapabilities;
 }
 
@@ -457,7 +458,8 @@ const MUTABLE_HISTORY_TAIL_REFRESH_INTERVAL_MS = 1_200;
 const WORKSPACE_DISCOVERY_BACKGROUND_MAX_AGE_MS = 15_000;
 const WORKSPACE_DISCOVERY_PARTIAL_COOLDOWN_MS = 60_000;
 const WORKSPACE_DISCOVERY_SCAN_CONCURRENCY = 2;
-const PROVIDER_CAPABILITY_CACHE_MAX_AGE_MS = 5_000;
+// 动态能力以环境变化为主失效，较长兜底时间只防止配置异常时永久保留旧数据。
+const PROVIDER_CAPABILITY_CACHE_MAX_AGE_MS = 10 * 60_000;
 const WORKSPACE_DISCOVERY_PERSIST_BATCH_SIZE = 25;
 const SESSION_DISCOVERY_TRIGGER_SOURCES = {
   background: "session_history.workspace_discovery.scan",
@@ -497,7 +499,8 @@ export class SessionHistoryService {
   > | null;
   private readonly providerDiscoveryHelperClient = getSharedProviderDiscoveryHelperClient();
   private readonly providerSessionDiscoveryConfig: ProviderSessionDiscoveryHelperConfig;
-  private readonly providerRuntimeStateService: Pick<ProviderRuntimeStateService, "isProviderCliAvailable">;
+  private readonly providerRuntimeStateService: Pick<ProviderRuntimeStateService, "isProviderCliAvailable">
+    & Partial<Pick<ProviderRuntimeStateService, "getState">>;
   private readonly providerPriceBookService: Pick<
     ProviderPriceBookService,
     "getCurrentPriceBook" | "getPriceBook"
@@ -561,7 +564,8 @@ export class SessionHistoryService {
     > | null = null,
     sessionProviderConfigService: Pick<SessionProviderConfigService, "prepareSessionBinding" | "resolveSessionBinding"> | null = null,
     providerControlRepository: Pick<ProviderControlRepository, "get"> | null = null,
-    providerRuntimeStateService: Pick<ProviderRuntimeStateService, "isProviderCliAvailable"> | null = null,
+    providerRuntimeStateService: (Pick<ProviderRuntimeStateService, "isProviderCliAvailable">
+      & Partial<Pick<ProviderRuntimeStateService, "getState">>) | null = null,
     claudeModelOptionsService: ClaudeModelOptionsService | null = null,
     providerPriceBookService: Pick<
       ProviderPriceBookService,
@@ -1102,13 +1106,7 @@ export class SessionHistoryService {
         timeoutMs: 60_000,
         run: async ({ capabilities, workspacePath }) => {
           const value = await this.enrichProviderCapabilities(capabilities, workspacePath);
-          this.providerCapabilityCache.set(
-            buildProviderCapabilityCacheKey(capabilities.provider, workspacePath),
-            {
-              refreshedAt: Date.now(),
-              value
-            }
-          );
+          this.writeProviderCapabilityCache(capabilities.provider, workspacePath, value);
         }
       });
     }
@@ -1903,13 +1901,9 @@ export class SessionHistoryService {
       }
 
        if ((baseCapabilities.provider === "opencode" || baseCapabilities.provider === "command-code") && workspacePath) {
-        const refreshed = await this.enrichProviderCapabilities(baseCapabilities, workspacePath);
-        const cacheKey = buildProviderCapabilityCacheKey(baseCapabilities.provider, workspacePath);
-        this.providerCapabilityCache.set(cacheKey, {
-          refreshedAt: Date.now(),
-          value: refreshed
-        });
-        return this.applyProviderEnabledState(refreshed);
+        return this.applyProviderEnabledState(
+          await this.refreshProviderCapabilities(baseCapabilities, workspacePath)
+        );
       }
 
       if (baseCapabilities.provider === "grok" && workspacePath) {
@@ -1950,18 +1944,8 @@ export class SessionHistoryService {
         const normalizedCapabilities = this.applyProviderCliAvailability(capabilities);
 
          if ((normalizedCapabilities.provider === "opencode" || normalizedCapabilities.provider === "command-code") && workspacePath) {
-          return this.enrichProviderCapabilities(normalizedCapabilities, workspacePath)
-            .then((refreshed) => {
-              const cacheKey = buildProviderCapabilityCacheKey(
-                normalizedCapabilities.provider,
-                workspacePath
-              );
-              this.providerCapabilityCache.set(cacheKey, {
-                refreshedAt: Date.now(),
-                value: refreshed
-              });
-              return this.applyProviderEnabledState(refreshed);
-            });
+          return this.refreshProviderCapabilities(normalizedCapabilities, workspacePath)
+            .then((refreshed) => this.applyProviderEnabledState(refreshed));
         }
 
         if (normalizedCapabilities.provider === "deepseek-harness") {
@@ -2032,11 +2016,9 @@ export class SessionHistoryService {
     capabilities: ProviderCapabilities,
     workspacePath: string | null
   ): ProviderCapabilities {
-    const cacheKey = buildProviderCapabilityCacheKey(capabilities.provider, workspacePath);
-    const cached = this.providerCapabilityCache.get(cacheKey);
+    const cached = this.readProviderCapabilityCache(capabilities.provider, workspacePath);
 
     if (cached) {
-      this.taskManager.recordCacheHit(HOST_TASK_TYPES.providerCapabilityRefresh, cacheKey);
       return cached.value;
     }
 
@@ -2061,12 +2043,12 @@ export class SessionHistoryService {
     }
 
     const cacheKey = buildProviderCapabilityCacheKey(capabilities.provider, workspacePath);
-    const cached = this.providerCapabilityCache.get(cacheKey);
+    const cached = this.readProviderCapabilityCache(capabilities.provider, workspacePath);
 
     if (
-      cached &&
-      Date.now() - cached.refreshedAt <= PROVIDER_CAPABILITY_CACHE_MAX_AGE_MS
+      cached
     ) {
+      this.taskManager.recordCacheHit(HOST_TASK_TYPES.providerCapabilityRefresh, cacheKey);
       return;
     }
 
@@ -2098,11 +2080,10 @@ export class SessionHistoryService {
     workspacePath: string | null
   ): Promise<ProviderCapabilities> {
     const cacheKey = buildProviderCapabilityCacheKey(capabilities.provider, workspacePath);
-    const cached = this.providerCapabilityCache.get(cacheKey);
+    const cached = this.readProviderCapabilityCache(capabilities.provider, workspacePath);
 
     if (
       cached
-      && Date.now() - cached.refreshedAt <= PROVIDER_CAPABILITY_CACHE_MAX_AGE_MS
     ) {
       this.taskManager.recordCacheHit(HOST_TASK_TYPES.providerCapabilityRefresh, cacheKey);
       return cached.value;
@@ -2111,8 +2092,49 @@ export class SessionHistoryService {
     const task = this.enqueueProviderCapabilityRefresh(capabilities, workspacePath, cacheKey);
     await task.promise;
 
-    return this.providerCapabilityCache.get(cacheKey)?.value
+    return this.readProviderCapabilityCache(capabilities.provider, workspacePath)?.value
       ?? this.resolveProviderCapabilitiesImmediate(capabilities, workspacePath);
+  }
+
+  private readProviderCapabilityCache(
+    provider: string,
+    workspacePath: string | null
+  ): ProviderCapabilityCacheEntry | null {
+    const cacheKey = buildProviderCapabilityCacheKey(provider, workspacePath);
+    const cached = this.providerCapabilityCache.get(cacheKey);
+
+    if (!cached) {
+      return null;
+    }
+
+    const runtimeStateUpdatedAt = this.providerRuntimeStateService.getState?.(provider)?.updatedAt ?? null;
+    if (
+      cached.runtimeStateUpdatedAt !== null
+      && runtimeStateUpdatedAt !== null
+      && cached.runtimeStateUpdatedAt !== runtimeStateUpdatedAt
+    ) {
+      this.providerCapabilityCache.delete(cacheKey);
+      return null;
+    }
+
+    if (Date.now() - cached.refreshedAt > PROVIDER_CAPABILITY_CACHE_MAX_AGE_MS) {
+      return null;
+    }
+
+    return cached;
+  }
+
+  private writeProviderCapabilityCache(
+    provider: string,
+    workspacePath: string | null,
+    value: ProviderCapabilities
+  ): void {
+    const cacheKey = buildProviderCapabilityCacheKey(provider, workspacePath);
+    this.providerCapabilityCache.set(cacheKey, {
+      refreshedAt: Date.now(),
+      runtimeStateUpdatedAt: this.providerRuntimeStateService.getState?.(provider)?.updatedAt ?? null,
+      value
+    });
   }
 
   private enqueueProviderCapabilityRefresh(

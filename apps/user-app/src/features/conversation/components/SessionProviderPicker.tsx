@@ -20,6 +20,7 @@ interface SessionProviderDefinition {
 }
 
 const providerCapabilitiesCache = new Map<string, ProviderCapabilitiesDto>();
+const providerCapabilitiesInFlight = new Map<string, Promise<ProviderCapabilitiesDto>>();
 
 export function clearSessionProviderPickerCapabilityCache(): void {
   providerCapabilitiesCache.clear();
@@ -97,9 +98,27 @@ export function SessionProviderPicker({
 
     // 每个供应商单独请求，完成一个刷新一个，不用等最慢的
     for (const provider of missingProviders) {
-      void getProviderCapabilities(provider, workspaceId, undefined, {
+      const cacheKey = buildCapabilityCacheKey(
+        workspaceId,
+        normalizeTargetHostId(targetHostIdForRequest) ?? "current",
+        provider
+      );
+      const existingRequest = providerCapabilitiesInFlight.get(cacheKey);
+      const request = existingRequest ?? getProviderCapabilities(provider, workspaceId, undefined, {
         targetHostId: targetHostIdForRequest
-      }).then((capabilities) => {
+      });
+
+      if (!existingRequest) {
+        providerCapabilitiesInFlight.set(cacheKey, request);
+        const clearInFlight = () => {
+          if (providerCapabilitiesInFlight.get(cacheKey) === request) {
+            providerCapabilitiesInFlight.delete(cacheKey);
+          }
+        };
+        void request.then(clearInFlight, clearInFlight);
+      }
+
+      void request.then((capabilities) => {
         if (cancelled) return;
 
         writeCachedCapabilities(workspaceId, targetHostIdForRequest, { [provider]: capabilities });

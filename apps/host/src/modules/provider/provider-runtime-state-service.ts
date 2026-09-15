@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+
 import type { ProviderId } from "@codingns/session-sync-core";
 
 import type { HostConfig } from "../../config/env.js";
@@ -29,6 +31,7 @@ export class ProviderRuntimeStateService {
   ];
   private readonly providerInstallCommands: Readonly<Partial<Record<ProviderId, string>>>;
   private readonly stateByProvider = new Map<ProviderId, ProviderRuntimeStateSnapshot>();
+  private readonly environmentFingerprintByProvider = new Map<ProviderId, string>();
 
   constructor(
     config: HostConfig,
@@ -59,6 +62,11 @@ export class ProviderRuntimeStateService {
     const cached = this.stateByProvider.get(normalizedProvider);
 
     if (cached) {
+      // 普通读取只做廉价指纹比较；只有发现路径或文件元数据变化时才重新执行版本探测。
+      if (this.environmentFingerprintByProvider.get(normalizedProvider) !== this.computeEnvironmentFingerprint(normalizedProvider)) {
+        return this.refreshProvider(normalizedProvider);
+      }
+
       return cached;
     }
 
@@ -81,6 +89,10 @@ export class ProviderRuntimeStateService {
     const snapshot = this.probeProvider(normalizedProvider);
 
     this.stateByProvider.set(normalizedProvider, snapshot);
+    this.environmentFingerprintByProvider.set(
+      normalizedProvider,
+      this.computeEnvironmentFingerprint(normalizedProvider)
+    );
     this.repository?.upsert(mapSnapshotToRecord(snapshot));
 
     return snapshot;
@@ -131,6 +143,30 @@ export class ProviderRuntimeStateService {
       commandPath: resolvedCommandPath,
       updatedAt
     };
+  }
+
+  private computeEnvironmentFingerprint(provider: ProviderId): string {
+    const configuredCommandPath = this.providerInstallCommands[provider] ?? "";
+    const resolvedCommandPath = configuredCommandPath
+      ? resolveAvailableCommandPath(configuredCommandPath)
+      : null;
+    let fileSignature = "missing";
+
+    if (resolvedCommandPath) {
+      try {
+        const stats = statSync(resolvedCommandPath);
+        fileSignature = [stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.mode].join(":");
+      } catch {
+        fileSignature = "unreadable";
+      }
+    }
+
+    return [
+      configuredCommandPath,
+      process.env.PATH ?? "",
+      resolvedCommandPath ?? "",
+      fileSignature
+    ].join("|");
   }
 }
 
