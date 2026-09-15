@@ -48,7 +48,8 @@ const PREFERENCE_PROVIDER_IDS: PreferenceProviderId[] = [
   "kimi",
   "legna-code",
   "deepseek-harness",
-  "grok"
+  "grok",
+  "command-code"
 ];
 const SHADOW_STORAGE_KEY = "codingns.account.preferences.shadow";
 const LEGACY_CLIENT_CONFIG_KEY = "codingns.client.runtime-config";
@@ -168,6 +169,10 @@ function createDefaultProviders(): AccountPreferenceState["providers"] {
       defaultReasoningLevel: null
     },
     grok: {
+      defaultModel: null,
+      defaultReasoningLevel: null
+    },
+    "command-code": {
       defaultModel: null,
       defaultReasoningLevel: null
     }

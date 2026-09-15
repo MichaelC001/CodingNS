@@ -6,10 +6,11 @@ export type PreferenceProviderId =
   | "codex"
   | "opencode"
   | "gemini"
-  | "legna-code"
   | "kimi"
+  | "legna-code"
   | "deepseek-harness"
-  | "grok";
+  | "grok"
+  | "command-code";
 export type PreferenceThemeId = "light" | "dark" | "sky-blue" | "eye-green";
 export type PreferenceReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type DebugPortPoolRole = "frontend" | "backend" | "worker" | "mock" | "custom";

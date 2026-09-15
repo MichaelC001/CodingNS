@@ -14,6 +14,7 @@ import kimiIcon from "../../../assets/provider-icons/kimi.png";
 import openCodeIcon from "../../../assets/provider-icons/opencode.png";
 import deepSeekHarnessIcon from "../../../assets/provider-icons/deepseek-harness.svg";
 import grokIcon from "../../../assets/provider-icons/grok.png";
+import commandCodeIcon from "../../../assets/provider-icons/command-code.svg";
 
 const REASONING_LEVEL_SET = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 
@@ -44,7 +45,8 @@ export const REGISTERED_PROVIDER_IDS: BuiltinProviderId[] = [
   "kimi",
   "legna-code",
   "deepseek-harness",
-  "grok"
+  "grok",
+  "command-code"
 ];
 
 export const SESSION_PROVIDER_PICKER_IDS: BuiltinProviderId[] = [
@@ -55,7 +57,8 @@ export const SESSION_PROVIDER_PICKER_IDS: BuiltinProviderId[] = [
   "kimi",
   "legna-code",
   "deepseek-harness",
-  "grok"
+  "grok",
+  "command-code"
 ];
 
 export function orderProviderIds(providerIds: readonly ProviderId[]): ProviderId[] {
@@ -154,7 +157,7 @@ const PROVIDER_METADATA: Record<BuiltinProviderId, ProviderMetadata> = {
     defaultReasoningLevel: null,
     supportsInterrupt: true,
     supportsAttachments: false,
-    supportsPermissionPrompt: true,
+    supportsPermissionPrompt: false,
     supportsSlashMenuByDefault: false,
     supportsSessionDeleteByDefault: true,
     foldRulesMessagesByDefault: false
@@ -201,6 +204,22 @@ const PROVIDER_METADATA: Record<BuiltinProviderId, ProviderMetadata> = {
     supportsInterrupt: false,
     supportsAttachments: false,
     supportsPermissionPrompt: false,
+    supportsSlashMenuByDefault: false,
+    supportsSessionDeleteByDefault: true,
+    foldRulesMessagesByDefault: false
+  },
+  "command-code": {
+    displayNameKey: "conversation.providerCommandCode",
+    fullDisplayNameKey: "shell.providerCommandCode",
+    draftTitleKey: "conversation.draftTitleCommandCode",
+    defaultModelLabelKey: "conversation.modelUseCliDefault",
+    icon: commandCodeIcon,
+    defaultRunInputMode: "none",
+    reasoningLevelPersists: false,
+    defaultReasoningLevel: null,
+    supportsInterrupt: true,
+    supportsAttachments: false,
+    supportsPermissionPrompt: true,
     supportsSlashMenuByDefault: false,
     supportsSessionDeleteByDefault: true,
     foldRulesMessagesByDefault: false

@@ -255,13 +255,15 @@ const FORK_PROVIDER_IDS: ProviderId[] = [
   "opencode",
   "gemini",
   "kimi",
-  "deepseek-harness"
+  "deepseek-harness",
+  "command-code"
 ];
 const RECONSTRUCTED_FORK_TARGET_PROVIDERS = new Set<ProviderId>([
   "codex",
   "claude-code",
   "opencode",
-  "deepseek-harness"
+  "deepseek-harness",
+  "command-code"
 ]);
 const NATIVE_FORK_PROVIDERS = new Set<ProviderId>([
   "codex",

@@ -50,6 +50,22 @@ describe("provider-ui", () => {
     expect(getProviderIcon("grok")).toContain("grok.png");
   });
 
+  it("会把 Command Code 暴露为会话创建入口并使用本地图标", () => {
+    userPreferenceStore.hydrate({
+      ...initialPreferenceState,
+      profile: {
+        ...initialPreferenceState.profile,
+        language: "zh-CN"
+      }
+    });
+    expect(SESSION_PROVIDER_PICKER_IDS.includes("command-code")).toBe(true);
+    expect(getProviderDisplayName("command-code")).toBe("Command Code");
+    expect(getDraftTitle("command-code")).toBe("新的 Command Code 会话");
+    expect(getProviderIcon("command-code")).toContain("data:image/svg+xml");
+    expect(createDraftCapabilities("command-code").supportsInterrupt).toBe(true);
+    expect(createDraftCapabilities("command-code").supportsAttachments).toBe(false);
+  });
+
   it("会把 legna-code 排在 kimi 之后", () => {
     expect(SESSION_PROVIDER_PICKER_IDS.indexOf("legna-code")).toBeGreaterThan(
       SESSION_PROVIDER_PICKER_IDS.indexOf("kimi")
