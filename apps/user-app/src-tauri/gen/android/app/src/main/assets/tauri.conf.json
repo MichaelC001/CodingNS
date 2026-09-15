@@ -1,0 +1,149 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "CodingNS",
+  "version": "2.1.0",
+  "identifier": "com.codingns.userapp",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": true,
+        "url": "index.html",
+        "dragDropEnabled": true,
+        "center": false,
+        "width": 1440,
+        "height": 920,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "resizable": true,
+        "maximizable": true,
+        "minimizable": true,
+        "closable": true,
+        "title": "CodingNS",
+        "fullscreen": false,
+        "focus": true,
+        "focusable": true,
+        "transparent": true,
+        "maximized": false,
+        "visible": true,
+        "decorations": true,
+        "alwaysOnBottom": false,
+        "alwaysOnTop": false,
+        "visibleOnAllWorkspaces": false,
+        "contentProtected": false,
+        "skipTaskbar": false,
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 16
+        },
+        "hiddenTitle": true,
+        "acceptFirstMouse": false,
+        "shadow": true,
+        "incognito": false,
+        "zoomHotkeysEnabled": false,
+        "browserExtensionsEnabled": false,
+        "useHttpsScheme": false,
+        "javascriptDisabled": false,
+        "allowLinkPreview": true,
+        "disableInputAccessoryView": false,
+        "scrollBarStyle": "default"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http: https: ws: wss:; font-src 'self'",
+      "freezePrototype": false,
+      "dangerousDisableAssetCspModification": false,
+      "assetProtocol": {
+        "scope": [],
+        "enable": false
+      },
+      "pattern": {
+        "use": "brownfield"
+      },
+      "capabilities": []
+    },
+    "macOSPrivateApi": true,
+    "withGlobalTauri": false,
+    "enableGTKAppId": false
+  },
+  "build": {
+    "devUrl": "http://127.0.0.1:5173/",
+    "frontendDist": "../dist",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "removeUnusedCommands": false,
+    "additionalWatchFolders": []
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "useLocalToolsDir": false,
+    "windows": {
+      "digestAlgorithm": null,
+      "certificateThumbprint": null,
+      "timestampUrl": null,
+      "tsp": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "allowDowngrades": true,
+      "wix": null,
+      "nsis": null,
+      "signCommand": null
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false,
+        "files": {}
+      },
+      "deb": {
+        "files": {}
+      },
+      "rpm": {
+        "release": "1",
+        "epoch": 0,
+        "files": {}
+      }
+    },
+    "macOS": {
+      "files": {},
+      "minimumSystemVersion": "10.13",
+      "hardenedRuntime": true,
+      "infoPlist": "Info.plist",
+      "dmg": {
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
+      }
+    },
+    "iOS": {
+      "developmentTeam": "828JR8JA8V",
+      "bundleVersion": "104",
+      "minimumSystemVersion": "14.0"
+    },
+    "android": {
+      "minSdkVersion": 24,
+      "autoIncrementVersionCode": false
+    }
+  },
+  "plugins": {}
+}
