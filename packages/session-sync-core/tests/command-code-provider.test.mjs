@@ -154,3 +154,31 @@ test("CommandCodeAdapter 能把 CLI 模型列表转换为模型和思考强度�
     rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+test("CommandCodeAdapter 读取 transcript usage、上下文占用和费用", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-usage-"));
+  const workspacePath = "/Users/jackson/Code/CodingNS";
+  const fixture = createTranscript(homeDir, workspacePath);
+  appendFileSync(fixture.filePath, `${JSON.stringify({
+    type: "message",
+    id: "assistant-usage",
+    sessionId: fixture.sessionId,
+    timestamp: "2026-09-14T10:00:04.000Z",
+    model: "qwen/test",
+    usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 5, costUsd: 0.12, contextWindow: 1000 },
+    message: { role: "assistant", content: [{ type: "text", text: "完成" }] }
+  })}\n`, "utf8");
+
+  try {
+    const adapter = new CommandCodeAdapter({ homeDir });
+    const context = await adapter.readContextUsage(fixture.sessionId, fixture.filePath);
+    assert.equal(context.promptTokens, 145);
+    assert.equal(context.contextWindow, 1000);
+    const stats = await adapter.readSessionStats(fixture.sessionId, fixture.filePath);
+    assert.equal(stats.metrics.inputTokens.value, 100);
+    assert.equal(stats.metrics.outputTokens.value, 20);
+    assert.equal(stats.metrics.costUsd.value, 0.12);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});

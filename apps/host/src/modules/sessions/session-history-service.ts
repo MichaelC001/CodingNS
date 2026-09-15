@@ -39,6 +39,7 @@ import type { HostConfig } from "../../config/env.js";
 import { AppError } from "../../shared/errors/app-error.js";
 import { hashContent } from "../../shared/utils/hash.js";
 import { createId } from "../../shared/utils/id.js";
+import { logCommandCodeDebug } from "../../shared/utils/command-code-debug-log.js";
 import { logPerformance } from "../../shared/utils/perf-log.js";
 import {
   isTerminalDebugEnabled,
@@ -1586,6 +1587,18 @@ export class SessionHistoryService {
 
     binding = this.repairClaudeEmptyBindingBeforeHistoryRead(resolvedSessionId, binding);
 
+    logCommandCodeDebug("history.read.begin", {
+      sessionId: resolvedSessionId,
+      requestedSessionId: sessionId,
+      provider: binding.provider,
+      providerSessionId: binding.providerSessionId,
+      rawStoreRef: binding.rawStoreRef,
+      runtimeHomeDir: binding.runtimeHomeDir,
+      configuredCommandCodeHomeDir: this.providerSessionDiscoveryConfig.commandCodeHomeDir,
+      direction,
+      cursor
+    });
+
     const current = this.sessionStatusSnapshotRepository.findBySessionId(resolvedSessionId);
     const safeLimit = clampLimit(limit);
     const knownTotalLookupStartedAt = Date.now();
@@ -1671,6 +1684,14 @@ export class SessionHistoryService {
 
       return page;
     } catch (error) {
+      logCommandCodeDebug("history.read.failed", {
+        sessionId: resolvedSessionId,
+        provider: binding.provider,
+        providerSessionId: binding.providerSessionId,
+        rawStoreRef: binding.rawStoreRef,
+        runtimeHomeDir: binding.runtimeHomeDir,
+        error: error instanceof Error ? error.message : String(error)
+      });
       logPerformance(
         "session.read_history.failed",
         Date.now() - startedAt,
@@ -1737,6 +1758,14 @@ export class SessionHistoryService {
     minTimestamp: string | null = null
   ): Promise<SendMessageResult["message"] | null> {
     const binding = this.getBindingOrThrow(sessionId);
+
+    logCommandCodeDebug("changed-files.index.begin", {
+      sessionId,
+      provider: binding.provider,
+      providerSessionId: binding.providerSessionId,
+      rawStoreRef: binding.rawStoreRef,
+      runtimeHomeDir: binding.runtimeHomeDir
+    });
     const acceptedContents = new Set(
       (Array.isArray(content) ? content : [content]).filter((value) => value.trim().length > 0)
     );
@@ -3284,6 +3313,14 @@ export class SessionHistoryService {
           rawStoreRef: subagent.raw_store_ref
         });
       } catch (error) {
+        logCommandCodeDebug("changed-files.index.read-failed", {
+          sessionId,
+          provider: binding.provider,
+          providerSessionId: binding.providerSessionId,
+          rawStoreRef: binding.rawStoreRef,
+          runtimeHomeDir: binding.runtimeHomeDir,
+          error: error instanceof Error ? error.message : String(error)
+        });
         if (!isProviderSessionMissing(error)) {
           // 子Agent文件删除失败不阻断父会话删除
         }

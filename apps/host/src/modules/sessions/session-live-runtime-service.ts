@@ -32,6 +32,7 @@ import {
 import type { HostConfig } from "../../config/env.js";
 import { AppError, isAppError } from "../../shared/errors/app-error.js";
 import { createId } from "../../shared/utils/id.js";
+import { logCommandCodeDebug } from "../../shared/utils/command-code-debug-log.js";
 import { isPerfDebugEnabled, logPerformance } from "../../shared/utils/perf-log.js";
 import { logPermissionDebug } from "../../shared/utils/permission-debug-log.js";
 import { logResourceScopeDebug } from "../../shared/utils/resource-scope-debug-log.js";
@@ -3209,6 +3210,17 @@ export class SessionLiveRuntimeService {
         userId
       });
     });
+    if (event.provider === "command-code") {
+      logCommandCodeDebug("runtime.event.binding", {
+        sessionId,
+        workspaceId,
+        eventType: event.type,
+        providerSessionId: event.providerSessionId,
+        rawStoreRef: event.rawStoreRef,
+        status: event.status,
+        errorCode: event.errorCode
+      });
+    }
     const currentState = await this.runRuntimeSqliteRead(sessionId, "findSessionState", () =>
       this.sessionStateRepository.findBySessionAndUser(sessionId, userId)
     );

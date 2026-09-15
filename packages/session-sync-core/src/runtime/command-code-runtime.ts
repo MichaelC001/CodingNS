@@ -37,6 +37,10 @@ interface ProgressiveMessageRef {
 
 const DEFAULT_INTERRUPT_GRACE_MS = 1_200;
 
+const COMMAND_CODE_DEBUG_ENABLED = /^(1|true|yes|on)$/i.test(
+  process.env.CODINGNS_COMMAND_CODE_DEBUG?.trim() ?? ""
+);
+
 /** Command Code 外部 CLI 运行时适配器。stdout 是 NDJSON，stderr 只用于诊断。 */
 export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
   readonly providerId = "command-code" as const;
@@ -102,10 +106,24 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     const progressiveMessageRefs = new Map<"text" | "thinking", ProgressiveMessageRef>();
     let nextSequence = Math.max(0, request.sequenceBase ?? 0);
     const toolStates = new Map<string, NormalizedMessage["toolCall"]>();
+    const childEnv = buildCommandCodeEnv(request.runtimeEnv);
     const child = this.spawnFactory(this.commandPath, args, {
       cwd: request.workspacePath,
-      env: buildCommandCodeEnv(request.runtimeEnv),
+      env: childEnv,
       stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    logCommandCodeDebug("launch", {
+      sessionId: request.sessionId,
+      providerSessionId: pendingProviderSessionId,
+      commandPath: this.commandPath,
+      homeDir,
+      workspacePath: request.workspacePath,
+      mode,
+      outputFormat: "json",
+      runtimeHomeDir: request.runtimeHomeDir,
+      childHome: childEnv.HOME ?? null,
+      childUserProfile: childEnv.USERPROFILE ?? null
     });
 
     const enqueue = (event: Parameters<ProviderRuntimeEventSink["emit"]>[0]): void => {
@@ -120,6 +138,12 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       if (!discoveredId || discoveredId === providerSessionId) return;
       providerSessionId = discoveredId;
       rawStoreRef = resolveCommandCodeTranscriptPath(homeDir, request.workspacePath, discoveredId);
+      logCommandCodeDebug("binding.update", {
+        sessionId: request.sessionId,
+        providerSessionId,
+        rawStoreRef,
+        eventType: readEventType(event)
+      });
       sink.updateSessionBinding({ providerSessionId, rawStoreRef });
     };
     const emitStatus = (
@@ -333,6 +357,15 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
           terminalState === "failed" ? `COMMAND_CODE_EXIT_${code ?? signal ?? "UNKNOWN"}` : undefined
         );
       }
+      logCommandCodeDebug("process.close", {
+        sessionId: request.sessionId,
+        providerSessionId,
+        rawStoreRef,
+        code,
+        signal,
+        stderrLength: stderrBuffer.length,
+        stderrTail: stderrBuffer.trim().slice(-500)
+      });
       settle(terminalState === "failed" && code !== 0
         ? new Error(`COMMAND_CODE_EXIT_${code ?? signal ?? "UNKNOWN"}`)
         : undefined);
@@ -367,6 +400,26 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       },
       isAlive: () => isChildAlive(child)
     };
+  }
+}
+
+function logCommandCodeDebug(scope: string, detail: Record<string, unknown>): void {
+  if (!COMMAND_CODE_DEBUG_ENABLED) return;
+  const suffix = Object.entries(detail)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${formatCommandCodeDebugValue(value)}`)
+    .join(" ");
+  console.info(`[session-sync-core][command-code-debug] ${scope}${suffix ? ` ${suffix}` : ""}`);
+}
+
+function formatCommandCodeDebugValue(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }
 

@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 import { promisify } from "node:util";
 
 import type {
+  ContextUsageSnapshot,
   DetectSessionsOptions,
   ForkSessionOptions,
   ForkSessionResult,
@@ -31,6 +32,9 @@ import type {
   ProviderModelOption,
   ProviderSessionDiscovery,
   ProviderSessionSummary,
+  ProviderSessionStats,
+  ProviderSessionStatsReadOptions,
+  ProviderSessionStatWatermark,
   ProviderSubscription,
   ResumeSessionResult,
   SendMessageResult,
@@ -38,6 +42,8 @@ import type {
   StartSessionOptions,
   StartSessionResult
 } from "../types.js";
+import { addProviderNativeCostMetric, addCatalogCostMetric, filterUsageLinesByBillingStart, buildProviderSessionModelUsages, type VerifiedUsageLine } from "../session-pricing.js";
+import { addDerivedCacheHitRate } from "../session-stats.js";
 import {
   appendJsonLine,
   createRawRef,
@@ -71,6 +77,7 @@ export interface CommandCodeAdapterOptions {
   commandPath?: string;
   modelDiscoveryTimeoutMs?: number;
   listModels?: (workspacePath: string) => Promise<string[]>;
+  readStatus?: (workspacePath: string) => Promise<Record<string, unknown> | null>;
 }
 
 interface TranscriptCache {
@@ -289,6 +296,77 @@ export class CommandCodeAdapter implements ProviderAdapter {
       resumedAt: nextTimestamp(),
       rawStoreRef: filePath
     };
+  }
+
+  async readContextUsage(
+    providerSessionId: string,
+    rawStoreRef: string
+  ): Promise<ContextUsageSnapshot | null> {
+    const filePath = this.resolveSessionFilePath(providerSessionId, rawStoreRef);
+    const records = readJsonLinesWithMetadata(filePath).records;
+    const snapshot = findLatestCommandCodeUsage(records);
+    if (!snapshot) return null;
+    const sessionCwd = ensureText(records.find((record) => record.data.type === "session")?.data.cwd).trim();
+    const status = await this.readCliStatus(sessionCwd || dirname(filePath));
+    const modelId = snapshot.model || readStatusText(status, "model");
+    const contextWindow = snapshot.contextWindow ?? readNonNegativeInteger(
+      readStatusValue(status, "context_window", "contextWindow")
+    );
+    if (!contextWindow || contextWindow <= 0) return null;
+    const promptTokens = snapshot.inputTokens + snapshot.cacheReadTokens + snapshot.cacheWriteTokens;
+    return {
+      provider: this.providerId,
+      promptTokens,
+      uncachedInputTokens: snapshot.inputTokens,
+      cachedInputTokens: snapshot.cacheReadTokens + snapshot.cacheWriteTokens,
+      contextWindow,
+      usageRatio: Math.min(Math.max(promptTokens / contextWindow, 0), 1),
+      source: "provider-log",
+      contextWindowSource: "provider-runtime",
+      modelId: modelId || null,
+      capturedAt: snapshot.timestamp || null,
+      isEstimated: false
+    };
+  }
+
+  async readSessionStats(
+    providerSessionId: string,
+    rawStoreRef: string,
+    options?: ProviderSessionStatsReadOptions
+  ): Promise<ProviderSessionStats | null> {
+    const filePath = this.resolveSessionFilePath(providerSessionId, rawStoreRef);
+    const records = readJsonLinesWithMetadata(filePath).records;
+    const snapshots = collectCommandCodeUsage(records);
+    if (snapshots.length === 0) return null;
+    const capturedAt = nextTimestamp();
+    const watermark = { kind: "source-timestamp" as const, value: snapshots.at(-1)?.timestamp || capturedAt };
+    const metrics: ProviderSessionStats["metrics"] = {};
+    addCommandCodeMetric(metrics, "inputTokens", snapshots.reduce((sum, item) => sum + item.inputTokens, 0), watermark);
+    addCommandCodeMetric(metrics, "uncachedInputTokens", snapshots.reduce((sum, item) => sum + item.inputTokens, 0), watermark);
+    addCommandCodeMetric(metrics, "outputTokens", snapshots.reduce((sum, item) => sum + item.outputTokens, 0), watermark);
+    addCommandCodeMetric(metrics, "cacheReadTokens", snapshots.reduce((sum, item) => sum + item.cacheReadTokens, 0), watermark);
+    addCommandCodeMetric(metrics, "cacheWriteTokens", snapshots.reduce((sum, item) => sum + item.cacheWriteTokens, 0), watermark);
+    addCommandCodeMetric(metrics, "totalTokens", snapshots.reduce((sum, item) => sum + item.inputTokens + item.outputTokens + item.cacheReadTokens + item.cacheWriteTokens, 0), watermark);
+    addCommandCodeMetric(metrics, "turns", snapshots.length, watermark);
+    addDerivedCacheHitRate(metrics, { denominator: ["inputTokens", "cacheReadTokens", "cacheWriteTokens"] });
+    const nativeCost = snapshots.reduce((sum, item) => sum + (item.costUsd ?? 0), 0);
+    const hasNativeCost = snapshots.some((item) => item.costUsd !== null);
+    if (hasNativeCost) addProviderNativeCostMetric(metrics, nativeCost, watermark);
+    const usageLines: VerifiedUsageLine[] = snapshots.map((item, index) => ({
+      key: `${providerSessionId}:${item.messageId || index}`,
+      provider: this.providerId,
+      model: item.model,
+      inputTokens: item.inputTokens,
+      outputTokens: item.outputTokens,
+      cacheReadTokens: item.cacheReadTokens,
+      cacheWriteTokens: item.cacheWriteTokens,
+      completed: true,
+      timestamp: item.timestamp || capturedAt
+    }));
+    const billingLines = filterUsageLinesByBillingStart(usageLines, options?.billing);
+    if (!hasNativeCost) addCatalogCostMetric(metrics, billingLines, options, watermark);
+    const modelUsages = buildProviderSessionModelUsages(usageLines);
+    return { provider: this.providerId, capturedAt, metrics, ...(modelUsages.length > 0 ? { modelUsages } : {}) };
   }
 
   async getProviderCapabilitiesForWorkspace(workspacePath: string): Promise<ProviderCapabilities> {
@@ -528,6 +606,23 @@ export class CommandCodeAdapter implements ProviderAdapter {
     return parseCommandCodeModelList(result.stdout);
   }
 
+  private async readCliStatus(workspacePath: string): Promise<Record<string, unknown> | null> {
+    if (this.options.readStatus) return this.options.readStatus(workspacePath);
+    try {
+      const result = await execFile(this.options.commandPath?.trim() || "command-code", ["status", "--json"], {
+        cwd: workspacePath,
+        env: { ...process.env },
+        timeout: this.options.modelDiscoveryTimeoutMs ?? COMMAND_CODE_MODEL_DISCOVERY_TIMEOUT_MS,
+        windowsHide: true,
+        shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(this.options.commandPath?.trim() || "")
+      });
+      const parsed = JSON.parse(result.stdout) as unknown;
+      return asRecord(parsed);
+    } catch {
+      return null;
+    }
+  }
+
   private listWorkspaceFiles(workspacePath: string, knownSessions: ProviderSessionSummary[]): string[] {
     const projectsRoot = this.projectsRoot();
     const exactProjectDir = join(projectsRoot, workspaceSlug(workspacePath));
@@ -586,10 +681,25 @@ export class CommandCodeAdapter implements ProviderAdapter {
   }
 
   private resolveSessionFilePath(providerSessionId: string, rawStoreRef: string): string {
-    if (this.isSafeTranscriptPath(rawStoreRef) && existsSync(rawStoreRef)) {
+    const rawPathExists = this.isSafeTranscriptPath(rawStoreRef) && existsSync(rawStoreRef);
+    const projectsRoot = this.projectsRoot();
+
+    commandCodeDebug("history.resolve-path", {
+      providerSessionId,
+      rawStoreRef,
+      rawPathExists,
+      projectsRoot
+    });
+
+    if (rawPathExists) {
       return resolve(rawStoreRef);
     }
     const found = this.findSessionFile(providerSessionId);
+    commandCodeDebug("history.resolve-path.result", {
+      providerSessionId,
+      rawStoreRef,
+      found
+    });
     if (!found) throw new Error("PROVIDER_SESSION_NOT_FOUND");
     return found;
   }
@@ -599,13 +709,21 @@ export class CommandCodeAdapter implements ProviderAdapter {
   }
 
   private findSessionFile(providerSessionId: string): string | null {
-    const candidates = walkJsonlFiles(this.projectsRoot()).filter((filePath) => {
+    const allFiles = walkJsonlFiles(this.projectsRoot());
+    const candidates = allFiles.filter((filePath) => {
       if (basename(filePath, ".jsonl") === providerSessionId) return true;
       try {
         return resolveTranscriptSessionId(filePath) === providerSessionId;
       } catch {
         return false;
       }
+    });
+    commandCodeDebug("history.find-session-file", {
+      providerSessionId,
+      projectsRoot: this.projectsRoot(),
+      jsonlFileCount: allFiles.length,
+      candidateCount: candidates.length,
+      candidates: candidates.slice(0, 5)
     });
     return candidates[0] ?? null;
   }
@@ -627,6 +745,26 @@ export class CommandCodeAdapter implements ProviderAdapter {
     if (!existsSync(filePath)) return 0;
     const content = readFileSync(filePath, "utf8");
     return content.length === 0 ? 0 : content.split(/\r?\n/).filter(Boolean).length;
+  }
+}
+
+function commandCodeDebug(scope: string, detail: Record<string, unknown>): void {
+  if (!/^(1|true|yes|on)$/i.test(process.env.CODINGNS_COMMAND_CODE_DEBUG?.trim() ?? "")) return;
+  const suffix = Object.entries(detail)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${formatCommandCodeDebugValue(value)}`)
+    .join(" ");
+  console.info(`[session-sync-core][command-code-debug] ${scope}${suffix ? ` ${suffix}` : ""}`);
+}
+
+function formatCommandCodeDebugValue(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }
 
@@ -840,6 +978,86 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+interface CommandCodeUsageSnapshot {
+  messageId: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number | null;
+  timestamp: string;
+  contextWindow: number | null;
+}
+
+function collectCommandCodeUsage(records: RawJsonLine[]): CommandCodeUsageSnapshot[] {
+  const byMessage = new Map<string, CommandCodeUsageSnapshot>();
+  for (const record of records) {
+    if (record.data.type !== "message" || !record.data.usage || typeof record.data.usage !== "object") continue;
+    const usage = asRecord(record.data.usage);
+    const inputTokens = readNonNegativeInteger(usage.inputTokens ?? usage.input_tokens);
+    const outputTokens = readNonNegativeInteger(usage.outputTokens ?? usage.output_tokens);
+    if (inputTokens === null || outputTokens === null) continue;
+    const message = asRecord(record.data.message);
+    const meta = asRecord(message.meta);
+    const messageId = ensureText(record.data.id || meta.messageId || meta.message_id).trim() || `line:${record.lineNumber}`;
+    const snapshot: CommandCodeUsageSnapshot = {
+      messageId,
+      model: ensureText(record.data.model || usage.model).trim(),
+      inputTokens,
+      outputTokens,
+      cacheReadTokens: readNonNegativeInteger(usage.cacheReadTokens ?? usage.cache_read_tokens) ?? 0,
+      cacheWriteTokens: readNonNegativeInteger(usage.cacheWriteTokens ?? usage.cache_write_tokens) ?? 0,
+      costUsd: readNonNegativeNumber(usage.costUsd ?? usage.cost_usd),
+      timestamp: safeDate(record.data.timestamp ?? meta.createdAt, ""),
+      contextWindow: readNonNegativeInteger(record.data.contextWindow ?? record.data.context_window ?? usage.contextWindow)
+    };
+    byMessage.set(messageId, snapshot);
+  }
+  return [...byMessage.values()];
+}
+
+function findLatestCommandCodeUsage(records: RawJsonLine[]): CommandCodeUsageSnapshot | null {
+  const snapshots = collectCommandCodeUsage(records);
+  return snapshots.at(-1) ?? null;
+}
+
+function addCommandCodeMetric(
+  metrics: ProviderSessionStats["metrics"],
+  metric: keyof ProviderSessionStats["metrics"],
+  value: number,
+  watermark: ProviderSessionStatWatermark
+): void {
+  if (!Number.isFinite(value) || value < 0) return;
+  metrics[metric] = {
+    value,
+    source: "provider-history-log",
+    semantic: "sum-of-final-events",
+    watermark
+  };
+}
+
+function readStatusValue(status: Record<string, unknown> | null, ...keys: string[]): unknown {
+  if (!status) return null;
+  for (const key of keys) if (status[key] !== undefined) return status[key];
+  return null;
+}
+
+function readStatusText(status: Record<string, unknown> | null, key: string): string {
+  const value = readStatusValue(status, key);
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readNonNegativeInteger(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null;
+}
+
+function readNonNegativeNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function createUserTranscriptRecord(
