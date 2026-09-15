@@ -130,7 +130,31 @@ function verifyWindowsPm2LaunchMode(matchedProcess, installState) {
 
   const pm2Env = matchedProcess?.pm2_env ?? {};
   assertPathContains(pm2Env.pm_exec_path, `${path.sep}runtime${path.sep}service${path.sep}start-codingns.mjs`, "PM2 没有启动受控包装脚本");
-  assertEqual(path.normalize(pm2Env.exec_interpreter || ""), path.normalize(installState.nodeExe || ""), "PM2 interpreter 没有使用当前 node");
+  if (!areEquivalentExecutablePaths(pm2Env.exec_interpreter, installState.nodeExe)) {
+    throw new Error(
+      `PM2 interpreter 没有使用当前 node：expected=${installState.nodeExe || "unknown"} actual=${pm2Env.exec_interpreter || "unknown"}`
+    );
+  }
+}
+
+function areEquivalentExecutablePaths(leftPath, rightPath) {
+  const normalizedLeft = path.normalize(leftPath || "");
+  const normalizedRight = path.normalize(rightPath || "");
+
+  if (normalizedLeft === normalizedRight) {
+    return true;
+  }
+
+  if (process.platform !== "win32") {
+    return false;
+  }
+
+  const normalizeWindowsExecutablePath = (targetPath) => {
+    const lowerPath = targetPath.toLowerCase();
+    return lowerPath.endsWith(".exe") ? lowerPath.slice(0, -4) : lowerPath;
+  };
+
+  return normalizeWindowsExecutablePath(normalizedLeft) === normalizeWindowsExecutablePath(normalizedRight);
 }
 
 function verifyInstallLogs(logsRoot) {
