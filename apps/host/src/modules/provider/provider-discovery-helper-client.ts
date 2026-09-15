@@ -632,6 +632,8 @@ export interface ProviderSessionDiscoveryHelperConfig {
   opencodeDataDir: string;
   opencodeDbPath: string;
   grokHomeDir: string;
+  commandCodeCliPath: string;
+  commandCodeHomeDir: string;
 }
 
 function resolveHelperLaunch(): { command: string; args: string[] } {

@@ -6,6 +6,7 @@ import {
   KimiAdapter,
   LegnaCodeAdapter,
   OpenCodeAdapter,
+  CommandCodeAdapter,
   ProviderRegistry,
   type ProviderCapabilities,
   type ProviderId,
@@ -28,7 +29,8 @@ const STREAMING_OUTPUT_PROVIDER_IDS = new Set<ProviderId>([
   "gemini",
   "kimi",
   "deepseek-harness",
-  "grok"
+  "grok",
+  "command-code"
 ]);
 // 会话互动（原“助手服务”）：既要产品侧有正式入口，也要 CLI 本身支持审批、问题这类交互。
 // deepseek-harness 与 affairs-lightweight-session-service 里的轻量会话支持范围保持一致。
@@ -48,7 +50,8 @@ const RECONSTRUCTED_FORK_PROVIDER_IDS = new Set<ProviderId>([
   "codex",
   "claude-code",
   "opencode",
-  "deepseek-harness"
+  "deepseek-harness",
+  "command-code"
 ]);
 
 export interface ProviderCatalogEntryDto {
@@ -112,6 +115,7 @@ export class ProviderCatalogService {
         dataDir: config.opencodeDataDir,
         dbPath: config.opencodeDbPath
       }),
+      new CommandCodeAdapter({ homeDir: config.commandCodeHomeDir }),
       ...additionalAdapters
     ]);
 
@@ -282,6 +286,8 @@ function resolveProviderDisplayName(provider: ProviderId): string {
       return "DeepSeek Harness";
     case "grok":
       return "Grok Build";
+    case "command-code":
+      return "Command Code";
     default:
       return provider;
   }
@@ -305,6 +311,8 @@ function buildProviderMissingMessage(provider: ProviderId): string {
       return "未检测到 DeepSeek Harness sidecar";
     case "grok":
       return "未检测到 Grok CLI";
+    case "command-code":
+      return "未检测到 Command Code CLI";
     default:
       return "未检测到对应 provider 运行环境";
   }

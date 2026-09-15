@@ -31,7 +31,8 @@ const PROVIDER_IDS: PreferenceProviderId[] = [
   "kimi",
   "legna-code",
   "deepseek-harness",
-  "grok"
+  "grok",
+  "command-code"
 ];
 
 const DEFAULT_LANGUAGE: UserPreferenceLanguage = "zh-CN";
@@ -204,7 +205,7 @@ function normalizeProvidersPatch(input: unknown): PreferenceProvidersPatch | und
       throw new AppError({
         statusCode: 400,
         errorCode: "INVALID_INPUT",
-        detail: "providers 只允许 claude-code、codex、opencode、gemini、kimi、legna-code、deepseek-harness、grok",
+        detail: "providers 只允许 claude-code、codex、opencode、gemini、kimi、legna-code、deepseek-harness、grok、command-code",
         field: "providers"
       });
     }

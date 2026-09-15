@@ -17,6 +17,7 @@ import {
   LegnaRuntimeAdapter,
   type NormalizedMessageAttachment,
   OpenCodeRuntimeAdapter,
+  CommandCodeRuntimeAdapter,
   ProviderRuntimeService,
   type ProviderRuntimeAdapter,
   type ProviderRuntimeRunRequest,
@@ -5041,6 +5042,10 @@ function createProviderRuntimeAdapters(
           config.opencodeBaseUrlResolver?.acquireManagedServerLease.bind(config.opencodeBaseUrlResolver),
         releaseManagedServerLease:
           config.opencodeBaseUrlResolver?.releaseManagedServerLease.bind(config.opencodeBaseUrlResolver)
+      }),
+      new CommandCodeRuntimeAdapter({
+        commandPath: config.commandCodeCliPath,
+        homeDir: config.commandCodeHomeDir
       }),
       ...(options.deepSeekHarnessRuntimeAdapter ? [options.deepSeekHarnessRuntimeAdapter] : []),
       ...(options.grokRuntimeAdapter ? [options.grokRuntimeAdapter] : [])

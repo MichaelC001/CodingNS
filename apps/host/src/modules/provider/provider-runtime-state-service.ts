@@ -24,7 +24,8 @@ export class ProviderRuntimeStateService {
     "kimi",
     "opencode",
     "deepseek-harness",
-    "grok"
+    "grok",
+    "command-code"
   ];
   private readonly providerInstallCommands: Readonly<Partial<Record<ProviderId, string>>>;
   private readonly stateByProvider = new Map<ProviderId, ProviderRuntimeStateSnapshot>();
@@ -41,7 +42,8 @@ export class ProviderRuntimeStateService {
       kimi: config.kimiCliPath,
       opencode: config.opencodeCliPath,
       "deepseek-harness": config.deepseekHarnessCliPath,
-      grok: config.grokCliPath
+      grok: config.grokCliPath,
+      "command-code": config.commandCodeCliPath
     };
 
     this.hydrateFromRepository();

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import {
   CapabilityService,
   ClaudeCodeAdapter,
+  CommandCodeAdapter,
   type CodexForkTransport,
   type CodexThreadControlTransport,
   type ContextUsageSnapshot,
@@ -222,7 +223,8 @@ const RECONSTRUCTED_FORK_TARGET_PROVIDERS = new Set([
   "codex",
   "claude-code",
   "opencode",
-  "deepseek-harness"
+  "deepseek-harness",
+  "command-code"
 ]);
 const FORK_RECONSTRUCTION_PAGE_SIZE = 200;
 const MAX_FORK_DEPTH = 4;
@@ -437,7 +439,8 @@ const SESSION_START_DEFERRED_PROVIDERS = new Set([
   "opencode",
   "gemini",
   "kimi",
-  "grok"
+  "grok",
+  "command-code"
 ]);
 const MUTABLE_HISTORY_TAIL_PROVIDERS = new Set([
   "claude-code",
@@ -446,7 +449,8 @@ const MUTABLE_HISTORY_TAIL_PROVIDERS = new Set([
   "gemini",
   "kimi",
   "opencode",
-  "grok"
+  "grok",
+  "command-code"
 ]);
 const MUTABLE_HISTORY_TAIL_REFRESH_INTERVAL_MS = 1_200;
 const WORKSPACE_DISCOVERY_BACKGROUND_MAX_AGE_MS = 15_000;
@@ -613,7 +617,9 @@ export class SessionHistoryService {
       opencodeBaseUrl: config.opencodeBaseUrl,
       opencodeDataDir: config.opencodeDataDir,
       opencodeDbPath: config.opencodeDbPath,
-      grokHomeDir: config.grokHomeDir
+      grokHomeDir: config.grokHomeDir,
+      commandCodeCliPath: config.commandCodeCliPath,
+      commandCodeHomeDir: config.commandCodeHomeDir
     };
     this.providerRegistry = new ProviderRegistry([
       new ClaudeCodeAdapter({ homeDir: config.claudeCodeHomeDir }),
@@ -645,6 +651,7 @@ export class SessionHistoryService {
         dataDir: config.opencodeDataDir,
         dbPath: config.opencodeDbPath
       }),
+      new CommandCodeAdapter({ homeDir: config.commandCodeHomeDir }),
       ...(adapterOverrides.additionalAdapters ?? [])
     ]);
     this.sessionSyncService = new SessionSyncService(this.providerRegistry);
@@ -7330,13 +7337,14 @@ function filterProjectedIsolatedWorkspaceSessionTree(
 
 function isProviderCliBacked(
   provider: string
-): provider is "claude-code" | "legna-code" | "codex" | "gemini" | "kimi" | "grok" {
+): provider is "claude-code" | "legna-code" | "codex" | "gemini" | "kimi" | "grok" | "command-code" {
   return provider === "claude-code"
     || provider === "legna-code"
     || provider === "codex"
     || provider === "gemini"
     || provider === "kimi"
-    || provider === "grok";
+    || provider === "grok"
+    || provider === "command-code";
 }
 
 function buildProviderCliUnavailableMessage(provider: string): string {
@@ -7353,6 +7361,8 @@ function buildProviderCliUnavailableMessage(provider: string): string {
       return "未检测到 Kimi CLI";
     case "grok":
       return "未检测到 Grok CLI";
+    case "command-code":
+      return "未检测到 Command Code CLI";
     default:
       return "未检测到对应 CLI";
   }

@@ -1,5 +1,6 @@
 import {
   ClaudeCodeAdapter,
+  CommandCodeAdapter,
   CodexAdapter,
   GeminiAdapter,
   GrokAdapter,
@@ -328,6 +329,9 @@ function getWorkspaceDiscoveryService(
     })],
     ["grok", [config.grokHomeDir], () => new GrokAdapter({
       homeDir: config.grokHomeDir
+    })],
+    ["command-code", [config.commandCodeHomeDir, config.commandCodeCliPath], () => new CommandCodeAdapter({
+      homeDir: config.commandCodeHomeDir
     })]
   ];
   const registry = new ProviderRegistry(factories

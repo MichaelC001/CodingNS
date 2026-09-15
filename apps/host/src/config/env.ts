@@ -49,6 +49,8 @@ export interface HostConfig {
   grokCliPath: string;
   grokHomeDir: string;
   grokApiBaseUrl: string | null;
+  commandCodeCliPath: string;
+  commandCodeHomeDir: string;
   sessionBillingProfileId: string | null;
   sessionBillingPriceBookVersion: string;
   chromeExecutablePath: string;
@@ -148,6 +150,15 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
   const grokApiBaseUrl = normalizeOptionalText(
     overrides.grokApiBaseUrl ?? process.env.CODINGNS_GROK_BASE_URL ?? null
   );
+  const commandCodeCliPath =
+    overrides.commandCodeCliPath
+    ?? process.env.CODINGNS_COMMAND_CODE_COMMAND
+    ?? process.env.COMMAND_CODE_PATH
+    ?? "command-code";
+  const commandCodeHomeDir =
+    overrides.commandCodeHomeDir
+    ?? process.env.CODINGNS_COMMAND_CODE_HOME
+    ?? path.join(homeDir, ".commandcode");
   const configuredOpenCodeBaseUrl = normalizeOptionalText(
     overrides.opencodeBaseUrl ?? process.env.CODINGNS_OPENCODE_BASE_URL ?? null
   );
@@ -243,6 +254,8 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
     grokCliPath,
     grokHomeDir,
     grokApiBaseUrl,
+    commandCodeCliPath,
+    commandCodeHomeDir,
     sessionBillingProfileId:
       overrides.sessionBillingProfileId
       ?? normalizeOptionalText(process.env.CODINGNS_SESSION_BILLING_PROFILE),

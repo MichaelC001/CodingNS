@@ -103,6 +103,7 @@ describe("provider catalog routes", () => {
       "gemini",
       "kimi",
       "opencode",
+      "command-code",
       "deepseek-harness",
       "grok"
     ]);
