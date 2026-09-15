@@ -2812,19 +2812,6 @@ export class SessionLiveRuntimeService {
     const currentState = this.sessionStateRepository.findBySessionAndUser(input.sessionId, input.userId);
     const currentSnapshot = this.sessionStatusSnapshotRepository.findBySessionId(input.sessionId);
 
-    this.sessionHistoryService.persistSessionBinding(
-      input.sessionId,
-      input.workspaceId,
-      {
-        ...this.buildBindingSnapshot(
-          input.sessionId,
-          input.snapshot.provider,
-          input.snapshot.providerSessionId,
-          input.snapshot.rawStoreRef
-        ),
-        userId: input.userId
-      }
-    );
     this.sessionIndexRepository.upsert({
       sessionId: input.sessionId,
       workspaceId: input.workspaceId,
@@ -2845,6 +2832,21 @@ export class SessionLiveRuntimeService {
       createdAt: currentIndex?.createdAt ?? timestamp,
       updatedAt: timestamp
     });
+    // 先建立可见的 session index，再更新 provider binding，避免订阅请求看到 binding
+    // 却找不到 index 而触发 repairMissingSessionListItem。
+    this.sessionHistoryService.persistSessionBinding(
+      input.sessionId,
+      input.workspaceId,
+      {
+        ...this.buildBindingSnapshot(
+          input.sessionId,
+          input.snapshot.provider,
+          input.snapshot.providerSessionId,
+          input.snapshot.rawStoreRef
+        ),
+        userId: input.userId
+      }
+    );
     this.upsertSnapshot(input.sessionId, {
       syncStatus: currentSnapshot?.syncStatus ?? "idle",
       syncCursor: currentSnapshot?.syncCursor ?? null,
@@ -3800,7 +3802,7 @@ export class SessionLiveRuntimeService {
     provider: string,
     handle: ActiveRunHandle
   ): Promise<void> {
-    if (provider !== "gemini" && provider !== "kimi" && provider !== "codex") {
+    if (provider !== "gemini" && provider !== "kimi" && provider !== "codex" && provider !== "command-code") {
       return;
     }
 
@@ -4946,7 +4948,9 @@ function isRepairableStartedSessionLookupError(error: unknown): boolean {
 }
 
 function shouldAwaitStartBindingBeforeAcceptedUserLookup(provider: string): boolean {
-  return provider === "kimi";
+  // Command Code 的首个订阅会立即使用返回的 binding；短暂等待真实 ID，
+  // 避免前端拿到 pending:// 后在回填窗口内订阅失败。
+  return provider === "kimi" || provider === "command-code";
 }
 
 function waitForAcceptedUserLookupWindow(): Promise<void> {

@@ -72,6 +72,32 @@ test("CommandCodeAdapter 按 Command Code 目录规则发现并解析 transcript
   }
 });
 
+test("CommandCodeAdapter 在 transcript 尚未落盘时把历史读取视为空结果", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-pending-history-"));
+  const adapter = new CommandCodeAdapter({ homeDir });
+
+  try {
+    const history = await adapter.readSessionHistory(
+      "pending-session-1",
+      join(homeDir, "projects", "users-jackson-code-coding-ns", "pending-session-1.jsonl"),
+      null,
+      20
+    );
+    assert.deepEqual(history.messages, []);
+
+    const delta = await adapter.readSessionHistoryDelta(
+      "pending-session-1",
+      "pending://command-code/pending-session-1",
+      null,
+      20
+    );
+    assert.equal(delta.mode, "reset_required");
+    assert.deepEqual(delta.messages, []);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("CommandCodeAdapter 支持追加游标和不完整尾行恢复", async () => {
   const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-delta-"));
   const workspacePath = "/Users/jackson/Code/CodingNS";

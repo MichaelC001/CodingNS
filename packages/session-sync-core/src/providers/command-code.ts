@@ -295,7 +295,10 @@ export class CommandCodeAdapter implements ProviderAdapter {
     limit: number,
     direction: HistoryDirection = "forward"
   ): Promise<HistoryPage> {
-    const filePath = this.resolveSessionFilePath(providerSessionId, rawStoreRef);
+    const filePath = this.resolveReadableSessionFilePath(providerSessionId, rawStoreRef);
+    if (!filePath) {
+      return { messages: [], cursor, nextCursor: null, total: 0 };
+    }
     if (!existsSync(filePath)) {
       return { messages: [], cursor, nextCursor: null, total: 0 };
     }
@@ -309,7 +312,19 @@ export class CommandCodeAdapter implements ProviderAdapter {
     limit: number,
     direction: HistoryDirection = "forward"
   ): Promise<SessionHistoryDeltaReadResult> {
-    const filePath = this.resolveSessionFilePath(providerSessionId, rawStoreRef);
+    const filePath = this.resolveReadableSessionFilePath(providerSessionId, rawStoreRef);
+    if (!filePath) {
+      return {
+        messages: [],
+        cursor,
+        nextCursor: null,
+        total: 0,
+        mode: "reset_required",
+        bytesRead: 0,
+        recordsParsed: 0,
+        tailWindowBytes: 0
+      };
+    }
     if (!existsSync(filePath)) {
       return {
         messages: [],
@@ -791,6 +806,17 @@ export class CommandCodeAdapter implements ProviderAdapter {
     });
     if (!found) throw new Error("PROVIDER_SESSION_NOT_FOUND");
     return found;
+  }
+
+  private resolveReadableSessionFilePath(providerSessionId: string, rawStoreRef: string): string | null {
+    try {
+      return this.resolveSessionFilePath(providerSessionId, rawStoreRef);
+    } catch (error) {
+      if (error instanceof Error && error.message === "PROVIDER_SESSION_NOT_FOUND") {
+        return null;
+      }
+      throw error;
+    }
   }
 
   private resolveTranscriptPath(workspacePath: string, providerSessionId: string): string {
