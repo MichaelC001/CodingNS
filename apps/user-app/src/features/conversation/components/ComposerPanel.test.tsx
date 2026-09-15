@@ -3,6 +3,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { t } from "../../../shared/i18n";
+import { localUiPreferenceStore } from "../../../preferences/local-ui-preference-store";
 import type { ProviderCapabilitiesDto } from "../api/conversation-api";
 import { clearProviderCatalogStore } from "../capability/provider-catalog-store";
 import type { SessionMessageViewModel } from "../runtime/session-runtime-machine";
@@ -329,6 +330,7 @@ function createForkDraft(options?: {
 describe("ComposerPanel", () => {
   beforeEach(() => {
     localStorage.clear();
+    localUiPreferenceStore.setTokenDisplayUnit("chinese");
     clearProviderCatalogStore();
     platformMock.platform = "web";
     platformMock.isDesktop = false;
@@ -1807,6 +1809,61 @@ describe("ComposerPanel", () => {
       );
     }
   );
+
+  it("可以在统计弹窗中切换万亿与 M/B，并同步底部摘要", () => {
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        contextUsage={{
+          provider: "codex",
+          promptTokens: 5_900_000,
+          uncachedInputTokens: 5_900_000,
+          cachedInputTokens: 0,
+          contextWindow: 10_000_000,
+          usageRatio: 0.59,
+          source: "provider-log",
+          contextWindowSource: "provider-log",
+          modelId: "gpt-5.4",
+          capturedAt: "2026-08-15T10:00:00.000Z",
+          isEstimated: false
+        }}
+        sessionStats={{
+          provider: "codex",
+          capturedAt: "2026-08-15T10:00:00.000Z",
+          metrics: {
+            inputTokens: {
+              value: 5_900_000,
+              source: "provider-history-log",
+              semantic: "latest-snapshot",
+              watermark: { kind: "source-timestamp", value: "2026-08-15T10:00:00.000Z" }
+            },
+            outputTokens: {
+              value: 250_000_000,
+              source: "provider-history-log",
+              semantic: "latest-snapshot",
+              watermark: { kind: "source-timestamp", value: "2026-08-15T10:00:00.000Z" }
+            }
+          }
+        }}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(container.querySelector(".composer-context-ring")!);
+    const tooltip = screen.getByRole("tooltip");
+    const toggle = screen.getByRole("switch", { name: t("conversation.sessionStatsTokenUnitToggle") });
+
+    expect(tooltip).toHaveTextContent("590万");
+    expect(container.querySelector(".composer-session-stats-summary")).toHaveTextContent("590万");
+    fireEvent.click(toggle);
+
+    expect(tooltip).toHaveTextContent("5.9M");
+    expect(tooltip).toHaveTextContent("250M");
+    expect(tooltip).toHaveTextContent("5.9M tokens");
+    expect(container.querySelector(".composer-session-stats-summary")).toHaveTextContent("5.9M");
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+  });
 
   it("移动端同时显示上下文占用和缓存命中率两个圆环", () => {
     platformMock.platform = "ios";
