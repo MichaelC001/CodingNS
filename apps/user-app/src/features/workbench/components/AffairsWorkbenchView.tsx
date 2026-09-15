@@ -8106,8 +8106,7 @@ function isAffairsAssistantProvider(provider: ProviderId | null | undefined): pr
   return provider === "codex" || provider === "claude-code";
 }
 
-function createAffairsLightweightCapabilities(provider: ProviderId): ProviderCapabilitiesDto {
-  const isDeepSeekHarness = provider === "deepseek-harness";
+export function createAffairsLightweightCapabilities(provider: ProviderId): ProviderCapabilitiesDto {
   return {
     provider,
     canStartSession: true,
@@ -8115,10 +8114,10 @@ function createAffairsLightweightCapabilities(provider: ProviderId): ProviderCap
     canSendMessage: true,
     inRunInputMode: "none",
     supportsSubagents: false,
-    supportsInterrupt: isDeepSeekHarness,
-    supportsStructuredToolCalls: isDeepSeekHarness,
+    supportsInterrupt: provider === "deepseek-harness",
+    supportsStructuredToolCalls: provider === "deepseek-harness",
     supportsTokenUsage: false,
-    supportsAttachments: !isDeepSeekHarness,
+    supportsAttachments: true,
     supportsPermissionPrompt: false,
     supportsCheckpoint: false,
     supportsSlashMenu: false,

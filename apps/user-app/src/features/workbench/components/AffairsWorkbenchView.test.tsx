@@ -16,7 +16,8 @@ import {
   AffairsSectionMenu,
   AffairsSidebarPanel,
   AffairsWorkbenchProvider,
-  AffairsWorkbenchView
+  AffairsWorkbenchView,
+  createAffairsLightweightCapabilities
 } from "./AffairsWorkbenchView";
 import { useButlerRuntimeStore } from "../../butler/runtime/butler-runtime-store";
 import type { AffairsViewState } from "../types/workbench-mode";
@@ -2769,6 +2770,10 @@ describe("AffairsWorkbenchView", () => {
     expect(composerPanelRenderMock).toHaveBeenLastCalledWith(expect.objectContaining({
       supportsAttachments: true
     }));
+  });
+
+  it("DeepSeek Harness 事务轻量模式会打开图片附件能力", () => {
+    expect(createAffairsLightweightCapabilities("deepseek-harness").supportsAttachments).toBe(true);
   });
 
   it("事务轻量草稿发送首条消息后会走独立 lightweight runtime 并切到对话页面", async () => {

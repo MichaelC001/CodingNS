@@ -829,6 +829,65 @@ describe("AffairsLightweightSessionService", () => {
     expect(stored.messages.at(-1)?.content).toContain("联网搜索");
   });
 
+  it("DeepSeek Harness 轻量会话会把图片附件交给 runtime，并在请求完成后清理临时文件", async () => {
+    const hostDataRootDir = await fs.mkdtemp(path.join(os.tmpdir(), "affairs-lightweight-harness-image-"));
+    let attachmentPath = "";
+    const adapter = createFakeHarnessAdapter({
+      onStart: async (request, sink) => {
+        const attachment = request.options.attachments[0];
+        attachmentPath = attachment?.filePath ?? "";
+        expect(attachment).toEqual(expect.objectContaining({
+          kind: "image",
+          fileName: "demo.png",
+          mimeType: "image/png"
+        }));
+        expect(await fs.readFile(attachment!.filePath)).toEqual(Buffer.from("img"));
+        await sink.emit({
+          type: "message",
+          providerSessionId: "harness-image-session",
+          rawStoreRef: "harness://harness-image-session",
+          message: createHarnessMessage({
+            messageId: "assistant-image-1",
+            providerSessionId: "harness-image-session",
+            role: "assistant",
+            kind: "text",
+            content: "我看到了图片。",
+            sequence: 2
+          })
+        });
+        await sink.emit({
+          type: "complete",
+          status: "completed",
+          providerSessionId: "harness-image-session",
+          rawStoreRef: "harness://harness-image-session"
+        });
+      }
+    });
+    const service = new AffairsLightweightSessionService(
+      hostDataRootDir,
+      null,
+      { getWorkspaceOrThrow: () => ({ path: "/tmp/codingns-workspace" }) },
+      adapter
+    );
+
+    await service.startSession({
+      workspaceId: "workspace-1",
+      userId: "user-1",
+      provider: "deepseek-harness",
+      content: "看看这张图片",
+      clientRequestId: "client-image-1",
+      attachments: [{
+        kind: "image",
+        fileName: "demo.png",
+        mimeType: "image/png",
+        fileSize: 3,
+        contentBase64: "aW1n"
+      }]
+    });
+
+    await expect(fs.access(attachmentPath)).rejects.toThrow();
+  });
+
   it("DeepSeek Harness 失败时轻量会话保持失败状态，不生成成功回复", async () => {
     const hostDataRootDir = await fs.mkdtemp(path.join(os.tmpdir(), "affairs-lightweight-harness-failed-"));
     let sessionId = "";

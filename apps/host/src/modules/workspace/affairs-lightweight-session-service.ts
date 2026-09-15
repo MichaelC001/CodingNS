@@ -6,6 +6,7 @@ import type { HistoryPage, ProviderId, SyncStatus } from "@codingns/session-sync
 import type {
   ProviderRuntimeAdapter,
   ProviderRuntimeRunRequest,
+  RuntimeAttachment,
   RuntimeEventInput
 } from "@codingns/session-sync-core/runtime/types";
 
@@ -28,6 +29,8 @@ const DEFAULT_OPENAI_MODEL = "gpt-5.4";
 const ANTHROPIC_API_VERSION = "2023-06-01";
 const LIGHTWEIGHT_SESSION_TMP_FILE_SUFFIX = ".tmp";
 const LIGHTWEIGHT_SESSION_READ_RETRY_DELAYS_MS = [12, 40] as const;
+const DEEPSEEK_HARNESS_LIGHTWEIGHT_ATTACHMENT_ROOT = "affairs-lightweight";
+const DEEPSEEK_HARNESS_LIGHTWEIGHT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const LIGHTWEIGHT_SYSTEM_PROMPT = [
   "你是 CodingNS 的事务轻量会话。",
   "你的职责是快速问答、联网搜索、轻量分析。",
@@ -731,15 +734,6 @@ export class AffairsLightweightSessionService {
         detail: "DeepSeek Harness sidecar 当前不可用，请检查 Host 的 Harness 配置。"
       });
     }
-    if ((input.attachments ?? []).length > 0) {
-      throw new AppError({
-        statusCode: 400,
-        errorCode: "DEEPSEEK_HARNESS_LIGHTWEIGHT_ATTACHMENTS_UNSUPPORTED",
-        detail: "DeepSeek Harness 轻量会话暂不支持附件，请切换到 Agent 会话。",
-        field: "attachments"
-      });
-    }
-
     const workspaceId = document.session.sourceWorkspaceId?.trim() || document.session.workspaceId;
     const workspace = this.workspaceService?.getWorkspaceOrThrow(workspaceId);
     const workspacePath = typeof workspace?.path === "string" ? workspace.path.trim() : "";
@@ -756,6 +750,11 @@ export class AffairsLightweightSessionService {
       ?? workingDocument.messages[workingDocument.messages.length - 1];
     let terminalError: AppError | null = null;
     const assistantParts = new Map<string, { content: string; sequence: number }>();
+    const runtimeAttachments = await this.materializeDeepSeekHarnessAttachments(
+      input.attachments ?? [],
+      document.session.sessionId,
+      input.clientRequestId
+    );
 
     const applyBinding = (binding: { providerSessionId?: string | null; rawStoreRef?: string | null }): void => {
       const providerSessionId = binding.providerSessionId?.trim() || workingDocument.session.providerSessionId;
@@ -856,61 +855,124 @@ export class AffairsLightweightSessionService {
     };
 
     const isFirstTurn = document.session.providerSessionId.startsWith("affairs-lightweight:");
-    const request: ProviderRuntimeRunRequest = {
-      sessionId: document.session.sessionId,
-      workspaceId: document.session.workspaceId,
-      workspacePath,
-      provider: "deepseek-harness",
-      providerSessionId: isFirstTurn ? null : document.session.providerSessionId,
-      rawStoreRef: document.session.rawStoreRef,
-      runtimeHomeDir: providerBinding.runtimeHomeDir,
-      sequenceBase: document.messages.length + 1,
-      options: {
-        content: input.content,
-        clientRequestId: input.clientRequestId,
-        model: input.model?.trim() || null,
-        reasoningLevel: input.reasoningLevel?.trim() || null,
-        agentPreset: isFirstTurn ? "minimal" : null,
-        permissionMode: null,
-        providerPrompt: `${LIGHTWEIGHT_SYSTEM_PROMPT}\n\n用户问题：${input.content}`,
-        attachments: []
+    try {
+      const request: ProviderRuntimeRunRequest = {
+        sessionId: document.session.sessionId,
+        workspaceId: document.session.workspaceId,
+        workspacePath,
+        provider: "deepseek-harness",
+        providerSessionId: isFirstTurn ? null : document.session.providerSessionId,
+        rawStoreRef: document.session.rawStoreRef,
+        runtimeHomeDir: providerBinding.runtimeHomeDir,
+        sequenceBase: document.messages.length + 1,
+        options: {
+          content: input.content,
+          clientRequestId: input.clientRequestId,
+          model: input.model?.trim() || null,
+          reasoningLevel: input.reasoningLevel?.trim() || null,
+          agentPreset: isFirstTurn ? "minimal" : null,
+          permissionMode: null,
+          providerPrompt: `${LIGHTWEIGHT_SYSTEM_PROMPT}\n\n用户问题：${input.content}`,
+          attachments: runtimeAttachments
+        }
+      };
+      const sink = {
+        emit: handleRuntimeEvent,
+        updateSessionBinding: applyBinding
+      };
+      const launch = isFirstTurn
+        ? await this.deepSeekHarnessRuntimeAdapter.startSession(request, sink)
+        : await this.deepSeekHarnessRuntimeAdapter.continueSession(request, sink);
+      applyBinding({
+        providerSessionId: launch.providerSessionId,
+        rawStoreRef: workingDocument.session.rawStoreRef.startsWith("harness://")
+          ? workingDocument.session.rawStoreRef
+          : launch.rawStoreRef
+      });
+      await this.writeSessionDocument(workingDocument);
+      await launch.completed;
+      if (terminalError) {
+        throw terminalError;
       }
-    };
-    const sink = {
-      emit: handleRuntimeEvent,
-      updateSessionBinding: applyBinding
-    };
-    const launch = isFirstTurn
-      ? await this.deepSeekHarnessRuntimeAdapter.startSession(request, sink)
-      : await this.deepSeekHarnessRuntimeAdapter.continueSession(request, sink);
-    applyBinding({
-      providerSessionId: launch.providerSessionId,
-      rawStoreRef: workingDocument.session.rawStoreRef.startsWith("harness://")
-        ? workingDocument.session.rawStoreRef
-        : launch.rawStoreRef
-    });
-    await this.writeSessionDocument(workingDocument);
-    await launch.completed;
-    if (terminalError) {
-      throw terminalError;
-    }
 
-    const assistantContent = [...assistantParts.values()]
-      .sort((left, right) => left.sequence - right.sequence)
-      .map((part) => part.content.trim())
-      .filter(Boolean)
-      .join("\n\n");
-    if (!assistantContent) {
+      const assistantContent = [...assistantParts.values()]
+        .sort((left, right) => left.sequence - right.sequence)
+        .map((part) => part.content.trim())
+        .filter(Boolean)
+        .join("\n\n");
+      if (!assistantContent) {
+        throw new AppError({
+          statusCode: 502,
+          errorCode: "DEEPSEEK_HARNESS_EMPTY_RESPONSE",
+          detail: "DeepSeek Harness 没有返回正文"
+        });
+      }
+      return {
+        content: assistantContent,
+        document: workingDocument
+      };
+    } finally {
+      await this.removeDeepSeekHarnessAttachments(runtimeAttachments);
+    }
+  }
+
+  private async materializeDeepSeekHarnessAttachments(
+    attachments: AffairsLightweightAttachmentInput[],
+    sessionId: string,
+    clientRequestId: string
+  ): Promise<RuntimeAttachment[]> {
+    const normalized = normalizeLightweightRuntimeAttachments(attachments, clientRequestId);
+    if (normalized.length === 0) return [];
+    if (normalized.some((attachment) => attachment.kind !== "image" || !attachment.mimeType.toLowerCase().startsWith("image/"))) {
       throw new AppError({
-        statusCode: 502,
-        errorCode: "DEEPSEEK_HARNESS_EMPTY_RESPONSE",
-        detail: "DeepSeek Harness 没有返回正文"
+        statusCode: 400,
+        errorCode: "DEEPSEEK_HARNESS_LIGHTWEIGHT_IMAGE_ATTACHMENTS_ONLY",
+        detail: "DeepSeek Harness 轻量会话目前只支持图片附件。",
+        field: "attachments"
       });
     }
-    return {
-      content: assistantContent,
-      document: workingDocument
-    };
+
+    const targetDir = path.join(
+      this.hostDataRootDir,
+      "session-attachments",
+      DEEPSEEK_HARNESS_LIGHTWEIGHT_ATTACHMENT_ROOT,
+      resolveLightweightAttachmentPathSegment(sessionId),
+      resolveLightweightAttachmentPathSegment(clientRequestId)
+    );
+    const filePaths: string[] = [];
+    try {
+      await fs.mkdir(targetDir, { recursive: true });
+      const runtimeAttachments: RuntimeAttachment[] = [];
+      for (const [index, attachment] of normalized.entries()) {
+        const content = Buffer.from(attachment.contentBase64, "base64");
+        if (content.length === 0 || content.length > DEEPSEEK_HARNESS_LIGHTWEIGHT_MAX_ATTACHMENT_BYTES) {
+          throw new AppError({
+            statusCode: 400,
+            errorCode: "DEEPSEEK_HARNESS_LIGHTWEIGHT_ATTACHMENT_TOO_LARGE",
+            detail: "图片附件为空或超过 10 MB 限制。",
+            field: "attachments"
+          });
+        }
+        const filePath = path.join(targetDir, `${index + 1}-${resolveLightweightAttachmentFileName(attachment.fileName)}`);
+        await fs.writeFile(filePath, content, { flag: "wx" });
+        filePaths.push(filePath);
+        runtimeAttachments.push({
+          ...attachment,
+          filePath
+        });
+      }
+      return runtimeAttachments;
+    } catch (error) {
+      await Promise.all(filePaths.map((filePath) => fs.rm(filePath, { force: true })));
+      await fs.rm(targetDir, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private async removeDeepSeekHarnessAttachments(attachments: RuntimeAttachment[]): Promise<void> {
+    if (attachments.length === 0) return;
+    await Promise.all(attachments.map((attachment) => fs.rm(attachment.filePath, { force: true })));
+    await fs.rm(path.dirname(attachments[0]!.filePath), { recursive: true, force: true });
   }
 
   private async generateOpenAiResponseSync(
@@ -1807,6 +1869,19 @@ function normalizeLightweightRuntimeAttachments(
     && Number.isFinite(attachment.fileSize)
     && attachment.fileSize > 0
   ));
+}
+
+function resolveLightweightAttachmentFileName(fileName: string): string {
+  const normalized = path.basename(fileName)
+    .replace(/[\\/]/g, "_")
+    .replace(/[^A-Za-z0-9._ -]/g, "_")
+    .trim();
+  return normalized || "attachment";
+}
+
+function resolveLightweightAttachmentPathSegment(value: string): string {
+  const normalized = value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 128);
+  return normalized || "attachment";
 }
 
 function normalizeLightweightMessageAttachments(
