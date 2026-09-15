@@ -10,7 +10,8 @@ export type PreferenceProviderId =
   | "legna-code"
   | "deepseek-harness"
   | "grok"
-  | "command-code";
+  | "command-code"
+  | "pi";
 export type PreferenceThemeId = "light" | "dark" | "sky-blue" | "eye-green";
 export type PreferenceReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type DebugPortPoolRole = "frontend" | "backend" | "worker" | "mock" | "custom";
