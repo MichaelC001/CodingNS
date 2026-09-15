@@ -377,6 +377,8 @@ describe("WorkspaceHomePage", () => {
   it("会渲染 iOS 风格的工作区和会话分组列表", async () => {
     renderPage();
 
+    expect(mockGetButlerProfile).not.toHaveBeenCalled();
+
     expect(screen.getByRole("button", { name: t("shell.workspaceHomeSwitcherLabel") })).toBeInTheDocument();
     expect(screen.getByText("/repo/project-one")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: t("shell.workspaceDetailTitle") })).toBeInTheDocument();
@@ -387,44 +389,31 @@ describe("WorkspaceHomePage", () => {
     expect(screen.getByLabelText(t("shell.workspaceHomeStatusSectionTitle"))).toBeInTheDocument();
     expect(screen.getByText(t("shell.workspaceHomeQuickLaunchStatusLabel"))).toBeInTheDocument();
     expect(screen.getByText(t("shell.workspaceHomeWaitingInputLabel"))).toBeInTheDocument();
-    expect(screen.getByText(t("shell.workspaceHomeButlerLabel"))).toBeInTheDocument();
-    expect(screen.getByText(t("shell.butlerInboxAction"))).toBeInTheDocument();
 
     const activeTerminalRow = screen.getByText(t("shell.workspaceHomeMetricTerminal")).closest("button");
     const changedFilesRow = screen.getByText(t("shell.workspaceHomeMetricChanges")).closest("button");
     const processRow = screen.getByText(t("shell.workspaceHomeQuickLaunchStatusLabel")).closest("button");
     const waitingInputRow = screen.getByText(t("shell.workspaceHomeWaitingInputLabel")).closest("button");
-    const butlerRow = screen.getByText(t("shell.workspaceHomeButlerLabel")).closest("button");
-    const inboxRow = screen.getByText(t("shell.butlerInboxAction")).closest("button");
 
     expect(activeTerminalRow).not.toBeNull();
     expect(changedFilesRow).not.toBeNull();
     expect(processRow).not.toBeNull();
     expect(waitingInputRow).not.toBeNull();
-    expect(butlerRow).not.toBeNull();
-    expect(inboxRow).not.toBeNull();
 
     await waitFor(() => {
       expect(within(activeTerminalRow as HTMLElement).getByText("2")).toBeInTheDocument();
       expect(within(changedFilesRow as HTMLElement).getByText("2")).toBeInTheDocument();
       expect(within(processRow as HTMLElement).getByText(t("shell.workspaceHomeQuickLaunchRunning"))).toBeInTheDocument();
       expect(within(waitingInputRow as HTMLElement).getByText("1")).toBeInTheDocument();
-      expect(within(butlerRow as HTMLElement).getByText("3")).toBeInTheDocument();
-      expect(within(inboxRow as HTMLElement).getByText("1")).toBeInTheDocument();
     });
 
     expect(activeTerminalRow).toHaveAttribute("data-accent", "true");
     expect(changedFilesRow).toHaveAttribute("data-accent", "true");
     expect(processRow).toHaveAttribute("data-accent", "true");
     expect(waitingInputRow).toHaveAttribute("data-accent", "true");
-    expect(butlerRow).toHaveAttribute("data-accent", "true");
-    expect(inboxRow).toHaveAttribute("data-accent", "true");
 
     expect(
       screen.getByText((_, element) => element?.textContent === t("shell.workspaceHomeMetricActive"))
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText((_, element) => element?.textContent === t("shell.workspaceHomeMetricUnread"))
     ).toBeInTheDocument();
     expect(
       screen.getByText((_, element) => element?.textContent === t("shell.workspaceHomeMetricTerminal"))
@@ -507,9 +496,6 @@ describe("WorkspaceHomePage", () => {
     const activeMetric = screen
       .getByText((_, element) => element?.textContent === t("shell.workspaceHomeMetricActive"))
       .closest(".mobile-workspace-home-toolbar-metric");
-    const notificationMetric = screen
-      .getByText((_, element) => element?.textContent === t("shell.workspaceHomeMetricUnread"))
-      .closest(".mobile-workspace-home-toolbar-metric");
     const terminalMetric = screen
       .getByText((_, element) => element?.textContent === t("shell.workspaceHomeMetricTerminal"))
       .closest(".mobile-workspace-home-toolbar-metric");
@@ -517,40 +503,29 @@ describe("WorkspaceHomePage", () => {
       .getByText((_, element) => element?.textContent === t("shell.workspaceHomeMetricChanges"))
       .closest(".mobile-workspace-home-toolbar-metric");
     const waitingInputRow = screen.getByText(t("shell.workspaceHomeWaitingInputLabel")).closest(".mobile-workspace-home-row");
-    const butlerRow = screen.getByText(t("shell.workspaceHomeButlerLabel")).closest(".mobile-workspace-home-row");
     const processRow = screen
       .getByText(t("shell.workspaceHomeQuickLaunchStatusLabel"))
       .closest(".mobile-workspace-home-row");
-    const inboxRow = screen.getByText(t("shell.butlerInboxAction")).closest(".mobile-workspace-home-row");
 
     expect(activeMetric).not.toBeNull();
-    expect(notificationMetric).not.toBeNull();
     expect(terminalMetric).not.toBeNull();
     expect(changesMetric).not.toBeNull();
     expect(waitingInputRow).not.toBeNull();
-    expect(butlerRow).not.toBeNull();
     expect(processRow).not.toBeNull();
-    expect(inboxRow).not.toBeNull();
 
     await waitFor(() => {
       expect(within(activeMetric as HTMLElement).getByText("0")).toBeInTheDocument();
-      expect(within(notificationMetric as HTMLElement).getByText("0")).toBeInTheDocument();
       expect(within(terminalMetric as HTMLElement).getByText("2")).toBeInTheDocument();
       expect(within(changesMetric as HTMLElement).getByText("2")).toBeInTheDocument();
       expect(within(waitingInputRow as HTMLElement).getByText("0")).toBeInTheDocument();
-      expect(within(butlerRow as HTMLElement).getByText("0")).toBeInTheDocument();
       expect(within(processRow as HTMLElement).getByText(t("shell.workspaceHomeQuickLaunchRunning"))).toBeInTheDocument();
-      expect(within(inboxRow as HTMLElement).getByText("0")).toBeInTheDocument();
     });
 
     expect(activeMetric).not.toHaveAttribute("data-accent");
-    expect(notificationMetric).not.toHaveAttribute("data-accent");
     expect(terminalMetric).toHaveAttribute("data-accent", "true");
     expect(changesMetric).toHaveAttribute("data-accent", "true");
     expect(waitingInputRow).not.toHaveAttribute("data-accent");
-    expect(butlerRow).not.toHaveAttribute("data-accent");
     expect(processRow).toHaveAttribute("data-accent", "true");
-    expect(inboxRow).not.toHaveAttribute("data-accent");
   });
 
   it("命中新鲜缓存时不会主动刷新 Git 和终端面板", async () => {
