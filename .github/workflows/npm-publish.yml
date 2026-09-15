@@ -34,6 +34,13 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
+      - name: Upgrade npm for trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.5.1
+          npm --version
+
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
@@ -51,8 +58,6 @@ jobs:
           fi
 
       - name: Publish npm package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
