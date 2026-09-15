@@ -4408,6 +4408,11 @@ function findPreferredTimelineEquivalentMessageId(
   incoming: SessionMessageViewModel,
   exactMatch: SessionMessageViewModel | null
 ): string | null {
+  const equivalentPiMessageId = findMatchingTimelineEquivalentPiMessageId(
+    messagesById,
+    candidateMessageIds,
+    incoming
+  );
   const equivalentRuntimeCodexMessageId = findMatchingRuntimeOverlayEquivalentCodexMessageId(
     messagesById,
     candidateMessageIds,
@@ -4423,6 +4428,8 @@ function findPreferredTimelineEquivalentMessageId(
     incoming
   );
   const preferredEquivalentMessageId =
+    equivalentPiMessageId
+    ??
     equivalentRuntimeCodexMessageId
     ?? equivalentCodexMessageId
     ?? equivalentOpenCodeMessageId;
@@ -4507,6 +4514,102 @@ function findMatchingRuntimeOverlayEquivalentCodexMessageId(
       incoming: summarizeTimelineBridgeMessageForDebug(incoming)
     });
     return messageId;
+  }
+
+  return null;
+}
+
+/**
+ * Pi 的实时消息和 JSONL 历史消息使用两套 rawRef：实时事件带 `#pi-event=`，
+ * 历史记录带 `pi://...#line=`。两者不能靠 messageId 直接合并，只能在同一会话文件、
+ * 同一消息类型和正文一致时做一次有边界的身份桥接。
+ */
+function findMatchingTimelineEquivalentPiMessageId(
+  messagesById: Map<string, SessionMessageViewModel>,
+  candidateMessageIds: Set<string>,
+  incoming: SessionMessageViewModel
+): string | null {
+  if (!isTimelinePiBridgeCandidate(incoming)) {
+    return null;
+  }
+
+  const incomingStore = extractTimelinePiRawRefStore(incoming.rawRef);
+  const incomingContent = normalizeTimelineComparableCodexText(incoming.content);
+  const incomingTimestampMs = toTimelineBridgeTimestampMs(incoming.timestamp);
+  let matchedId: string | null = null;
+  let matchedScore = Number.POSITIVE_INFINITY;
+
+  for (const [messageId, current] of messagesById.entries()) {
+    if (
+      messageId === incoming.id
+      || !candidateMessageIds.has(messageId)
+      || !isTimelinePiBridgeCandidate(current)
+      || current.role !== incoming.role
+      || current.kind !== incoming.kind
+      || normalizeTimelineComparableCodexText(current.content) !== incomingContent
+    ) {
+      continue;
+    }
+
+    const currentStore = extractTimelinePiRawRefStore(current.rawRef);
+
+    if (!incomingStore || !currentStore || incomingStore !== currentStore) {
+      continue;
+    }
+
+    const timestampDistance = Math.abs(
+      toTimelineBridgeTimestampMs(current.timestamp) - incomingTimestampMs
+    );
+
+    // 运行事件通常先于 JSONL 落盘；给慢磁盘和稍长的一轮推理留出余量，
+    // 但不把跨轮、跨时段的同文案回复误认为同一条消息。
+    if (timestampDistance > 10 * 60 * 1000) {
+      continue;
+    }
+
+    const score = timestampDistance + Math.abs(current.sequence - incoming.sequence);
+
+    if (score < matchedScore) {
+      matchedId = messageId;
+      matchedScore = score;
+    }
+  }
+
+  if (matchedId) {
+    const matched = messagesById.get(matchedId) ?? null;
+    logSessionMessageDedupDebug("session.messages.pi_identity_bridge_match", {
+      previous: matched ? summarizeTimelineBridgeMessageForDebug(matched) : null,
+      incoming: summarizeTimelineBridgeMessageForDebug(incoming)
+    });
+  }
+
+  return matchedId;
+}
+
+function isTimelinePiBridgeCandidate(message: SessionMessageViewModel): boolean {
+  return (
+    message.deliveryState === "sent"
+    && (message.role === "assistant" || message.role === "tool")
+    && (message.kind === "text" || message.kind === "thinking" || message.kind === "tool_call" || message.kind === "tool_result")
+    && (isTimelinePiHistoryRawRef(message.rawRef) || isTimelinePiRuntimeRawRef(message.rawRef))
+  );
+}
+
+function isTimelinePiHistoryRawRef(rawRef: string): boolean {
+  return rawRef.startsWith("pi://");
+}
+
+function isTimelinePiRuntimeRawRef(rawRef: string): boolean {
+  return rawRef.includes("#pi-event=");
+}
+
+function extractTimelinePiRawRefStore(rawRef: string): string | null {
+  if (isTimelinePiHistoryRawRef(rawRef)) {
+    return rawRef.slice("pi://".length).split("#", 1)[0] ?? null;
+  }
+
+  if (isTimelinePiRuntimeRawRef(rawRef)) {
+    return rawRef.split("#", 1)[0] ?? null;
   }
 
   return null;

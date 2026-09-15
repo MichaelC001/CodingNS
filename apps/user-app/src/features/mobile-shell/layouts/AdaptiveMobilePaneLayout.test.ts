@@ -29,7 +29,7 @@ describe("AdaptiveMobilePaneLayout", () => {
     });
     const toolsMode = resolveAdaptiveMobilePaneLayout({
       viewportClass: "medium",
-      activeEntry: "butler",
+      activeEntry: "terminals",
       hasNavigationPanel: true,
       hasAuxiliaryPanel: true
     });

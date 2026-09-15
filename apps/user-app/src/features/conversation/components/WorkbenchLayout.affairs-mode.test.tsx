@@ -245,6 +245,7 @@ describe("WorkbenchLayout", () => {
 
     expect(labels).toEqual([
       t("shell.conversationEntry"),
+      t("shell.chatEntry"),
       t("shell.searchEntry"),
       t("shell.affairsLibraryNav"),
       t("shell.affairsWorkbenchNav")
