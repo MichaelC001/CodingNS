@@ -171,14 +171,14 @@ CodingNS/
 
 #### Requirements
 
-- **Node.js** >= 22.0.0
+- **Node.js** >= 22.19.0（Node 24、Node 26 也受支持）
 - **npm** >= 10.0.0
 - **pnpm** >= 9.0.0
 - **Rust** >= 1.70 (required for desktop development)
 
 #### Install From npm
 
-`@jingyi0605/codingns` 使用 `libsql` 和 `@lydell/node-pty` 的 npm 预编译 N-API 包，支持 Node.js 22、24 和 26，无需安装本机 C++ 编译工具或切换到固定 Node 版本。
+`@jingyi0605/codingns` 要求 Node.js 22.19.0 或更高版本，并支持 Node.js 24 和 26。它使用 `libsql` 和 `@lydell/node-pty` 的 npm 预编译 N-API 包，无需安装本机 C++ 编译工具或切换到固定 Node 版本。
 
 ```bash
 # Install globally
@@ -583,13 +583,13 @@ CodingNS/
 #### 环境要求
 
 - **npm** >= 10.0.0
-- **Node.js** >= 22.0.0
+- **Node.js** >= 22.19.0（Node 24、Node 26 也受支持）
 - **pnpm** >= 9.0.0
 - **Rust** >= 1.70（桌面端开发需要）
 
 #### 通过 NPM 包快速安装
 
-`@jingyi0605/codingns` 使用 `libsql`、`@lydell/node-pty` 的 npm 预编译 N-API 包，支持 Node.js 22、24 和 26，安装时不需要本机编译工具，也不要求固定 Node 版本。
+`@jingyi0605/codingns` 要求 Node.js 22.19.0 或更高版本，并支持 Node.js 24 和 26。它使用 `libsql`、`@lydell/node-pty` 的 npm 预编译 N-API 包，安装时不需要本机编译工具，也不要求固定 Node 版本。
 
 ```bash
 # 全局安装

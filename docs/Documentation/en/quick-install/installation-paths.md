@@ -29,6 +29,6 @@ Best for temporary access or cases where installing a client is not convenient.
 ## Then make sure the machine is ready
 
 - Prepare a device that can stay online with your project directories.
-- Make sure Node.js 22 or newer is available for the Host.
+- Make sure Node.js 22.19.0 or newer is available for the Host. Node.js 24 and 26 are also supported.
 - If you plan to install with plain npm on Linux, prepare `build-essential` and `python3` first.
 - If you plan to connect from outside the local network, prepare a remote access path later.

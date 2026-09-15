@@ -4,7 +4,7 @@
 
 本项目需要以下环境：
 
-- **Node.js**: >= 22.0.0 （项目运行时和工具链要求）
+- **Node.js**: >= 22.19.0（Node 24、Node 26 也受支持）
 - **pnpm**: >= 9.0.0 （推荐使用 pnpm 10.7.1）
 
 ## 快速开始
@@ -17,11 +17,11 @@
 # 安装 nvm (如果还没有)
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
 
-# 安装 Node.js 22
-nvm install 22
+# 安装 Node.js 22.19
+nvm install 22.19.0
 
-# 使用 Node.js 22
-nvm use 22
+# 使用 Node.js 22.19
+nvm use 22.19.0
 
 # 在项目目录中自动切换版本
 cd /path/to/CodingNS
@@ -36,11 +36,11 @@ brew install fnm  # macOS
 # 或
 curl -fsSL https://fnm.vercel.app/install | bash  # Linux/其他
 
-# 安装 Node.js 22
-fnm install 22
+# 安装 Node.js 22.19
+fnm install 22.19.0
 
-# 使用 Node.js 22
-fnm use 22
+# 使用 Node.js 22.19
+fnm use 22.19.0
 
 # 在项目目录中自动切换版本
 cd /path/to/CodingNS
@@ -81,7 +81,7 @@ pnpm install
 
 > **为什么需要这一步？**
 >
-> 原生模块（如 `libsql`, `@lydell/node-pty`）通过 npm 发布的 N-API 预编译包安装，Node.js 22、24、26 可以共用对应平台二进制，不需要在本机重新编译。
+> 原生模块（如 `libsql`, `@lydell/node-pty`）通过 npm 发布的 N-API 预编译包安装，Node.js 22.19 及更高版本（包括 24、26）可以共用对应平台二进制，不需要在本机重新编译。
 >
 > **常见错误**：
 > ```
@@ -107,16 +107,16 @@ pnpm dev:frontend
 
 ## 常见问题
 
-### Q: 为什么需要 Node.js 22+？
+### Q: 为什么需要 Node.js 22.19+？
 
-A: 项目运行时和工具链按 Node.js 22+ 维护。SQLite 正式运行链路统一使用 `libsql`，不要直接使用 Node 内置的实验性 `node:sqlite`。
+A: 项目运行时和工具链按 Node.js 22.19+ 维护，并明确验证 Node.js 24 和 26。SQLite 正式运行链路统一使用 `libsql`，不要直接使用 Node 内置的实验性 `node:sqlite`。
 
 ### Q: 我已经安装了 Node.js 20，怎么办？
 
 A: 你有两个选择：
 
-1. **推荐**: 使用 nvm/fnm 安装 Node.js 22，并与 Node.js 20 共存
-2. 或者卸载旧版本，直接安装 Node.js 22
+1. **推荐**: 使用 nvm/fnm 安装 Node.js 22.19，并与旧版本共存
+2. 或者卸载旧版本，直接安装 Node.js 22.19 或更高版本
 
 ### Q: 切换 Node.js 版本后出现 "NODE_MODULE_VERSION" 错误怎么办？
 
@@ -124,7 +124,7 @@ A: 这是因为原生模块是用旧版本 Node.js 编译的。解决方法：
 
 ```bash
 # 确保使用正确的 Node.js 版本
-node --version  # 应该显示 v22.x.x
+node --version  # 应该显示 v22.19.x 或 v24.x/v26.x
 
 # 重新编译所有原生模块
 pnpm rebuild
@@ -175,7 +175,7 @@ A: 删除 `node_modules` 后重新执行 `pnpm install`，让 npm 根据当前�
 
 ```bash
 # 检查 Node.js 版本
-node --version  # 应该显示 v22.x.x
+node --version  # 应该显示 v22.19.x 或 v24.x/v26.x
 
 # 检查 pnpm 版本
 pnpm --version  # 应该显示 10.7.1 或更高
@@ -192,12 +192,12 @@ pnpm install
 在新设备上设置项目时，请按以下步骤操作：
 
 - [ ] 安装 Node.js 版本管理器（nvm 或 fnm）
-- [ ] 安装 Node.js 22
+- [ ] 安装 Node.js 22.19 或更高版本
 - [ ] 启用 Corepack（`corepack enable`）
 - [ ] 克隆项目仓库
-- [ ] 进入项目目录（如果配置了自动切换，会自动使用 Node.js 22）
+- [ ] 进入项目目录（如果配置了自动切换，会自动使用 `.nvmrc` 指定的版本）
 - [ ] 运行 `pnpm install`
-- [ ] **确认 Node.js 版本为 22、24 或 26，并重新执行 `pnpm install`**
+- [ ] **确认 Node.js 版本为 22.19+、24 或 26，并重新执行 `pnpm install`**
 - [ ] 运行 `pnpm dev:backend` 测试后端
 - [ ] 运行 `pnpm dev:frontend` 测试前端
 
