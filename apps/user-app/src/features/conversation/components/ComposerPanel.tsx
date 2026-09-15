@@ -18,6 +18,11 @@ import {
   updatePreferences,
   usePreferencesSelector
 } from "../../../preferences/preferences-store";
+import {
+  localUiPreferenceStore,
+  useLocalUiPreferenceSelector,
+  type TokenDisplayUnit
+} from "../../../preferences/local-ui-preference-store";
 import { isPreferenceProviderId } from "../../../preferences/user-preference-store";
 import { decideCapability } from "../capability/capability-gate";
 import {
@@ -3415,12 +3420,38 @@ interface SessionStatsSummaryItem {
   text: string;
 }
 
+function TokenDisplayUnitToggle({ tokenDisplayUnit }: { tokenDisplayUnit: TokenDisplayUnit }) {
+  return (
+    <button
+      type="button"
+      className="composer-token-unit-toggle"
+      role="switch"
+      aria-checked={tokenDisplayUnit === "international"}
+      aria-label={t("conversation.sessionStatsTokenUnitToggle")}
+      title={t("conversation.sessionStatsTokenUnitToggle")}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={() => {
+        localUiPreferenceStore.setTokenDisplayUnit(
+          tokenDisplayUnit === "international" ? "chinese" : "international"
+        );
+      }}
+    >
+      <span>{t("conversation.sessionStatsTokenUnitChinese")}</span>
+      <span>{t("conversation.sessionStatsTokenUnitInternational")}</span>
+    </button>
+  );
+}
+
 function SessionStatsSummary({
   sessionStats
 }: {
   sessionStats: ProviderSessionStatsDto | null;
 }) {
-  const summaryItems = useMemo(() => buildSessionStatsSummary(sessionStats), [sessionStats]);
+  const tokenDisplayUnit = useLocalUiPreferenceSelector((state) => state.tokenDisplayUnit);
+  const summaryItems = useMemo(
+    () => buildSessionStatsSummary(sessionStats, tokenDisplayUnit),
+    [sessionStats, tokenDisplayUnit]
+  );
 
   if (summaryItems.length === 0) {
     return null;
@@ -3538,7 +3569,10 @@ function isSessionCostAvailable(value: SessionStatsMetricValue): boolean {
     && value.pricing?.coverage !== "unavailable";
 }
 
-function buildSessionStatsSummary(sessionStats: ProviderSessionStatsDto | null): SessionStatsSummaryItem[] {
+function buildSessionStatsSummary(
+  sessionStats: ProviderSessionStatsDto | null,
+  tokenDisplayUnit: TokenDisplayUnit = "chinese"
+): SessionStatsSummaryItem[] {
   const summary: SessionStatsSummaryItem[] = [];
   const turns = sessionStats?.metrics.turns;
   const inputTokens = sessionStats?.metrics.inputTokens;
@@ -3555,7 +3589,7 @@ function buildSessionStatsSummary(sessionStats: ProviderSessionStatsDto | null):
     summary.push({
       key: "inputTokens",
       text: t("conversation.sessionStatsSummaryInputTokens", {
-        value: formatSessionStatsTokenCount(inputTokens.value)
+        value: formatSessionStatsTokenCount(inputTokens.value, tokenDisplayUnit)
       })
     });
   }
@@ -3564,7 +3598,7 @@ function buildSessionStatsSummary(sessionStats: ProviderSessionStatsDto | null):
     summary.push({
       key: "outputTokens",
       text: t("conversation.sessionStatsSummaryOutputTokens", {
-        value: formatSessionStatsTokenCount(outputTokens.value)
+        value: formatSessionStatsTokenCount(outputTokens.value, tokenDisplayUnit)
       })
     });
   }
@@ -3572,7 +3606,28 @@ function buildSessionStatsSummary(sessionStats: ProviderSessionStatsDto | null):
   return summary;
 }
 
-function formatSessionStatsTokenCount(value: number): string {
+function formatSessionStatsTokenCount(
+  value: number,
+  tokenDisplayUnit: TokenDisplayUnit = "chinese"
+): string {
+  if (tokenDisplayUnit === "international") {
+    if (value >= 1_000_000_000) {
+      return formatSessionStatsUnit(
+        value / 1_000_000_000,
+        t("conversation.sessionStatsBillionInternationalUnit")
+      );
+    }
+
+    if (value >= 1_000_000) {
+      return formatSessionStatsUnit(
+        value / 1_000_000,
+        t("conversation.sessionStatsMillionInternationalUnit")
+      );
+    }
+
+    return formatTokenCount(value);
+  }
+
   if (value >= 100_000_000) {
     return formatSessionStatsUnit(
       value / 100_000_000,
@@ -3604,7 +3659,11 @@ function isSessionStatValueAvailable(
   return Number.isFinite(value.value) && value.value >= 0;
 }
 
-function formatSessionStatValue(metric: SessionStatsDisplayMetric, value: number): string {
+function formatSessionStatValue(
+  metric: SessionStatsDisplayMetric,
+  value: number,
+  tokenDisplayUnit: TokenDisplayUnit = "chinese"
+): string {
   if (metric === "cacheHitRate") {
     return `${value.toFixed(value % 1 === 0 ? 0 : 1)}%`;
   }
@@ -3615,7 +3674,7 @@ function formatSessionStatValue(metric: SessionStatsDisplayMetric, value: number
 
   if (metric === "inputTokens") {
     return t("conversation.sessionStatsInputTokensValue", {
-      exact: formatSessionStatsTokenCount(value)
+      exact: formatSessionStatsTokenCount(value, tokenDisplayUnit)
     });
   }
 
@@ -3755,6 +3814,7 @@ function SessionStatsIndicators({
   const tooltipId = useId();
   const platform = usePlatform();
   const isMobile = platform.isMobile || platform.isNativeMobile;
+  const tokenDisplayUnit = useLocalUiPreferenceSelector((state) => state.tokenDisplayUnit);
   const sessionStatsItems = useMemo(() => buildSessionStatsItems(sessionStats), [sessionStats]);
   const costMetric = useMemo(() => resolveSessionCostMetric(sessionStats), [sessionStats]);
   const cacheHitRate = sessionStats?.metrics.cacheHitRate;
@@ -3975,8 +4035,11 @@ function SessionStatsIndicators({
               {contextUsage ? (
                 <section className="composer-context-usage-overview">
                   <div className="composer-context-usage-heading">
-                    <div className="composer-context-tooltip-title">
-                      {t("conversation.contextUsageTitle")}
+                    <div className="composer-context-tooltip-title-row">
+                      <div className="composer-context-tooltip-title">
+                        {t("conversation.contextUsageTitle")}
+                      </div>
+                      <TokenDisplayUnitToggle tokenDisplayUnit={tokenDisplayUnit} />
                     </div>
                     <strong className={`composer-context-usage-percent ${stateClassName}`}>
                       {usagePercent}%
@@ -3993,8 +4056,8 @@ function SessionStatsIndicators({
                     <span style={{ width: `${progress * 100}%` }} />
                   </div>
                   <div className="composer-context-usage-amounts">
-                    <span>{t("conversation.contextUsageUsedTokens", { count: formatSessionStatsTokenCount(contextUsage.promptTokens) })}</span>
-                    <span>{t("conversation.contextUsageLimitTokens", { count: formatSessionStatsTokenCount(contextUsage.contextWindow) })}</span>
+                    <span>{t("conversation.contextUsageUsedTokens", { count: formatSessionStatsTokenCount(contextUsage.promptTokens, tokenDisplayUnit) })}</span>
+                    <span>{t("conversation.contextUsageLimitTokens", { count: formatSessionStatsTokenCount(contextUsage.contextWindow, tokenDisplayUnit) })}</span>
                   </div>
                 </section>
               ) : !hasSessionStats ? (
@@ -4079,8 +4142,11 @@ function SessionStatsIndicators({
               ) : null}
               {sessionStatsItems.length > 0 ? (
                 <section className="composer-context-tooltip-session-stats">
-                  <div className="composer-context-tooltip-title">
-                    {t("conversation.sessionStatsTitle")}
+                  <div className="composer-context-tooltip-title-row">
+                    <div className="composer-context-tooltip-title">
+                      {t("conversation.sessionStatsTitle")}
+                    </div>
+                    {!contextUsage ? <TokenDisplayUnitToggle tokenDisplayUnit={tokenDisplayUnit} /> : null}
                   </div>
                   <div className="composer-session-stats-grid">
                     {sessionStatsItems.map((item) => (
@@ -4113,7 +4179,7 @@ function SessionStatsIndicators({
                               </button>
                             </span>
                           ) : (
-                            <strong>{formatSessionStatValue(item.metric, item.value.value)}</strong>
+                            <strong>{formatSessionStatValue(item.metric, item.value.value, tokenDisplayUnit)}</strong>
                           )}
                         </div>
                       </div>
@@ -4155,6 +4221,7 @@ function SessionCostDetailsModal({
   const [catalogPriceBook, setCatalogPriceBook] = useState<ProviderPriceBookDto | null>(null);
   const [catalogPriceBookLoading, setCatalogPriceBookLoading] = useState(false);
   const [catalogPriceBookError, setCatalogPriceBookError] = useState(false);
+  const tokenDisplayUnit = useLocalUiPreferenceSelector((state) => state.tokenDisplayUnit);
   const pricing = metric.pricing;
   const costUnavailable = pricing?.coverage === "unavailable";
   const breakdown = pricing?.breakdown ?? [];
@@ -4222,6 +4289,7 @@ function SessionCostDetailsModal({
       catalogPriceBookLoading={catalogPriceBookLoading}
       catalogPriceBookError={catalogPriceBookError}
       showPriceBook={priceBookOpen}
+      tokenDisplayUnit={tokenDisplayUnit}
     />
   );
 
@@ -4274,7 +4342,8 @@ function SessionCostDetailsBody({
   catalogPriceBook,
   catalogPriceBookLoading,
   catalogPriceBookError,
-  showPriceBook
+  showPriceBook,
+  tokenDisplayUnit
 }: {
   metric: SessionStatsMetricValue;
   pricing: SessionCostPricing | undefined;
@@ -4284,6 +4353,7 @@ function SessionCostDetailsBody({
   catalogPriceBookLoading: boolean;
   catalogPriceBookError: boolean;
   showPriceBook: boolean;
+  tokenDisplayUnit: TokenDisplayUnit;
 }) {
   const exchangeRate = pricing?.exchangeRate;
   const cnyValue = exchangeRate && Number.isFinite(exchangeRate.rate)
@@ -4314,7 +4384,7 @@ function SessionCostDetailsBody({
                   <ModalListItem
                     key={`${item.provider}:${item.model}`}
                     label={`${getProviderDisplayName(item.provider)} · ${item.model}`}
-                    description={formatSessionCostTokenBreakdown(item)}
+                    description={formatSessionCostTokenBreakdown(item, tokenDisplayUnit)}
                     trailing={<strong>{formatSessionCostValue(item.costUsd, pricing?.estimated)}</strong>}
                   />
                 ))}
@@ -4413,18 +4483,21 @@ function SessionCostDetailsBody({
   );
 }
 
-function formatSessionCostTokenBreakdown(item: SessionCostBreakdown): string {
+function formatSessionCostTokenBreakdown(
+  item: SessionCostBreakdown,
+  tokenDisplayUnit: TokenDisplayUnit = "chinese"
+): string {
   return [
-    t("conversation.sessionStatsCostInputTokens", { value: formatTokenCount(item.inputTokens) }),
-    t("conversation.sessionStatsCostOutputTokens", { value: formatTokenCount(item.outputTokens) }),
+    t("conversation.sessionStatsCostInputTokens", { value: formatSessionStatsTokenCount(item.inputTokens, tokenDisplayUnit) }),
+    t("conversation.sessionStatsCostOutputTokens", { value: formatSessionStatsTokenCount(item.outputTokens, tokenDisplayUnit) }),
     item.reasoningTokens > 0
-      ? t("conversation.sessionStatsCostReasoningTokens", { value: formatTokenCount(item.reasoningTokens) })
+      ? t("conversation.sessionStatsCostReasoningTokens", { value: formatSessionStatsTokenCount(item.reasoningTokens, tokenDisplayUnit) })
       : null,
     item.cacheReadTokens > 0
-      ? t("conversation.sessionStatsCostCacheReadTokens", { value: formatTokenCount(item.cacheReadTokens) })
+      ? t("conversation.sessionStatsCostCacheReadTokens", { value: formatSessionStatsTokenCount(item.cacheReadTokens, tokenDisplayUnit) })
       : null,
     item.cacheWriteTokens > 0
-      ? t("conversation.sessionStatsCostCacheWriteTokens", { value: formatTokenCount(item.cacheWriteTokens) })
+      ? t("conversation.sessionStatsCostCacheWriteTokens", { value: formatSessionStatsTokenCount(item.cacheWriteTokens, tokenDisplayUnit) })
       : null
   ].filter(Boolean).join(" · ");
 }

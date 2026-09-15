@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 type Listener = () => void;
 
 export type SessionDisplaySortMode = "createdAt" | "updatedAt" | "title";
+export type TokenDisplayUnit = "chinese" | "international";
 
 export interface LocalNotificationPreferenceState {
   notifyOnPermissionRequest: boolean;
@@ -12,11 +13,13 @@ export interface LocalNotificationPreferenceState {
 
 interface LocalUiPreferenceState {
   sessionDisplaySortMode: SessionDisplaySortMode;
+  tokenDisplayUnit: TokenDisplayUnit;
   showSystemFiles: boolean;
   notificationPreferences: LocalNotificationPreferenceState;
 }
 
 export const SESSION_DISPLAY_SORT_MODE_STORAGE_KEY = "codingns.workspace.session-display-sort-mode";
+export const TOKEN_DISPLAY_UNIT_STORAGE_KEY = "codingns.conversation.token-display-unit";
 export const SHOW_SYSTEM_FILES_STORAGE_KEY = "codingns.file-panel.show-system-files";
 export const NOTIFICATION_PREFERENCES_STORAGE_KEY = "codingns.notification.preferences";
 
@@ -41,6 +44,19 @@ function readSessionDisplaySortModeFromStorage(): SessionDisplaySortMode {
 
   const storedValue = window.localStorage.getItem(SESSION_DISPLAY_SORT_MODE_STORAGE_KEY);
   return isSessionDisplaySortMode(storedValue) ? storedValue : "createdAt";
+}
+
+function isTokenDisplayUnit(value: unknown): value is TokenDisplayUnit {
+  return value === "chinese" || value === "international";
+}
+
+function readTokenDisplayUnitFromStorage(): TokenDisplayUnit {
+  if (!canUseLocalStorage()) {
+    return "chinese";
+  }
+
+  const storedValue = window.localStorage.getItem(TOKEN_DISPLAY_UNIT_STORAGE_KEY);
+  return isTokenDisplayUnit(storedValue) ? storedValue : "chinese";
 }
 
 function readShowSystemFilesFromStorage(): boolean {
@@ -109,6 +125,7 @@ function writeNotificationPreferencesToStorage(preferences: LocalNotificationPre
 class LocalUiPreferenceStore {
   private state: LocalUiPreferenceState = {
     sessionDisplaySortMode: readSessionDisplaySortModeFromStorage(),
+    tokenDisplayUnit: readTokenDisplayUnitFromStorage(),
     showSystemFiles: readShowSystemFilesFromStorage(),
     notificationPreferences: readNotificationPreferencesFromStorage()
   };
@@ -146,6 +163,26 @@ class LocalUiPreferenceStore {
     this.state = {
       ...this.state,
       sessionDisplaySortMode: mode
+    };
+    this.emit();
+  }
+
+  setTokenDisplayUnit(unit: TokenDisplayUnit): void {
+    if (canUseLocalStorage()) {
+      if (unit === "chinese") {
+        window.localStorage.removeItem(TOKEN_DISPLAY_UNIT_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(TOKEN_DISPLAY_UNIT_STORAGE_KEY, unit);
+      }
+    }
+
+    if (this.state.tokenDisplayUnit === unit) {
+      return;
+    }
+
+    this.state = {
+      ...this.state,
+      tokenDisplayUnit: unit
     };
     this.emit();
   }
@@ -192,6 +229,7 @@ class LocalUiPreferenceStore {
     if (
       event.key !== null
       && event.key !== SESSION_DISPLAY_SORT_MODE_STORAGE_KEY
+      && event.key !== TOKEN_DISPLAY_UNIT_STORAGE_KEY
       && event.key !== SHOW_SYSTEM_FILES_STORAGE_KEY
       && event.key !== NOTIFICATION_PREFERENCES_STORAGE_KEY
     ) {
@@ -199,11 +237,13 @@ class LocalUiPreferenceStore {
     }
 
     const nextSessionDisplaySortMode = readSessionDisplaySortModeFromStorage();
+    const nextTokenDisplayUnit = readTokenDisplayUnitFromStorage();
     const nextShowSystemFiles = readShowSystemFilesFromStorage();
     const nextNotificationPreferences = readNotificationPreferencesFromStorage();
     const sessionDisplaySortModeUnchanged =
       this.state.sessionDisplaySortMode === nextSessionDisplaySortMode;
     const showSystemFilesUnchanged = this.state.showSystemFiles === nextShowSystemFiles;
+    const tokenDisplayUnitUnchanged = this.state.tokenDisplayUnit === nextTokenDisplayUnit;
     const notificationPreferencesUnchanged = areNotificationPreferencesEqual(
       this.state.notificationPreferences,
       nextNotificationPreferences
@@ -211,6 +251,7 @@ class LocalUiPreferenceStore {
 
     if (
       sessionDisplaySortModeUnchanged
+      && tokenDisplayUnitUnchanged
       && showSystemFilesUnchanged
       && notificationPreferencesUnchanged
     ) {
@@ -219,6 +260,7 @@ class LocalUiPreferenceStore {
 
     this.state = {
       sessionDisplaySortMode: nextSessionDisplaySortMode,
+      tokenDisplayUnit: nextTokenDisplayUnit,
       showSystemFiles: nextShowSystemFiles,
       notificationPreferences: nextNotificationPreferences
     };
