@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { PluginDefinition } from "../../types/domain.js";
 
 export class PluginDefinitionRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   upsert(record: PluginDefinition): PluginDefinition {
     this.db

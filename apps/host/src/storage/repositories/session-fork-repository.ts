@@ -1,12 +1,12 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionForkRecord } from "../../types/domain.js";
 
 export class SessionForkRepository {
-  private readonly upsertStatement: Database.Statement<any[], any>;
-  private readonly findBySessionIdStatement: Database.Statement<any[], any>;
+  private readonly upsertStatement: SqliteStatement<any[], any>;
+  private readonly findBySessionIdStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.upsertStatement = this.db.prepare(
       `INSERT INTO session_forks (
          session_id,

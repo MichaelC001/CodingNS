@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { ButlerProfile } from "../../types/domain.js";
 
 export class ButlerProfileRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   find(userId?: string): ButlerProfile | null {
     if (userId?.trim()) {

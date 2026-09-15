@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import { AppError } from "../../shared/errors/app-error.js";
 import { nowIso } from "../../shared/utils/time.js";
@@ -45,7 +45,7 @@ export class TailscaleService {
   private readonly defaultStateDir: string;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: SqliteDatabase,
     private readonly repository: InstanceTailscaleRepository,
     private readonly manager: TailscaleManager,
     options: {

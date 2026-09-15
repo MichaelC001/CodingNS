@@ -8,7 +8,7 @@ import { detectCatalogSchema } from "../../../src/modules/affairs-indexer/core/s
 import { openDatabase } from "../../../src/modules/affairs-indexer/core/src/sqlite/open-database.js";
 
 describe("affairs-indexer SQLite runtime", () => {
-  it("使用 better-sqlite3 完成基础读写，不触发 node:sqlite 实验特性警告", () => {
+  it("使用 libsql 完成基础读写并清理内部元数据，不触发 node:sqlite 实验特性警告", () => {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "affairs-indexer-sqlite-runtime-"));
     const dbPath = path.join(rootDir, "catalog.db");
     const warnings: Error[] = [];

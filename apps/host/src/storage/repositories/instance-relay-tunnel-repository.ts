@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type {
   InstanceRelayTunnelConfig,
@@ -7,7 +7,7 @@ import type {
 } from "../../types/domain.js";
 
 export class InstanceRelayTunnelRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findConfig(): InstanceRelayTunnelConfig | null {
     const row = this.db

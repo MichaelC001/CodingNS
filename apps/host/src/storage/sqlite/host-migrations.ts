@@ -1,9 +1,9 @@
-import type { BetterSqliteDatabase } from "../../shared/runtime/better-sqlite3.js";
+import type { SqliteDatabase } from "../../shared/runtime/sqlite-runtime.js";
 
 interface HostMigration {
   version: number;
   name: string;
-  apply: (db: BetterSqliteDatabase) => void;
+  apply: (db: SqliteDatabase) => void;
 }
 
 const HOST_MIGRATIONS: readonly HostMigration[] = [
@@ -24,7 +24,7 @@ const HOST_MIGRATIONS: readonly HostMigration[] = [
  * Host 主库此前只有幂等 schema 初始化，没有独立的版本记录，因此这里使用
  * 专用迁移表，避免复用 affairs-indexer 自己的 catalog 迁移状态。
  */
-export function runHostMigrations(db: BetterSqliteDatabase): void {
+export function runHostMigrations(db: SqliteDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS host_schema_migrations (
       version INTEGER PRIMARY KEY,

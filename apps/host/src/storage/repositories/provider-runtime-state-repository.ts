@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { ProviderRuntimeStateRecord } from "../../types/domain.js";
 
 export class ProviderRuntimeStateRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   list(): ProviderRuntimeStateRecord[] {
     return this.db

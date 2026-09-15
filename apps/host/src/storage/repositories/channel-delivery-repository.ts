@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { ChannelDelivery } from "../../types/domain.js";
 
 export class ChannelDeliveryRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findById(id: string): ChannelDelivery | null {
     const row = this.db

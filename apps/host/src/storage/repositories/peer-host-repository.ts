@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type {
   PeerHostRecord,
@@ -8,7 +8,7 @@ import type {
 } from "../../types/domain.js";
 
 export class PeerHostRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: PeerHostRecord): PeerHostRecord {
     this.db
@@ -257,7 +257,7 @@ export class PeerHostRepository {
 }
 
 export class PeerHostWorkspaceBindingRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   listByOwner(ownerUserId: string): PeerHostWorkspaceBindingRecord[] {
     return this.db
@@ -311,7 +311,7 @@ export class PeerHostWorkspaceBindingRepository {
 }
 
 export class PeerHostSessionRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   find(peerHostId: string, ownerUserId: string): PeerHostSessionRecord | null {
     const row = this.db

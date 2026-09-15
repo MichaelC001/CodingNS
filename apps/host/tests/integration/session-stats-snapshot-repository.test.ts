@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ProviderSessionStats } from "@codingns/session-sync-core";
 
 import { SessionStatsSnapshotRepository } from "../../src/storage/repositories/session-stats-snapshot-repository.js";
-import Database from "../../src/shared/runtime/better-sqlite3.js";
+import Database from "../../src/shared/runtime/sqlite-runtime.js";
 import { createDatabaseClient } from "../../src/storage/sqlite/client.js";
 
 const clients: Array<ReturnType<typeof createDatabaseClient>> = [];

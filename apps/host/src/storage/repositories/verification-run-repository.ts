@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 export interface VerificationRunRecord {
   id: string;
@@ -18,7 +18,7 @@ export interface VerificationRunRecord {
 }
 
 export class VerificationRunRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: VerificationRunRecord): VerificationRunRecord {
     this.db

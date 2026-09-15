@@ -4,7 +4,7 @@ import path from "node:path";
 import readline from "node:readline";
 
 import { parseCliArgs, readRequiredCliArg } from "./conpty-runtime-shared.js";
-import Database from "../../../shared/runtime/better-sqlite3.js";
+import Database from "../../../shared/runtime/sqlite-runtime.js";
 
 interface PersistRequest {
   type: "persist";

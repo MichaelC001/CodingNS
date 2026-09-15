@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { AppError } from "../../shared/errors/app-error.js";
-import Database from "../../shared/runtime/better-sqlite3.js";
+import Database from "../../shared/runtime/sqlite-runtime.js";
 import { resolveAvailableCommandPath } from "../../shared/utils/command-availability.js";
 import { resolveCommandLaunch } from "../../shared/utils/command-launch.js";
 import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";

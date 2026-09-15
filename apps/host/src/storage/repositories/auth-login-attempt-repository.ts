@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { AuthLoginAttemptRecord } from "../../types/domain.js";
 
 export class AuthLoginAttemptRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findByUsername(username: string): AuthLoginAttemptRecord | null {
     const row = this.db

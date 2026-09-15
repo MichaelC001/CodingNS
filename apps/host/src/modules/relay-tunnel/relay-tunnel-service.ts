@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import { AppError } from "../../shared/errors/app-error.js";
 import { decryptSecret, encryptSecret } from "../../shared/utils/secret-box.js";
@@ -149,7 +149,7 @@ export class RelayTunnelService {
   private readonly identityService: RelayTunnelIdentityService;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: SqliteDatabase,
     private readonly bootstrapStateRepository: BootstrapStateRepository,
     identityRepository: InstanceRelayTunnelIdentityRepository,
     private readonly repository: InstanceRelayTunnelRepository,

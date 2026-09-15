@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type {
   SessionCleanupArchiveRecord,
@@ -7,16 +7,16 @@ import type {
 } from "../../types/domain.js";
 
 export class SessionCleanupRepository {
-  private readonly insertScanStatement: Database.Statement<any[], any>;
-  private readonly findLatestScanByUserIdStatement: Database.Statement<any[], any>;
-  private readonly insertArchiveStatement: Database.Statement<any[], any>;
-  private readonly listArchivesByUserIdStatement: Database.Statement<any[], any>;
-  private readonly insertOperationItemStatement: Database.Statement<any[], any>;
-  private readonly listOperationItemsByOperationIdStatement: Database.Statement<any[], any>;
-  private readonly updateOperationItemStatement: Database.Statement<any[], any>;
-  private readonly findLatestOperationItemByUserIdAndTaskKindStatement: Database.Statement<any[], any>;
+  private readonly insertScanStatement: SqliteStatement<any[], any>;
+  private readonly findLatestScanByUserIdStatement: SqliteStatement<any[], any>;
+  private readonly insertArchiveStatement: SqliteStatement<any[], any>;
+  private readonly listArchivesByUserIdStatement: SqliteStatement<any[], any>;
+  private readonly insertOperationItemStatement: SqliteStatement<any[], any>;
+  private readonly listOperationItemsByOperationIdStatement: SqliteStatement<any[], any>;
+  private readonly updateOperationItemStatement: SqliteStatement<any[], any>;
+  private readonly findLatestOperationItemByUserIdAndTaskKindStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.insertScanStatement = this.db.prepare(
       `INSERT INTO session_cleanup_scans (
          id,

@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { CommitRuleProfile } from "../../modules/git/types.js";
 
 export class CommitRuleProfileRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findByWorkspaceId(workspaceId: string): CommitRuleProfile | null {
     const row = this.db

@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { OfficeRollbackRecord, OfficeRollbackStatus } from "../../types/domain.js";
 
 export class OfficeRollbackRecordRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: OfficeRollbackRecord): OfficeRollbackRecord {
     this.db

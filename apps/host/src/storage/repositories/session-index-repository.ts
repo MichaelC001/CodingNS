@@ -1,15 +1,15 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionIndexRecord, SessionListItem } from "../../types/domain.js";
 
 export class SessionIndexRepository {
-  private readonly upsertStatement: Database.Statement<any[], any>;
-  private readonly listByWorkspaceStatement: Database.Statement<any[], any>;
-  private readonly findBySessionIdStatement: Database.Statement<any[], any>;
-  private readonly findIndexRecordBySessionIdStatement: Database.Statement<any[], any>;
-  private readonly renameTitleStatement: Database.Statement<any[], any>;
+  private readonly upsertStatement: SqliteStatement<any[], any>;
+  private readonly listByWorkspaceStatement: SqliteStatement<any[], any>;
+  private readonly findBySessionIdStatement: SqliteStatement<any[], any>;
+  private readonly findIndexRecordBySessionIdStatement: SqliteStatement<any[], any>;
+  private readonly renameTitleStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.upsertStatement = this.db.prepare(
       `INSERT INTO session_indices (
          session_id,

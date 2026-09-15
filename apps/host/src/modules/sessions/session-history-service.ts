@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -536,7 +536,7 @@ export class SessionHistoryService {
   private workspaceStateRefreshTaskSequence = 0;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: SqliteDatabase,
     private readonly workspaceRepository: WorkspaceRepository,
     private readonly sessionBindingRepository: SessionBindingRepository,
     private readonly sessionChangedFileService: SessionChangedFileService,

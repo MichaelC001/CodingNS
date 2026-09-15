@@ -1,12 +1,12 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { AffairsAssistantSessionSnapshotRecord } from "../../types/domain.js";
 
 export class AffairsAssistantSessionSnapshotRepository {
-  private readonly findByWorkspaceAndUserStatement: Database.Statement<any[], any>;
-  private readonly upsertStatement: Database.Statement<any[], any>;
+  private readonly findByWorkspaceAndUserStatement: SqliteStatement<any[], any>;
+  private readonly upsertStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.findByWorkspaceAndUserStatement = this.db.prepare(
       `SELECT workspace_id, user_id, project_id, project_workspace_id, agent_workspace_path, sessions_json, updated_at
        FROM affairs_assistant_session_snapshots

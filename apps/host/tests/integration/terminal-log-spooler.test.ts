@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import Database from "better-sqlite3";
+import Database from "../../src/shared/runtime/sqlite-runtime.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TerminalLogFileRepository } from "../../src/storage/repositories/terminal-log-file-repository.js";

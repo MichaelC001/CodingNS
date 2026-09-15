@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import Database from "../../src/shared/runtime/better-sqlite3.js";
+import Database from "../../src/shared/runtime/sqlite-runtime.js";
 import { installSlowQueryDiagnostics } from "../../src/storage/sqlite/slow-query-diagnostics.js";
 import { SessionStatusSnapshotRepository } from "../../src/storage/repositories/session-status-snapshot-repository.js";
 

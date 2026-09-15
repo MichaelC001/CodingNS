@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { PortLeaseRecord, PortLeaseStatus } from "../../types/domain.js";
 
 export class PortLeaseRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: PortLeaseRecord): PortLeaseRecord {
     this.db

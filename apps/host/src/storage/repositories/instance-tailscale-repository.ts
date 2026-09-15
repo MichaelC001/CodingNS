@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type {
   InstanceTailscaleConfig,
@@ -6,7 +6,7 @@ import type {
 } from "../../types/domain.js";
 
 export class InstanceTailscaleRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findConfig(): InstanceTailscaleConfig | null {
     const row = this.db

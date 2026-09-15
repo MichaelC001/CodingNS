@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { TerminalInstance, TerminalRuntimeType, TerminalStatus } from "../../types/domain.js";
 
@@ -13,7 +13,7 @@ interface UpdateTerminalLifecycleInput {
 }
 
 export class TerminalInstanceRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: TerminalInstance): TerminalInstance {
     this.db

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 import { createHash } from "node:crypto";
 
 import type {
@@ -31,7 +31,7 @@ export interface SessionStatsSnapshotRecord {
 
 /** 会话统计、账单和模型用量的原子读写入口。 */
 export class SessionStatsSnapshotRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findStatsBySessionId(sessionId: string): ProviderSessionStats | null {
     const row = this.db

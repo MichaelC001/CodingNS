@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { TeableSyncSourceType, UserTeableMirrorRecordMappingRecord } from "../../types/domain.js";
 
 export class UserTeableMirrorRecordMappingRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   listByUserIdAndMirrorType(userId: string, mirrorType: TeableSyncSourceType): UserTeableMirrorRecordMappingRecord[] {
     return this.db

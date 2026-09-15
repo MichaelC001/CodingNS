@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { DebugServiceSpec } from "../../types/domain.js";
 
 export class DebugServiceRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: DebugServiceSpec): DebugServiceSpec {
     this.db

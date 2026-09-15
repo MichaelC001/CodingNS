@@ -1,7 +1,7 @@
 ﻿import { EventEmitter } from "node:events";
 import path from "node:path";
 
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import { AppError } from "../../shared/errors/app-error.js";
 import { createId } from "../../shared/utils/id.js";
@@ -138,7 +138,7 @@ export class TerminalService extends EventEmitter {
   private isDisposing = false;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: SqliteDatabase,
     private readonly terminalInstanceRepository: TerminalInstanceRepository,
     private readonly terminalRuntimeSessionRepository: TerminalRuntimeSessionRepository,
     private readonly workspaceService: WorkspaceService,

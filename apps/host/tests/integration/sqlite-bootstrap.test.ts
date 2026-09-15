@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { resolveHostConfig } from "../../src/config/env.js";
-import Database from "../../src/shared/runtime/better-sqlite3.js";
+import Database from "../../src/shared/runtime/sqlite-runtime.js";
 import { createDatabaseClient } from "../../src/storage/sqlite/client.js";
 
 const tempDirs: string[] = [];
@@ -30,7 +30,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-sqlite-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -174,7 +174,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-auth-token-device-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -217,7 +217,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-workspace-owner-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -320,7 +320,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-butler-owner-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -497,7 +497,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-teable-form-binding-enabled-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -543,7 +543,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-auth-token-caller-kind-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -668,7 +668,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-auth-device-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -709,7 +709,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-managed-skill-scope-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -799,7 +799,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-skill-target-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -913,7 +913,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-session-index-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -1062,7 +1062,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-affairs-assistant-session-snapshot-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -1273,7 +1273,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-debug-terminal-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -1384,7 +1384,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-session-forks-migration-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -1532,7 +1532,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-document-template-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`
@@ -1566,7 +1566,7 @@ describe("sqlite 启动引导", () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-terminal-log-bootstrap-"));
     tempDirs.push(tempDir);
     const databasePath = path.join(tempDir, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`

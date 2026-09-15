@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import { AppError } from "../../shared/errors/app-error.js";
 import { hashPassword } from "../../shared/utils/hash.js";
@@ -14,7 +14,7 @@ export interface SetupInput {
 
 export class BootstrapService {
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: SqliteDatabase,
     private readonly bootstrapStateRepository: BootstrapStateRepository,
     private readonly authUserRepository: AuthUserRepository,
     private readonly demoMode: boolean = false

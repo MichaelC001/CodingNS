@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SkillTargetBindingRecord, SkillTargetCli } from "../../types/domain.js";
 
 export class SkillTargetBindingRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findBySkillAndTarget(skillId: string, targetCli: SkillTargetCli): SkillTargetBindingRecord | null {
     const row = this.db

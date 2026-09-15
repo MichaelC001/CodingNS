@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type {
   UserQuickPhrasePreferenceRecord,
@@ -6,7 +6,7 @@ import type {
 } from "../../types/domain.js";
 
 export class UserQuickPhrasePreferenceRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findByUserId(userId: string): UserQuickPhrasePreferenceRecord | null {
     const row = this.db

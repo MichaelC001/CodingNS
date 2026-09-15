@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 export interface PatrolRunRecord {
   id: string;
@@ -17,7 +17,7 @@ export interface PatrolRunRecord {
 }
 
 export class PatrolRunRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: PatrolRunRecord): PatrolRunRecord {
     this.db

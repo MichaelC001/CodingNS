@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import Database from "../../../../../shared/runtime/better-sqlite3.js";
+import Database from "../../../../../shared/runtime/sqlite-runtime.js";
 
 export interface OpenDatabaseOptions {
   tempStore?: "FILE" | "MEMORY";
@@ -13,7 +13,7 @@ export interface AffairsIndexerRunResult {
 
 /**
  * affairs-indexer 只需要同步 SQL 的最小接口。
- * 不直接暴露 better-sqlite3 的完整 Statement 类型，避免它的绑定参数类型把运行时允许的多参数调用误报成错误。
+ * 不直接暴露 libsql 的完整 Statement 类型，避免它的绑定参数类型把运行时允许的多参数调用误报成错误。
  */
 export interface AffairsIndexerStatement {
   run(...params: unknown[]): AffairsIndexerRunResult;
@@ -29,7 +29,7 @@ export interface AffairsIndexerDatabase {
 
 /**
  * 打开 SQLite 数据库。
- * 这里统一走 better-sqlite3，避免 helper 子进程加载 Node 实验性的 node:sqlite。
+ * 这里统一走 libsql，避免 helper 子进程加载 Node 实验性的 node:sqlite。
  */
 export function openDatabase(
   dbPath: string,

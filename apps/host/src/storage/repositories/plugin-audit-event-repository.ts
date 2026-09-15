@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { PluginAuditEvent } from "../../types/domain.js";
 
 export class PluginAuditEventRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: PluginAuditEvent): PluginAuditEvent {
     this.db

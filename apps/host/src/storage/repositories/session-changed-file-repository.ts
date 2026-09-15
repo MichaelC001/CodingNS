@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type {
   SessionChangedFileIndexState,
@@ -6,14 +6,14 @@ import type {
 } from "../../types/domain.js";
 
 export class SessionChangedFileRepository {
-  private readonly upsertManyStatement: Database.Statement<any[], any>;
-  private readonly listBySessionIdStatement: Database.Statement<any[], any>;
-  private readonly findIndexStateBySessionIdStatement: Database.Statement<any[], any>;
-  private readonly upsertIndexStateStatement: Database.Statement<any[], any>;
-  private readonly deleteFilesBySessionIdStatement: Database.Statement<any[], any>;
-  private readonly deleteStatesBySessionIdStatement: Database.Statement<any[], any>;
+  private readonly upsertManyStatement: SqliteStatement<any[], any>;
+  private readonly listBySessionIdStatement: SqliteStatement<any[], any>;
+  private readonly findIndexStateBySessionIdStatement: SqliteStatement<any[], any>;
+  private readonly upsertIndexStateStatement: SqliteStatement<any[], any>;
+  private readonly deleteFilesBySessionIdStatement: SqliteStatement<any[], any>;
+  private readonly deleteStatesBySessionIdStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.upsertManyStatement = this.db.prepare(
       `INSERT INTO session_changed_files (
          session_id,

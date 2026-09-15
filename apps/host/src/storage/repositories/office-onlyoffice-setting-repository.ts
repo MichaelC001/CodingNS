@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 export interface OfficeOnlyOfficeSettingRecord {
   singletonKey: string;
@@ -14,7 +14,7 @@ export interface OfficeOnlyOfficeSettingRecord {
 }
 
 export class OfficeOnlyOfficeSettingRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   find(): OfficeOnlyOfficeSettingRecord | null {
     const row = this.db

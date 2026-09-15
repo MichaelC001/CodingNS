@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { OfficeAuditEvent, OfficeAuditEventKind } from "../../types/domain.js";
 
 export class OfficeAuditEventRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: OfficeAuditEvent): OfficeAuditEvent {
     this.db

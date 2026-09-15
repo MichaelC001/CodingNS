@@ -1,11 +1,11 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { ProviderControlRecord } from "../../types/domain.js";
 
 const DEFAULT_PROVIDER_CONTROL_ENABLED = true;
 
 export class ProviderControlRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   list(): ProviderControlRecord[] {
     return this.db

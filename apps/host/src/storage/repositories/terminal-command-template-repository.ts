@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { TerminalCommandTemplate } from "../../types/domain.js";
 
 export class TerminalCommandTemplateRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: TerminalCommandTemplate): TerminalCommandTemplate {
     this.db

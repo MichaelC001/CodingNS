@@ -87,7 +87,7 @@ describe("会话费用绑定元数据", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "codingns-session-billing-legacy-"));
     tempDirs.push(directory);
     const databasePath = path.join(directory, "host.sqlite");
-    const { default: Database } = await import("better-sqlite3");
+    const { default: Database } = await import("../../src/shared/runtime/sqlite-runtime.js");
     const seed = new Database(databasePath);
 
     seed.exec(`

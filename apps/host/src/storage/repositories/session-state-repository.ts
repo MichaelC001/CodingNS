@@ -1,12 +1,12 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionStateRecord } from "../../types/domain.js";
 
 export class SessionStateRepository {
-  private readonly findBySessionAndUserStatement: Database.Statement<any[], any>;
-  private readonly upsertStatement: Database.Statement<any[], any>;
+  private readonly findBySessionAndUserStatement: SqliteStatement<any[], any>;
+  private readonly upsertStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.findBySessionAndUserStatement = this.db.prepare(
       `SELECT
          session_id,

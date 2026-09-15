@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { ProjectMemory, ProjectMemoryStatus, ProjectMemoryType } from "../../types/domain.js";
 
 export class ProjectMemoryRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: ProjectMemory): ProjectMemory {
     this.db

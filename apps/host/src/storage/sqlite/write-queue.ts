@@ -20,7 +20,7 @@ const DEFAULT_RETRY_DELAYS_MS = [50, 100, 250, 500, 1_000] as const;
 /**
  * Host 进程内所有高频 SQLite 写入共用的 FIFO 队列。
  *
- * better-sqlite3 的调用是同步的，队列的作用不是把同步调用变成异步调用，
+ * libsql 的调用是同步的，队列的作用不是把同步调用变成异步调用，
  * 而是避免多个 async 链路在 await 之后交错进入长事务，并把 busy 重试放到
  * 一个可观测、可释放的边界里。
  */

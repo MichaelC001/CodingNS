@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import Database from "../../src/shared/runtime/better-sqlite3.js";
+import Database from "../../src/shared/runtime/sqlite-runtime.js";
 
 import {
   createEmptyFixture,

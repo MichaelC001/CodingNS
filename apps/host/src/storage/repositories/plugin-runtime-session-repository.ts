@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type {
   PluginRuntimeSession,
@@ -7,7 +7,7 @@ import type {
 } from "../../types/domain.js";
 
 export class PluginRuntimeSessionRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: PluginRuntimeSession): PluginRuntimeSession {
     this.db

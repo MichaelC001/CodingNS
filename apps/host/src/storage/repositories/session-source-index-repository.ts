@@ -1,14 +1,14 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionSourceIndexRecord } from "../../types/domain.js";
 
 export class SessionSourceIndexRepository {
-  private readonly findBySourceKeyStatement: Database.Statement<any[], any>;
-  private readonly listByWorkspaceIdStatement: Database.Statement<any[], any>;
-  private readonly upsertStatement: Database.Statement<any[], any>;
-  private readonly deleteBySourceKeyStatement: Database.Statement<any[], any>;
+  private readonly findBySourceKeyStatement: SqliteStatement<any[], any>;
+  private readonly listByWorkspaceIdStatement: SqliteStatement<any[], any>;
+  private readonly upsertStatement: SqliteStatement<any[], any>;
+  private readonly deleteBySourceKeyStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.findBySourceKeyStatement = this.db.prepare(
       `SELECT
          source_key,

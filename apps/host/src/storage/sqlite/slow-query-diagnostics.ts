@@ -1,8 +1,8 @@
 import { performance } from "node:perf_hooks";
-import type { BetterSqliteDatabase } from "../../shared/runtime/better-sqlite3.js";
+import type { SqliteDatabase } from "../../shared/runtime/sqlite-runtime.js";
 
 /** 只在同步查询确实慢时取调用栈；不记录绑定参数或 SQL 正文，避免泄漏业务内容。 */
-export function installSlowQueryDiagnostics(db: BetterSqliteDatabase, thresholdMs = 100): void {
+export function installSlowQueryDiagnostics(db: SqliteDatabase, thresholdMs = 100): void {
   const prepare = db.prepare;
   const lastReportedByOperation = new Map<string, number>();
 
@@ -27,7 +27,7 @@ export function installSlowQueryDiagnostics(db: BetterSqliteDatabase, thresholdM
 
   Object.defineProperty(db, "prepare", {
     configurable: true,
-    value: function (this: BetterSqliteDatabase, ...args: Parameters<typeof prepare>) {
+    value: function (this: SqliteDatabase, ...args: Parameters<typeof prepare>) {
       const statement = Reflect.apply(prepare, this, args);
       for (const method of ["run", "get", "all"] as const) {
         const execute = statement[method];

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import { AppError } from "../../shared/errors/app-error.js";
 import { createId } from "../../shared/utils/id.js";
@@ -54,7 +54,7 @@ interface CommandTemplateDraft
 
 export class CommandTemplateService {
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: SqliteDatabase,
     private readonly templateRepository: TerminalCommandTemplateRepository,
     private readonly workspaceService: WorkspaceService,
     private readonly terminalService: TerminalService

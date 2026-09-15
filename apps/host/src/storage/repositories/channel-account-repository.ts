@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { ChannelAccount } from "../../types/domain.js";
 
 export class ChannelAccountRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   listByUserId(userId: string): ChannelAccount[] {
     return this.db

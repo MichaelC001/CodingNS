@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import Database from "better-sqlite3";
+import Database from "../../src/shared/runtime/sqlite-runtime.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {

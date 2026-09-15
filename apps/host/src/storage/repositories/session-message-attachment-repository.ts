@@ -1,17 +1,17 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionMessageAttachmentRecord } from "../../types/domain.js";
 
 export class SessionMessageAttachmentRepository {
-  private readonly listBySessionAndClientRequestStatement: Database.Statement<any[], any>;
-  private readonly listBySessionStatement: Database.Statement<any[], any>;
-  private readonly findBySessionAndIdStatement: Database.Statement<any[], any>;
-  private readonly insertStatement: Database.Statement<any[], any>;
-  private readonly bindMessageStatement: Database.Statement<any[], any>;
-  private readonly listUnboundBySessionAndClientRequestStatement: Database.Statement<any[], any>;
-  private readonly deleteBySessionStatement: Database.Statement<any[], any>;
+  private readonly listBySessionAndClientRequestStatement: SqliteStatement<any[], any>;
+  private readonly listBySessionStatement: SqliteStatement<any[], any>;
+  private readonly findBySessionAndIdStatement: SqliteStatement<any[], any>;
+  private readonly insertStatement: SqliteStatement<any[], any>;
+  private readonly bindMessageStatement: SqliteStatement<any[], any>;
+  private readonly listUnboundBySessionAndClientRequestStatement: SqliteStatement<any[], any>;
+  private readonly deleteBySessionStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.listBySessionAndClientRequestStatement = this.db.prepare(
       `SELECT
          id,

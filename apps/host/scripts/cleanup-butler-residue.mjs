@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import Database from "better-sqlite3";
+import Database from "../src/shared/runtime/sqlite-runtime.js";
 
 function main() {
   const codingHome = path.join(os.homedir(), ".codingns");

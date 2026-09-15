@@ -3,6 +3,10 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "@codingns/host-sqlite-runtime": ["src/shared/runtime/sqlite-runtime.ts"]
+    },
     "lib": ["ES2022"],
     "strict": true,
     "skipLibCheck": true,

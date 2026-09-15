@@ -2,22 +2,22 @@ import { createRequire } from "node:module";
 
 const runtimeRequire = createRequire(import.meta.url);
 
-interface BetterSqliteStatementLike {
+interface SqliteStatementLike {
   all(...params: unknown[]): unknown[];
   get(...params: unknown[]): unknown;
   run(...params: unknown[]): CompatibleRunResult;
 }
 
-interface BetterSqliteDatabaseLike {
+interface SqliteDatabaseLike {
   exec(sql: string): void;
-  prepare(sql: string): BetterSqliteStatementLike;
+  prepare(sql: string): SqliteStatementLike;
   close(): void;
 }
 
-type BetterSqliteConstructor = new (
+type SqliteConstructor = new (
   dbPath: string,
   options?: { readonly?: boolean }
-) => BetterSqliteDatabaseLike;
+) => SqliteDatabaseLike;
 
 interface CompatibleDatabaseOptions {
   open?: boolean;
@@ -48,16 +48,16 @@ export type DatabaseSyncConstructor = new (
 
 /**
  * 返回一个兼容 node:sqlite DatabaseSync 调用形态的构造器。
- * 底层改用 better-sqlite3，避免 Host 和 helper 子进程加载实验性的 node:sqlite。
+ * 底层改用 libsql，避免 Host 和 helper 子进程加载实验性的 node:sqlite。
  */
 export function loadDatabaseSync(): DatabaseSyncConstructor {
-  const runtimeModule = runtimeRequire("better-sqlite3") as BetterSqliteConstructor | {
-    default?: BetterSqliteConstructor;
+  const runtimeModule = runtimeRequire("libsql") as SqliteConstructor | {
+    default?: SqliteConstructor;
   };
-  const Database = (("default" in runtimeModule && runtimeModule.default) || runtimeModule) as BetterSqliteConstructor;
+  const Database = (("default" in runtimeModule && runtimeModule.default) || runtimeModule) as SqliteConstructor;
 
-  return class BetterSqliteDatabaseSyncCompat implements DatabaseSyncType {
-    private readonly db: BetterSqliteDatabaseLike;
+  return class SqliteDatabaseSyncCompat implements DatabaseSyncType {
+    private readonly db: SqliteDatabaseLike;
 
     constructor(dbPath: string, options: CompatibleDatabaseOptions = {}) {
       if (options.open === false) {
@@ -76,8 +76,8 @@ export function loadDatabaseSync(): DatabaseSyncConstructor {
     prepare(sql: string): CompatibleStatement {
       const statement = this.db.prepare(sql);
       return {
-        all: (...params) => statement.all(...params),
-        get: (...params) => statement.get(...params),
+        all: (...params) => statement.all(...params).map(stripMetadata),
+        get: (...params) => stripMetadata(statement.get(...params)),
         run: (...params) => statement.run(...params)
       };
     }
@@ -86,4 +86,14 @@ export function loadDatabaseSync(): DatabaseSyncConstructor {
       this.db.close();
     }
   };
+}
+
+function stripMetadata(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+
+  const result = { ...(value as Record<string, unknown>) };
+  delete result._metadata;
+  return result;
 }

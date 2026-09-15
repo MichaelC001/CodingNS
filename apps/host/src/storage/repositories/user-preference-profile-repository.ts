@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { UserPreferenceProfileRecord } from "../../types/domain.js";
 
 export class UserPreferenceProfileRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   findByUserId(userId: string): UserPreferenceProfileRecord | null {
     const row = this.db

@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionIsolatedWorkspaceRecord } from "../../types/domain.js";
 
 export class SessionIsolatedWorkspaceRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   create(record: SessionIsolatedWorkspaceRecord): SessionIsolatedWorkspaceRecord {
     this.db

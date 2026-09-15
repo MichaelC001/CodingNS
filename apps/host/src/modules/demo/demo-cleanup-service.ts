@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 /**
  * Demo 模式清理服务。
@@ -13,7 +13,7 @@ export class DemoCleanupService {
   private readonly dataRootDir: string;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: SqliteDatabase,
     databasePath: string
   ) {
     this.dataRootDir = path.dirname(databasePath);

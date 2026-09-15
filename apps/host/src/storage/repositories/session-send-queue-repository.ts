@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionSendQueueItemRecord } from "../../types/domain.js";
 
 export class SessionSendQueueRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   listBySessionId(sessionId: string): SessionSendQueueItemRecord[] {
     const rows = this.db

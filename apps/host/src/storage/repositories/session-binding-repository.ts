@@ -1,16 +1,16 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionBinding } from "../../types/domain.js";
 
 export class SessionBindingRepository {
-  private readonly findBySessionIdStatement: Database.Statement<any[], any>;
-  private readonly findByProviderSessionStatement: Database.Statement<any[], any>;
-  private readonly findByRawStoreRefStatement: Database.Statement<any[], any>;
-  private readonly listByUserIdStatement: Database.Statement<any[], any>;
-  private readonly upsertStatement: Database.Statement<any[], any>;
-  private readonly confirmBillingIfUnsetStatement: Database.Statement<any[], any>;
+  private readonly findBySessionIdStatement: SqliteStatement<any[], any>;
+  private readonly findByProviderSessionStatement: SqliteStatement<any[], any>;
+  private readonly findByRawStoreRefStatement: SqliteStatement<any[], any>;
+  private readonly listByUserIdStatement: SqliteStatement<any[], any>;
+  private readonly upsertStatement: SqliteStatement<any[], any>;
+  private readonly confirmBillingIfUnsetStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: SqliteDatabase) {
     this.findBySessionIdStatement = this.db.prepare(
       `SELECT
          session_id,

@@ -1,9 +1,9 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { UserTeableMirrorTableBindingRecord } from "../../types/domain.js";
 
 export class UserTeableMirrorTableBindingRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: SqliteDatabase) {}
 
   listByUserId(userId: string): UserTeableMirrorTableBindingRecord[] {
     return this.db
