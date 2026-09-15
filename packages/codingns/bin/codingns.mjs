@@ -24,7 +24,8 @@ const PROVIDER_SESSION_DELETE_PROVIDERS = new Set([
   "gemini",
   "kimi",
   "deepseek-harness",
-  "command-code"
+  "command-code",
+  "pi"
 ]);
 
 const [command, ...argv] = process.argv.slice(2);
@@ -1472,7 +1473,8 @@ async function runProviderSessionsCommand(argv) {
         GeminiAdapter,
         KimiAdapter,
         LegnaCodeAdapter,
-        OpenCodeAdapter
+        OpenCodeAdapter,
+        PiAdapter
       } = await import("@codingns/session-sync-core");
       const homeDir = os.homedir();
       const registry = new ProviderRegistry([
@@ -1518,6 +1520,12 @@ async function runProviderSessionsCommand(argv) {
             readOptionalTrimmedValue(process.env.CODINGNS_OPENCODE_DATA_DIR) ?? undefined,
           dbPath:
             readOptionalTrimmedValue(process.env.CODINGNS_OPENCODE_DB_PATH) ?? undefined
+        }),
+        // Pi 的会话文件按工作区放在 Host 数据目录下，删除时必须知道同一个数据根目录，
+        // 否则路径会被判成越界。
+        new PiAdapter({
+          commandPath: readStringOption(process.env.CODINGNS_PI_COMMAND, "pi"),
+          dataRootDir: readOptionalTrimmedValue(process.env.CODINGNS_PI_DATA_ROOT) ?? null
         })
       ]);
       const sessionSyncService = new SessionSyncService(registry);

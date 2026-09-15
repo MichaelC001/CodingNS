@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { GeminiAdapter, GrokAdapter, KimiAdapter } from "@codingns/session-sync-core";
+import { GeminiAdapter, GrokAdapter, KimiAdapter, PiAdapter } from "@codingns/session-sync-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveHostConfig } from "../../src/config/env.js";
@@ -124,6 +124,137 @@ describe("provider session delete", () => {
 
     expect(existsSync(sessionDir)).toBe(false);
     expect(adapter.getProviderCapabilities().supportsSessionDelete).toBe(true);
+  });
+
+  it("Pi adapter 会删除会话文件、清掉归档标记并暴露删除能力", async () => {
+    const rootDir = createTempDir("codingns-pi-delete-");
+    const dataRootDir = path.join(rootDir, "data");
+    const sessionDir = path.join(
+      dataRootDir,
+      "pi-workspaces",
+      "-tmp-workspace",
+      "pi-agent",
+      "sessions"
+    );
+    const sessionName = "2026-09-15T15-34-17-374Z_01a0a5b4-621d-7074-8257-d7fdb2d12b14.jsonl";
+    const sessionFile = path.join(sessionDir, sessionName);
+    const metadataPath = path.join(sessionDir, ".codingns-pi-meta.json");
+
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "01a0a5b4-621d-7074-8257-d7fdb2d12b14",
+        timestamp: "2026-09-15T15:34:17.374Z",
+        cwd: path.join(rootDir, "workspace")
+      })}\n`,
+      "utf8"
+    );
+    // 归档标记按文件名存在共享元数据文件里，删会话时这个 key 也要一起消失。
+    writeFileSync(metadataPath, JSON.stringify({ [sessionName]: { archived: true } }), "utf8");
+
+    const adapter = new PiAdapter({ dataRootDir });
+    await adapter.deleteSession("pi-session-1", sessionFile);
+
+    expect(existsSync(sessionFile)).toBe(false);
+    // 归档标记是文件里唯一一条，删掉会话后元数据文件本身也不该留在 session 目录里。
+    expect(existsSync(metadataPath)).toBe(false);
+    expect(adapter.getProviderCapabilities().supportsSessionDelete).toBe(true);
+
+    // 重复删除走统一错误码，Host 会把它当成“早就删掉了”继续清理本地索引。
+    await expect(adapter.deleteSession("pi-session-1", sessionFile))
+      .rejects.toThrow("PROVIDER_SESSION_NOT_FOUND");
+  });
+
+  it("SessionHistoryService 在 Host 进程内删除 Pi 会话，不再走 CLI 通道", async () => {
+    const fixture = createEmptyFixture();
+    cleanupTargets.push(fixture.rootDir);
+    const sessionDir = path.join(
+      fixture.rootDir,
+      "pi-workspaces",
+      "-tmp-workspace",
+      "pi-agent",
+      "sessions"
+    );
+    const sessionFile = path.join(
+      sessionDir,
+      "2026-09-15T15-34-17-374Z_01a0a5b4-621d-7074-8257-d7fdb2d12b14.jsonl"
+    );
+
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "01a0a5b4-621d-7074-8257-d7fdb2d12b14",
+        timestamp: "2026-09-15T15:34:17.374Z",
+        cwd: fixture.workspaceDir
+      })}\n`,
+      "utf8"
+    );
+
+    const cliDelete = {
+      deleteSession: vi.fn(async () => {})
+    };
+    const context = createServiceContext(fixture, cliDelete, [], {
+      piDataRootDir: fixture.rootDir
+    });
+
+    seedSession(context, {
+      sessionId: "session-pi",
+      provider: "pi",
+      providerSessionId: "01a0a5b4-621d-7074-8257-d7fdb2d12b14",
+      rawStoreRef: sessionFile,
+      runningState: "idle"
+    });
+
+    await context.service.deleteSession("session-pi", "user-1");
+
+    expect(existsSync(sessionFile)).toBe(false);
+    expect(cliDelete.deleteSession).not.toHaveBeenCalled();
+    expect(context.sessionBindingRepository.findBySessionId("session-pi")).toBeNull();
+    expect(context.sessionIndexRepository.findIndexRecordBySessionId("session-pi")).toBeNull();
+  });
+
+  it("Pi 会话文件还没落盘时删除也能收口，不会卡住本地索引", async () => {
+    const fixture = createEmptyFixture();
+    cleanupTargets.push(fixture.rootDir);
+    const sessionDir = path.join(
+      fixture.rootDir,
+      "pi-workspaces",
+      "-tmp-workspace",
+      "pi-agent",
+      "sessions"
+    );
+    // 新建会话后、第一条消息之前，Pi 还没写文件，这里刻意不创建它。
+    const sessionFile = path.join(
+      sessionDir,
+      "2026-09-15T15-34-17-374Z_01a0a5b4-621d-7074-8257-d7fdb2d12b14.jsonl"
+    );
+    mkdirSync(sessionDir, { recursive: true });
+
+    const cliDelete = { deleteSession: vi.fn(async () => {}) };
+    const context = createServiceContext(fixture, cliDelete, [], {
+      piDataRootDir: fixture.rootDir
+    });
+
+    seedSession(context, {
+      sessionId: "session-pi-pending",
+      provider: "pi",
+      providerSessionId: "01a0a5b4-621d-7074-8257-d7fdb2d12b14",
+      rawStoreRef: sessionFile,
+      runningState: "idle"
+    });
+
+    await expect(
+      context.service.deleteSession("session-pi-pending", "user-1")
+    ).resolves.toBeUndefined();
+
+    expect(context.sessionBindingRepository.findBySessionId("session-pi-pending")).toBeNull();
+    expect(context.sessionIndexRepository.findIndexRecordBySessionId("session-pi-pending")).toBeNull();
   });
 
   it("SessionHistoryService 删除会话时会调用 CLI 传输层并清理本地索引", async () => {
@@ -562,14 +693,16 @@ function createServiceContext(
   providerSessionDeleteCli: {
     deleteSession: ReturnType<typeof vi.fn>;
   },
-  additionalAdapters: GrokAdapter[] = []
+  additionalAdapters: GrokAdapter[] = [],
+  configOverrides: Partial<Parameters<typeof resolveHostConfig>[0]> = {}
 ) {
   const config = resolveHostConfig({
     databasePath: ":memory:",
     claudeCodeHomeDir: fixture.claudeHomeDir,
     codexHomeDir: fixture.codexHomeDir,
     geminiHomeDir: fixture.geminiHomeDir,
-    kimiHomeDir: fixture.kimiHomeDir
+    kimiHomeDir: fixture.kimiHomeDir,
+    ...configOverrides
   });
   const database = createDatabaseClient(":memory:");
   const workspaceRepository = new WorkspaceRepository(database.db);

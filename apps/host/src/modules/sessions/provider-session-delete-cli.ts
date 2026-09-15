@@ -144,7 +144,10 @@ function buildProviderSessionDeleteEnv(config: HostConfig): NodeJS.ProcessEnv {
     CODINGNS_OPENCODE_BASE_URL: config.opencodeBaseUrl,
     CODINGNS_OPENCODE_DATA_DIR: config.opencodeDataDir,
     CODINGNS_OPENCODE_DB_PATH: config.opencodeDbPath,
-    CODINGNS_OPENCODE_COMMAND: config.opencodeCliPath
+    CODINGNS_OPENCODE_COMMAND: config.opencodeCliPath,
+    // Pi 的会话文件在 Host 数据目录下，删除时 CLI 必须拿到同一个根目录。
+    CODINGNS_PI_COMMAND: config.piCliPath,
+    CODINGNS_PI_DATA_ROOT: config.piDataRootDir
   };
 }
 
