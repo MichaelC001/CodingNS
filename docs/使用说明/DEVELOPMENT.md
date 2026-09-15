@@ -81,16 +81,16 @@ pnpm install
 
 > **为什么需要这一步？**
 >
-> 原生模块（如 `better-sqlite3`, `node-pty`）是 C++ 代码编译而成的，它们依赖于特定版本的 Node.js ABI（二进制接口）。当你切换 Node.js 版本后，这些模块需要重新编译才能在新版本中运行。
+> 原生模块（如 `libsql`, `@lydell/node-pty`）通过 npm 发布的 N-API 预编译包安装，Node.js 22、24、26 可以共用对应平台二进制，不需要在本机重新编译。
 >
 > **常见错误**：
 > ```
 > Error: The module 'better_sqlite3.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 115.
 > This version of Node.js requires NODE_MODULE_VERSION 127.
 > ```
-> 这表示你的原生模块是用旧版本编译的，需要运行 `pnpm rebuild` 重新编译。
+> 这表示安装到了不匹配的平台文件。请删除 `node_modules` 后重新执行 `pnpm install`，不要在用户环境中编译 native 模块。
 >
-> 在 macOS 上，如果看到终端创建时报 `posix_spawnp failed.`，通常是 `node-pty` 的 `spawn-helper` 丢失了执行权限。现在项目会在 `postinstall` 和 Host 运行时自动修复这个权限。
+> PTY 由 `@lydell/node-pty` 统一提供，不再需要项目脚本修复 `spawn-helper` 权限。
 
 ### 5. 运行开发服务器
 
@@ -109,7 +109,7 @@ pnpm dev:frontend
 
 ### Q: 为什么需要 Node.js 22+？
 
-A: 项目运行时和工具链按 Node.js 22+ 维护。SQLite 正式运行链路统一使用 `better-sqlite3`，不要直接使用 Node 内置的实验性 `node:sqlite`。
+A: 项目运行时和工具链按 Node.js 22+ 维护。SQLite 正式运行链路统一使用 `libsql`，不要直接使用 Node 内置的实验性 `node:sqlite`。
 
 ### Q: 我已经安装了 Node.js 20，怎么办？
 
@@ -165,17 +165,9 @@ A: 检查以下几点：
    pnpm install
    ```
 
-### Q: `pnpm rebuild` 很慢怎么办？
+### Q: 安装后 native 模块无法加载怎么办？
 
-A: `pnpm rebuild` 会重新编译所有原生模块，这可能需要几分钟时间。如果只想重新编译特定的模块：
-
-```bash
-# 只重新编译 better-sqlite3
-pnpm rebuild better-sqlite3
-
-# 只重新编译 node-pty
-pnpm rebuild node-pty
-```
+A: 删除 `node_modules` 后重新执行 `pnpm install`，让 npm 根据当前平台和 Node 版本重新选择 N-API 预编译包。项目不建议在用户环境执行 `pnpm rebuild`。
 
 ## 验证安装
 
@@ -205,7 +197,7 @@ pnpm install
 - [ ] 克隆项目仓库
 - [ ] 进入项目目录（如果配置了自动切换，会自动使用 Node.js 22）
 - [ ] 运行 `pnpm install`
-- [ ] **运行 `pnpm rebuild`**（如果之前用其他 Node.js 版本安装过依赖）
+- [ ] **确认 Node.js 版本为 22、24 或 26，并重新执行 `pnpm install`**
 - [ ] 运行 `pnpm dev:backend` 测试后端
 - [ ] 运行 `pnpm dev:frontend` 测试前端
 

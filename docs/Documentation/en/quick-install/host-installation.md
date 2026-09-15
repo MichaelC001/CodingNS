@@ -4,7 +4,7 @@ Install CodingNS Host on a machine you plan to keep online. Desktop, mobile, and
 
 ## Quick Install
 
-`@jingyi0605/codingns` includes native modules such as `better-sqlite3` and `node-pty`. If npm cannot fetch a prebuilt binary, it falls back to local compilation, so the required prerequisites differ by platform.
+`@jingyi0605/codingns` includes native modules such as `libsql` and `@lydell/node-pty`. If npm cannot fetch a prebuilt binary, it falls back to local compilation, so the required prerequisites differ by platform.
 
 On Linux, prepare the native build tools first:
 

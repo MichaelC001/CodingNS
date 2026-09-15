@@ -20,7 +20,7 @@
 - Node.js `22` 或更高版本
 - npm `10` 或更高版本
 
-CodingNS 依赖 `better-sqlite3`、`node-pty` 这类原生模块。  
+CodingNS 依赖 `libsql`、`@lydell/node-pty` 这类原生模块。
 如果 npm 没拿到预编译包，就会自动退回本机编译，所以不同系统的前置条件不一样。
 
 Linux 上建议先装编译工具：
@@ -103,7 +103,7 @@ npm install -g @jingyi0605/codingns
 
 如果你在 Windows 上手动安装，先确认：
 
-- `node -v` 最好是 `v22.x`
+- `node -v` 应为 `v22` 或更高版本
 - 已安装 Visual Studio Build Tools 2022，并勾选 `Desktop development with C++`
 
 再执行：
