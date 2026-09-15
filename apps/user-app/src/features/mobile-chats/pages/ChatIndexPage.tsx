@@ -42,15 +42,34 @@ export function ChatIndexPage() {
     findNavigationWorkspaceTarget(navigationGroups, currentWorkspaceId) ??
     findNavigationWorkspaceTarget(navigationGroups, navigationGroups[0]?.workspace.id ?? null);
   const workspace = currentWorkspaceTarget?.workspace ?? null;
-  const workspaceTone = workspace ? workspaceVisualContextMap[workspace.id]?.tone ?? "root" : "root";
-  const workspaceChats = workspace ? lightweightChatSessionsByWorkspaceId[workspace.id] ?? [] : [];
+  const chatEntries = useMemo(
+    () => Array.from(new Map(
+      Object.entries(lightweightChatSessionsByWorkspaceId)
+        .flatMap(([workspaceId, sessions]) => {
+          const entryWorkspace = navigationGroups.find((group) => group.workspace.id === workspaceId)?.workspace;
+          return entryWorkspace
+            ? sessions.map((session) => [
+                session.sessionId,
+                { session, workspace: entryWorkspace }
+              ] as const)
+            : [];
+        })
+        .reverse()
+    ).values())
+      .sort((left, right) =>
+        (right.session.lastMessageAt ?? right.session.updatedAt).localeCompare(
+          left.session.lastMessageAt ?? left.session.updatedAt
+        )
+      ),
+    [lightweightChatSessionsByWorkspaceId, navigationGroups]
+  );
   const favoriteChats = useMemo(
-    () => workspaceChats.filter((session) => session.isFavorite === true),
-    [workspaceChats]
+    () => chatEntries.filter((entry) => entry.session.isFavorite === true),
+    [chatEntries]
   );
   const visibleChats = useMemo(
-    () => workspaceChats.filter((session) => session.isFavorite !== true),
-    [workspaceChats]
+    () => chatEntries.filter((entry) => entry.session.isFavorite !== true),
+    [chatEntries]
   );
   const archivedChats = workspace
     ? lightweightArchivedChatSessionsByWorkspaceId[workspace.id] ?? []
@@ -58,13 +77,9 @@ export function ChatIndexPage() {
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [restoringChatId, setRestoringChatId] = useState<string | null>(null);
 
-  function handleOpenChat(session: SessionSummaryDto) {
-    if (!workspace) {
-      return;
-    }
-
+  function handleOpenChat(entry: { session: SessionSummaryDto; workspace: NonNullable<typeof workspace> }) {
     writeMobileConversationPreviewMode("immersive");
-    openLightweightChat(workspace, session);
+    openLightweightChat(entry.workspace, entry.session);
   }
 
   async function handleRestoreArchivedChat(sessionId: string) {
@@ -81,27 +96,23 @@ export function ChatIndexPage() {
     }
   }
 
-  function renderChatItem(session: SessionSummaryDto) {
-    if (!workspace) {
-      return null;
-    }
-
+  function renderChatItem(entry: { session: SessionSummaryDto; workspace: NonNullable<typeof workspace> }) {
     return (
       <SessionListItem
-        key={session.sessionId}
-        entry={{ session, workspace }}
-        isFavorite={session.isFavorite === true}
-        isActive={activeLightweightChatId === session.sessionId}
+        key={`${entry.workspace.id}:${entry.session.sessionId}`}
+        entry={entry}
+        isFavorite={entry.session.isFavorite === true}
+        isActive={activeLightweightChatId === entry.session.sessionId}
         depth={0}
         variant="mobile"
-        workspaceTone={workspaceTone}
-        onActivate={() => handleOpenChat(session)}
+        workspaceTone={workspaceVisualContextMap[entry.workspace.id]?.tone ?? "root"}
+        onActivate={() => handleOpenChat(entry)}
         onToggleFavorite={() => {
-          void toggleLightweightChatFavorite(workspace, session);
+          void toggleLightweightChatFavorite(entry.workspace, entry.session);
         }}
-        onArchive={() => archiveLightweightChat(workspace, session)}
-        onUnarchive={() => unarchiveLightweightChat(workspace, session.sessionId)}
-        onRename={(_sessionId, title) => renameLightweightChat(workspace, session.sessionId, title)}
+        onArchive={() => archiveLightweightChat(entry.workspace, entry.session)}
+        onUnarchive={() => unarchiveLightweightChat(entry.workspace, entry.session.sessionId)}
+        onRename={(_sessionId, title) => renameLightweightChat(entry.workspace, entry.session.sessionId, title)}
       />
     );
   }
@@ -162,7 +173,7 @@ export function ChatIndexPage() {
               <span className="session-section-count">{favoriteChats.length}</span>
             </header>
             <div className="session-current-workspace-list">
-              {favoriteChats.map((session) => renderChatItem(session))}
+              {favoriteChats.map((entry) => renderChatItem(entry))}
             </div>
           </section>
         ) : null}
@@ -178,7 +189,7 @@ export function ChatIndexPage() {
             <p className="session-section-empty">{t("shell.mobileChatEmptyHint")}</p>
           ) : (
             <div className="session-current-workspace-list">
-              {visibleChats.map((session) => renderChatItem(session))}
+              {visibleChats.map((entry) => renderChatItem(entry))}
             </div>
           )}
         </section>

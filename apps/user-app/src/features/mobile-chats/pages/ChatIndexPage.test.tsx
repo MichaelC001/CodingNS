@@ -101,6 +101,13 @@ function createLightweightChats(): Record<string, SessionSummaryDto[]> {
         title: "Other Workspace Chat",
         provider: "codex",
         workspaceId: "workspace-2"
+      }),
+      createSessionSummary({
+        sessionId: "chat-1",
+        title: "聊天 Alpha",
+        provider: "codex",
+        workspaceId: "workspace-2",
+        lastMessageAt: "2026-03-27T10:00:00Z"
       })
     ]
   };
@@ -169,13 +176,14 @@ describe("ChatIndexPage", () => {
     vi.restoreAllMocks();
   });
 
-  it("只渲染当前工作区的聊天，不混入普通会话和其他工作区", () => {
+  it("渲染所有工作区的轻量聊天，不混入普通会话", () => {
     renderPage();
 
     expect(screen.getByRole("heading", { level: 1, name: "项目一" })).toBeInTheDocument();
     expect(screen.getByText("聊天 Alpha")).toBeInTheDocument();
+    expect(screen.getAllByText("聊天 Alpha")).toHaveLength(1);
     expect(screen.queryByText("普通会话 Alpha")).not.toBeInTheDocument();
-    expect(screen.queryByText("Other Workspace Chat")).not.toBeInTheDocument();
+    expect(screen.getByText("Other Workspace Chat")).toBeInTheDocument();
   });
 
   it("收藏聊天会进入收藏分组，不出现在主列表里", () => {
