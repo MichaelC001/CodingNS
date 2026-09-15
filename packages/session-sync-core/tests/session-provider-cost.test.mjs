@@ -319,6 +319,60 @@ describe("各 Provider 的模型归因和费用", () => {
     }
   });
 
+  it("Codex 尾部窗口缺 turn 归属时按累计快照估算，不再整场不可用", async () => {
+    const root = mkdtempSync(join(tmpdir(), "codingns-codex-truncated-cost-"));
+    const file = join(root, "session.jsonl");
+    const record = (timestamp, type, payload) => JSON.stringify({ timestamp, type, payload });
+
+    try {
+      // 只有尾部窗口时，最早的 token_count 可能落在 turn_context 之前，
+      // 归属信息全丢，但累计差值仍然可以算出这一段的花费。
+      writeFileSync(file, [
+        record("2026-08-16T00:00:01.000Z", "event_msg", {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 100,
+              output_tokens: 20,
+              cached_input_tokens: 40
+            },
+            model: "gpt-5.3-codex"
+          }
+        }),
+        record("2026-08-16T00:00:02.000Z", "event_msg", {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 180,
+              output_tokens: 30,
+              cached_input_tokens: 60
+            },
+            model: "gpt-5.3-codex"
+          }
+        })
+      ].join("\n"));
+
+      const stats = await new CodexAdapter({ homeDir: root }).readSessionStats(
+        "session-truncated",
+        file,
+        billing
+      );
+
+      // 增量：未缓存输入 60 * 1.75e-6 + 缓存读取 20 * 0.175e-6 + 输出 10 * 14e-6。
+      expect(stats?.metrics.costUsd?.value).toBeCloseTo(0.0002485, 12);
+      expect(stats?.metrics.costUsd).toMatchObject({
+        semantic: "latest-snapshot",
+        pricing: {
+          coverage: "complete",
+          estimated: true,
+          estimationReason: "concurrent-turns"
+        }
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("Gemini 重写消息时保留最终 model 和 tokens", async () => {
     const root = mkdtempSync(join(tmpdir(), "codingns-gemini-cost-"));
     const chatDir = join(root, "tmp", "hash", "chats");
@@ -489,5 +543,130 @@ describe("各 Provider 的模型归因和费用", () => {
     const stats = await adapter.readSessionStats("harness-1", "harness://harness-1", billing);
 
     expect(stats?.metrics.costUsd?.value).toBeCloseTo(0.000098, 10);
+  });
+
+  it("Harness 没有任何 turn/end 时按累计用量给出估算费用", async () => {
+    const events = [
+      { event: { type: "turn/start", seq: 1, time: "2026-08-16T00:00:01.000Z", data: { turn: 1 } } },
+      {
+        event: {
+          type: "assistant/message",
+          seq: 2,
+          time: "2026-08-16T00:00:02.000Z",
+          data: {
+            turn: 1,
+            step: 1,
+            message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } },
+            usage: { inputTokens: 100, outputTokens: 20 }
+          }
+        }
+      },
+      {
+        event: {
+          type: "assistant/message",
+          seq: 3,
+          time: "2026-08-16T00:00:03.000Z",
+          data: {
+            turn: 1,
+            step: 2,
+            message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } },
+            usage: { inputTokens: 50, outputTokens: 10 }
+          }
+        }
+      }
+    ];
+    const adapter = new DeepSeekHarnessAdapter({
+      transport: {
+        call: async () => ({
+          events,
+          projections: {
+            asOfSeq: 3,
+            values: {
+              sessionStats: { turns: 1, steps: 2 },
+              tokenUsage: { uncachedInputTokens: 150, outputTokens: 30 }
+            }
+          }
+        }),
+        subscribe: () => ({ close() {} })
+      }
+    });
+
+    const stats = await adapter.readSessionStats("harness-no-terminal", "harness://harness-no-terminal", billing);
+
+    // 用户中断或 provider 失败可能整场都没有 turn/end。这时按累计用量估算，
+    // 不能让界面显示“用量记录尚未完成”。150 * 0.27e-6 + 30 * 1.1e-6。
+    expect(stats?.metrics.costUsd?.value).toBeCloseTo(0.0000735, 12);
+    expect(stats?.metrics.costUsd?.semantic).toBe("latest-snapshot");
+    expect(stats?.metrics.costUsd?.pricing).toMatchObject({
+      coverage: "complete",
+      estimated: true,
+      estimationReason: "incomplete-usage"
+    });
+  });
+
+  it("Harness 单页事件被截断时向前翻页补齐早期 turn/end", async () => {
+    const originals = [
+      { type: "turn/start", seq: 1, time: "2026-08-16T00:00:01.000Z", data: { turn: 1 } },
+      {
+        type: "assistant/message",
+        seq: 2,
+        time: "2026-08-16T00:00:02.000Z",
+        data: {
+          turn: 1,
+          step: 1,
+          message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } },
+          usage: { inputTokens: 100, outputTokens: 20 }
+        }
+      },
+      { type: "turn/end", seq: 3, time: "2026-08-16T00:00:03.000Z", data: { turn: 1, reason: { kind: "completed" } } },
+      { type: "turn/start", seq: 4, time: "2026-08-16T00:00:04.000Z", data: { turn: 2 } },
+      {
+        type: "assistant/message",
+        seq: 5,
+        time: "2026-08-16T00:00:05.000Z",
+        data: {
+          turn: 2,
+          step: 1,
+          message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } },
+          usage: { inputTokens: 40, outputTokens: 8 }
+        }
+      },
+      { type: "turn/end", seq: 6, time: "2026-08-16T00:00:06.000Z", data: { turn: 2, reason: { kind: "completed" } } }
+    ];
+    const historyCalls = [];
+    const adapter = new DeepSeekHarnessAdapter({
+      transport: {
+        call: async (method, payload) => {
+          historyCalls.push({ method, payload });
+
+          // 模拟单页上限：第一页只给两条事件，更早的必须靠 beforeSeq 向前翻。
+          const limit = typeof payload?.maxMessages === "number" ? payload.maxMessages : 1000;
+          const beforeSeq = typeof payload?.beforeSeq === "number" ? payload.beforeSeq : null;
+          const pool = beforeSeq === null ? originals : originals.filter((event) => event.seq < beforeSeq);
+          const page = pool.slice(-Math.min(limit, 2));
+
+          return {
+            events: page.map((event) => ({ event })),
+            hasMore: pool.length > page.length,
+            projections: {
+              asOfSeq: 6,
+              values: {
+                sessionStats: { turns: 2, steps: 2 },
+                tokenUsage: { uncachedInputTokens: 140, outputTokens: 28 }
+              }
+            }
+          };
+        },
+        subscribe: () => ({ close() {} })
+      }
+    });
+
+    const stats = await adapter.readSessionStats("harness-paged", "harness://harness-paged", billing);
+
+    // turn 1 的用量必须通过翻页补回来；只读最后一页时这一场会算不出费用。
+    // turn1: 100 * 0.27e-6 + 20 * 1.1e-6；turn2: 40 * 0.27e-6 + 8 * 1.1e-6。
+    expect(historyCalls.filter((call) => call.method === "session.history").length).toBeGreaterThan(1);
+    expect(stats?.metrics.costUsd?.value).toBeCloseTo(0.0000686, 12);
+    expect(stats?.metrics.costUsd?.pricing.coverage).toBe("complete");
   });
 });

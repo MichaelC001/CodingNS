@@ -4359,13 +4359,20 @@ function buildCodexUsageLines(
   // 更早的快照。此时把累计计数视为本会话从零开始，仍然可以可靠计算首轮差值。
   const baselineTotal = baseline?.total ?? {};
 
+  // 只有尾部窗口时，窗口开头可能正好落在某个 turn 中间，最早几条 token_count
+  // 既没有 turn_context 归属，也可能缺时间戳。这类快照不能反过来让整场会话
+  // 变成“算不出费用”，改为按窗口内累计快照估算。
+  const hasUnattributableSnapshot = active.some(
+    (snapshot) => !snapshot.turnId || !snapshot.timestamp
+  );
+
   // 并发 turn 之间不能可靠拆分累计快照。此时退化为“计费起点到最新快照”
   // 的会话总量，并用最近快照的模型价格估算。总 Token 差值仍然只计算一次，
   // 不会因为多个 turn 重复累加；不确定的只是模型归因，因此必须打上估算标记。
-  if (hasConcurrentTurns) {
-    return buildCodexConcurrentUsageEstimate(
+  if (hasConcurrentTurns || hasUnattributableSnapshot) {
+    return buildCodexEstimatedUsageLine(
       providerSessionId,
-      baselineTotal,
+      hasUnattributableSnapshot ? active[0]?.total ?? baselineTotal : baselineTotal,
       active,
       turnModels
     );
@@ -4452,7 +4459,7 @@ function buildCodexUsageLines(
   return lines;
 }
 
-function buildCodexConcurrentUsageEstimate(
+function buildCodexEstimatedUsageLine(
   providerSessionId: string,
   baselineTotal: Record<string, unknown>,
   active: readonly CodexTokenUsageSnapshot[],

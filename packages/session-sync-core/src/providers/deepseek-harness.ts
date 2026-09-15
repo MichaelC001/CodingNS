@@ -119,6 +119,36 @@ export const DEEPSEEK_HARNESS_SAFE_READ_CAPABILITIES = [
   "events.host"
 ] as const;
 
+/** 会话统计读取历史事件的单页条数。 */
+const HARNESS_STATS_EVENT_PAGE_SIZE = 1000;
+/** 向前翻页的上限，避免超长会话把统计读取拖成全量扫描。 */
+const HARNESS_STATS_MAX_EVENT_PAGES = 20;
+/** 会话统计最多累积的原始事件条数。 */
+const HARNESS_STATS_MAX_EVENTS = 20000;
+/** 向前翻页的总耗时预算，超时就用已取到的事件算费用并标注估算。 */
+const HARNESS_STATS_PAGE_BUDGET_MS = 3000;
+
+/** 取一批事件里最早的 sequence，作为下一次向前翻页的上界。 */
+function readOldestHarnessSequence(events: readonly unknown[]): number | null {
+  let oldest: number | null = null;
+
+  for (const event of events) {
+    const record = asRecord(event);
+    const inner = asRecord(record.event);
+    const sequence = readNonNegativeNumber(inner.seq ?? record.seq);
+
+    if (sequence === null) {
+      continue;
+    }
+
+    if (oldest === null || sequence < oldest) {
+      oldest = sequence;
+    }
+  }
+
+  return oldest;
+}
+
 const DEEPSEEK_HARNESS_REQUIRED_CAPABILITIES = [
   "host.describe",
   "session.list",
@@ -707,17 +737,66 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
     values: Record<string, unknown>;
     events: unknown[];
   }> {
-    const response = await this.call<{ projections?: unknown; events?: unknown[] }>("session.history", {
-      sessionId: providerSessionId,
-      maxMessages: includeEvents ? 1000 : 1
-    });
+    const response = await this.call<{ projections?: unknown; events?: unknown[]; hasMore?: boolean }>(
+      "session.history",
+      {
+        sessionId: providerSessionId,
+        maxMessages: includeEvents ? HARNESS_STATS_EVENT_PAGE_SIZE : 1
+      }
+    );
     const projections = asRecord(response.projections);
 
     return {
       projections,
       values: asRecord(projections.values),
-      events: includeEvents ? response.events ?? [] : []
+      events: includeEvents
+        ? await this.readFullHistoryEvents(providerSessionId, response)
+        : []
     };
+  }
+
+  /**
+   * 会话统计需要整场会话的 `turn/end` 才能把每一轮用量封口。
+   *
+   * 单页只返回最近 1000 条事件，长会话的早期终态会被截断，导致那些轮次
+   * 永远算不出费用。这里向前翻页补齐事件，并用条数、页数和耗时三重上限
+   * 兜底，避免会话统计自己变成新的主线程压力来源。
+   */
+  private async readFullHistoryEvents(
+    providerSessionId: string,
+    firstPage: { events?: unknown[]; hasMore?: boolean }
+  ): Promise<unknown[]> {
+    const events = [...(firstPage.events ?? [])];
+    let hasMore = firstPage.hasMore === true;
+    let oldestSequence = readOldestHarnessSequence(events);
+    const startedAt = Date.now();
+
+    for (
+      let page = 1;
+      hasMore
+        && oldestSequence !== null
+        && page < HARNESS_STATS_MAX_EVENT_PAGES
+        && events.length < HARNESS_STATS_MAX_EVENTS
+        && Date.now() - startedAt < HARNESS_STATS_PAGE_BUDGET_MS;
+      page += 1
+    ) {
+      const response = await this.call<{ events?: unknown[]; hasMore?: boolean }>("session.history", {
+        sessionId: providerSessionId,
+        beforeSeq: oldestSequence,
+        maxMessages: HARNESS_STATS_EVENT_PAGE_SIZE
+      });
+      const older = response.events ?? [];
+
+      if (older.length === 0) {
+        break;
+      }
+
+      events.unshift(...older);
+      hasMore = response.hasMore === true;
+      oldestSequence = readOldestHarnessSequence(older) ?? oldestSequence;
+    }
+
+    return events;
   }
 
   getProviderCapabilities(): ProviderCapabilities {
@@ -1568,11 +1647,21 @@ function buildHarnessUsageLines(events: readonly unknown[]): VerifiedUsageLine[]
     });
   }
 
-  return [...usageByTrack.values()].map((candidate) => ({
+  const candidates = [...usageByTrack.values()];
+  const modelOf = (candidate: HarnessUsageCandidate): string =>
+    candidate.model || modelByTrack.get(`${candidate.turn}:${candidate.step}`) || latestModelBySession.value;
+
+  // 一条终态都没有的会话（中断、provider 失败、日志只带回最近一段）无法逐轮核验，
+  // 退化成一条累计估算，避免整场费用因为缺 turn/end 而完全不可用。
+  if (terminalStateByTurn.size === 0) {
+    return buildHarnessEstimatedUsageLine(candidates, modelByTrack, latestModelBySession.value);
+  }
+
+  return candidates.map((candidate) => ({
     key: `${candidate.turn}:${candidate.step}`,
     turnKey: candidate.turn,
     provider: "deepseek-harness",
-    model: candidate.model || modelByTrack.get(`${candidate.turn}:${candidate.step}`) || latestModelBySession.value,
+    model: modelOf(candidate),
     inputTokens: candidate.inputTokens ?? 0,
     outputTokens: candidate.outputTokens ?? 0,
     reasoningTokens: candidate.reasoningTokens ?? 0,
@@ -1580,17 +1669,72 @@ function buildHarnessUsageLines(events: readonly unknown[]): VerifiedUsageLine[]
     cacheWriteTokens: candidate.cacheWriteTokens ?? 0,
     inputIncludesCacheRead: false,
     completed: Boolean(
-      (candidate.model || modelByTrack.get(`${candidate.turn}:${candidate.step}`) || latestModelBySession.value)
+      modelOf(candidate)
       && candidate.timestamp
       && candidate.inputTokens !== null
       && candidate.outputTokens !== null
       // `assistant/message.usage` 是 provider 已经结算的 step 用量；用户中断或
       // provider 失败也可能产生可计费用量。只要存在可识别的 turn/end 终态，就
-      // 认为这条 usage 已经封口，未知终态仍然拒绝计费。
+      // 认为这条 usage 已经封口，未知终态交给费用层按未计价轮次处理。
       && terminalStateByTurn.has(candidate.turn)
     ),
     timestamp: candidate.timestamp
   }));
+}
+
+/**
+ * 整个会话都没有可识别的 turn/end 时，按累计用量给一条估算行。
+ *
+ * Harness 在用户中断、provider 报错或进程被杀时可能根本不写 `turn/end`；
+ * 历史读取也可能只带回最近一段事件。这些情况下逐轮用量确实无法核验，
+ * 但 `assistant/message.usage` 本身是 provider 结算过的真实用量，
+ * 所以返回估算行并打上标记，好过让界面显示“暂无费用”。
+ */
+function buildHarnessEstimatedUsageLine(
+  candidates: readonly HarnessUsageCandidate[],
+  modelByTrack: ReadonlyMap<string, string>,
+  latestModelBySession: string
+): VerifiedUsageLine[] {
+  const priced = candidates.filter(
+    (candidate) => candidate.timestamp && candidate.inputTokens !== null && candidate.outputTokens !== null
+  );
+
+  if (priced.length === 0) {
+    return [];
+  }
+
+  const model = priced
+    .map((candidate) => candidate.model || modelByTrack.get(`${candidate.turn}:${candidate.step}`) || latestModelBySession)
+    .filter(Boolean)
+    .at(-1) ?? latestModelBySession;
+  const latest = priced.at(-1);
+  const sum = priced.reduce(
+    (total, candidate) => ({
+      inputTokens: total.inputTokens + (candidate.inputTokens ?? 0),
+      outputTokens: total.outputTokens + (candidate.outputTokens ?? 0),
+      reasoningTokens: total.reasoningTokens + (candidate.reasoningTokens ?? 0),
+      cacheReadTokens: total.cacheReadTokens + (candidate.cacheReadTokens ?? 0),
+      cacheWriteTokens: total.cacheWriteTokens + (candidate.cacheWriteTokens ?? 0)
+    }),
+    { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  );
+
+  if (!model) {
+    return [];
+  }
+
+  return [{
+    key: `${latest?.turn ?? "session"}:${latest?.step ?? "estimated"}:estimated`,
+    turnKey: latest?.turn,
+    provider: "deepseek-harness",
+    model,
+    ...sum,
+    inputIncludesCacheRead: false,
+    completed: true,
+    timestamp: latest?.timestamp ?? "",
+    estimated: true,
+    estimationReason: "incomplete-usage"
+  }];
 }
 
 function resolveHarnessEventModel(data: Record<string, unknown>): string {
