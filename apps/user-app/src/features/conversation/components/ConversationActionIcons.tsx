@@ -120,6 +120,29 @@ export function TemporarySessionListIcon() {
   );
 }
 
+/** 移动端会话列表入口图标。 */
+export function ConversationListActionIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="conversation-action-icon"
+    >
+      <path d="M4 5.5h1.5" />
+      <path d="M8.5 5.5H16" />
+      <path d="M4 10h1.5" />
+      <path d="M8.5 10H16" />
+      <path d="M4 14.5h1.5" />
+      <path d="M8.5 14.5H16" />
+    </svg>
+  );
+}
+
 export function MoreActionIcon() {
   return (
     <svg

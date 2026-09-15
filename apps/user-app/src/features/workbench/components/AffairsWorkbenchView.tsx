@@ -20,6 +20,7 @@ import { createPortal } from "react-dom";
 import { pinyin } from "pinyin-pro";
 import {
   UNSAFE_NavigationContext,
+  useNavigate,
   type Navigator
 } from "react-router-dom";
 
@@ -156,10 +157,17 @@ import { FileViewerPanel } from "../../conversation/components/FileViewerModal";
 import { ConversationTranscriptExport, MessageTimeline, type TemporarySessionAnchor } from "../../conversation/components/MessageTimeline";
 import { PermissionRequestList } from "../../conversation/components/PermissionRequestList";
 import { SessionProviderPicker } from "../../conversation/components/SessionProviderPicker";
+import {
+  useMobileConversationComposerHeightVar,
+  useMobileConversationHeaderHeightVar,
+  useMobileConversationPreviewController
+} from "../../conversation/components/mobile-conversation-preview";
 import { useMobileConversationBottomLayer } from "../../mobile-shell/components/MobileConversationBottomLayerContext";
 import { SessionHeader } from "../../conversation/components/SessionHeader";
 import { ConversationSelectionActions } from "../../conversation/components/ConversationSelectionActions";
 import { TemporarySessionHeaderAction } from "../../conversation/components/TemporarySessionCreateModal";
+import { ConversationListActionIcon } from "../../conversation/components/ConversationActionIcons";
+import { MobileWorkspaceSwitcherHeader } from "../../mobile-shell/components/MobileWorkspaceSwitcherHeader";
 import { WorkbenchModal } from "../../conversation/components/WorkbenchModal";
 import { WorkspaceImportBrowserModal } from "../../conversation/components/WorkspaceImportBrowserModal";
 import { resolveSessionActivityBadgeClassName, resolveSessionActivityBadgeLabel, resolveSessionIndicatorClassName } from "../../conversation/session-activity-display";
@@ -212,6 +220,9 @@ import {
 import { usePlatform } from "../../../platform/platform-provider";
 import { listWorkspaceBridgeDir } from "../../../platform/preview/codingns-workspace-bridge";
 import { resolveContextMenuPosition } from "../utils/context-menu-position";
+import { buildWorkspaceChatIndexPath, buildWorkspaceChatPath } from "../utils/workbench-navigation";
+import { SessionListItem } from "../../mobile-sessions/components/SessionListItem";
+import { MobileArchivedSessionsDialog } from "../../mobile-sessions/components/MobileArchivedSessionsDialog";
 import { userPreferenceStore } from "../../../preferences/user-preference-store";
 import { useAffairsLibraryCapability } from "../affairs-library-capability-store";
 import { useWorkbenchShell, type WorkspaceSessionGroup } from "../../conversation/components/WorkbenchLayout";
@@ -7316,6 +7327,202 @@ function AffairsConnectionCheckingState() {
   );
 }
 
+function AffairsLightweightChatPreviewPanel(input: {
+  workspaceId: string;
+  activeSessionId: string | null;
+  preview: ReturnType<typeof useMobileConversationPreviewController>;
+}) {
+  const navigate = useNavigate();
+  const {
+    navigationGroups,
+    currentWorkspaceId,
+    lightweightChatSessionsByWorkspaceId,
+    lightweightArchivedChatSessionsByWorkspaceId,
+    openLightweightChat,
+    createLightweightChat,
+    toggleLightweightChatFavorite,
+    archiveLightweightChat,
+    unarchiveLightweightChat,
+    renameLightweightChat,
+    refreshLightweightChatSessions
+  } = useWorkbenchShell();
+  const isPreviewVisible = input.preview.isVisible;
+  const resolvedWorkspaceId = (currentWorkspaceId ?? input.workspaceId ?? "").trim();
+  const workspace =
+    navigationGroups.find((group) => group.workspace.id === resolvedWorkspaceId)?.workspace
+    ?? (resolvedWorkspaceId
+      ? ({ id: resolvedWorkspaceId, name: "", path: "", repoRoot: null } satisfies WorkspaceDto)
+      : null);
+  const chats = useMemo(
+    () => (workspace ? lightweightChatSessionsByWorkspaceId?.[workspace.id] ?? [] : [])
+      .filter((session) => !session.isArchived)
+      .sort((left, right) =>
+        (right.lastMessageAt ?? right.updatedAt).localeCompare(left.lastMessageAt ?? left.updatedAt)
+      ),
+    [lightweightChatSessionsByWorkspaceId, workspace]
+  );
+  const archivedChats = workspace
+    ? lightweightArchivedChatSessionsByWorkspaceId?.[workspace.id] ?? []
+    : [];
+  const favoriteChats = useMemo(
+    () => chats.filter((session) => session.isFavorite === true),
+    [chats]
+  );
+  const otherChats = useMemo(
+    () => chats.filter((session) => session.isFavorite !== true),
+    [chats]
+  );
+  const [archiveFolderOpen, setArchiveFolderOpen] = useState(false);
+  const [restoringChatId, setRestoringChatId] = useState<string | null>(null);
+
+  // 面板每次打开都补拉一次，避免只依赖导航快照里那份可能过期的缓存。
+  useEffect(() => {
+    if (!isPreviewVisible || !resolvedWorkspaceId) {
+      return;
+    }
+
+    void refreshLightweightChatSessions(resolvedWorkspaceId).catch(() => undefined);
+  }, [isPreviewVisible, refreshLightweightChatSessions, resolvedWorkspaceId]);
+
+  if (!workspace || !isPreviewVisible) {
+    return null;
+  }
+
+  const activeWorkspace = workspace;
+  const activeChat = chats.find((session) => session.sessionId === input.activeSessionId) ?? null;
+
+  function openChat(session: SessionSummaryDto) {
+    input.preview.closePreview();
+    openLightweightChat(activeWorkspace, session);
+  }
+
+  async function handleArchiveActiveChat() {
+    if (!activeChat) {
+      return;
+    }
+
+    await archiveLightweightChat(activeWorkspace, activeChat);
+    input.preview.closePreview();
+    navigate(buildWorkspaceChatIndexPath(activeWorkspace.id));
+  }
+
+  async function handleRestoreArchivedChat(sessionId: string) {
+    setRestoringChatId(sessionId);
+
+    try {
+      await unarchiveLightweightChat(activeWorkspace, sessionId);
+    } finally {
+      setRestoringChatId((current) => (current === sessionId ? null : current));
+    }
+  }
+
+  function renderChatItem(session: SessionSummaryDto) {
+    return (
+      <SessionListItem
+        key={session.sessionId}
+        entry={{ session, workspace: activeWorkspace }}
+        isFavorite={session.isFavorite === true}
+        isActive={session.sessionId === input.activeSessionId}
+        depth={0}
+        variant="mobile"
+        workspaceTone="root"
+        onActivate={() => openChat(session)}
+        onToggleFavorite={() => {
+          void toggleLightweightChatFavorite(activeWorkspace, session);
+        }}
+        onArchive={() => archiveLightweightChat(activeWorkspace, session)}
+        onUnarchive={() => unarchiveLightweightChat(activeWorkspace, session.sessionId)}
+        onRename={(_sessionId, title) => renameLightweightChat(activeWorkspace, session.sessionId, title)}
+      />
+    );
+  }
+
+  return (
+    <div
+      className="mobile-conversation-preview-rail affairs-chat-preview-rail surface-card"
+      data-dragging={input.preview.isDragging ? "true" : "false"}
+      {...input.preview.railGestureHandlers}
+    >
+      <div className="mobile-conversation-preview-topbar terminal-mobile-list-footer">
+        <button
+          type="button"
+          className="mobile-conversation-preview-create-button workbench-import-toggle terminal-mobile-list-create"
+          onClick={() => createLightweightChat(activeWorkspace)}
+        >
+          <span className="workbench-import-toggle-symbol" aria-hidden="true">
+            +
+          </span>
+          <span className="workbench-import-toggle-label">{t("shell.chatNewAction")}</span>
+        </button>
+      </div>
+
+      <div className="mobile-conversation-preview-body terminal-mobile-list-body">
+        {favoriteChats.length > 0 ? (
+          <section className="mobile-conversation-preview-group mobile-conversation-preview-list-favorites terminal-mobile-list-group terminal-mobile-list-group-pinned">
+            <div className="mobile-conversation-preview-group-heading terminal-mobile-list-group-heading">
+              <span>{t("shell.favoriteSectionTitle")}</span>
+              <span className="workbench-section-counter">{favoriteChats.length}</span>
+            </div>
+            <div className="mobile-conversation-preview-list mobile-conversation-preview-list-static terminal-mobile-session-list">
+              {favoriteChats.map((session) => renderChatItem(session))}
+            </div>
+          </section>
+        ) : null}
+
+        <section className="mobile-conversation-preview-group mobile-conversation-preview-group-workspace terminal-mobile-list-group terminal-mobile-list-group-workspace">
+          <div className="mobile-conversation-preview-group-heading terminal-mobile-list-group-heading">
+            <span>{activeWorkspace.name}</span>
+            <span className="workbench-section-counter">{otherChats.length}</span>
+          </div>
+          {otherChats.length === 0 ? (
+            <div className="workbench-session-empty">{t("shell.mobileChatEmptyHint")}</div>
+          ) : (
+            <div className="mobile-conversation-preview-list terminal-mobile-session-list">
+              {otherChats.map((session) => renderChatItem(session))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <div className="mobile-conversation-preview-actions terminal-mobile-list-footer">
+        {activeChat ? (
+          <button
+            type="button"
+            className="mobile-conversation-preview-archive-button workbench-import-toggle"
+            onClick={() => {
+              void handleArchiveActiveChat();
+            }}
+          >
+            {t("shell.archiveCurrentSessionAction")}
+          </button>
+        ) : null}
+        {archivedChats.length > 0 ? (
+          <button
+            type="button"
+            className="mobile-conversation-preview-archive-button workbench-import-toggle"
+            onClick={() => setArchiveFolderOpen(true)}
+          >
+            {t("shell.archiveFolderLabel")}
+          </button>
+        ) : null}
+      </div>
+
+      <MobileArchivedSessionsDialog
+        open={archiveFolderOpen}
+        workspaceName={activeWorkspace.name || null}
+        sessions={archivedChats}
+        restoringSessionId={restoringChatId}
+        onClose={() => {
+          if (!restoringChatId) {
+            setArchiveFolderOpen(false);
+          }
+        }}
+        onRestore={(sessionId) => void handleRestoreArchivedChat(sessionId)}
+      />
+    </div>
+  );
+}
+
 export function AffairsLightweightConversationDraftState(input: {
   workspaceId: string;
   draft: AffairsConversationDraftSelection;
@@ -7324,10 +7531,17 @@ export function AffairsLightweightConversationDraftState(input: {
     activateConversationSession,
     reloadLightweightConversationSessions,
     lightweightRuntimeBySessionId,
-    setLightweightRuntimeSnapshot
+    setLightweightRuntimeSnapshot,
+    navigationGroups
   } = useAffairsWorkbenchInternal();
-  const { shellMode } = useWorkbenchShell();
+  const { shellMode, currentWorkspaceRef } = useWorkbenchShell();
+  const navigate = useNavigate();
   const { composerPortalTarget } = useMobileConversationBottomLayer();
+  const isMobileChatShell = shellMode === "mobile";
+  const mobilePreview = useMobileConversationPreviewController(isMobileChatShell);
+  const mobilePreviewPageRef = useRef<HTMLElement | null>(null);
+  const mobilePreviewHeaderRef = useRef<HTMLDivElement | null>(null);
+  const [mobileComposerPanelElement, setMobileComposerPanelElement] = useState<HTMLElement | null>(null);
   const capabilities = useAffairsLightweightCapabilities(input.draft.provider, input.workspaceId);
   const session = useMemo(
     () => createAffairsConversationDraftSessionSummary(input.workspaceId, input.draft),
@@ -7344,6 +7558,10 @@ export function AffairsLightweightConversationDraftState(input: {
   );
   const currentDraftNodeIdRef = useRef<string | null>(draftNodeId);
   const timelineSelectionContainerRef = useRef<HTMLDivElement | null>(null);
+  const mobileWorkspace = useMemo(
+    () => navigationGroups.find((group) => group.workspace.id === input.workspaceId)?.workspace ?? null,
+    [input.workspaceId, navigationGroups]
+  );
 
   useEffect(() => {
     currentDraftNodeIdRef.current = draftNodeId;
@@ -7354,10 +7572,78 @@ export function AffairsLightweightConversationDraftState(input: {
     };
   }, [draftNodeId]);
 
+  useMobileConversationHeaderHeightVar(
+    mobilePreviewPageRef,
+    mobilePreviewHeaderRef,
+    isMobileChatShell,
+    session.sessionId
+  );
+  useMobileConversationComposerHeightVar(
+    mobilePreviewPageRef,
+    mobileComposerPanelElement,
+    isMobileChatShell,
+    session.sessionId
+  );
+
   return (
-    <main className="workbench-page conversation-page-shell affairs-conversation-page-shell" data-affairs-section="conversation">
-      <div className="conversation-main affairs-conversation-main">
-        <SessionHeader session={session} actions={<TemporarySessionHeaderAction session={session} />} />
+    <main
+      ref={mobilePreviewPageRef}
+      className={
+        isMobileChatShell
+          ? "workbench-page conversation-page-shell affairs-conversation-page-shell mobile-page-fixed-root mobile-conversation-page"
+          : "workbench-page conversation-page-shell affairs-conversation-page-shell"
+      }
+      data-affairs-section="conversation"
+      data-mobile-shell={isMobileChatShell ? "true" : undefined}
+      data-preview-mode={isMobileChatShell ? mobilePreview.displayMode : undefined}
+      data-preview-dragging={isMobileChatShell ? mobilePreview.isDragging : undefined}
+      style={isMobileChatShell ? mobilePreview.pageStyle : undefined}
+    >
+      {isMobileChatShell ? (
+        <AffairsLightweightChatPreviewPanel
+          workspaceId={input.workspaceId}
+          activeSessionId={null}
+          preview={mobilePreview}
+        />
+      ) : null}
+      <div
+        className={
+          isMobileChatShell
+            ? "conversation-main affairs-conversation-main mobile-conversation-stage"
+            : "conversation-main affairs-conversation-main"
+        }
+        {...(isMobileChatShell ? mobilePreview.mainGestureHandlers : {})}
+      >
+        {isMobileChatShell ? (
+          <MobileWorkspaceSwitcherHeader
+            containerRef={mobilePreviewHeaderRef}
+            className="mobile-conversation-page-header"
+            currentWorkspace={mobileWorkspace}
+            workspaces={navigationGroups.map((group) => group.workspace)}
+            onSelectWorkspace={(workspaceId, workspaceRef) => {
+              navigate(buildWorkspaceChatIndexPath(workspaceId, workspaceRef ?? currentWorkspaceRef));
+            }}
+            triggerLabel={<ConversationListActionIcon />}
+            triggerAriaLabel={t("shell.mobileConversationSessionListAction")}
+            triggerClassName="mobile-conversation-session-list-trigger"
+            showTriggerChevron={false}
+            showWorkspaceMenuButton
+            onTriggerClick={mobilePreview.togglePreview}
+            heading={session.title}
+            trailing={(
+              <div className="mobile-conversation-toolbar-main">
+                <span className="mobile-conversation-toolbar-title" title={session.title}>
+                  {session.title}
+                </span>
+                <TemporarySessionHeaderAction session={session} />
+              </div>
+            )}
+          />
+        ) : (
+          <div ref={mobilePreviewHeaderRef}>
+            <SessionHeader session={session} actions={<TemporarySessionHeaderAction session={session} />} />
+          </div>
+        )}
         <AffairsLightweightStreamingStatusBar status={runtimeSnapshot.streamingToolStatus} />
         <div ref={timelineSelectionContainerRef} className="conversation-timeline-shell affairs-conversation-timeline-shell">
           <MessageTimeline
@@ -7374,7 +7660,8 @@ export function AffairsLightweightConversationDraftState(input: {
         <ConversationSelectionActions containerRef={timelineSelectionContainerRef} session={session} currentCapabilities={capabilities} />
         <ComposerPanel
           capabilities={capabilities}
-          portalContainer={shellMode === "mobile" ? composerPortalTarget : null}
+          panelRef={isMobileChatShell ? setMobileComposerPanelElement : undefined}
+          portalContainer={isMobileChatShell ? composerPortalTarget : null}
           draftStorageId={draftNodeId}
           workspaceId={input.workspaceId}
           contextUsage={null}
@@ -7587,7 +7874,8 @@ export function AffairsLightweightConversationLiveState(input: {
   sessionId: string;
   runtimeSeed: AffairsConversationRuntimeSeed;
 }) {
-  const { currentTargetHostId, shellMode } = useWorkbenchShell();
+  const { currentTargetHostId, shellMode, currentWorkspaceRef, navigationGroups } = useWorkbenchShell();
+  const navigate = useNavigate();
   const { composerPortalTarget } = useMobileConversationBottomLayer();
   const runtime = useAffairsLightweightSessionController({
     sessionId: input.sessionId,
@@ -7601,6 +7889,30 @@ export function AffairsLightweightConversationLiveState(input: {
         : []
   });
   const session = runtime.session;
+  const isMobileChatShell = shellMode === "mobile";
+  const mobileWorkspace = useMemo(
+    () => {
+      const workspaceId = session?.workspaceId ?? input.runtimeSeed?.session.workspaceId ?? null;
+      return navigationGroups.find((group) => group.workspace.id === workspaceId)?.workspace ?? null;
+    },
+    [input.runtimeSeed?.session.workspaceId, navigationGroups, session?.workspaceId]
+  );
+  const mobilePreview = useMobileConversationPreviewController(isMobileChatShell);
+  const mobilePreviewPageRef = useRef<HTMLElement | null>(null);
+  const mobilePreviewHeaderRef = useRef<HTMLDivElement | null>(null);
+  const [mobileComposerPanelElement, setMobileComposerPanelElement] = useState<HTMLElement | null>(null);
+  useMobileConversationHeaderHeightVar(
+    mobilePreviewPageRef,
+    mobilePreviewHeaderRef,
+    isMobileChatShell,
+    input.sessionId
+  );
+  useMobileConversationComposerHeightVar(
+    mobilePreviewPageRef,
+    mobileComposerPanelElement,
+    isMobileChatShell,
+    input.sessionId
+  );
   const timelineSelectionContainerRef = useRef<HTMLDivElement | null>(null);
   const [temporarySessionOpenRequest, setTemporarySessionOpenRequest] = useState<{
     sessionId: string;
@@ -7642,20 +7954,84 @@ export function AffairsLightweightConversationLiveState(input: {
   }, [temporarySessionSummaries]);
 
   return (
-    <main className="workbench-page conversation-page-shell affairs-conversation-page-shell" data-affairs-section="conversation">
-      <div className="conversation-main affairs-conversation-main">
-        <SessionHeader
-          session={session}
-          actions={(
-            <TemporarySessionHeaderAction
-              session={session}
-              requestedSessionId={temporarySessionOpenRequest?.sessionId ?? null}
-              requestKey={temporarySessionOpenRequest?.nonce ?? null}
-              onSessionSelected={handleTemporarySessionSelected}
-              onSessionCreated={handleTemporarySessionCreated}
-            />
-          )}
+    <main
+      ref={mobilePreviewPageRef}
+      className={
+        isMobileChatShell
+          ? "workbench-page conversation-page-shell affairs-conversation-page-shell mobile-page-fixed-root mobile-conversation-page"
+          : "workbench-page conversation-page-shell affairs-conversation-page-shell"
+      }
+      data-affairs-section="conversation"
+      data-mobile-shell={isMobileChatShell ? "true" : undefined}
+      data-preview-mode={isMobileChatShell ? mobilePreview.displayMode : undefined}
+      data-preview-dragging={isMobileChatShell ? mobilePreview.isDragging : undefined}
+      style={isMobileChatShell ? mobilePreview.pageStyle : undefined}
+    >
+      {isMobileChatShell ? (
+        <AffairsLightweightChatPreviewPanel
+          workspaceId={session?.workspaceId ?? input.runtimeSeed?.session.workspaceId ?? ""}
+          activeSessionId={input.sessionId}
+          preview={mobilePreview}
         />
+      ) : null}
+      <div
+        className={
+          isMobileChatShell
+            ? "conversation-main affairs-conversation-main mobile-conversation-stage"
+            : "conversation-main affairs-conversation-main"
+        }
+        {...(isMobileChatShell ? mobilePreview.mainGestureHandlers : {})}
+      >
+        {isMobileChatShell ? (
+          <MobileWorkspaceSwitcherHeader
+            containerRef={mobilePreviewHeaderRef}
+            className="mobile-conversation-page-header"
+            currentWorkspace={mobileWorkspace}
+            workspaces={navigationGroups.map((group) => group.workspace)}
+            onSelectWorkspace={(workspaceId, workspaceRef) => {
+              navigate(buildWorkspaceChatIndexPath(workspaceId, workspaceRef ?? currentWorkspaceRef));
+            }}
+            triggerLabel={<ConversationListActionIcon />}
+            triggerAriaLabel={t("shell.mobileConversationSessionListAction")}
+            triggerClassName="mobile-conversation-session-list-trigger"
+            showTriggerChevron={false}
+            showWorkspaceMenuButton
+            onTriggerClick={mobilePreview.togglePreview}
+            heading={session?.title ?? t("conversation.titleFallback")}
+            trailing={(
+              <div className="mobile-conversation-toolbar-main">
+                <span
+                  className="mobile-conversation-toolbar-title"
+                  title={session?.title ?? t("conversation.titleFallback")}
+                >
+                  {session?.title ?? t("conversation.titleFallback")}
+                </span>
+                <TemporarySessionHeaderAction
+                  session={session}
+                  requestedSessionId={temporarySessionOpenRequest?.sessionId ?? null}
+                  requestKey={temporarySessionOpenRequest?.nonce ?? null}
+                  onSessionSelected={handleTemporarySessionSelected}
+                  onSessionCreated={handleTemporarySessionCreated}
+                />
+              </div>
+            )}
+          />
+        ) : (
+          <div ref={mobilePreviewHeaderRef}>
+            <SessionHeader
+              session={session}
+              actions={(
+                <TemporarySessionHeaderAction
+                  session={session}
+                  requestedSessionId={temporarySessionOpenRequest?.sessionId ?? null}
+                  requestKey={temporarySessionOpenRequest?.nonce ?? null}
+                  onSessionSelected={handleTemporarySessionSelected}
+                  onSessionCreated={handleTemporarySessionCreated}
+                />
+              )}
+            />
+          </div>
+        )}
         <AffairsLightweightStreamingStatusBar status={runtime.streamingToolStatus} />
         <PermissionRequestList
           requests={runtime.permissionRequests}
@@ -7689,7 +8065,8 @@ export function AffairsLightweightConversationLiveState(input: {
         />
         <ComposerPanel
           capabilities={runtime.capabilities}
-          portalContainer={shellMode === "mobile" ? composerPortalTarget : null}
+          panelRef={isMobileChatShell ? setMobileComposerPanelElement : undefined}
+          portalContainer={isMobileChatShell ? composerPortalTarget : null}
           draftStorageId={input.sessionId}
           workspaceId={session?.workspaceId ?? input.runtimeSeed?.session.workspaceId ?? null}
           initialProviderConfigMode={session?.providerConfigMode ?? input.runtimeSeed?.session.providerConfigMode ?? "global-default"}

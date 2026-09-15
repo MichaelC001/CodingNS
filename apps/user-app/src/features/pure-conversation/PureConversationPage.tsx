@@ -12,6 +12,7 @@ import {
 import { buildWorkspaceChatPath } from "../workbench/utils/workbench-navigation";
 import { createDefaultAffairsViewState } from "../workbench/utils/workbench-mode";
 import type { AffairsViewState } from "../workbench/types/workbench-mode";
+import "../mobile-sessions/styles.css";
 
 const DEFAULT_LIGHTWEIGHT_PROVIDER = "codex" as const;
 type LightweightProvider = "codex" | "claude-code" | "deepseek-harness";

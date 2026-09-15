@@ -46,6 +46,9 @@ interface MobileWorkspaceSwitcherHeaderProps {
   readonly sheetContent?: (closeSheet: () => void) => ReactNode;
   readonly triggerLabel?: ReactNode;
   readonly triggerAriaLabel?: string;
+  readonly triggerClassName?: string;
+  readonly showTriggerChevron?: boolean;
+  readonly showWorkspaceMenuButton?: boolean;
   readonly onTriggerClick?: () => void;
   readonly trailing?: ReactNode;
   readonly gestureHandlers?: {
@@ -69,6 +72,9 @@ export function MobileWorkspaceSwitcherHeader({
   sheetContent,
   triggerLabel,
   triggerAriaLabel,
+  triggerClassName,
+  showTriggerChevron = true,
+  showWorkspaceMenuButton = false,
   onTriggerClick,
   trailing,
   gestureHandlers
@@ -96,6 +102,11 @@ export function MobileWorkspaceSwitcherHeader({
   const hostSwitcherItems = buildMobileHostSwitcherEntries(runtimeConfig, switcherItems, effectiveScopedWorkspaces);
   const headerTitle = currentWorkspace?.name ?? activeHost?.name ?? null;
   const headerSubtitle = currentWorkspace?.path ?? activeHost?.baseUrl ?? null;
+
+  function openWorkspaceSwitcher() {
+    void haptics.trigger("selection");
+    setSwitcherOpen(true);
+  }
 
   useEffect(() => {
     if (!switcherOpen || scopedWorkspaces) {
@@ -191,7 +202,7 @@ export function MobileWorkspaceSwitcherHeader({
           <div className="mobile-workspace-home-toolbar-top">
             <button
               type="button"
-              className="mobile-workspace-home-switcher"
+              className={["mobile-workspace-home-switcher", triggerClassName].filter(Boolean).join(" ")}
               aria-label={triggerAriaLabel ?? t("shell.workspaceHomeSwitcherLabel")}
               onClick={() => {
                 if (onTriggerClick) {
@@ -199,13 +210,24 @@ export function MobileWorkspaceSwitcherHeader({
                   return;
                 }
 
-                void haptics.trigger("selection");
-                setSwitcherOpen(true);
+                openWorkspaceSwitcher();
               }}
             >
               <span className="mobile-workspace-home-switcher-label">{triggerLabel ?? headerTitle}</span>
-              <ChevronDownIcon />
+              {showTriggerChevron ? <ChevronDownIcon /> : null}
             </button>
+
+            {showWorkspaceMenuButton ? (
+              <button
+                type="button"
+                className="mobile-conversation-workspace-menu-trigger"
+                aria-label={t("shell.workspaceHomeSwitcherLabel")}
+                title={headerTitle}
+                onClick={openWorkspaceSwitcher}
+              >
+                <ChevronDownIcon />
+              </button>
+            ) : null}
 
             <div className="mobile-workspace-home-toolbar-actions">
               {trailing}
@@ -217,7 +239,7 @@ export function MobileWorkspaceSwitcherHeader({
         </section>
       </MobileTopHeaderFrame>
 
-      {switcherOpen && !onTriggerClick
+      {switcherOpen && (!onTriggerClick || showWorkspaceMenuButton)
         ? (
             <WorkspaceSwitcherSheet
               open={switcherOpen}

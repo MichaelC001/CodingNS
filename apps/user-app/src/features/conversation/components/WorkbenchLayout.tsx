@@ -1976,6 +1976,7 @@ interface WorkbenchShellContextValue {
   unarchiveLightweightChat: (workspace: WorkspaceDto, sessionId: string) => Promise<void>;
   renameLightweightChat: (workspace: WorkspaceDto, sessionId: string, title: string) => Promise<SessionSummaryDto>;
   deleteLightweightChat: (workspace: WorkspaceDto, session: SessionSummaryDto) => Promise<void>;
+  refreshLightweightChatSessions: (workspaceId: string) => Promise<void>;
   globalNotifications: WorkbenchGlobalNotification[];
   archivedNotificationIds: string[];
   showArchivedNotifications: boolean;
@@ -16917,6 +16918,31 @@ export function WorkbenchLayout({
     }));
   }, []);
 
+  const refreshLightweightChatSessions = useCallback(async (workspaceId: string) => {
+    const normalizedWorkspaceId = workspaceId.trim();
+
+    if (!normalizedWorkspaceId) {
+      return;
+    }
+
+    const response = await listAffairsLightweightSessions(normalizedWorkspaceId, {
+      targetHostId: currentTargetHostId
+    });
+
+    setLightweightChatSessionsByWorkspaceId((current) => ({
+      ...current,
+      [normalizedWorkspaceId]: filterSidebarLightweightSessions(
+        response.items.filter((session) => !session.isArchived)
+      )
+    }));
+    setLightweightArchivedChatSessionsByWorkspaceId((current) => ({
+      ...current,
+      [normalizedWorkspaceId]: filterSidebarLightweightSessions(
+        response.items.filter((session) => session.isArchived)
+      )
+    }));
+  }, [currentTargetHostId]);
+
   const openSearchModal = useCallback(() => {
     setSearchModalOpen(true);
   }, []);
@@ -17238,6 +17264,7 @@ export function WorkbenchLayout({
       unarchiveLightweightChat,
       renameLightweightChat,
       deleteLightweightChat,
+      refreshLightweightChatSessions,
       globalNotifications,
       archivedNotificationIds: Array.from(archivedNotificationIds),
       showArchivedNotifications,
@@ -17337,7 +17364,8 @@ export function WorkbenchLayout({
       archiveLightweightChat,
       unarchiveLightweightChat,
       renameLightweightChat,
-      deleteLightweightChat
+      deleteLightweightChat,
+      refreshLightweightChatSessions
     ]
   );
 
@@ -18560,6 +18588,7 @@ export function useWorkbenchShell(): WorkbenchShellContextValue {
         throw new Error("renameLightweightChat is unavailable outside the workbench shell");
       },
       deleteLightweightChat: async () => undefined,
+      refreshLightweightChatSessions: async () => undefined,
       globalNotifications: [],
       archivedNotificationIds: [],
       showArchivedNotifications: false,
