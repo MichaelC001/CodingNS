@@ -63,7 +63,7 @@ describe("provider-ui", () => {
     expect(getDraftTitle("command-code")).toBe("新的 Command Code 会话");
     expect(getProviderIcon("command-code")).toContain("data:image/svg+xml");
     expect(createDraftCapabilities("command-code").supportsInterrupt).toBe(true);
-    expect(createDraftCapabilities("command-code").supportsAttachments).toBe(false);
+    expect(createDraftCapabilities("command-code").supportsAttachments).toBe(true);
     expect(createDraftCapabilities("command-code").modelOptions?.[0]?.supportedReasoningEfforts)
       .toBeUndefined();
     expect(shouldPersistReasoningLevel("command-code")).toBe(true);

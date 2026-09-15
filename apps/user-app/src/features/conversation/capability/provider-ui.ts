@@ -219,7 +219,7 @@ const PROVIDER_METADATA: Record<BuiltinProviderId, ProviderMetadata> = {
     reasoningLevelPersists: true,
     defaultReasoningLevel: null,
     supportsInterrupt: true,
-    supportsAttachments: false,
+    supportsAttachments: true,
     supportsPermissionPrompt: true,
     supportsSlashMenuByDefault: false,
     supportsSessionDeleteByDefault: true,
