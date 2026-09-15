@@ -524,6 +524,49 @@ test("图片走 image content，小文本文件内联，越界附件直接失败
   }
 });
 
+test("允许根目录内的工作区外图片可以发送", async () => {
+  const root = createFixtureRoot();
+  const workspacePath = join(root, "workspace");
+  const attachmentRoot = join(root, "session-attachments");
+  mkdirSync(workspacePath, { recursive: true });
+  mkdirSync(attachmentRoot, { recursive: true });
+  const scriptPath = writeFakePi(root);
+  const imagePath = join(attachmentRoot, "image.png");
+  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  writeFileSync(imagePath, imageBytes);
+
+  try {
+    const adapter = createAdapter(scriptPath, { allowedAttachmentRoots: [attachmentRoot] });
+    const launch = await adapter.startSession(
+      createRequest(workspacePath, {
+        options: {
+          content: "查看这张图",
+          attachments: [{
+            id: "attachment-1",
+            kind: "image",
+            fileName: "image.png",
+            mimeType: "image/png",
+            fileSize: imageBytes.length,
+            filePath: imagePath
+          }]
+        }
+      }),
+      createSink().sink
+    );
+    await launch.completed;
+
+    const prompt = readCommandLog(workspacePath)
+      .filter((entry) => entry.kind === "command")
+      .map((entry) => entry.command)
+      .find((command) => command.type === "prompt");
+
+    assert.equal(prompt.images.length, 1);
+    assert.equal(prompt.images[0].data, imageBytes.toString("base64"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("模型不支持图片时直接失败，不静默丢图", async () => {
   const root = createFixtureRoot();
   const workspacePath = join(root, "workspace");
