@@ -2814,9 +2814,11 @@ export function promoteSessionIsolatedWorkspace(id: string) {
   );
 }
 
-export function createWorktree(payload: CreateWorktreePayload) {
+export function createWorktree(payload: CreateWorktreePayload, options?: ScopedRequestOptions) {
   return httpClient.request<CreateWorktreeResponseDto>("/api/worktrees", {
     method: "POST",
+    targetHostId: options?.targetHostId ?? undefined,
+    signal: options?.signal,
     body: JSON.stringify(payload)
   });
 }

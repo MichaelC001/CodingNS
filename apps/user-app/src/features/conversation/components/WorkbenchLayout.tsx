@@ -7644,8 +7644,8 @@ function SidebarContent({
     setCreateWorktreeBaseRefSuggestionsError(null);
 
     void Promise.all([
-      getGitBranches(workspaceId),
-      getGitTags(workspaceId)
+      getGitBranches(workspaceId, { targetHostId: currentTargetHostId }),
+      getGitTags(workspaceId, { targetHostId: currentTargetHostId })
     ])
       .then(([branches, tags]) => {
         if (cancelled) {
@@ -7675,7 +7675,7 @@ function SidebarContent({
     return () => {
       cancelled = true;
     };
-  }, [createSessionWorkspace?.id, createWorktreeFormOpen]);
+  }, [createSessionWorkspace?.id, createWorktreeFormOpen, currentTargetHostId]);
 
   useLayoutEffect(() => {
     if (!createWorktreeBaseRefPickerOpen || !createWorktreeBaseRefPickerRef.current) {
@@ -9061,6 +9061,8 @@ function SidebarContent({
         branchName,
         displayName: displayName || undefined,
         baseRef: baseRef || undefined
+      }, {
+        targetHostId: currentTargetHostId
       });
 
       setCreateSessionWorkspaceDraft(created.workspace);

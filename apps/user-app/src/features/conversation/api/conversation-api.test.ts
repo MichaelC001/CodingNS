@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   cancelWorkspaceSessionScan,
+  createWorktree,
   getParallelGroupDetail,
   getSessionMessages,
   getWorkspaceSessionScanStatus,
@@ -222,6 +223,20 @@ describe("conversation-api 会话请求边界", () => {
       3,
       "/api/sessions/discovery/scan?workspaceId=workspace-1",
       expect.objectContaining({ method: "DELETE", targetHostId: "peer-1" })
+    );
+  });
+
+  it("创建子工作树会沿用当前远程 Host", async () => {
+    request.mockResolvedValue({ workspace: {}, meta: {} });
+
+    await createWorktree(
+      { sourceWorkspaceId: "workspace-1", branchName: "feat/child" },
+      { targetHostId: "peer-1" }
+    );
+
+    expect(request).toHaveBeenCalledWith(
+      "/api/worktrees",
+      expect.objectContaining({ method: "POST", targetHostId: "peer-1" })
     );
   });
 
