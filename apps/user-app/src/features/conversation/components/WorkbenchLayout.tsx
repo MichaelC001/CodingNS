@@ -15362,8 +15362,11 @@ export function WorkbenchLayout({
       ? buildSessionEntryPath(fallbackSessionEntry)
       : null;
     const fallbackWorkspaceRef = currentWorkspaceRef;
+    // start-live 成功后会先通过路由 state 携带首条消息；此时导航摘要和 sessionWorkspaceMap
+    // 可能还没完成同一帧更新，不能把这个刚创建的会话误判成缺失并回退到旧会话。
+    const hasFreshLiveSessionBootstrap = hasLiveSessionBootstrapState(location.state, currentSessionId);
 
-    if (routeWorkspaceId && !validatedRouteWorkspaceId) {
+    if (routeWorkspaceId && !validatedRouteWorkspaceId && !hasFreshLiveSessionBootstrap) {
       navigate(
         storedSessionPath
           ?? fallbackSessionPath
@@ -15375,7 +15378,7 @@ export function WorkbenchLayout({
       return;
     }
 
-    if (currentSessionId && !isDraftSession && !sessionWorkspaceId) {
+    if (currentSessionId && !isDraftSession && !sessionWorkspaceId && !hasFreshLiveSessionBootstrap) {
       navigate(
         storedSessionPath
           ?? fallbackSessionPath
@@ -15391,6 +15394,7 @@ export function WorkbenchLayout({
     findFallbackSessionEntry,
     isDraftSession,
     location.pathname,
+    location.state,
     navigate,
     navigationGroups,
     navigationLoading,
@@ -18390,6 +18394,20 @@ function normalizeScopeTargetHostId(workspaceRef?: WorkspaceRef | null): string 
   }
 
   return workspaceRef.hostId !== "current" ? workspaceRef.hostId : null;
+}
+
+function hasLiveSessionBootstrapState(state: unknown, sessionId: string | null): boolean {
+  if (!sessionId || !state || typeof state !== "object") {
+    return false;
+  }
+
+  const bootstrap = (state as { bootstrap?: unknown }).bootstrap;
+
+  if (!bootstrap || typeof bootstrap !== "object") {
+    return false;
+  }
+
+  return (bootstrap as { sessionId?: unknown }).sessionId === sessionId;
 }
 
 function isDraftSessionId(sessionId: string): boolean {
