@@ -2388,6 +2388,14 @@ function filterVisibleWorkspaceSessions(sessions: SessionSummaryDto[]) {
   });
 }
 
+function isParentBoundLightweightSession(session: SessionSummaryDto): boolean {
+  return Boolean(session.parentSessionId?.trim());
+}
+
+function filterSidebarLightweightSessions(sessions: SessionSummaryDto[]): SessionSummaryDto[] {
+  return sessions.filter((session) => !isParentBoundLightweightSession(session));
+}
+
 export function flattenVisibleSessionTree(nodes: NavigationSessionTreeNode[]) {
   return nodes.flatMap((node) => {
     const session = getTreeNodeSession(node);
@@ -8773,9 +8781,12 @@ function SidebarContent({
       ?? workspaceGroups[0]?.workspace
       ?? null;
     const sessions = workspace
-      ? (lightweightChatSessionsByWorkspaceId[workspace.id] ?? []).filter((session) => session.isFavorite !== true)
+      ? filterSidebarLightweightSessions(lightweightChatSessionsByWorkspaceId[workspace.id] ?? [])
+        .filter((session) => session.isFavorite !== true)
       : [];
-    const archivedSessions = workspace ? lightweightArchivedChatSessionsByWorkspaceId[workspace.id] ?? [] : [];
+    const archivedSessions = workspace
+      ? filterSidebarLightweightSessions(lightweightArchivedChatSessionsByWorkspaceId[workspace.id] ?? [])
+      : [];
     const workspaceContext = workspace ? getWorkspaceContext(workspace) : null;
 
     return (
@@ -13832,74 +13843,6 @@ export function WorkbenchLayout({
     [navigationGroups]
   );
 
-  useEffect(() => {
-    const workspaceIds = workspaceIdSignature
-      ? workspaceIdSignature.split("|").filter((workspaceId) => workspaceId.length > 0)
-      : [];
-
-    if (workspaceIds.length === 0) {
-      setLightweightChatSessionsByWorkspaceId({});
-      setLightweightArchivedChatSessionsByWorkspaceId({});
-      return;
-    }
-
-    const abortController = new AbortController();
-    let cancelled = false;
-
-    void Promise.allSettled(
-      workspaceIds.map(async (workspaceId) => {
-        const response = await listAffairsLightweightSessions(workspaceId, {
-          signal: abortController.signal
-        });
-        return {
-          workspaceId,
-          sessions: response.items.filter((session) => !session.isArchived),
-          archivedSessions: response.items.filter((session) => session.isArchived)
-        };
-      })
-    ).then((results) => {
-      if (cancelled) {
-        return;
-      }
-
-      setLightweightChatSessionsByWorkspaceId((current) => {
-        const next: Record<string, SessionSummaryDto[]> = {};
-
-        for (const workspaceId of workspaceIds) {
-          next[workspaceId] = current[workspaceId] ?? [];
-        }
-
-        for (const result of results) {
-          if (result.status === "fulfilled") {
-            next[result.value.workspaceId] = result.value.sessions;
-          }
-        }
-
-        return next;
-      });
-      setLightweightArchivedChatSessionsByWorkspaceId((current) => {
-        const next: Record<string, SessionSummaryDto[]> = {};
-
-        for (const workspaceId of workspaceIds) {
-          next[workspaceId] = current[workspaceId] ?? [];
-        }
-
-        for (const result of results) {
-          if (result.status === "fulfilled") {
-            next[result.value.workspaceId] = result.value.archivedSessions;
-          }
-        }
-
-        return next;
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      abortController.abort();
-    };
-  }, [workspaceIdSignature]);
-
   const applyNavigationGroupsSnapshot = useCallback((groups: WorkspaceSessionGroup[]) => {
     const nextSnapshot = createWorkbenchSnapshotFromGroups(groups, collapsedWorkspaceIds);
 
@@ -14636,6 +14579,76 @@ export function WorkbenchLayout({
       ? currentWorkspaceRef.hostId
       : activeTargetHostId;
   currentTargetHostIdRef.current = currentTargetHostId;
+
+  useEffect(() => {
+    const workspaceIds = workspaceIdSignature
+      ? workspaceIdSignature.split("|").filter((workspaceId) => workspaceId.length > 0)
+      : [];
+
+    if (workspaceIds.length === 0) {
+      setLightweightChatSessionsByWorkspaceId({});
+      setLightweightArchivedChatSessionsByWorkspaceId({});
+      return;
+    }
+
+    const abortController = new AbortController();
+    let cancelled = false;
+
+    void Promise.allSettled(
+      workspaceIds.map(async (workspaceId) => {
+        const response = await listAffairsLightweightSessions(workspaceId, {
+          targetHostId: currentTargetHostId,
+          signal: abortController.signal
+        });
+        return {
+          workspaceId,
+          sessions: filterSidebarLightweightSessions(response.items.filter((session) => !session.isArchived)),
+          archivedSessions: filterSidebarLightweightSessions(response.items.filter((session) => session.isArchived))
+        };
+      })
+    ).then((results) => {
+      if (cancelled) {
+        return;
+      }
+
+      setLightweightChatSessionsByWorkspaceId((current) => {
+        const next: Record<string, SessionSummaryDto[]> = {};
+
+        for (const workspaceId of workspaceIds) {
+          next[workspaceId] = current[workspaceId] ?? [];
+        }
+
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            next[result.value.workspaceId] = result.value.sessions;
+          }
+        }
+
+        return next;
+      });
+      setLightweightArchivedChatSessionsByWorkspaceId((current) => {
+        const next: Record<string, SessionSummaryDto[]> = {};
+
+        for (const workspaceId of workspaceIds) {
+          next[workspaceId] = current[workspaceId] ?? [];
+        }
+
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            next[result.value.workspaceId] = result.value.archivedSessions;
+          }
+        }
+
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      abortController.abort();
+    };
+  }, [currentTargetHostId, workspaceIdSignature]);
+
   const currentWorkspaceName = useMemo(
     () => currentWorkspace?.name ?? null,
     [currentWorkspace]
@@ -14726,6 +14739,7 @@ export function WorkbenchLayout({
     let cancelled = false;
 
     void listAffairsLightweightSessions(currentWorkspaceId, {
+      targetHostId: currentTargetHostId,
       signal: abortController.signal
     })
       .then((response) => {
@@ -14734,7 +14748,7 @@ export function WorkbenchLayout({
         }
         setLightweightChatSessionsByWorkspaceId((current) => ({
           ...current,
-          [currentWorkspaceId]: response.items.filter((session) => !session.isArchived)
+          [currentWorkspaceId]: filterSidebarLightweightSessions(response.items.filter((session) => !session.isArchived))
         }));
       })
       .catch(() => undefined);
@@ -14743,7 +14757,7 @@ export function WorkbenchLayout({
       cancelled = true;
       abortController.abort();
     };
-  }, [currentWorkspaceId, location.pathname]);
+  }, [currentTargetHostId, currentWorkspaceId, location.pathname]);
 
   useEffect(() => {
     if (!currentWorkspaceId) {
@@ -15755,7 +15769,7 @@ export function WorkbenchLayout({
           return [];
         }
 
-        return sessions.flatMap((session) => {
+        return filterSidebarLightweightSessions(sessions).flatMap((session) => {
           if (session.isFavorite !== true || session.isArchived) {
             return [];
           }
