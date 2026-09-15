@@ -106,9 +106,11 @@ pi --mode rpc --session <rawStoreRef> --session-dir <dir>
 | `tool_execution_start` | tool_call running |
 | `tool_execution_update` | 更新工具输出 |
 | `tool_execution_end` | tool_result completed/failed |
-| `agent_end` | 记录一轮结束，不终止运行 |
-| `agent_settled` | complete |
+| `agent_end` | `willRetry=false` 时发 `status: completed`（表示这一轮真的跑完了），`willRetry=true` 时保持 running |
+| `agent_settled` | 真正的终态：发 complete 并回收进程 |
 | `extension_error` | 记录错误并按是否仍运行决定是否终止 |
+
+**为什么 `agent_end` 也要收敛状态**：Pi 转发 `agent_settled` 的顺序是「先 `await` 扩展的 `agent_settled` handler，再发给 RPC 客户端」，而计划模式这类扩展正好在这个 handler 里等用户点审批。如果只在 `agent_settled` 时才结束，会话会一直显示"进行中"。所以 `agent_end` 且不会自动重试时先把状态收敛；进程仍然留着，等审批回包、`agent_settled` 到达后才关闭，并只在此时兑现 `completed` promise。
 
 ### 4.2 消息身份
 
