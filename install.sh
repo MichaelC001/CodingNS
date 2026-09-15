@@ -14,6 +14,8 @@ DRY_RUN="${CODINGNS_INSTALL_DRY_RUN:-0}"
 REGISTRY_PROBE_PACKAGE_SPEC="${CODINGNS_REGISTRY_PROBE_SPEC:-@openai/codex-sdk}"
 PTY_PACKAGE_NAME="@lydell/node-pty"
 SQLITE_PACKAGE_NAME="libsql"
+MIN_NODE_MAJOR=22
+MIN_NODE_MINOR=19
 DEEPSEEK_HARNESS_ROOT="${CODINGNS_DEEPSEEK_HARNESS_ROOT:-$HOME/.local/share/codingns/deepseek-harness}"
 DEEPSEEK_HARNESS_BIN="${CODINGNS_DEEPSEEK_HARNESS_BIN:-$HOME/.local/bin/dsh}"
 INSTALL_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,8 +101,8 @@ msg() {
 
     zh:error_root) printf '不要直接用 sudo 整个执行脚本。请用普通用户运行，脚本会在需要管理员权限时单独请求 sudo。';;
     en:error_root) printf 'Do not run the whole installer with sudo. Run it as a normal user and the script will request sudo only when needed.';;
-    zh:error_no_node) printf '未检测到 node，请先安装 Node.js 22 或更高版本。';;
-    en:error_no_node) printf 'Node.js was not found. Please install Node.js 22 or later first.';;
+    zh:error_no_node) printf '未检测到 node，请先安装 Node.js 22.19 或更高版本。';;
+    en:error_no_node) printf 'Node.js was not found. Please install Node.js 22.19 or later first.';;
     zh:error_no_npm) printf '未检测到 npm，请先安装 npm 10 或更高版本。';;
     en:error_no_npm) printf 'npm was not found. Please install npm 10 or later first.';;
     zh:error_no_make) printf '未检测到 make，Linux 下安装 CodingNS 需要编译工具链。';;
@@ -109,8 +111,8 @@ msg() {
     en:error_no_cpp_compiler) printf 'g++ was not found. CodingNS installation on Linux needs a C++ compiler.';;
     zh:error_no_python3) printf '未检测到 python3，Linux 下安装 CodingNS 需要 Python 3。';;
     en:error_no_python3) printf 'python3 was not found. CodingNS installation on Linux needs Python 3.';;
-    zh:error_bad_node_version) printf '当前 Node.js 版本是 %s，项目要求 Node.js 22 或更高版本。' "$@";;
-    en:error_bad_node_version) printf 'Your current Node.js version is %s, but CodingNS requires Node.js 22 or later.' "$@";;
+    zh:error_bad_node_version) printf '当前 Node.js 版本是 %s，项目要求 Node.js 22.19 或更高版本。' "$@";;
+    en:error_bad_node_version) printf 'Your current Node.js version is %s, but CodingNS requires Node.js 22.19 or later.' "$@";;
     zh:error_bad_npm_version) printf '当前 npm 版本是 %s，项目要求 >= 10。' "$@";;
     en:error_bad_npm_version) printf 'Your current npm version is %s, but CodingNS requires >= 10.' "$@";;
     zh:error_read_node_version) printf '无法识别 Node.js 版本：%s' "$@";;
@@ -137,8 +139,8 @@ msg() {
     en:error_prompt_interrupted) printf 'No terminal input was received. The installation was aborted. Please run the script again in an interactive terminal.';;
     zh:error_prereq_auto_install_cancelled) printf '缺少必备环境，且你没有同意自动安装，安装流程已中止。';;
     en:error_prereq_auto_install_cancelled) printf 'Required dependencies are missing, and automatic installation was not approved. The installation was aborted.';;
-    zh:error_prereq_auto_install_unsupported) printf '当前系统暂不支持自动安装必备环境，请先手工安装 Node.js 22+、npm 10+ 和所需编译工具后重试。';;
-    en:error_prereq_auto_install_unsupported) printf 'Automatic dependency installation is not supported on this system yet. Please install Node.js 22+, npm 10+, and the required build tools manually, then try again.';;
+    zh:error_prereq_auto_install_unsupported) printf '当前系统暂不支持自动安装必备环境，请先手工安装 Node.js 22.19+、npm 10+ 和所需编译工具后重试。';;
+    en:error_prereq_auto_install_unsupported) printf 'Automatic dependency installation is not supported on this system yet. Please install Node.js 22.19+, npm 10+, and the required build tools manually, then try again.';;
     zh:error_prereq_auto_install_failed) printf '自动安装必备环境失败，请检查网络、权限或软件源后重试。';;
     en:error_prereq_auto_install_failed) printf 'Automatic dependency installation failed. Please check your network, permissions, or package sources and try again.';;
     zh:error_no_supported_linux_installer) printf '当前 Linux 发行版没有检测到受支持的自动安装方式。暂时只支持 apt-get。';;
@@ -893,6 +895,30 @@ read_major_version() {
   printf ''
 }
 
+is_supported_node_version() {
+  local version_text="$1"
+  local major_version=""
+  local minor_version=""
+
+  version_text="${version_text#v}"
+  if [[ ! "$version_text" =~ ^([0-9]+)\.([0-9]+)(\.|$) ]]; then
+    return 1
+  fi
+
+  major_version="${BASH_REMATCH[1]}"
+  minor_version="${BASH_REMATCH[2]}"
+
+  if (( major_version > MIN_NODE_MAJOR )); then
+    return 0
+  fi
+
+  if (( major_version < MIN_NODE_MAJOR )); then
+    return 1
+  fi
+
+  (( minor_version >= MIN_NODE_MINOR ))
+}
+
 localized_bool() {
   if [[ "$1" == "1" ]]; then
     msg yes_word
@@ -1044,10 +1070,8 @@ collect_prerequisite_issues() {
     SYSTEM_NODE_ABI="$("$NODE_BIN" -p "process.versions.modules" 2>/dev/null | tr -d '\r' || true)"
     node_major="$(read_major_version "$node_version")"
     if [[ -z "$node_major" ]]; then
-      if ! is_windows_environment; then
-        PREREQUISITE_ISSUES+=("error_read_node_version|$node_version")
-      fi
-    elif (( node_major < 22 )) && ! is_windows_environment; then
+      PREREQUISITE_ISSUES+=("error_read_node_version|$node_version")
+    elif ! is_supported_node_version "$node_version"; then
       PREREQUISITE_ISSUES+=("error_bad_node_version|$node_version")
     fi
   fi
