@@ -137,6 +137,7 @@ const mockListQuickPhrases = vi.fn();
 const mockReplaceQuickPhrases = vi.fn();
 const mockGetProviderCapabilities = vi.fn();
 const mockGetCodexRateLimits = vi.fn();
+const mockGetCommandCodeRateLimits = vi.fn();
 const mockResetCodexRateLimits = vi.fn();
 const mockListProviderCatalog = vi.fn();
 const mockGetProviderPriceBook = vi.fn();
@@ -150,6 +151,7 @@ vi.mock("../api/conversation-api", async () => {
     ...actual,
     getProviderCapabilities: (...args: unknown[]) => mockGetProviderCapabilities(...args),
     getCodexRateLimits: (...args: unknown[]) => mockGetCodexRateLimits(...args),
+    getCommandCodeRateLimits: (...args: unknown[]) => mockGetCommandCodeRateLimits(...args),
     resetCodexRateLimits: (...args: unknown[]) => mockResetCodexRateLimits(...args),
     listProviderCatalog: (...args: unknown[]) => mockListProviderCatalog(...args),
     getProviderPriceBook: (...args: unknown[]) => mockGetProviderPriceBook(...args),
@@ -210,7 +212,7 @@ function createDeferred() {
 function createCapabilities(options?: {
   supportsAttachments?: boolean;
   supportsInterrupt?: boolean;
-  provider?: "codex" | "claude-code" | "opencode" | "deepseek-harness";
+  provider?: "codex" | "command-code" | "claude-code" | "opencode" | "deepseek-harness";
   modelOptions?: Array<{
     id: string;
     name: string;
@@ -350,6 +352,7 @@ describe("ComposerPanel", () => {
     mockReplaceQuickPhrases.mockReset();
     mockGetProviderCapabilities.mockReset();
     mockGetCodexRateLimits.mockReset();
+    mockGetCommandCodeRateLimits.mockReset();
     mockResetCodexRateLimits.mockReset();
     mockListProviderCatalog.mockReset();
     mockGetProviderPriceBook.mockReset();
@@ -388,6 +391,7 @@ describe("ComposerPanel", () => {
     ]);
     mockGetProviderCapabilities.mockResolvedValue(createCapabilities());
     mockGetCodexRateLimits.mockResolvedValue({ rateLimits: null });
+    mockGetCommandCodeRateLimits.mockResolvedValue({ rateLimits: null });
     mockResetCodexRateLimits.mockResolvedValue({ outcome: "reset", rateLimits: null });
     mockFetchModelManagementSnapshot.mockResolvedValue({
       scannedAt: "2026-06-11T00:00:00.000Z",
@@ -1095,7 +1099,7 @@ describe("ComposerPanel", () => {
     const tooltip = await screen.findByRole("tooltip");
     expect(tooltip).toHaveTextContent(t("conversation.codexRateLimitTitle"));
     expect(tooltip).toHaveTextContent("订阅类型 Pro");
-    expect(tooltip).toHaveTextContent("下次重置");
+    expect(tooltip).toHaveTextContent(/\d+小时\d+分钟/);
     expect(tooltip).toHaveTextContent(t("conversation.codexRateLimitCredits", { count: 1 }));
 
     fireEvent.click(screen.getByRole("button", {
@@ -1145,6 +1149,64 @@ describe("ComposerPanel", () => {
 
     expect(await screen.findByRole("tooltip")).toHaveTextContent(`订阅类型 ${label}`);
     unmount();
+  });
+
+  it("Command Code 订阅余量显示 Go、三种额度进度和两位 credits", async () => {
+    mockGetCommandCodeRateLimits.mockResolvedValue({
+      rateLimits: {
+        authenticated: true,
+        planType: "individual-go",
+        primary: {
+          usedPercent: 4.61,
+          remainingPercent: 95.39,
+          windowDurationMins: 300,
+          resetsAt: 1_789_000_000
+        },
+        secondary: {
+          usedPercent: 3.26,
+          remainingPercent: 96.74,
+          windowDurationMins: 10_080,
+          resetsAt: 1_789_600_000
+        },
+        monthly: {
+          usedPercent: 1.95,
+          remainingPercent: 98.05,
+          windowDurationMins: null,
+          resetsAt: 1_790_000_000,
+          remainingCredits: 9.8,
+          totalCredits: 10
+        },
+        rateLimitReachedType: null,
+        resetCredits: null,
+        capturedAt: "2026-09-15T10:00:00.000Z"
+      }
+    });
+
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities({ provider: "command-code" })}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    const ring = await waitFor(() => {
+      const element = container.querySelector(".composer-codex-rate-ring");
+      expect(element).not.toHaveClass("is-loading");
+      return element as HTMLElement;
+    });
+    expect(ring).toHaveTextContent("95%");
+    fireEvent.click(ring);
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("类型 Go");
+    expect(tooltip).not.toHaveTextContent("剩余 9.80 credits");
+    expect(tooltip).not.toHaveTextContent("下次重置");
+    expect(tooltip).toHaveTextContent(/\d+小时\d+分钟/);
+    expect(tooltip.querySelectorAll(".composer-codex-rate-limit-tooltip-window")).toHaveLength(3);
+    expect(screen.getByRole("progressbar", { name: "5 小时额度 95.39%" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "周额度 96.74%" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "月额度 98.05%" })).toBeInTheDocument();
   });
 
   it("会话统计弹层会在上方可用空间内向上展开", async () => {
