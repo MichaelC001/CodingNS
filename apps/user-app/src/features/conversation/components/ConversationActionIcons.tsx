@@ -78,6 +78,48 @@ export function BranchTreeActionIcon() {
   );
 }
 
+/** 临时会话菜单图标：两层会话卡片表示父会话下的轻量追问。 */
+export function TemporarySessionActionIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="conversation-action-icon"
+    >
+      <rect x="3" y="4" width="11" height="9" rx="2.2" />
+      <path d="M6 16.2h8.2a2 2 0 0 0 2-2V8.5" />
+      <path d="M6.5 7.5h4" />
+      <path d="M6.5 10h2.8" />
+    </svg>
+  );
+}
+
+/** 临时会话列表图标：用列表和会话数量表达历史临时会话入口。 */
+export function TemporarySessionListIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="conversation-action-icon"
+    >
+      <rect x="3" y="4" width="14" height="12" rx="2.2" />
+      <path d="M6.5 7.5h7" />
+      <path d="M6.5 10h5" />
+      <path d="M6.5 12.5h3" />
+    </svg>
+  );
+}
+
 export function MoreActionIcon() {
   return (
     <svg

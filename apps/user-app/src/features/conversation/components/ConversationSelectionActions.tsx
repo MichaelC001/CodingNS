@@ -55,11 +55,13 @@ interface ConversationSelectionActionsProps {
   containerRef: RefObject<HTMLElement | null>;
   session: SessionSummaryDto | null;
   currentCapabilities: ProviderCapabilitiesDto | null;
+  onTemporarySessionCreated?: (session: SessionSummaryDto) => void;
 }
 
 interface SelectionSnapshot {
   text: string;
   sourceMessageId: string | null;
+  contextText: string | null;
   rect: {
     left: number;
     top: number;
@@ -200,6 +202,26 @@ function buildSelectionPrompt(selectionText: string, actionPrompt: string): stri
   ].join("\n");
 }
 
+function buildSelectionContextText(range: Range, selectionText: string): string | null {
+  const messageElement = getNodeElement(range.startContainer)?.closest("[data-message-id]");
+  const messageText = messageElement?.textContent?.trim() ?? "";
+  if (!messageText) {
+    return null;
+  }
+
+  const normalizedSelection = selectionText.trim();
+  const selectionIndex = messageText.indexOf(normalizedSelection);
+  if (selectionIndex < 0) {
+    // 选区跨越格式化节点时，textContent 可能和浏览器选区的空白不同。
+    // 找不到精确位置时仍保留消息前 1000 字，保证“带入上下文”可用。
+    return messageText.slice(0, 1000).trim();
+  }
+
+  const contextStart = Math.max(0, selectionIndex - 500);
+  const contextEnd = Math.min(messageText.length, selectionIndex + normalizedSelection.length + 500);
+  return messageText.slice(contextStart, contextEnd).trim();
+}
+
 function buildSelectionSnapshot(container: HTMLElement): SelectionSnapshot | null {
   if (typeof window === "undefined") {
     return null;
@@ -240,6 +262,7 @@ function buildSelectionSnapshot(container: HTMLElement): SelectionSnapshot | nul
       startMessageId && startMessageId === endMessageId
         ? startMessageId
         : null,
+    contextText: buildSelectionContextText(range, text),
     rect: {
       left: rect.left,
       top: rect.top,
@@ -254,7 +277,8 @@ function buildSelectionSnapshot(container: HTMLElement): SelectionSnapshot | nul
 export function ConversationSelectionActions({
   containerRef,
   session,
-  currentCapabilities
+  currentCapabilities,
+  onTemporarySessionCreated
 }: ConversationSelectionActionsProps) {
   const navigate = useNavigate();
   const platform = usePlatform();
@@ -305,6 +329,10 @@ export function ConversationSelectionActions({
   const [todoDraft, setTodoDraft] = useState<{ title: string; content: string } | null>(null);
   const [temporarySessionOpen, setTemporarySessionOpen] = useState(false);
   const [temporarySessionPrompt, setTemporarySessionPrompt] = useState("");
+  const [temporarySessionSelectedText, setTemporarySessionSelectedText] = useState<string | null>(null);
+  const [temporarySessionAnchorMessageId, setTemporarySessionAnchorMessageId] = useState<string | null>(null);
+  const [temporarySessionContextText, setTemporarySessionContextText] = useState<string | null>(null);
+  const [temporarySessionFloatingStyle, setTemporarySessionFloatingStyle] = useState<CSSProperties | null>(null);
   const [viewportSize, setViewportSize] = useState(() => ({
     width: typeof window === "undefined" ? 0 : window.innerWidth,
     height: typeof window === "undefined" ? 0 : window.innerHeight
@@ -918,7 +946,23 @@ export function ConversationSelectionActions({
 
   function handleAskTemporary() {
     if (!selection || !session) return;
-    setTemporarySessionPrompt(buildSelectionPrompt(selection.text, ""));
+    setTemporarySessionPrompt("");
+    setTemporarySessionSelectedText(selection.text);
+    setTemporarySessionAnchorMessageId(selection.sourceMessageId);
+    setTemporarySessionContextText(selection.contextText);
+    if (toolbarStyle) {
+      const toolbarLeft = typeof toolbarStyle.left === "number" ? toolbarStyle.left : 12;
+      const toolbarTop = typeof toolbarStyle.top === "number" ? toolbarStyle.top : 56;
+      const panelWidth = Math.min(580, Math.max(280, viewportSize.width - 24));
+      setTemporarySessionFloatingStyle({
+        left: Math.max(12, Math.min(toolbarLeft - panelWidth / 2, viewportSize.width - panelWidth - 12)),
+        top: Math.max(56, toolbarTop + 54),
+        right: "auto",
+        width: panelWidth
+      });
+    } else {
+      setTemporarySessionFloatingStyle(null);
+    }
     setTemporarySessionOpen(true);
     setSelection(null);
     if (typeof window !== "undefined") window.getSelection()?.removeAllRanges?.();
@@ -1203,8 +1247,18 @@ export function ConversationSelectionActions({
         />
         <TemporarySessionCreateModal
           open={temporarySessionOpen}
-          source={session ? { workspaceId: session.workspaceId, parentSessionId: session.sessionId, parentTitle: session.title, provider: session.provider, initialPrompt: temporarySessionPrompt } : null}
-          onClose={() => setTemporarySessionOpen(false)}
+          source={session ? { workspaceId: session.workspaceId, parentSessionId: session.sessionId, anchorMessageId: temporarySessionAnchorMessageId, contextText: temporarySessionContextText, selectedText: temporarySessionSelectedText, parentTitle: session.title, provider: session.provider, providerConfigMode: session.providerConfigMode, providerPresetId: session.providerPresetId, initialPrompt: temporarySessionPrompt } : null}
+          presentation="floating"
+          floatingPortal
+          floatingStyle={temporarySessionFloatingStyle ?? undefined}
+          onClose={() => {
+            setTemporarySessionOpen(false);
+            setTemporarySessionAnchorMessageId(null);
+            setTemporarySessionContextText(null);
+            setTemporarySessionSelectedText(null);
+            setTemporarySessionFloatingStyle(null);
+          }}
+          onSessionCreated={onTemporarySessionCreated}
         />
       </>
     );
@@ -1278,11 +1332,26 @@ export function ConversationSelectionActions({
         source={session ? {
           workspaceId: session.workspaceId,
           parentSessionId: session.sessionId,
+          anchorMessageId: temporarySessionAnchorMessageId,
+          contextText: temporarySessionContextText,
+          selectedText: temporarySessionSelectedText,
           parentTitle: session.title,
           provider: session.provider,
+          providerConfigMode: session.providerConfigMode,
+          providerPresetId: session.providerPresetId,
           initialPrompt: temporarySessionPrompt
         } : null}
-        onClose={() => setTemporarySessionOpen(false)}
+        presentation="floating"
+        floatingPortal
+        floatingStyle={temporarySessionFloatingStyle ?? undefined}
+        onClose={() => {
+          setTemporarySessionOpen(false);
+          setTemporarySessionAnchorMessageId(null);
+          setTemporarySessionContextText(null);
+          setTemporarySessionSelectedText(null);
+          setTemporarySessionFloatingStyle(null);
+        }}
+        onSessionCreated={onTemporarySessionCreated}
       />
     </>
   );

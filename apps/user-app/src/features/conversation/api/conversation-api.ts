@@ -998,6 +998,7 @@ export interface SessionSummaryDto {
   providerPresetId?: string | null;
   selectedModel?: string | null;
   parentSessionId?: string | null;
+  anchorMessageId?: string | null;
   sessionKind?: SessionKind;
   annotationSourceMessageId?: string | null;
   annotationSourceText?: string | null;
@@ -1545,6 +1546,7 @@ export interface SendSessionMessagePayload {
 export interface StartAffairsLightweightSessionPayload {
   sourceWorkspaceId?: string | null;
   parentSessionId?: string | null;
+  anchorMessageId?: string | null;
   provider: ProviderId;
   content: string;
   clientRequestId?: string | null;
@@ -3284,12 +3286,15 @@ export function startAffairsLightweightSession(
 export async function startAffairsLightweightSessionStream(
   workspaceId: string,
   payload: StartAffairsLightweightSessionPayload,
-  onEvent: (event: AffairsLightweightSessionStreamEventDto) => void | Promise<void>
+  onEvent: (event: AffairsLightweightSessionStreamEventDto) => void | Promise<void>,
+  options?: { targetHostId?: string | null; signal?: AbortSignal }
 ) {
   const response = await httpClient.requestRaw(
     "/api/affairs/lightweight-sessions/stream",
     {
       method: "POST",
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal,
       body: JSON.stringify(payload)
     }
   );
@@ -3316,12 +3321,15 @@ export async function sendAffairsLightweightSessionMessageStream(
   workspaceId: string,
   sessionId: string,
   payload: SendAffairsLightweightSessionMessagePayload,
-  onEvent: (event: AffairsLightweightSessionStreamEventDto) => void | Promise<void>
+  onEvent: (event: AffairsLightweightSessionStreamEventDto) => void | Promise<void>,
+  options?: { targetHostId?: string | null; signal?: AbortSignal }
 ) {
   const response = await httpClient.requestRaw(
     `/api/affairs/lightweight-sessions/${encodeURIComponent(sessionId)}/messages/stream`,
     {
       method: "POST",
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal,
       body: JSON.stringify(payload)
     }
   );

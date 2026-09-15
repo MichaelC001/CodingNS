@@ -62,6 +62,16 @@ export const SESSION_PROVIDER_PICKER_IDS: BuiltinProviderId[] = [
   "command-code"
 ];
 
+/**
+ * 事务轻量会话允许使用的 Provider。
+ * 临时会话和事务工作台都复用这里，避免各自维护一份列表。
+ */
+export const LIGHTWEIGHT_SESSION_PROVIDER_IDS: BuiltinProviderId[] = [
+  "codex",
+  "claude-code",
+  "deepseek-harness"
+];
+
 export function orderProviderIds(providerIds: readonly ProviderId[]): ProviderId[] {
   const seen = new Set<string>();
   const nextProviders: ProviderId[] = [];

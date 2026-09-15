@@ -32,6 +32,7 @@ import { usePlatform } from "../../../platform/platform-provider";
 import {
   deleteSession,
   getProviderCapabilities,
+  listAffairsLightweightSessions,
   startLiveSession,
   updateSessionComposerSettings,
   type HistoryMessageDto,
@@ -46,7 +47,7 @@ import { ComposerPanel } from "../components/ComposerPanel";
 import { ConversationSelectionActions } from "../components/ConversationSelectionActions";
 import { FileContextPanel } from "../components/FileContextPanel";
 import { GitSidebar } from "../components/GitSidebar";
-import { MessageTimeline } from "../components/MessageTimeline";
+import { MessageTimeline, type TemporarySessionAnchor } from "../components/MessageTimeline";
 import { MobileConversationSessionActions } from "../components/MobileConversationSessionActions";
 import { ParallelConversationGroupView } from "../components/ParallelConversationGroupView";
 import { ParallelSessionCreateModal } from "../components/ParallelSessionCreateModal";
@@ -595,6 +596,92 @@ function LiveConversationPage({
   const showInlineHeader = shellMode !== "mobile";
   const mobilePreview = useMobileConversationPreviewController(!showInlineHeader);
   const currentSessionSummary = session ?? navigationSession ?? null;
+  const [temporarySessionSummaries, setTemporarySessionSummaries] = useState<SessionSummaryDto[]>([]);
+  const [temporarySessionOpenRequest, setTemporarySessionOpenRequest] = useState<{
+    sessionId: string;
+    nonce: number;
+  } | null>(null);
+  const [temporarySessionJumpMessageId, setTemporarySessionJumpMessageId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const workspaceId = currentSessionSummary?.workspaceId?.trim();
+    if (!workspaceId || !sessionId) {
+      setTemporarySessionSummaries([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    void listAffairsLightweightSessions(workspaceId, {
+      targetHostId: effectiveTargetHostId,
+      signal: controller.signal
+    }).then((response) => {
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      setTemporarySessionSummaries(response.items.filter(
+        (item) => item.parentSessionId?.trim() === sessionId && item.isArchived !== true && item.anchorMessageId?.trim()
+      ));
+    }).catch(() => {
+      if (!controller.signal.aborted) {
+        setTemporarySessionSummaries([]);
+      }
+    });
+
+    return () => controller.abort();
+  }, [currentSessionSummary?.workspaceId, effectiveTargetHostId, sessionId]);
+
+  const temporarySessionAnchorsByMessageId = useMemo(() => {
+    const sorted = [...temporarySessionSummaries].sort((left, right) => {
+      const leftTime = left.lastMessageAt ?? left.updatedAt ?? left.createdAt;
+      const rightTime = right.lastMessageAt ?? right.updatedAt ?? right.createdAt;
+      return rightTime.localeCompare(leftTime);
+    });
+    const anchors = new Map<string, TemporarySessionAnchor[]>();
+
+    sorted.forEach((item, index) => {
+      const messageId = item.anchorMessageId?.trim();
+      if (!messageId) {
+        return;
+      }
+      const next = anchors.get(messageId) ?? [];
+      next.push({
+        sessionId: item.sessionId,
+        title: item.title || t("conversation.titleFallback"),
+        ordinal: index + 1,
+        anchorMessageId: messageId
+      });
+      anchors.set(messageId, next);
+    });
+
+    return anchors;
+  }, [temporarySessionSummaries]);
+
+  const handleTemporarySessionCreated = useCallback((createdSession: SessionSummaryDto) => {
+    setTemporarySessionSummaries((current) => [
+      createdSession,
+      ...current.filter((item) => item.sessionId !== createdSession.sessionId)
+    ]);
+  }, []);
+
+  const handleTemporarySessionSelected = useCallback((selectedSession: SessionSummaryDto) => {
+    const anchorMessageId = selectedSession.anchorMessageId?.trim();
+    if (anchorMessageId) {
+      setTemporarySessionJumpMessageId(anchorMessageId);
+    }
+  }, []);
+
+  const handleTemporarySessionAnchorClick = useCallback((anchor: TemporarySessionAnchor) => {
+    setTemporarySessionOpenRequest({
+      sessionId: anchor.sessionId,
+      nonce: Date.now()
+    });
+    setTemporarySessionJumpMessageId(
+      anchor.anchorMessageId
+      ?? temporarySessionSummaries.find((item) => item.sessionId === anchor.sessionId)?.anchorMessageId?.trim()
+      ?? null
+    );
+  }, [temporarySessionSummaries]);
   const currentSessionIsolatedWorkspace =
     session?.sessionIsolatedWorkspace
     ?? navigationSession?.sessionIsolatedWorkspace
@@ -867,7 +954,13 @@ function LiveConversationPage({
                 {canOpenBranchTree ? (
                   <ConversationBranchTreeButton onOpenBranchTree={openBranchTree} />
                 ) : null}
-                <TemporarySessionHeaderAction session={session ?? navigationSession} />
+                <TemporarySessionHeaderAction
+                  session={session ?? navigationSession}
+                  requestedSessionId={temporarySessionOpenRequest?.sessionId ?? null}
+                  requestKey={temporarySessionOpenRequest?.nonce ?? null}
+                  onSessionSelected={handleTemporarySessionSelected}
+                  onSessionCreated={handleTemporarySessionCreated}
+                />
               </>
             )}
           />
@@ -898,6 +991,13 @@ function LiveConversationPage({
                 <MobileConversationSessionActions
                   session={session ?? navigationSession}
                   onOpenBranchTree={canOpenBranchTree ? openBranchTree : undefined}
+                />
+                <TemporarySessionHeaderAction
+                  session={session ?? navigationSession}
+                  requestedSessionId={temporarySessionOpenRequest?.sessionId ?? null}
+                  requestKey={temporarySessionOpenRequest?.nonce ?? null}
+                  onSessionSelected={handleTemporarySessionSelected}
+                  onSessionCreated={handleTemporarySessionCreated}
                 />
               </div>
             }
@@ -1028,6 +1128,9 @@ function LiveConversationPage({
                 onLoadOlderMessages={loadOlderMessages}
                 onRetryMessage={retryMessage}
                 onSubmitStructuredQuestion={handleSubmitStructuredQuestion}
+                temporarySessionAnchorsByMessageId={temporarySessionAnchorsByMessageId}
+                onTemporarySessionAnchorClick={handleTemporarySessionAnchorClick}
+                jumpToMessageId={temporarySessionJumpMessageId}
                 permissionRequests={permissionRequests}
                 replyingPermissionRequestId={replyingPermissionRequestId}
                 onReplyPermissionRequest={replyPermissionRequest}
@@ -1059,6 +1162,7 @@ function LiveConversationPage({
               containerRef={timelineSelectionContainerRef}
               session={session ?? navigationSession ?? null}
               currentCapabilities={capabilities}
+              onTemporarySessionCreated={handleTemporarySessionCreated}
             />
             <QueuedMessageList
               items={queuedMessages}

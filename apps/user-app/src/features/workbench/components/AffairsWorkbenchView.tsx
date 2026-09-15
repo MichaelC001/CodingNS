@@ -153,7 +153,7 @@ import {
 } from "../../conversation/api/conversation-api";
 import { ComposerPanel } from "../../conversation/components/ComposerPanel";
 import { FileViewerPanel } from "../../conversation/components/FileViewerModal";
-import { ConversationTranscriptExport, MessageTimeline } from "../../conversation/components/MessageTimeline";
+import { ConversationTranscriptExport, MessageTimeline, type TemporarySessionAnchor } from "../../conversation/components/MessageTimeline";
 import { PermissionRequestList } from "../../conversation/components/PermissionRequestList";
 import { SessionProviderPicker } from "../../conversation/components/SessionProviderPicker";
 import { SessionHeader } from "../../conversation/components/SessionHeader";
@@ -174,7 +174,8 @@ import {
 import {
   getDraftTitle,
   getProviderDisplayName,
-  isDraftProviderSupported
+  isDraftProviderSupported,
+  LIGHTWEIGHT_SESSION_PROVIDER_IDS
 } from "../../conversation/capability/provider-ui";
 import { getPathLeafName } from "../../conversation/components/file-entry-visibility";
 import {
@@ -193,6 +194,15 @@ import {
   markPendingAsFailed,
   type SessionMessageViewModel
 } from "../../conversation/runtime/session-runtime-machine";
+import {
+  appendLightweightStreamingAssistantDelta,
+  createAffairsLightweightRuntimeSnapshot,
+  createAffairsLightweightToolStatus,
+  createLightweightStreamingAssistantPlaceholder,
+  upsertAffairsLightweightToolMessage,
+  type AffairsLightweightRuntimeSnapshot,
+  type AffairsLightweightStreamingToolStatus
+} from "../../conversation/runtime/affairs-lightweight-session-runtime";
 import { getCodingNSDesktopBridge } from "../../../platform/desktop/codingns-desktop-bridge";
 import {
   showDesktopContextMenu,
@@ -203,7 +213,7 @@ import { listWorkspaceBridgeDir } from "../../../platform/preview/codingns-works
 import { resolveContextMenuPosition } from "../utils/context-menu-position";
 import { userPreferenceStore } from "../../../preferences/user-preference-store";
 import { useAffairsLibraryCapability } from "../affairs-library-capability-store";
-import type { WorkspaceSessionGroup } from "../../conversation/components/WorkbenchLayout";
+import { useWorkbenchShell, type WorkspaceSessionGroup } from "../../conversation/components/WorkbenchLayout";
 import {
   AFFAIRS_GRID_COLUMN_GAP,
   AFFAIRS_GRID_ITEM_HEIGHT,
@@ -625,20 +635,6 @@ type AffairsConversationRuntimeSeed = {
   session: SessionSummaryDto;
   bootstrapMessages: HistoryMessageDto[];
 } | null;
-
-type AffairsLightweightStreamingToolStatus = {
-  label: string;
-  detail: string | null;
-  phase: "running" | "completed" | "failed";
-};
-
-type AffairsLightweightRuntimeSnapshot = {
-  session: SessionSummaryDto | null;
-  messages: SessionMessageViewModel[];
-  historyState: "loading" | "ready";
-  sending: boolean;
-  streamingToolStatus: AffairsLightweightStreamingToolStatus | null;
-};
 
 type AffairsConversationListItem = {
   id: string;
@@ -1500,10 +1496,85 @@ function resolveHtmlSourceScopeOption(
   return options.find((option) => option.value === normalizedValue) ?? null;
 }
 
-const AFFAIRS_LIGHTWEIGHT_PROVIDER_IDS: ProviderId[] = ["codex", "claude-code", "deepseek-harness"];
+const AFFAIRS_LIGHTWEIGHT_PROVIDER_IDS = LIGHTWEIGHT_SESSION_PROVIDER_IDS;
 const AFFAIRS_ASSISTANT_PROVIDER_IDS: ProviderId[] = ["codex", "claude-code"];
 const EMPTY_AFFAIRS_WORKSPACE_SESSIONS: SessionSummaryDto[] = [];
 const affairsLightweightRuntimeMemory = new Map<string, AffairsLightweightRuntimeSnapshot>();
+
+function useAffairsTemporarySessionAnchors(
+  workspaceId: string | null | undefined,
+  parentSessionId: string | null | undefined,
+  targetHostId: string | null | undefined
+) {
+  const [sessions, setSessions] = useState<SessionSummaryDto[]>([]);
+
+  useEffect(() => {
+    const normalizedWorkspaceId = workspaceId?.trim();
+    const normalizedParentSessionId = parentSessionId?.trim();
+    if (!normalizedWorkspaceId || !normalizedParentSessionId) {
+      setSessions([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    void listAffairsLightweightSessions(normalizedWorkspaceId, {
+      targetHostId,
+      signal: controller.signal
+    }).then((response) => {
+      if (!controller.signal.aborted) {
+        setSessions(response.items.filter(
+          (item) => item.parentSessionId?.trim() === normalizedParentSessionId
+            && item.isArchived !== true
+            && item.anchorMessageId?.trim()
+        ));
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted) {
+        setSessions([]);
+      }
+    });
+
+    return () => controller.abort();
+  }, [parentSessionId, targetHostId, workspaceId]);
+
+  const anchorsByMessageId = useMemo(() => {
+    const sorted = [...sessions].sort((left, right) => {
+      const leftTime = left.lastMessageAt ?? left.updatedAt ?? left.createdAt;
+      const rightTime = right.lastMessageAt ?? right.updatedAt ?? right.createdAt;
+      return rightTime.localeCompare(leftTime);
+    });
+    const anchors = new Map<string, TemporarySessionAnchor[]>();
+
+    sorted.forEach((item, index) => {
+      const anchorMessageId = item.anchorMessageId?.trim();
+      if (!anchorMessageId) {
+        return;
+      }
+      const next = anchors.get(anchorMessageId) ?? [];
+      next.push({
+        sessionId: item.sessionId,
+        title: item.title || t("conversation.titleFallback"),
+        ordinal: index + 1,
+        anchorMessageId
+      });
+      anchors.set(anchorMessageId, next);
+    });
+
+    return { anchorsByMessageId: anchors, sessions };
+  }, [sessions]);
+
+  const upsertSession = useCallback((session: SessionSummaryDto) => {
+    if (session.parentSessionId?.trim() !== parentSessionId?.trim() || session.isArchived === true) {
+      return;
+    }
+    setSessions((current) => [
+      session,
+      ...current.filter((item) => item.sessionId !== session.sessionId)
+    ]);
+  }, [parentSessionId]);
+
+  return { ...anchorsByMessageId, upsertSession };
+}
 
 const AffairsWorkbenchContext = createContext<AffairsWorkbenchContextValue | null>(null);
 
@@ -7512,6 +7583,7 @@ export function AffairsLightweightConversationLiveState(input: {
   sessionId: string;
   runtimeSeed: AffairsConversationRuntimeSeed;
 }) {
+  const { currentTargetHostId } = useWorkbenchShell();
   const runtime = useAffairsLightweightSessionController({
     sessionId: input.sessionId,
     externalSession:
@@ -7525,11 +7597,60 @@ export function AffairsLightweightConversationLiveState(input: {
   });
   const session = runtime.session;
   const timelineSelectionContainerRef = useRef<HTMLDivElement | null>(null);
+  const [temporarySessionOpenRequest, setTemporarySessionOpenRequest] = useState<{
+    sessionId: string;
+    nonce: number;
+  } | null>(null);
+  const [temporarySessionJumpMessageId, setTemporarySessionJumpMessageId] = useState<string | null>(null);
+  const {
+    anchorsByMessageId: temporarySessionAnchorsByMessageId,
+    sessions: temporarySessionSummaries,
+    upsertSession: upsertTemporarySession
+  } =
+    useAffairsTemporarySessionAnchors(session?.workspaceId, input.sessionId, currentTargetHostId);
+
+  const handleTemporarySessionCreated = useCallback((createdSession: SessionSummaryDto) => {
+    upsertTemporarySession(createdSession);
+    const anchorMessageId = createdSession.anchorMessageId?.trim();
+    if (anchorMessageId) {
+      setTemporarySessionJumpMessageId(anchorMessageId);
+    }
+  }, [upsertTemporarySession]);
+
+  const handleTemporarySessionSelected = useCallback((selectedSession: SessionSummaryDto) => {
+    const anchorMessageId = selectedSession.anchorMessageId?.trim();
+    if (anchorMessageId) {
+      setTemporarySessionJumpMessageId(anchorMessageId);
+    }
+  }, []);
+
+  const handleTemporarySessionAnchorClick = useCallback((anchor: TemporarySessionAnchor) => {
+    setTemporarySessionOpenRequest({
+      sessionId: anchor.sessionId,
+      nonce: Date.now()
+    });
+    setTemporarySessionJumpMessageId(
+      anchor.anchorMessageId
+      ?? temporarySessionSummaries.find((item) => item.sessionId === anchor.sessionId)?.anchorMessageId?.trim()
+      ?? null
+    );
+  }, [temporarySessionSummaries]);
 
   return (
     <main className="workbench-page conversation-page-shell affairs-conversation-page-shell" data-affairs-section="conversation">
       <div className="conversation-main affairs-conversation-main">
-        <SessionHeader session={session} actions={<TemporarySessionHeaderAction session={session} />} />
+        <SessionHeader
+          session={session}
+          actions={(
+            <TemporarySessionHeaderAction
+              session={session}
+              requestedSessionId={temporarySessionOpenRequest?.sessionId ?? null}
+              requestKey={temporarySessionOpenRequest?.nonce ?? null}
+              onSessionSelected={handleTemporarySessionSelected}
+              onSessionCreated={handleTemporarySessionCreated}
+            />
+          )}
+        />
         <AffairsLightweightStreamingStatusBar status={runtime.streamingToolStatus} />
         <PermissionRequestList
           requests={runtime.permissionRequests}
@@ -7550,9 +7671,17 @@ export function AffairsLightweightConversationLiveState(input: {
             interruptedSource={runtime.runtimeInterruptSource}
             onLoadOlderMessages={runtime.loadOlderMessages}
             onRetryMessage={runtime.retryMessage}
+            temporarySessionAnchorsByMessageId={temporarySessionAnchorsByMessageId}
+            onTemporarySessionAnchorClick={handleTemporarySessionAnchorClick}
+            jumpToMessageId={temporarySessionJumpMessageId}
           />
         </div>
-        <ConversationSelectionActions containerRef={timelineSelectionContainerRef} session={session} currentCapabilities={runtime.capabilities} />
+        <ConversationSelectionActions
+          containerRef={timelineSelectionContainerRef}
+          session={session}
+          currentCapabilities={runtime.capabilities}
+          onTemporarySessionCreated={handleTemporarySessionCreated}
+        />
         <ComposerPanel
           capabilities={runtime.capabilities}
           draftStorageId={input.sessionId}
@@ -8297,29 +8426,6 @@ async function recoverAffairsLightweightSessionAfterCreateStreamFailure(input: {
   return null;
 }
 
-function createLightweightStreamingAssistantPlaceholder(
-  sessionId: string,
-  clientRequestId: string
-): SessionMessageViewModel {
-  return {
-    id: `lightweight-streaming-assistant-${clientRequestId}`,
-    sessionId,
-    role: "assistant",
-    kind: "text",
-    content: "",
-    toolCall: null,
-    attachments: [],
-    attachmentPayloads: null,
-    origin: null,
-    originRef: null,
-    timestamp: new Date().toISOString(),
-    sequence: Number.MAX_SAFE_INTEGER,
-    rawRef: `pending://assistant/${clientRequestId}`,
-    deliveryState: "sending",
-    clientRequestId
-  };
-}
-
 function AffairsLightweightStreamingStatusBar({
   status
 }: {
@@ -8340,133 +8446,12 @@ function AffairsLightweightStreamingStatusBar({
   );
 }
 
-function createAffairsLightweightRuntimeSnapshot(input?: {
-  session?: SessionSummaryDto | null;
-  messages?: SessionMessageViewModel[];
-  historyState?: "loading" | "ready";
-  sending?: boolean;
-  streamingToolStatus?: AffairsLightweightStreamingToolStatus | null;
-}): AffairsLightweightRuntimeSnapshot {
-  return {
-    session: input?.session ?? null,
-    messages: input?.messages ?? [],
-    historyState: input?.historyState ?? "loading",
-    sending: input?.sending ?? false,
-    streamingToolStatus: input?.streamingToolStatus ?? null
-  };
-}
-
-function createAffairsLightweightToolStatus(toolName: string, detail: string | null, status: string): AffairsLightweightStreamingToolStatus {
-  return {
-    label: toolName === "web_search" ? t("conversation.toolWebSearch") : toolName,
-    detail,
-    phase: status === "completed" ? "completed" : status === "failed" ? "failed" : "running"
-  };
-}
-
 function resolveAffairsLightweightRuntimeSessionId(input: {
   fallbackSessionId: string;
   activeSessionId: string | null;
   eventSessionId?: string | null;
 }): string {
   return input.eventSessionId?.trim() || input.activeSessionId?.trim() || input.fallbackSessionId;
-}
-
-function upsertAffairsLightweightToolMessage(
-  current: SessionMessageViewModel[],
-  input: {
-    sessionId: string;
-    toolCallId: string;
-    toolName: string;
-    status: "running" | "completed" | "failed";
-    detail: string | null;
-    toolInput: string | null;
-    toolOutput: string | null;
-  }
-): SessionMessageViewModel[] {
-  const messageId = `lightweight-tool-${input.toolCallId}`;
-  const assistantIndex = current.findIndex((message) => message.id.startsWith("lightweight-streaming-assistant-"));
-  const insertIndex = assistantIndex >= 0 ? assistantIndex : current.length;
-  const previousSequence = insertIndex > 0 ? current[insertIndex - 1]?.sequence ?? 0 : 0;
-  const nextMessage: SessionMessageViewModel = {
-    id: messageId,
-    sessionId: input.sessionId,
-    role: "tool",
-    kind: input.status === "running" ? "tool_call" : "tool_result",
-    content: input.detail?.trim() || input.toolOutput?.trim() || input.toolInput?.trim() || input.toolName,
-    toolCall: {
-      callId: input.toolCallId,
-      name: input.toolName,
-      input: input.toolInput ?? "",
-      output: input.toolOutput,
-      error: input.status === "failed" ? (input.detail ?? input.toolOutput ?? null) : null,
-      status: input.status
-    },
-    attachments: [],
-    attachmentPayloads: null,
-    origin: null,
-    originRef: null,
-    timestamp: new Date().toISOString(),
-    sequence: previousSequence + 1,
-    rawRef: `lightweight-tool://${input.toolCallId}`,
-    deliveryState: "sent",
-    clientRequestId: null
-  };
-
-  const index = current.findIndex((message) => message.toolCall?.callId === input.toolCallId || message.id === messageId);
-  if (index < 0) {
-    return [
-      ...current.slice(0, insertIndex),
-      nextMessage,
-      ...current.slice(insertIndex).map((message) => ({
-        ...message,
-        sequence: message.sequence >= nextMessage.sequence ? message.sequence + 1 : message.sequence
-      }))
-    ];
-  }
-
-  const next = [...current];
-  next[index] = {
-    ...next[index],
-    ...nextMessage,
-    timestamp: next[index].timestamp,
-    sequence: next[index].sequence,
-    rawRef: next[index].rawRef
-  };
-  return next;
-}
-
-function appendLightweightStreamingAssistantDelta(
-  current: SessionMessageViewModel[],
-  sessionId: string,
-  clientRequestId: string,
-  delta: string
-): SessionMessageViewModel[] {
-  if (!delta) {
-    return current;
-  }
-  const placeholderId = `lightweight-streaming-assistant-${clientRequestId}`;
-  let found = false;
-  const next = current.map((message) => {
-    if (message.id !== placeholderId) {
-      return message;
-    }
-    found = true;
-    return {
-      ...message,
-      content: `${message.content}${delta}`
-    };
-  });
-  if (found) {
-    return next;
-  }
-  return [
-    ...current,
-    {
-      ...createLightweightStreamingAssistantPlaceholder(sessionId, clientRequestId),
-      content: delta
-    }
-  ];
 }
 
 function AffairsHostUnavailableState({
