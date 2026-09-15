@@ -18,6 +18,8 @@ import {
   type NormalizedMessageAttachment,
   OpenCodeRuntimeAdapter,
   CommandCodeRuntimeAdapter,
+  PiRuntimeAdapter,
+  type PiExtensionUiBridge,
   ProviderRuntimeService,
   type ProviderRuntimeAdapter,
   type ProviderRuntimeRunRequest,
@@ -509,7 +511,27 @@ export class SessionLiveRuntimeService {
           input.request
         ),
       deepSeekHarnessRuntimeAdapter: this.deepSeekHarnessRuntimeAdapter,
-      grokRuntimeAdapter: this.grokRuntimeAdapter
+      grokRuntimeAdapter: this.grokRuntimeAdapter,
+      piExtensionUiBridge: {
+        request: async (prompt) => {
+          // 扩展交互发生在运行中，此时绑定已经落库；这里不查用户维度的会话，
+          // 避免在 bridge 里再引入一次权限查询。
+          const binding = this.sessionBindingRepository.findBySessionId(prompt.sessionId);
+
+          return await this.sessionPermissionRequestService.handlePiExtensionUiRequest({
+            sessionId: prompt.sessionId,
+            providerSessionId: binding?.providerSessionId ?? "",
+            requestId: prompt.requestId,
+            method: prompt.method,
+            title: prompt.title,
+            message: prompt.message,
+            options: prompt.options,
+            placeholder: prompt.placeholder,
+            prefill: prompt.prefill,
+            timeoutMs: prompt.timeoutMs
+          });
+        }
+      }
     });
     this.runtimeAdapterDisposables = runtimeAdapters.disposables;
     this.providerRuntimeService = new ProviderRuntimeService(runtimeAdapters.adapters);
@@ -4974,6 +4996,8 @@ function createProviderRuntimeAdapters(
     }) => Promise<unknown>;
     deepSeekHarnessRuntimeAdapter?: ProviderRuntimeAdapter | null;
     grokRuntimeAdapter?: ProviderRuntimeAdapter | null;
+    /** Pi 扩展交互桥；缺省时不加载任何扩展，Pi 侧按其默认值继续。 */
+    piExtensionUiBridge?: PiExtensionUiBridge | null;
   } = {}
 ): {
   adapters: ProviderRuntimeAdapter[];
@@ -5067,6 +5091,15 @@ function createProviderRuntimeAdapters(
       new CommandCodeRuntimeAdapter({
         commandPath: config.commandCodeCliPath,
         homeDir: config.commandCodeHomeDir
+      }),
+      new PiRuntimeAdapter({
+        commandPath: config.piCliPath,
+        dataRootDir: config.piDataRootDir,
+        // 用户上传的附件保存在 Host 数据目录，不在工作区内；必须显式加入 Pi 的允许根目录。
+        allowedAttachmentRoots: [path.join(path.dirname(config.databasePath), "session-attachments")],
+        // 只加载受控扩展；--no-extensions 会关掉工作区里的自动发现。
+        extensionPaths: config.piExtensionPaths,
+        extensionUiBridge: options.piExtensionUiBridge ?? null
       }),
       ...(options.deepSeekHarnessRuntimeAdapter ? [options.deepSeekHarnessRuntimeAdapter] : []),
       ...(options.grokRuntimeAdapter ? [options.grokRuntimeAdapter] : [])

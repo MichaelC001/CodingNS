@@ -136,7 +136,38 @@ interface SessionPermissionRequestInternalRecord extends SessionPermissionReques
         requestType: "approval" | "question";
         questions: SessionPermissionRequestQuestionView[];
         respond: (result: { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }) => Promise<void>;
+      }
+    | {
+        /**
+         * Pi 扩展交互。
+         *
+         * Pi 只有 select/confirm/input/editor 四种能力，表达不了 DSH 的结构化权限范围，
+         * 所以它只映射成普通交互请求，不会伪装成完整的权限审批。
+         */
+        kind: "pi-extension-ui";
+        method: "select" | "confirm" | "input" | "editor";
+        resolve: (decision: PiExtensionUiDecision) => void;
+        timer: ReturnType<typeof setTimeout> | null;
       };
+}
+
+/** 回传给 Pi 的扩展交互结果。 */
+export type PiExtensionUiDecision =
+  | { kind: "value"; value: string }
+  | { kind: "confirmed"; confirmed: boolean }
+  | { kind: "cancelled" };
+
+export interface PiExtensionUiRequestInput {
+  sessionId: string;
+  providerSessionId: string;
+  requestId: string;
+  method: "select" | "confirm" | "input" | "editor";
+  title: string;
+  message: string | null;
+  options: string[];
+  placeholder: string | null;
+  prefill: string | null;
+  timeoutMs: number;
 }
 
 type DeepSeekHarnessRequest = Omit<SessionPermissionRequestInternalRecord, "source"> & {
@@ -255,6 +286,14 @@ export class SessionPermissionRequestService {
     for (const request of this.requestsById.values()) {
       if (request.source.kind === "claude-pre-tool-use" && request.source.timer) {
         clearTimeout(request.source.timer);
+      }
+
+      // Pi 扩展交互在 Host 收尾时必须收到取消结果，否则子进程会一直等回包。
+      if (request.source.kind === "pi-extension-ui") {
+        if (request.source.timer) {
+          clearTimeout(request.source.timer);
+        }
+        request.source.resolve({ kind: "cancelled" });
       }
     }
 
@@ -467,8 +506,53 @@ export class SessionPermissionRequestService {
       );
     }
 
-    const responsePayload = buildCodexServerRequestResponsePayload(request, input);
+    if (request.source.kind === "pi-extension-ui") {
+      const action = normalizeText(input.action);
+      const answerText = normalizeText(input.answers?.["pi-extension-ui"]?.[0]);
+      // 普通选择看问题选项；计划审批没有 questions，选项直接就是 actions。
+      // 注意只对 plan_approval 回退到 actions，否则 answer/cancel 这类动作值会被当成用户输入。
+      const optionMatch = request.questions[0]?.options.find((option) => option.label === action)
+        ?? (request.kind === "plan_approval"
+          ? request.actions.find((candidate) => candidate.value === action)
+          : undefined);
+      const isCancel = action === "" || action === "cancel";
 
+      if (isCancel && !answerText) {
+        request.source.resolve({ kind: "cancelled" });
+        return await this.markResolved(request, "cancelled");
+      }
+
+      if (request.source.method === "confirm") {
+        if (action !== "allow" && action !== "deny") {
+          throw new AppError({
+            statusCode: 400,
+            errorCode: "INVALID_INPUT",
+            detail: "Pi 确认请求只支持 allow 或 deny",
+            field: "action"
+          });
+        }
+
+        request.source.resolve({ kind: "confirmed", confirmed: action === "allow" });
+        return await this.markResolved(request, action === "allow" ? "approved" : "declined");
+      }
+
+      const value = answerText || optionMatch?.label || "";
+
+      if (!value) {
+        throw new AppError({
+          statusCode: 400,
+          errorCode: "INVALID_INPUT",
+          detail: "Pi 交互请求需要一个具体值",
+          field: "answers"
+        });
+      }
+
+      request.source.resolve({ kind: "value", value });
+      // 计划审批里选「取消」等于放弃这次计划，不能记成通过。
+      return await this.markResolved(request, isPiCancellationChoice(value) ? "cancelled" : "approved");
+    }
+
+    const responsePayload = buildCodexServerRequestResponsePayload(request, input);
     if (!request.source.resolve) {
       throw new AppError({
         statusCode: 409,
@@ -562,6 +646,128 @@ export class SessionPermissionRequestService {
     };
     this.upsertRequest(request);
     await this.emitEnvelope({ type: "session.permission_request", sessionId: input.sessionId, request: this.toRequestView(request) });
+  }
+
+  /**
+   * 处理 Pi `extension_ui_request`。
+   *
+   * 这里把 Pi 的四种交互能力映射成 CodingNS 的交互请求，并返回一个等待中的 Promise：
+   * 用户在界面上提交后由 `replyToSessionPermissionRequest` 唤醒；超时、会话结束或
+   * 服务释放时统一返回 `cancelled`，保证 Pi 进程不会一直等下去。
+   */
+  async handlePiExtensionUiRequest(input: PiExtensionUiRequestInput): Promise<PiExtensionUiDecision> {
+    const requestId = `pi-ui-${input.requestId}`;
+    const existing = this.requestsById.get(requestId);
+
+    if (existing && existing.status === "pending" && existing.source.kind === "pi-extension-ui") {
+      // 同一条 Pi 请求重复到达时复用原记录，只等同一个结果。
+      return await new Promise<PiExtensionUiDecision>((resolve) => {
+        const previous = existing.source.kind === "pi-extension-ui" ? existing.source.resolve : null;
+        existing.source.kind === "pi-extension-ui"
+          ? (existing.source.resolve = (decision) => {
+              previous?.(decision);
+              resolve(decision);
+            })
+          : resolve({ kind: "cancelled" });
+      });
+    }
+
+    const now = nowIso();
+    const isPlanApproval = isPiPlanApprovalRequest(input);
+    const isQuestion = input.method !== "confirm" && !isPlanApproval;
+    const questions: SessionPermissionRequestQuestionView[] = isQuestion
+      ? [{
+          id: "pi-extension-ui",
+          header: input.title || "Pi",
+          question: buildPiExtensionUiQuestion(input),
+          allowOther: input.method === "input" || input.method === "editor",
+          secret: false,
+          multiSelect: false,
+          options: input.options.map((option) => ({ label: option, description: null }))
+        }]
+      : [];
+    const actions = isPlanApproval
+      // 计划审批直接把扩展给的选项原样交给用户，选项文案就是回包值，不做二次翻译。
+      ? input.options.map((option) => createAction(
+          option,
+          option,
+          buildPiPlanApprovalActionTone(option),
+          buildPiPlanApprovalActionDescription(option)
+        ))
+      : input.method === "confirm"
+        ? [
+            createAction("allow", "允许", "primary", "允许本次操作"),
+            createAction("deny", "拒绝", "danger", "拒绝本次操作")
+          ]
+        : [
+            createAction("answer", "提交", "primary", "把内容发送给 Pi"),
+            createAction("cancel", "取消", "danger", "取消本次交互")
+          ];
+
+    let resolveDecision: (decision: PiExtensionUiDecision) => void = () => undefined;
+    const decision = new Promise<PiExtensionUiDecision>((resolve) => {
+      resolveDecision = resolve;
+    });
+
+    const request: SessionPermissionRequestInternalRecord = {
+      id: requestId,
+      sessionId: input.sessionId,
+      provider: "pi",
+      providerSessionId: input.providerSessionId,
+      requestKey: input.requestId,
+      kind: isPlanApproval ? "plan_approval" : isQuestion ? "user_input" : "permissions",
+      status: "pending",
+      title: isPlanApproval
+        ? "Pi 请求确认执行计划"
+        : input.method === "confirm"
+          ? "Pi 扩展请求确认"
+          : "Pi 扩展请求补充信息",
+      summary: input.message?.trim() || input.title || "Pi 扩展需要你的选择",
+      detail: buildPiExtensionUiDetail(input),
+      reason: null,
+      toolName: null,
+      command: null,
+      cwd: null,
+      paths: [],
+      permissionProfile: null,
+      questions,
+      actions,
+      rawPayload: JSON.stringify(input),
+      createdAt: now,
+      updatedAt: now,
+      resolvedAt: null,
+      source: {
+        kind: "pi-extension-ui",
+        method: input.method,
+        resolve: resolveDecision,
+        timer: null
+      }
+    };
+
+    const timeoutMs = Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
+      ? Math.floor(input.timeoutMs)
+      : 5 * 60 * 1_000;
+    const timer = setTimeout(() => {
+      const current = this.requestsById.get(requestId);
+
+      if (current?.status === "pending" && current.source.kind === "pi-extension-ui") {
+        current.source.resolve({ kind: "cancelled" });
+        void this.markResolved(current, "cancelled");
+      }
+    }, timeoutMs);
+    timer.unref?.();
+    request.source.kind === "pi-extension-ui"
+      ? (request.source.timer = timer)
+      : undefined;
+
+    this.upsertRequest(request);
+    await this.emitEnvelope({
+      type: "session.permission_request",
+      sessionId: input.sessionId,
+      request: this.toRequestView(request)
+    });
+
+    return await decision;
   }
 
   async handleGrokServerRequest(input: {
@@ -3086,6 +3292,77 @@ function buildOpenCodeKind(
     paths: [],
     permissionProfile: null
   };
+}
+
+/**
+ * 判断这条 Pi 交互请求是不是计划审批。
+ *
+ * 受控 plan-mode 扩展用固定的选项文案征求下一步意见，这里按选项识别，
+ * 识别不到就还是普通交互请求，不会把普通确认伪装成计划审批。
+ */
+export function isPiPlanApprovalRequest(input: {
+  method: string;
+  options: string[];
+}): boolean {
+  if (input.method !== "select") return false;
+  return input.options.some((option) => option.includes("执行计划") || option.includes("批准计划"));
+}
+
+function isPiCancellationChoice(value: string): boolean {
+  const normalized = value.trim();
+  return normalized === "取消" || normalized === "拒绝" || normalized.toLowerCase() === "cancel";
+}
+
+function buildPiPlanApprovalActionTone(
+  option: string
+): SessionPermissionRequestActionTone {
+  if (isPiCancellationChoice(option)) return "danger";
+  return option.includes("执行计划") ? "primary" : "neutral";
+}
+
+function buildPiPlanApprovalActionDescription(option: string): string {
+  if (option.includes("执行计划")) return "按当前计划继续执行，写权限恢复";
+  if (isPiCancellationChoice(option)) return "放弃这次计划，保持只读";
+  return "继续待在只读计划模式里调整计划";
+}
+
+/**
+ * 把 Pi 扩展交互拼成一句人类能读懂的问题。
+ *
+ * Pi 的 select 只给标题和选项，input/editor 只有一个占位符，所以这里要把能拿到的
+ * 信息拼起来，前端不需要再猜。
+ */
+function buildPiExtensionUiQuestion(input: PiExtensionUiRequestInput): string {
+  const title = input.title.trim();
+
+  if (input.method === "confirm") {
+    return input.message?.trim() || title || "Pi 扩展需要确认";
+  }
+
+  if (input.method === "editor") {
+    return title || "Pi 扩展请求编辑内容";
+  }
+
+  if (input.method === "input") {
+    return input.placeholder?.trim()
+      ? `${title || "Pi 扩展请求输入"}（${input.placeholder.trim()}）`
+      : (title || "Pi 扩展请求输入");
+  }
+
+  return input.message?.trim() || title || "Pi 扩展请求选择";
+}
+
+function buildPiExtensionUiDetail(input: PiExtensionUiRequestInput): string {
+  const lines = [
+    `method: ${input.method}`,
+    input.title.trim() ? `title: ${input.title.trim()}` : null,
+    input.message?.trim() ? `message: ${input.message.trim()}` : null,
+    input.options.length > 0 ? `options: ${input.options.join(" / ")}` : null,
+    input.placeholder?.trim() ? `placeholder: ${input.placeholder.trim()}` : null,
+    input.prefill?.trim() ? `prefill: ${input.prefill.trim()}` : null
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.join("\n");
 }
 
 function readClaudePaths(inputRecord: Record<string, unknown> | null): string[] {
