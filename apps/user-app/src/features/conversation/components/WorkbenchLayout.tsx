@@ -8931,6 +8931,124 @@ function SidebarContent({
 	        </div>
 	      </section>
 	    );
+	  }
+
+  function renderGlobalLightweightChatSection() {
+    const chatEntries = Array.from(new Map(
+      Object.entries(lightweightChatSessionsByWorkspaceId)
+        .flatMap(([workspaceId, sessions]) => {
+          const workspace = navigationGroups.find((group) => group.workspace.id === workspaceId)?.workspace;
+          return workspace
+            ? filterSidebarLightweightSessions(sessions).map((session) => [
+                session.sessionId,
+                { session, workspace }
+              ] as const)
+            : [];
+        })
+        .reverse()
+    ).values())
+      .sort((left, right) =>
+        (right.session.lastMessageAt ?? right.session.updatedAt).localeCompare(
+          left.session.lastMessageAt ?? left.session.updatedAt
+        )
+      );
+    const createWorkspace =
+      navigationGroups.find((group) => group.workspace.id === activeWorkspaceId)?.workspace
+      ?? navigationGroups[0]?.workspace
+      ?? null;
+
+    return (
+      <section className="workbench-section-block workbench-workspace-section workbench-chat-section" aria-label={t("shell.chatSectionTitle")}>
+        <div className="workbench-section-heading">
+          <div className="workbench-section-heading-main">
+            <span>{t("shell.chatSectionTitle")}</span>
+          </div>
+          {createWorkspace ? (
+            <div className="workbench-section-actions">
+              <button
+                type="button"
+                className="workbench-workspace-icon-button"
+                aria-label={t("shell.chatNewAction")}
+                title={t("shell.chatNewAction")}
+                onClick={() => {
+                  onCreateLightweightChat(createWorkspace);
+                  onClose?.();
+                }}
+              >
+                <PlusIcon />
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="workbench-session-list workbench-chat-list">
+          {chatEntries.length === 0 ? (
+            <p className="workbench-session-empty">{t("shell.chatSectionEmpty")}</p>
+          ) : chatEntries.map(({ session, workspace }) => {
+            const menuKey = `lightweight-chat-global:${workspace.id}:${session.sessionId}`;
+            const workspaceContext = getWorkspaceContext(workspace);
+
+            return (
+              <div key={menuKey}>
+                <SessionCard
+                  menuKey={menuKey}
+                  cardClassName="workbench-chat-card"
+                  session={session}
+                  workspace={workspace}
+                  workspaceContext={workspaceContext}
+                  isActive={activeLightweightChatId === session.sessionId}
+                  isFavorite={session.isFavorite === true}
+                  menuOpen={openSessionMenuKey === menuKey}
+                  showWorkspaceName={false}
+                  hideMetaRow
+                  depth={0}
+                  showActions
+                  needsUserAnswer={pendingUserInputSessionIds.has(session.sessionId)}
+                  exportDisabled
+                  onExport={() => undefined}
+                  menuAnchorPoint={openSessionMenuKey === menuKey ? openSessionMenuAnchorPoint : null}
+                  onOpenContextMenu={(anchorPoint) => openSessionMenu(menuKey, anchorPoint)}
+                  onOpen={() => {
+                    onOpenLightweightChat(workspace, session);
+                    onClose?.();
+                  }}
+                  onRename={() => {
+                    closeSessionMenu();
+                    setLightweightChatRenameTarget({ session, workspace });
+                    setRenameTitleValue(session.title);
+                  }}
+                  onToggleFavorite={async () => {
+                    try {
+                      await onToggleLightweightChatFavorite(workspace, session);
+                    } catch (error) {
+                      showToast({
+                        title: error instanceof Error ? error.message : t("shell.navigationLoadFailed"),
+                        tone: "error"
+                      });
+                    }
+                  }}
+                  onArchive={async () => {
+                    try {
+                      await onArchiveLightweightChat(workspace, session);
+                    } catch (error) {
+                      showToast({
+                        title: error instanceof Error ? error.message : t("shell.navigationLoadFailed"),
+                        tone: "error"
+                      });
+                    }
+                  }}
+                  onDelete={() => {
+                    closeSessionMenu();
+                    setLightweightChatDeletionTarget({ session, workspace });
+                  }}
+                  onCloseMenu={closeSessionMenu}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    );
   }
 
   function handleStartBatchSelection(workspaceId: string) {
@@ -10004,6 +10122,7 @@ function SidebarContent({
         ) : null}
 
         {embeddedAffairsSidebarContent ?? (
+          isLightweightChatRoute(location.pathname) ? renderGlobalLightweightChatSection() : (
           <>
             {favoriteSessions.length > 0 ? (
               <section className="workbench-section-block workbench-favorite-section">
@@ -10031,7 +10150,7 @@ function SidebarContent({
                           isActive={activeLightweightChatId === item.session.sessionId}
                           isFavorite
                           menuOpen={openSessionMenuKey === menuKey}
-                          showWorkspaceName
+                          showWorkspaceName={false}
                           hideMetaRow
                           depth={0}
                           showActions
@@ -10281,6 +10400,7 @@ function SidebarContent({
 
             {showLightweightChatSection ? renderLightweightChatSection() : null}
           </>
+          )
         )}
       </div>
 
@@ -15821,7 +15941,7 @@ export function WorkbenchLayout({
             return [];
           }
 
-          const dedupeKey = `${workspace.id}:${session.sessionId}`;
+          const dedupeKey = session.sessionId;
           if (seenLightweightFavoriteKeys.has(dedupeKey)) {
             return [];
           }
@@ -17795,6 +17915,7 @@ export function WorkbenchLayout({
             onNavigateChats={() => {
               setMobileNavOpen(false);
               setMobileInfoOpen(false);
+              setCodeEmbeddedAffairsState(null);
               navigate(
                 currentWorkspaceId
                   ? buildWorkspaceChatIndexPath(currentWorkspaceId, currentWorkspaceRef)
@@ -17889,6 +18010,7 @@ export function WorkbenchLayout({
                     onSessionUpdated={upsertNavigationSession}
                     onNavigateConversation={goToConversationTab}
                     onNavigateChat={() => {
+                      setCodeEmbeddedAffairsState(null);
                       navigate(
                         currentWorkspaceId
                           ? buildWorkspaceChatIndexPath(currentWorkspaceId, currentWorkspaceRef)
