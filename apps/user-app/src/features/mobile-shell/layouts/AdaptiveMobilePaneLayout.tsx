@@ -38,7 +38,7 @@ export function resolveAdaptiveMobilePaneLayout({
     return "expanded";
   }
 
-  if (activeEntry === "butler" && hasAuxiliaryPanel) {
+  if (activeEntry === "terminals" && hasAuxiliaryPanel) {
     return "medium-auxiliary";
   }
 

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-export type MobileWorkbenchEntry = "workspaces" | "terminals" | "sessions" | "butler" | "settings";
+export type MobileWorkbenchEntry = "workspaces" | "chats" | "sessions" | "terminals" | "settings";
 export type MobileWorkbenchPresentation = "default" | "conversation-focus";
 
 export interface MobileWorkbenchShellProps {
@@ -15,7 +15,7 @@ export interface MobileWorkbenchShellProps {
   readonly onNavigateWorkspaces: () => void;
   readonly onNavigateTerminals: () => void;
   readonly onNavigateSessions: () => void;
-  readonly onNavigateButler: () => void;
+  readonly onNavigateChats: () => void;
   readonly onNavigateToolFiles: () => void;
   readonly onNavigateToolGit: () => void;
   readonly onNavigateToolProcesses: () => void;

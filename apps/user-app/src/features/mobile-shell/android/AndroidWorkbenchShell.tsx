@@ -37,7 +37,7 @@ export function AndroidWorkbenchShell({
   onNavigateWorkspaces,
   onNavigateTerminals,
   onNavigateSessions,
-  onNavigateButler,
+  onNavigateChats,
   onNavigateToolProcesses,
   onNavigateSettings
 }: MobileWorkbenchShellProps) {
@@ -86,13 +86,13 @@ export function AndroidWorkbenchShell({
       onClick: onNavigateSessions
     },
     {
-      key: "terminals",
-      label: t("shell.mobileButlerEntry"),
-      icon: <AssistantIcon />,
-      onClick: onNavigateButler
+      key: "chats",
+      label: t("shell.mobileChatEntry"),
+      icon: <ChatIcon />,
+      onClick: onNavigateChats
     },
     {
-      key: "butler",
+      key: "terminals",
       label: t("shell.mobileTerminalsEntry"),
       icon: <TerminalIcon />,
       onClick: onNavigateTerminals
@@ -275,14 +275,13 @@ function TerminalIcon() {
   );
 }
 
-function AssistantIcon() {
+function ChatIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="5" y="7" width="14" height="10" rx="3" />
-      <path d="M9 7V5a3 3 0 0 1 6 0v2" />
-      <circle cx="10" cy="12" r="1" fill="currentColor" stroke="none" />
-      <circle cx="14" cy="12" r="1" fill="currentColor" stroke="none" />
-      <path d="M10 15c.6.5 1.2.8 2 .8s1.4-.3 2-.8" />
+      <path d="M20.5 11.5a7.5 7.5 0 0 1-7.5 7.5H9.2l-4.7 3 1.2-4.3A7.5 7.5 0 1 1 20.5 11.5z" />
+      <circle cx="9" cy="11.5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="12.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="11.5" r="1" fill="currentColor" stroke="none" />
     </svg>
   );
 }

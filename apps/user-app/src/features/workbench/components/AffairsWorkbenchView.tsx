@@ -156,6 +156,7 @@ import { FileViewerPanel } from "../../conversation/components/FileViewerModal";
 import { ConversationTranscriptExport, MessageTimeline, type TemporarySessionAnchor } from "../../conversation/components/MessageTimeline";
 import { PermissionRequestList } from "../../conversation/components/PermissionRequestList";
 import { SessionProviderPicker } from "../../conversation/components/SessionProviderPicker";
+import { useMobileConversationBottomLayer } from "../../mobile-shell/components/MobileConversationBottomLayerContext";
 import { SessionHeader } from "../../conversation/components/SessionHeader";
 import { ConversationSelectionActions } from "../../conversation/components/ConversationSelectionActions";
 import { TemporarySessionHeaderAction } from "../../conversation/components/TemporarySessionCreateModal";
@@ -7325,6 +7326,8 @@ export function AffairsLightweightConversationDraftState(input: {
     lightweightRuntimeBySessionId,
     setLightweightRuntimeSnapshot
   } = useAffairsWorkbenchInternal();
+  const { shellMode } = useWorkbenchShell();
+  const { composerPortalTarget } = useMobileConversationBottomLayer();
   const capabilities = useAffairsLightweightCapabilities(input.draft.provider, input.workspaceId);
   const session = useMemo(
     () => createAffairsConversationDraftSessionSummary(input.workspaceId, input.draft),
@@ -7371,6 +7374,7 @@ export function AffairsLightweightConversationDraftState(input: {
         <ConversationSelectionActions containerRef={timelineSelectionContainerRef} session={session} currentCapabilities={capabilities} />
         <ComposerPanel
           capabilities={capabilities}
+          portalContainer={shellMode === "mobile" ? composerPortalTarget : null}
           draftStorageId={draftNodeId}
           workspaceId={input.workspaceId}
           contextUsage={null}
@@ -7583,7 +7587,8 @@ export function AffairsLightweightConversationLiveState(input: {
   sessionId: string;
   runtimeSeed: AffairsConversationRuntimeSeed;
 }) {
-  const { currentTargetHostId } = useWorkbenchShell();
+  const { currentTargetHostId, shellMode } = useWorkbenchShell();
+  const { composerPortalTarget } = useMobileConversationBottomLayer();
   const runtime = useAffairsLightweightSessionController({
     sessionId: input.sessionId,
     externalSession:
@@ -7684,6 +7689,7 @@ export function AffairsLightweightConversationLiveState(input: {
         />
         <ComposerPanel
           capabilities={runtime.capabilities}
+          portalContainer={shellMode === "mobile" ? composerPortalTarget : null}
           draftStorageId={input.sessionId}
           workspaceId={session?.workspaceId ?? input.runtimeSeed?.session.workspaceId ?? null}
           initialProviderConfigMode={session?.providerConfigMode ?? input.runtimeSeed?.session.providerConfigMode ?? "global-default"}

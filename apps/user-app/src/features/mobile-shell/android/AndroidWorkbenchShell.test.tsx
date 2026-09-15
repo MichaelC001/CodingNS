@@ -125,7 +125,7 @@ describe("AndroidWorkbenchShell", () => {
     window.localStorage.setItem("mobile.tools.last-primary-tool", "git");
 
     renderAndroidShell({
-      activeEntry: "butler",
+      activeEntry: "terminals",
       initialEntries: [
         "/workspaces/workspace-1/tools?tab=git",
         "/workspaces/workspace-1/tools/processes"
@@ -152,7 +152,7 @@ function renderAndroidShell({
   initialEntries?: string[];
   initialIndex?: number;
   presentation?: "default" | "conversation-focus";
-  activeEntry?: "workspaces" | "terminals" | "sessions" | "butler" | "settings";
+  activeEntry?: "workspaces" | "chats" | "sessions" | "terminals" | "settings";
   childVariant?: "workbench" | "conversation";
   onNavigateToolGit?: () => void;
   onNavigateToolProcesses?: () => void;
@@ -174,7 +174,7 @@ function renderAndroidShell({
               onNavigateWorkspaces={() => undefined}
               onNavigateTerminals={() => undefined}
               onNavigateSessions={() => undefined}
-              onNavigateButler={() => undefined}
+              onNavigateChats={() => undefined}
               onNavigateToolFiles={() => undefined}
               onNavigateToolGit={onNavigateToolGit ?? (() => undefined)}
               onNavigateToolProcesses={onNavigateToolProcesses ?? (() => undefined)}

@@ -194,8 +194,8 @@ const appRoutes = [
           {
             path: "workspaces/:workspaceId/chats",
             lazy: lazyRouteComponent(
-              () => import("../features/pure-conversation/PureConversationPage"),
-              "PureConversationPage"
+              () => import("../features/mobile-chats/pages/ChatIndexPage"),
+              "ChatIndexPage"
             )
           },
           {

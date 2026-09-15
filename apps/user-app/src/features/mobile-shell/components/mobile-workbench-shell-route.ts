@@ -162,7 +162,7 @@ export function resolveMobileToolHeaderState({
   search: string;
   moreButtonLabel: string;
 }): MobileToolHeaderState | null {
-  if (presentation === "conversation-focus" || activeEntry !== "butler") {
+  if (presentation === "conversation-focus" || activeEntry !== "terminals") {
     return null;
   }
 

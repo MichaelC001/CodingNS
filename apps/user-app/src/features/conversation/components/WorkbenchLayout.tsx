@@ -1031,6 +1031,13 @@ function isLightweightChatRoute(pathname: string) {
   return Boolean(resolveRouteLightweightChatMatch(pathname));
 }
 
+function isLightweightChatDetailRoute(pathname: string) {
+  return Boolean(
+    matchPath("/workspaces/:workspaceId/chats/new", pathname)
+    || matchPath("/workspaces/:workspaceId/chats/:chatId", pathname)
+  );
+}
+
 function appendLightweightChatProviderParam(path: string, provider: ProviderId): string {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}provider=${encodeURIComponent(provider)}`;
@@ -1959,6 +1966,16 @@ interface WorkbenchShellContextValue {
   }) => WorkspaceRef | null;
   favoriteSessionIds: string[];
   favoriteSessions: WorkbenchNavigationEntry[];
+  lightweightChatSessionsByWorkspaceId: Record<string, SessionSummaryDto[]>;
+  lightweightArchivedChatSessionsByWorkspaceId: Record<string, SessionSummaryDto[]>;
+  activeLightweightChatId: string | null;
+  openLightweightChat: (workspace: WorkspaceDto, session: SessionSummaryDto) => void;
+  createLightweightChat: (workspace: WorkspaceDto) => void;
+  toggleLightweightChatFavorite: (workspace: WorkspaceDto, session: SessionSummaryDto) => Promise<void>;
+  archiveLightweightChat: (workspace: WorkspaceDto, session: SessionSummaryDto) => Promise<void>;
+  unarchiveLightweightChat: (workspace: WorkspaceDto, sessionId: string) => Promise<void>;
+  renameLightweightChat: (workspace: WorkspaceDto, sessionId: string, title: string) => Promise<SessionSummaryDto>;
+  deleteLightweightChat: (workspace: WorkspaceDto, session: SessionSummaryDto) => Promise<void>;
   globalNotifications: WorkbenchGlobalNotification[];
   archivedNotificationIds: string[];
   showArchivedNotifications: boolean;
@@ -4058,6 +4075,17 @@ function ConversationIcon() {
   );
 }
 
+function ChatIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.85">
+      <path d="M20.5 11.5a7.5 7.5 0 0 1-7.5 7.5H9.2l-4.7 3 1.2-4.3A7.5 7.5 0 1 1 20.5 11.5Z" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="9" cy="11.5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="12.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="11.5" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 function ButlerIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
@@ -5973,6 +6001,7 @@ function SidebarContent({
   lightweightChatSessionsByWorkspaceId,
   lightweightArchivedChatSessionsByWorkspaceId,
   activeLightweightChatId,
+  showLightweightChatSection = true,
   isConversationActive,
   isButlerActive,
   isSearchOpen,
@@ -5984,6 +6013,7 @@ function SidebarContent({
   onRefreshNavigation,
   onSessionUpdated,
   onNavigateConversation,
+  onNavigateChat,
   onOpenTerminalDock,
   onNavigateButler,
   onOpenSearch,
@@ -6031,6 +6061,7 @@ function SidebarContent({
   lightweightChatSessionsByWorkspaceId: Record<string, SessionSummaryDto[]>;
   lightweightArchivedChatSessionsByWorkspaceId: Record<string, SessionSummaryDto[]>;
   activeLightweightChatId: string | null;
+  showLightweightChatSection?: boolean;
   isConversationActive: boolean;
   isButlerActive: boolean;
   isSearchOpen: boolean;
@@ -6042,6 +6073,7 @@ function SidebarContent({
   onRefreshNavigation: () => Promise<void>;
   onSessionUpdated: (session: SessionSummaryDto) => void;
   onNavigateConversation: () => void;
+  onNavigateChat?: () => void;
   onOpenTerminalDock: (workspaceId?: string | null, workspaceRef?: WorkspaceRef | null) => void;
   onNavigateButler: () => void;
   onOpenSearch: () => void;
@@ -9888,17 +9920,33 @@ function SidebarContent({
               <button
                 type="button"
                 className={
-                  isConversationActive && !codeEmbeddedAffairsState
+                  isConversationActive && !codeEmbeddedAffairsState && !isLightweightChatRoute(location.pathname)
                     ? "workbench-nav-segment-button active"
                     : "workbench-nav-segment-button"
                 }
                 role="tab"
-                aria-selected={isConversationActive && !codeEmbeddedAffairsState}
+                aria-selected={isConversationActive && !codeEmbeddedAffairsState && !isLightweightChatRoute(location.pathname)}
                 onClick={onNavigateConversation}
               >
                 <ConversationIcon />
                 <span>{t("shell.conversationEntry")}</span>
               </button>
+              {onNavigateChat ? (
+                <button
+                  type="button"
+                  className={
+                    isLightweightChatRoute(location.pathname)
+                      ? "workbench-nav-segment-button active"
+                      : "workbench-nav-segment-button"
+                  }
+                  role="tab"
+                  aria-selected={isLightweightChatRoute(location.pathname)}
+                  onClick={onNavigateChat}
+                >
+                  <ChatIcon />
+                  <span>{t("shell.chatEntry")}</span>
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={
@@ -10231,7 +10279,7 @@ function SidebarContent({
         })}
         </section>
 
-            {renderLightweightChatSection()}
+            {showLightweightChatSection ? renderLightweightChatSection() : null}
           </>
         )}
       </div>
@@ -15793,13 +15841,13 @@ export function WorkbenchLayout({
   );
   const mobileActiveEntry: MobileWorkbenchEntry = location.pathname.startsWith("/settings")
     ? "settings"
-    : isButlerRoute(location.pathname)
-      ? "terminals"
+    : isLightweightChatRoute(location.pathname)
+      ? "chats"
     : isTerminalsRoute(location.pathname)
-      ? "butler"
+      ? "terminals"
     : isToolsRoute(location.pathname)
       ? location.pathname.endsWith("/tools/processes") || location.pathname === "/tools/processes"
-        ? "butler"
+        ? "terminals"
         : "sessions"
     : isSessionsRoute(location.pathname) || isSessionDetailRoute(location.pathname)
       ? "sessions"
@@ -15809,7 +15857,7 @@ export function WorkbenchLayout({
     isMobileShell
     && (
       (mobileActiveEntry === "sessions" && isSessionDetailRoute(location.pathname))
-      || isButlerRoute(location.pathname)
+      || (mobileActiveEntry === "chats" && isLightweightChatDetailRoute(location.pathname))
     );
   const preferCompactMobilePaneLayout = shouldPreferCompactNativeMobileLayout({
     isNativeMobile: platform.isNativeMobile,
@@ -17060,6 +17108,16 @@ export function WorkbenchLayout({
       resolveNavigationWorkspaceRef,
       favoriteSessionIds,
       favoriteSessions,
+      lightweightChatSessionsByWorkspaceId,
+      lightweightArchivedChatSessionsByWorkspaceId,
+      activeLightweightChatId: resolveRouteLightweightChatMatch(location.pathname)?.chatId ?? null,
+      openLightweightChat,
+      createLightweightChat,
+      toggleLightweightChatFavorite,
+      archiveLightweightChat,
+      unarchiveLightweightChat,
+      renameLightweightChat,
+      deleteLightweightChat,
       globalNotifications,
       archivedNotificationIds: Array.from(archivedNotificationIds),
       showArchivedNotifications,
@@ -17149,7 +17207,17 @@ export function WorkbenchLayout({
       toggleNotificationArchive,
       toggleFavoriteSession,
       upsertNavigationSession,
-      revealWorkspaceFile
+      revealWorkspaceFile,
+      location.pathname,
+      lightweightChatSessionsByWorkspaceId,
+      lightweightArchivedChatSessionsByWorkspaceId,
+      openLightweightChat,
+      createLightweightChat,
+      toggleLightweightChatFavorite,
+      archiveLightweightChat,
+      unarchiveLightweightChat,
+      renameLightweightChat,
+      deleteLightweightChat
     ]
   );
 
@@ -17618,6 +17686,7 @@ export function WorkbenchLayout({
       lightweightChatSessionsByWorkspaceId={lightweightChatSessionsByWorkspaceId}
       lightweightArchivedChatSessionsByWorkspaceId={lightweightArchivedChatSessionsByWorkspaceId}
       activeLightweightChatId={resolveRouteLightweightChatMatch(location.pathname)?.chatId ?? null}
+      showLightweightChatSection={false}
       isConversationActive={activeCenterTab === "conversation"}
       isButlerActive={activeCenterTab === "butler"}
       isSearchOpen={searchModalOpen}
@@ -17723,12 +17792,12 @@ export function WorkbenchLayout({
                   : buildWorkspaceHomePath()
               );
             }}
-            onNavigateButler={() => {
+            onNavigateChats={() => {
               setMobileNavOpen(false);
               setMobileInfoOpen(false);
               navigate(
                 currentWorkspaceId
-                  ? buildWorkspaceButlerPath(currentWorkspaceId, undefined, currentWorkspaceRef)
+                  ? buildWorkspaceChatIndexPath(currentWorkspaceId, currentWorkspaceRef)
                   : buildWorkspaceHomePath()
               );
             }}
@@ -17819,6 +17888,13 @@ export function WorkbenchLayout({
                     onRefreshNavigation={refreshNavigation}
                     onSessionUpdated={upsertNavigationSession}
                     onNavigateConversation={goToConversationTab}
+                    onNavigateChat={() => {
+                      navigate(
+                        currentWorkspaceId
+                          ? buildWorkspaceChatIndexPath(currentWorkspaceId, currentWorkspaceRef)
+                          : buildWorkspaceHomePath()
+                      );
+                    }}
                     onOpenTerminalDock={openCodeTerminalDock}
                     onNavigateButler={() =>
                       navigate(
@@ -17860,6 +17936,7 @@ export function WorkbenchLayout({
                     onToggleCollapse={() => {
                       setLeftCollapsed(true);
                     }}
+                    showLightweightChatSection={false}
                     codeShortcutRailSlot={codeShortcutRailLeftSlot}
                   />
                 </aside>
@@ -18349,6 +18426,18 @@ export function useWorkbenchShell(): WorkbenchShellContextValue {
       resolveNavigationWorkspaceRef: () => null,
       favoriteSessionIds: [],
       favoriteSessions: [],
+      lightweightChatSessionsByWorkspaceId: {},
+      lightweightArchivedChatSessionsByWorkspaceId: {},
+      activeLightweightChatId: null,
+      openLightweightChat: () => undefined,
+      createLightweightChat: () => undefined,
+      toggleLightweightChatFavorite: async () => undefined,
+      archiveLightweightChat: async () => undefined,
+      unarchiveLightweightChat: async () => undefined,
+      renameLightweightChat: async () => {
+        throw new Error("renameLightweightChat is unavailable outside the workbench shell");
+      },
+      deleteLightweightChat: async () => undefined,
       globalNotifications: [],
       archivedNotificationIds: [],
       showArchivedNotifications: false,

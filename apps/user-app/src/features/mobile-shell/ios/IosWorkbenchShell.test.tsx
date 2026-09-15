@@ -96,7 +96,7 @@ describe("IosWorkbenchShell", () => {
     window.localStorage.setItem("mobile.tools.last-primary-tool", "git");
 
     renderIosShell({
-      activeEntry: "butler",
+      activeEntry: "terminals",
       initialEntries: [
         "/workspaces/workspace-1/tools?tab=git",
         "/workspaces/workspace-1/tools/processes"
@@ -122,7 +122,7 @@ function renderIosShell({
   initialEntries?: string[];
   initialIndex?: number;
   presentation?: "default" | "conversation-focus";
-  activeEntry?: "workspaces" | "terminals" | "sessions" | "butler" | "settings";
+  activeEntry?: "workspaces" | "chats" | "sessions" | "terminals" | "settings";
   onNavigateToolGit?: () => void;
   onNavigateToolProcesses?: () => void;
 } = {}) {
@@ -143,7 +143,7 @@ function renderIosShell({
               onNavigateWorkspaces={() => undefined}
               onNavigateTerminals={() => undefined}
               onNavigateSessions={() => undefined}
-              onNavigateButler={() => undefined}
+              onNavigateChats={() => undefined}
               onNavigateToolFiles={() => undefined}
               onNavigateToolGit={onNavigateToolGit ?? (() => undefined)}
               onNavigateToolProcesses={onNavigateToolProcesses ?? (() => undefined)}

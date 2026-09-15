@@ -170,9 +170,9 @@ describe("MobileWorkbenchShell", () => {
     expect(view.queryByRole("button", { name: "打开工具面板" })).not.toBeInTheDocument();
   });
 
-  it("底部导航会显示工作区、对话、助手、终端、设置五个一级入口", () => {
+  it("底部导航会显示工作区、对话、聊天、终端、设置五个一级入口", () => {
     const view = renderMobileShell({
-      activeEntry: "terminals"
+      activeEntry: "chats"
     });
 
     const tabbarItems = Array.from(view.container.querySelectorAll(".mobile-workbench-tabbar-item"));
@@ -180,7 +180,7 @@ describe("MobileWorkbenchShell", () => {
     expect(tabbarItems.map((item) => item.textContent?.trim())).toEqual([
       t("shell.mobileWorkspacesEntry"),
       t("shell.mobileSessionsEntry"),
-      t("shell.mobileButlerEntry"),
+      t("shell.mobileChatEntry"),
       t("shell.mobileTerminalsEntry"),
       t("shell.mobileSettingsEntry")
     ]);
@@ -392,7 +392,7 @@ describe("MobileWorkbenchShell", () => {
     const user = userEvent.setup();
 
     const view = renderMobileShell({
-      activeEntry: "butler",
+      activeEntry: "terminals",
       initialEntries: [
         "/workspaces/workspace-1/tools?tab=git",
         "/workspaces/workspace-1/tools/processes"
@@ -412,7 +412,7 @@ describe("MobileWorkbenchShell", () => {
 });
 
 function renderMobileShell(options?: {
-  activeEntry?: "workspaces" | "terminals" | "sessions" | "butler" | "settings";
+  activeEntry?: "workspaces" | "chats" | "sessions" | "terminals" | "settings";
   navigationPanel?: ReactNode;
   auxiliaryPanel?: ReactNode;
   presentation?: "default" | "conversation-focus";
@@ -443,7 +443,7 @@ function renderMobileShell(options?: {
           onNavigateWorkspaces={() => undefined}
           onNavigateTerminals={() => undefined}
           onNavigateSessions={() => undefined}
-          onNavigateButler={() => undefined}
+          onNavigateChats={() => undefined}
           onNavigateToolFiles={options?.onNavigateToolFiles ?? (() => undefined)}
           onNavigateToolGit={options?.onNavigateToolGit ?? (() => undefined)}
           onNavigateToolProcesses={options?.onNavigateToolProcesses ?? (() => undefined)}
