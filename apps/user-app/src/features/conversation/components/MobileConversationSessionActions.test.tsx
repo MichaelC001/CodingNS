@@ -7,25 +7,6 @@ import { MobileConversationSessionActions } from "./MobileConversationSessionAct
 
 import type { SessionSummaryDto } from "../api/conversation-api";
 
-vi.mock("./SessionButlerActionButton", () => ({
-  SessionButlerActionButton: ({
-    openRequestKey = 0,
-    showTrigger = true
-  }: {
-    openRequestKey?: number;
-    showTrigger?: boolean;
-  }) => (
-    <>
-      <div
-        data-testid="butler-action-state"
-        data-open-request-key={String(openRequestKey)}
-        data-show-trigger={String(showTrigger)}
-      />
-      {openRequestKey > 0 ? <div role="dialog">助手跟进模态框</div> : null}
-    </>
-  )
-}));
-
 describe("MobileConversationSessionActions", () => {
   it("有会话时显示更多按钮并展开菜单", () => {
     render(
@@ -43,7 +24,6 @@ describe("MobileConversationSessionActions", () => {
     fireEvent.click(screen.getByRole("button", { name: t("conversation.moreSessionActions") }));
 
     expect(screen.getByRole("menu", { name: t("conversation.moreSessionActions") })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: t("shell.butlerEntry") })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: t("shell.filesEntry") })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: t("shell.gitEntry") })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: t("shell.mobileConversationToolProcessesTab") })).toBeInTheDocument();
@@ -99,31 +79,6 @@ describe("MobileConversationSessionActions", () => {
     expect(screen.getByTestId("route-probe")).toHaveTextContent(
       "/workspaces/workspace-1/sessions/session-nav-1?toolPanel=processes"
     );
-  });
-
-  it("点击助手菜单项会打开当前会话的助手跟进模态框，而不是跳路由", () => {
-    render(
-      <MemoryRouter initialEntries={["/workspaces/workspace-1/sessions/session-nav-1?toolPanel=git"]}>
-        <MobileConversationSessionActions
-          session={createSessionSummary({
-            sessionId: "session-nav-1",
-            title: "Nav Session",
-            workspaceId: "workspace-1"
-          })}
-        />
-        <RouteProbe />
-      </MemoryRouter>
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: t("conversation.moreSessionActions") }));
-    fireEvent.click(screen.getByRole("menuitem", { name: t("shell.butlerEntry") }));
-
-    expect(screen.getByText("助手跟进模态框")).toBeInTheDocument();
-    expect(screen.getByTestId("route-probe")).toHaveTextContent(
-      "/workspaces/workspace-1/sessions/session-nav-1?toolPanel=git"
-    );
-    expect(screen.getByTestId("butler-action-state")).toHaveAttribute("data-show-trigger", "false");
-    expect(screen.getByTestId("butler-action-state")).toHaveAttribute("data-open-request-key", "1");
   });
 
   it("点击分支菜单项会触发分支树动作", () => {

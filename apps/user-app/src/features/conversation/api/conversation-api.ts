@@ -3165,38 +3165,42 @@ export function startLiveSession(payload: StartLivePayload, options?: ScopedRequ
   });
 }
 
-export function listAffairsLightweightSessions(workspaceId: string, options?: { signal?: AbortSignal }) {
+export function listAffairsLightweightSessions(workspaceId: string, options?: ScopedRequestOptions) {
   return httpClient.request<{ items: SessionSummaryDto[] }>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/affairs/lightweight-sessions`,
     {
+      targetHostId: options?.targetHostId ?? undefined,
       signal: options?.signal
     }
   );
 }
 
-export function getAffairsLightweightSession(workspaceId: string, sessionId: string, options?: { signal?: AbortSignal }) {
+export function getAffairsLightweightSession(workspaceId: string, sessionId: string, options?: ScopedRequestOptions) {
   return httpClient.request<SessionSummaryDto>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/affairs/lightweight-sessions/${encodeURIComponent(sessionId)}`,
     {
+      targetHostId: options?.targetHostId ?? undefined,
       signal: options?.signal
     }
   );
 }
 
-export function getAffairsLightweightSessionMessages(workspaceId: string, sessionId: string, options?: { signal?: AbortSignal }) {
+export function getAffairsLightweightSessionMessages(workspaceId: string, sessionId: string, options?: ScopedRequestOptions) {
   return httpClient.request<HistoryPageDto>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/affairs/lightweight-sessions/${encodeURIComponent(sessionId)}/messages`,
     {
+      targetHostId: options?.targetHostId ?? undefined,
       signal: options?.signal
     }
   );
 }
 
-export function markAffairsLightweightSessionSeen(workspaceId: string, sessionId: string, seenAt?: string) {
+export function markAffairsLightweightSessionSeen(workspaceId: string, sessionId: string, seenAt?: string, options?: ScopedRequestOptions) {
   return httpClient.request<void>(
     `/api/affairs/lightweight-sessions/${encodeURIComponent(sessionId)}/seen`,
     {
       method: "POST",
+      targetHostId: options?.targetHostId ?? undefined,
       body: JSON.stringify(seenAt ? { seenAt } : {})
     }
   );
@@ -3282,12 +3286,14 @@ export async function startAffairsLightweightSessionStream(
 export function sendAffairsLightweightSessionMessage(
   workspaceId: string,
   sessionId: string,
-  payload: SendAffairsLightweightSessionMessagePayload
+  payload: SendAffairsLightweightSessionMessagePayload,
+  options?: ScopedRequestOptions
 ) {
   return httpClient.request<AffairsLightweightSessionTurnResponseDto>(
     `/api/affairs/lightweight-sessions/${encodeURIComponent(sessionId)}/messages`,
     {
       method: "POST",
+      targetHostId: options?.targetHostId ?? undefined,
       body: JSON.stringify(payload)
     }
   );

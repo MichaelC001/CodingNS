@@ -10309,6 +10309,128 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   min-height: 0;
 }
 
+.conversation-temporary-session-modal {
+  display: grid;
+  grid-template-columns: minmax(180px, 30%) minmax(0, 1fr);
+  min-height: min(620px, 68vh);
+  gap: 0;
+}
+
+.conversation-temporary-session-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--panel-border);
+  padding: 0 var(--space-4) 0 0;
+}
+
+.conversation-temporary-session-sidebar-header,
+.conversation-temporary-session-content-header,
+.conversation-temporary-session-follow-up {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.conversation-temporary-session-sidebar-header {
+  justify-content: space-between;
+  padding: 0 0 var(--space-3);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.conversation-temporary-session-list {
+  overflow-y: auto;
+  margin-top: var(--space-2);
+}
+
+.conversation-temporary-session-list-button {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 3px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.conversation-temporary-session-list-button strong,
+.conversation-temporary-session-content-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-temporary-session-list-button span,
+.conversation-temporary-session-content-header span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.conversation-temporary-session-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding-left: var(--space-5);
+}
+
+.conversation-temporary-session-content-header {
+  justify-content: space-between;
+  min-height: 36px;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.conversation-temporary-session-content-header > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conversation-temporary-session-timeline {
+  flex: 1 1 auto;
+  min-height: 280px;
+  overflow: hidden;
+}
+
+.conversation-temporary-session-timeline .message-list {
+  min-height: 0;
+}
+
+.conversation-temporary-session-follow-up {
+  align-items: flex-end;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--panel-border);
+}
+
+.conversation-temporary-session-follow-up textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: vertical;
+}
+
+@media (max-width: 720px) {
+  .conversation-temporary-session-modal {
+    grid-template-columns: 1fr;
+    min-height: 0;
+    gap: var(--space-4);
+  }
+
+  .conversation-temporary-session-sidebar {
+    max-height: 180px;
+    border-right: 0;
+    border-bottom: 1px solid var(--panel-border);
+    padding: 0 0 var(--space-3);
+  }
+
+  .conversation-temporary-session-content {
+    min-height: 340px;
+    padding-left: 0;
+  }
+}
+
 .affairs-conversation-header .conversation-header-main {
   align-items: flex-start;
   text-align: left;

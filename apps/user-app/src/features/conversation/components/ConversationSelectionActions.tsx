@@ -1205,12 +1205,6 @@ export function ConversationSelectionActions({
           open={temporarySessionOpen}
           source={session ? { workspaceId: session.workspaceId, parentSessionId: session.sessionId, parentTitle: session.title, provider: session.provider, initialPrompt: temporarySessionPrompt } : null}
           onClose={() => setTemporarySessionOpen(false)}
-          onCreated={async (created) => {
-            upsertNavigationSession(created);
-            await requestNavigationRefresh();
-            selectWorkspace(created.workspaceId, currentWorkspaceRef);
-            navigate(buildWorkspaceSessionPath(created.workspaceId, created.sessionId, currentWorkspaceRef));
-          }}
         />
       </>
     );
@@ -1289,15 +1283,6 @@ export function ConversationSelectionActions({
           initialPrompt: temporarySessionPrompt
         } : null}
         onClose={() => setTemporarySessionOpen(false)}
-        onCreated={async (created) => {
-          upsertNavigationSession(created);
-          await requestNavigationRefresh();
-          const workspaceRef = currentTargetHostId && currentWorkspaceRef
-            ? { hostId: currentTargetHostId, workspaceId: currentWorkspaceRef.workspaceId }
-            : currentWorkspaceRef;
-          selectWorkspace(created.workspaceId, workspaceRef);
-          navigate(buildWorkspaceSessionPath(created.workspaceId, created.sessionId, workspaceRef));
-        }}
       />
     </>
   );

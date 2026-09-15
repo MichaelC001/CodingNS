@@ -11,7 +11,9 @@ const {
   mockListProviderCapabilities,
   mockFetchModelManagementSnapshot,
   mockListProviderCatalog,
-   mockStartLiveSession,
+  mockListAffairsLightweightSessions,
+  mockGetAffairsLightweightSessionMessages,
+  mockStartLiveSession,
   mockStartAffairsLightweightSession,
   mockGetSessionDetail,
   mockNavigate,
@@ -21,6 +23,8 @@ const {
   mockListProviderCapabilities: vi.fn(),
   mockFetchModelManagementSnapshot: vi.fn(),
   mockListProviderCatalog: vi.fn(),
+  mockListAffairsLightweightSessions: vi.fn(),
+  mockGetAffairsLightweightSessionMessages: vi.fn(),
   mockStartLiveSession: vi.fn(),
   mockStartAffairsLightweightSession: vi.fn(),
   mockGetSessionDetail: vi.fn(),
@@ -68,6 +72,8 @@ vi.mock("../api/conversation-api", () => ({
   listProviderCatalog: mockListProviderCatalog,
   listProviderCapabilities: mockListProviderCapabilities,
   getSessionDetail: mockGetSessionDetail,
+  listAffairsLightweightSessions: mockListAffairsLightweightSessions,
+  getAffairsLightweightSessionMessages: mockGetAffairsLightweightSessionMessages,
   startLiveSession: mockStartLiveSession,
   startAffairsLightweightSession: mockStartAffairsLightweightSession,
   sendLiveMessage: vi.fn()
@@ -159,6 +165,8 @@ describe("ConversationSelectionActions", () => {
         enabled: true
       }
     ]);
+    mockListAffairsLightweightSessions.mockResolvedValue({ items: [] });
+    mockGetAffairsLightweightSessionMessages.mockResolvedValue({ messages: [] });
     mockFetchModelManagementSnapshot.mockResolvedValue({
       scannedAt: "2026-04-25T10:00:00.000Z",
       items: [
@@ -205,7 +213,8 @@ describe("ConversationSelectionActions", () => {
         workspaceId: "workspace-1",
         provider: "codex",
         parentSessionId: "session-1"
-      }
+      },
+      messages: []
     });
     mockGetSessionDetail.mockResolvedValue({
       sessionId: "session-selection-action",
@@ -446,6 +455,8 @@ describe("ConversationSelectionActions", () => {
       }),
       { targetHostId: "peer-host-1" }
     );
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockSelectWorkspace).not.toHaveBeenCalled();
   });
 });
 

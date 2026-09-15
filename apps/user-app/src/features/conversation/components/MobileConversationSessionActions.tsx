@@ -15,7 +15,6 @@ import {
   type ContextMenuAnchorPoint
 } from "../../workbench/utils/context-menu-position";
 import { MoreActionIcon } from "./ConversationActionIcons";
-import { SessionButlerActionButton } from "./SessionButlerActionButton";
 
 import type { SessionSummaryDto } from "../api/conversation-api";
 
@@ -35,7 +34,6 @@ export function MobileConversationSessionActions({
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchorPoint, setMenuAnchorPoint] = useState<ContextMenuAnchorPoint | null>(null);
   const [menuPositionStyle, setMenuPositionStyle] = useState<CSSProperties | null>(null);
-  const [assistantOpenRequestKey, setAssistantOpenRequestKey] = useState(0);
 
   useEffect(() => {
     setMenuOpen(false);
@@ -157,14 +155,6 @@ export function MobileConversationSessionActions({
   }
 
   const menuItems = [
-    {
-      key: "assistant",
-      label: t("shell.butlerEntry"),
-      onSelect: () => {
-        setAssistantOpenRequestKey((current) => current + 1);
-        closeMenu();
-      }
-    },
     ...(onOpenBranchTree
       ? [
           {
@@ -251,11 +241,6 @@ export function MobileConversationSessionActions({
             <MoreActionIcon />
           </span>
         </button>
-        <SessionButlerActionButton
-          session={session}
-          showTrigger={false}
-          openRequestKey={assistantOpenRequestKey}
-        />
       </div>
       {sessionActionMenu}
     </>

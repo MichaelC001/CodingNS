@@ -54,7 +54,6 @@ import { PermissionRequestList } from "../components/PermissionRequestList";
 import { QueuedMessageList } from "../components/QueuedMessageList";
 import { SessionBranchTreePanel } from "../components/SessionBranchTreePanel";
 import { SessionHeader } from "../components/SessionHeader";
-import { SessionButlerActionButton } from "../components/SessionButlerActionButton";
 import { TemporarySessionHeaderAction } from "../components/TemporarySessionCreateModal";
 import { useArchiveSessionSearch } from "../components/useArchiveSessionSearch";
 import {
@@ -869,7 +868,6 @@ function LiveConversationPage({
                   <ConversationBranchTreeButton onOpenBranchTree={openBranchTree} />
                 ) : null}
                 <TemporarySessionHeaderAction session={session ?? navigationSession} />
-                <SessionButlerActionButton session={session ?? navigationSession} />
               </>
             )}
           />
