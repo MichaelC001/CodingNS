@@ -1,4 +1,5 @@
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { execFile as nodeExecFile } from "node:child_process";
 import {
   closeSync,
   existsSync,
@@ -12,6 +13,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import crypto from "node:crypto";
+import { promisify } from "node:util";
 
 import type {
   DetectSessionsOptions,
@@ -26,6 +28,7 @@ import type {
   ProviderDiscoveryDiagnostic,
   ProviderId,
   ProviderRealtimeEvent,
+  ProviderModelOption,
   ProviderSessionDiscovery,
   ProviderSessionSummary,
   ProviderSubscription,
@@ -59,9 +62,15 @@ const COMMAND_CODE_PROVIDER = "command-code" as const;
 const COMMAND_CODE_PROJECTS_DIRNAME = "projects";
 const COMMAND_CODE_MAX_TITLE_LENGTH = 48;
 const COMMAND_CODE_POLL_INTERVAL_MS = 300;
+const COMMAND_CODE_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
+export const COMMAND_CODE_REASONING_EFFORTS = ["low", "medium", "high"] as const;
+const execFile = promisify(nodeExecFile);
 
 export interface CommandCodeAdapterOptions {
   homeDir: string;
+  commandPath?: string;
+  modelDiscoveryTimeoutMs?: number;
+  listModels?: (workspacePath: string) => Promise<string[]>;
 }
 
 interface TranscriptCache {
@@ -282,6 +291,33 @@ export class CommandCodeAdapter implements ProviderAdapter {
     };
   }
 
+  async getProviderCapabilitiesForWorkspace(workspacePath: string): Promise<ProviderCapabilities> {
+    const fallback = this.getProviderCapabilities();
+
+    try {
+      const modelIds = this.options.listModels
+        ? await this.options.listModels(workspacePath)
+        : await this.readCliModelList(workspacePath);
+      const modelOptions = buildCommandCodeModelOptions(modelIds);
+
+      return {
+        ...fallback,
+        modelOptions: modelOptions.length > 0 ? modelOptions : fallback.modelOptions,
+        limitations: modelOptions.length > 0
+          ? fallback.limitations
+          : [...fallback.limitations, "Command Code 没有返回可用模型列表，当前仅显示默认模型。"]
+      };
+    } catch {
+      return {
+        ...fallback,
+        limitations: [
+          ...fallback.limitations,
+          "当前无法读取 Command Code 模型列表，暂时显示默认模型。"
+        ]
+      };
+    }
+  }
+
   async startSession(workspacePath: string, options: StartSessionOptions): Promise<StartSessionResult> {
     const providerSessionId = crypto.randomUUID();
     const filePath = this.resolveTranscriptPath(workspacePath, providerSessionId);
@@ -464,9 +500,8 @@ export class CommandCodeAdapter implements ProviderAdapter {
       supportsSessionDelete: true,
       supportsAsyncPrompt: false,
       supportsNativeAgents: true,
-      modelOptions: [
-        { id: "provider-default", name: "跟随 Command Code 默认模型", usesProviderDefault: true }
-      ],
+      modelOptions: buildCommandCodeModelOptions([]),
+      defaultReasoningLevel: null,
       limitations: [
         "Command Code 的 transcript schema 属于外部 CLI，未知事件只保留原始记录引用。",
         "headless 模式不提供人工等待式 ask_user_question RPC。"
@@ -476,6 +511,21 @@ export class CommandCodeAdapter implements ProviderAdapter {
 
   async getSessionCapabilities(): Promise<ProviderCapabilities> {
     return this.getProviderCapabilities();
+  }
+
+  private async readCliModelList(workspacePath: string): Promise<string[]> {
+    const commandPath = this.options.commandPath?.trim() || "command-code";
+    const result = await execFile(commandPath, ["--list-models"], {
+      cwd: workspacePath,
+      env: {
+        ...process.env
+      },
+      timeout: this.options.modelDiscoveryTimeoutMs ?? COMMAND_CODE_MODEL_DISCOVERY_TIMEOUT_MS,
+      windowsHide: true,
+      shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(commandPath)
+    });
+
+    return parseCommandCodeModelList(result.stdout);
   }
 
   private listWorkspaceFiles(workspacePath: string, knownSessions: ProviderSessionSummary[]): string[] {
@@ -725,6 +775,48 @@ function resolveTranscriptTitle(
 
 function normalizeTitle(value: unknown): string {
   return ensureText(value).trim().replace(/\s+/g, " ").slice(0, COMMAND_CODE_MAX_TITLE_LENGTH);
+}
+
+export function parseCommandCodeModelList(output: string): string[] {
+  const models: string[] = [];
+  const seen = new Set<string>();
+
+  for (const line of output.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, "").split(/\r?\n/)) {
+    const match = line.trim().match(/^([^\s]+)\s{2,}.*$/);
+    const modelId = match?.[1] ?? "";
+
+    if (
+      !modelId
+      || !/[./:_-]/.test(modelId)
+      || modelId === "Docs:"
+      || seen.has(modelId)
+    ) {
+      continue;
+    }
+
+    seen.add(modelId);
+    models.push(modelId);
+  }
+
+  return models;
+}
+
+function buildCommandCodeModelOptions(modelIds: readonly string[]): ProviderModelOption[] {
+  const supportedReasoningEfforts = [...COMMAND_CODE_REASONING_EFFORTS];
+
+  return [
+    {
+      id: "provider-default",
+      name: "跟随 Command Code 默认模型",
+      usesProviderDefault: true,
+      supportedReasoningEfforts
+    },
+    ...modelIds.map((modelId) => ({
+      id: modelId,
+      name: modelId,
+      supportedReasoningEfforts
+    }))
+  ];
 }
 
 function readArchivedFlag(filePath: string): boolean {

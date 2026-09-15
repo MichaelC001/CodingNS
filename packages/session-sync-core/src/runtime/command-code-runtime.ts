@@ -103,7 +103,7 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     const toolStates = new Map<string, NormalizedMessage["toolCall"]>();
     const child = this.spawnFactory(this.commandPath, args, {
       cwd: request.workspacePath,
-      env: buildCommandCodeEnv(homeDir, request.runtimeEnv),
+      env: buildCommandCodeEnv(request.runtimeEnv),
       stdio: ["ignore", "pipe", "pipe"]
     });
 
@@ -388,17 +388,18 @@ function buildCommandCodeArgs(
   if (options.permissionMode === "bypassPermissions") args.push("--yolo");
   else if (options.permissionMode && options.permissionMode !== "default") args.push("--permission-mode", options.permissionMode);
   if (options.model && options.model !== "provider-default") args.push("--model", options.model);
+  if (options.reasoningLevel === "low" || options.reasoningLevel === "medium" || options.reasoningLevel === "high") {
+    args.push("--effort", options.reasoningLevel);
+  }
   if (options.enableAskUserQuestion === true || request.runtimeEnv?.CMD_TOOLS_ASK_USER_QUESTION_ENABLE === "true") {
     args.push("--tools-enable", "ask_user_question");
   }
   return args;
 }
 
-function buildCommandCodeEnv(homeDir: string, runtimeEnv: Record<string, string> | null | undefined): NodeJS.ProcessEnv {
+function buildCommandCodeEnv(runtimeEnv: Record<string, string> | null | undefined): NodeJS.ProcessEnv {
   return {
     ...process.env,
-    HOME: homeDir,
-    USERPROFILE: homeDir,
     ...(runtimeEnv ?? {})
   };
 }

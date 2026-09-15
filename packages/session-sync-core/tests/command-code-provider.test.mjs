@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFile
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { CommandCodeAdapter } from "../dist/index.js";
+import { CommandCodeAdapter, parseCommandCodeModelList } from "../dist/index.js";
 
 function createTranscript(homeDir, workspacePath) {
   const projectDir = join(homeDir, "projects", "users-jackson-code-coding-ns");
@@ -122,6 +122,34 @@ test("CommandCodeAdapter 新建会话使用实测项目目录 slug", async () =>
     const adapter = new CommandCodeAdapter({ homeDir });
     const result = await adapter.startSession("/Users/jackson/Code/CodingNS", { initialPrompt: "开始任务" });
     assert.match(result.session.rawStoreRef, /\/projects\/users-jackson-code-coding-ns\/[^/]+\.jsonl$/);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeAdapter 能把 CLI 模型列表转换为模型和思考强度选项", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-models-"));
+
+  try {
+    const adapter = new CommandCodeAdapter({
+      homeDir,
+      listModels: async () => ["deepseek/deepseek-v4-flash", "claude-sonnet-4-6"]
+    });
+    const capabilities = await adapter.getProviderCapabilitiesForWorkspace("/Users/jackson/Code/CodingNS");
+
+    assert.deepEqual(capabilities.modelOptions?.map((option) => option.id), [
+      "provider-default",
+      "deepseek/deepseek-v4-flash",
+      "claude-sonnet-4-6"
+    ]);
+    assert.deepEqual(capabilities.modelOptions?.[1].supportedReasoningEfforts, ["low", "medium", "high"]);
+    assert.deepEqual(parseCommandCodeModelList([
+      "Available models  ·  2 models",
+      "Open Source",
+      "deepseek/deepseek-v4-flash               fast reasoning",
+      "claude-sonnet-4-6                        fast model",
+      "Docs: https://commandcode.ai/docs"
+    ].join("\n")), ["deepseek/deepseek-v4-flash", "claude-sonnet-4-6"]);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }

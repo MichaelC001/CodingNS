@@ -132,6 +132,35 @@ test("CommandCodeRuntimeAdapter 区分 --continue 和 --resume", async () => {
   }
 });
 
+test("CommandCodeRuntimeAdapter 会把思考强度传给 CLI", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-effort-"));
+  const scriptPath = createRuntimeFixture(homeDir);
+  const captured = [];
+  const capturedOptions = [];
+
+  try {
+    const adapter = new CommandCodeRuntimeAdapter({
+      commandPath: process.execPath,
+      spawnFactory: (command, args, options) => {
+        captured.push(args);
+        capturedOptions.push(options);
+        return spawn(command, [scriptPath, ...args], options);
+      }
+    });
+    const request = createRequest({
+      options: { ...createRequest().options, reasoningLevel: "high" }
+    });
+    await (await adapter.startSession(request, { updateSessionBinding() {}, async emit() {} })).completed;
+
+    const effortIndex = captured[0].indexOf("--effort");
+    assert.deepEqual(captured[0].slice(effortIndex, effortIndex + 2), ["--effort", "high"]);
+    assert.equal(capturedOptions[0].env.HOME, process.env.HOME);
+    assert.notEqual(capturedOptions[0].env.HOME, homeDir);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("CommandCodeRuntimeAdapter 收到 SIGINT 后报告 interrupted", async () => {
   const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-interrupt-"));
   const scriptPath = createRuntimeFixture(homeDir, "interrupt");

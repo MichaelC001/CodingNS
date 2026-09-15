@@ -27,6 +27,7 @@ interface ProviderMetadata {
   defaultRunInputMode: InRunInputMode;
   reasoningLevelPersists: boolean;
   defaultReasoningLevel?: string | null;
+  defaultReasoningEfforts?: string[];
   supportsInterrupt?: boolean;
   supportsAttachments?: boolean;
   supportsPermissionPrompt?: boolean;
@@ -215,7 +216,8 @@ const PROVIDER_METADATA: Record<BuiltinProviderId, ProviderMetadata> = {
     defaultModelLabelKey: "conversation.modelUseCliDefault",
     icon: commandCodeIcon,
     defaultRunInputMode: "none",
-    reasoningLevelPersists: false,
+    reasoningLevelPersists: true,
+    defaultReasoningEfforts: ["low", "medium", "high"],
     defaultReasoningLevel: null,
     supportsInterrupt: true,
     supportsAttachments: false,
@@ -260,7 +262,12 @@ function createDefaultModelOptions(labelKey: string): ProviderModelOptionDto[] {
 
 function getMetadataModelOptions(provider: ProviderId | null): ProviderModelOptionDto[] {
   const metadata = getProviderMetadata(provider);
-  return createDefaultModelOptions(metadata?.defaultModelLabelKey ?? "conversation.modelUseCliDefault");
+  const options = createDefaultModelOptions(metadata?.defaultModelLabelKey ?? "conversation.modelUseCliDefault");
+  const supportedReasoningEfforts = metadata?.defaultReasoningEfforts;
+
+  return supportedReasoningEfforts
+    ? options.map((option) => ({ ...option, supportedReasoningEfforts }))
+    : options;
 }
 
 export function isDraftProviderSupported(value: string | null): value is ProviderId {

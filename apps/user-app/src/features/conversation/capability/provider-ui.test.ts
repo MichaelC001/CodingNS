@@ -64,6 +64,9 @@ describe("provider-ui", () => {
     expect(getProviderIcon("command-code")).toContain("data:image/svg+xml");
     expect(createDraftCapabilities("command-code").supportsInterrupt).toBe(true);
     expect(createDraftCapabilities("command-code").supportsAttachments).toBe(false);
+    expect(createDraftCapabilities("command-code").modelOptions?.[0]?.supportedReasoningEfforts)
+      .toEqual(["low", "medium", "high"]);
+    expect(shouldPersistReasoningLevel("command-code")).toBe(true);
   });
 
   it("会把 legna-code 排在 kimi 之后", () => {

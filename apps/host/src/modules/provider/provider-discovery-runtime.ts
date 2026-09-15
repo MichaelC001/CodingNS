@@ -331,7 +331,8 @@ function getWorkspaceDiscoveryService(
       homeDir: config.grokHomeDir
     })],
     ["command-code", [config.commandCodeHomeDir, config.commandCodeCliPath], () => new CommandCodeAdapter({
-      homeDir: config.commandCodeHomeDir
+      homeDir: config.commandCodeHomeDir,
+      commandPath: config.commandCodeCliPath
     })]
   ];
   const registry = new ProviderRegistry(factories

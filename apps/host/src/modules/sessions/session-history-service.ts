@@ -651,7 +651,10 @@ export class SessionHistoryService {
         dataDir: config.opencodeDataDir,
         dbPath: config.opencodeDbPath
       }),
-      new CommandCodeAdapter({ homeDir: config.commandCodeHomeDir }),
+       new CommandCodeAdapter({
+         homeDir: config.commandCodeHomeDir,
+         commandPath: config.commandCodeCliPath
+       }),
       ...(adapterOverrides.additionalAdapters ?? [])
     ]);
     this.sessionSyncService = new SessionSyncService(this.providerRegistry);
@@ -1870,7 +1873,7 @@ export class SessionHistoryService {
         );
       }
 
-      if (baseCapabilities.provider === "opencode" && workspacePath) {
+       if ((baseCapabilities.provider === "opencode" || baseCapabilities.provider === "command-code") && workspacePath) {
         const refreshed = await this.enrichProviderCapabilities(baseCapabilities, workspacePath);
         const cacheKey = buildProviderCapabilityCacheKey(baseCapabilities.provider, workspacePath);
         this.providerCapabilityCache.set(cacheKey, {
@@ -1917,7 +1920,7 @@ export class SessionHistoryService {
       .then(async (capabilities) => {
         const normalizedCapabilities = this.applyProviderCliAvailability(capabilities);
 
-        if (normalizedCapabilities.provider === "opencode") {
+         if ((normalizedCapabilities.provider === "opencode" || normalizedCapabilities.provider === "command-code") && workspacePath) {
           return this.enrichProviderCapabilities(normalizedCapabilities, workspacePath)
             .then((refreshed) => {
               const cacheKey = buildProviderCapabilityCacheKey(
@@ -1963,6 +1966,13 @@ export class SessionHistoryService {
     workspacePath: string | null
   ): Promise<ProviderCapabilities> {
     if (capabilities.provider === "grok" && workspacePath) {
+      return this.capabilityService.getProviderCapabilitiesForWorkspace(
+        capabilities.provider,
+        workspacePath
+      );
+    }
+
+    if (capabilities.provider === "command-code" && workspacePath) {
       return this.capabilityService.getProviderCapabilitiesForWorkspace(
         capabilities.provider,
         workspacePath
@@ -3351,7 +3361,10 @@ export class SessionHistoryService {
       }
     }
 
-    await this.providerSessionDeleteCli.deleteSession(input);
+    await this.providerSessionDeleteCli.deleteSession({
+      ...input,
+      provider: normalizeProviderSessionDeleteProvider(input.provider)
+    });
   }
 
   async renameSessionTitle(
@@ -7345,6 +7358,10 @@ function isProviderCliBacked(
     || provider === "kimi"
     || provider === "grok"
     || provider === "command-code";
+}
+
+function normalizeProviderSessionDeleteProvider(provider: string): string {
+  return provider === "code" ? "command-code" : provider;
 }
 
 function buildProviderCliUnavailableMessage(provider: string): string {

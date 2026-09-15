@@ -115,7 +115,10 @@ export class ProviderCatalogService {
         dataDir: config.opencodeDataDir,
         dbPath: config.opencodeDbPath
       }),
-      new CommandCodeAdapter({ homeDir: config.commandCodeHomeDir }),
+      new CommandCodeAdapter({
+        homeDir: config.commandCodeHomeDir,
+        commandPath: config.commandCodeCliPath
+      }),
       ...additionalAdapters
     ]);
 
