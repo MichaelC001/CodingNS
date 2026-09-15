@@ -235,7 +235,14 @@ export interface ProviderSessionCostProvenance {
   coverage: "complete" | "unavailable";
   /** 金额可计算，但模型/轮次归因只能通过会话累计快照近似推断。 */
   estimated?: boolean;
-  estimationReason?: "concurrent-turns";
+  estimationReason?: "concurrent-turns" | "incomplete-usage";
+  /**
+   * 没有计入金额的用量行数。
+   *
+   * 只统计“拿不到最终 usage”的行（正在进行的 turn、日志被截断、provider 没写终态），
+   * 不包含价格缺失。缺价格的会话仍然整场报不可用，避免把错误金额当真。
+   */
+  unpricedUsageLineCount?: number;
   unavailableReason?: ProviderSessionCostUnavailableReason;
   pricingProfileId?: string;
   priceBookVersion?: string;

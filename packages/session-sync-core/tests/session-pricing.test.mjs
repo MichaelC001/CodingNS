@@ -341,4 +341,108 @@ describe("会话费用折叠", () => {
       unavailableReason: "usage-incomplete"
     });
   });
+
+  it("已封口轮次照常计费，未封口轮次只标注不计入金额", () => {
+    const metrics = {};
+
+    addCatalogCostMetric(
+      metrics,
+      [
+        {
+          key: "turn-1:1",
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          inputTokens: 100,
+          outputTokens: 20,
+          completed: true,
+          timestamp: "2026-08-16T00:00:01.000Z"
+        },
+        {
+          key: "turn-2:1",
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          inputTokens: 500,
+          outputTokens: 90,
+          completed: false,
+          timestamp: "2026-08-16T00:00:05.000Z"
+        }
+      ],
+      {
+        billing: {
+          billingStartedAt: "2026-08-16T00:00:00.000Z",
+          pricingProfileId: "direct-api",
+          priceBookVersion: "test"
+        }
+      },
+      { kind: "source-timestamp", value: "2026-08-16T00:00:05.000Z" },
+      {
+        version: "test",
+        entries: [{
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          inputUsdPerToken: 1e-6,
+          outputUsdPerToken: 2e-6
+        }]
+      }
+    );
+
+    // 只算已封口那一轮：100 * 1e-6 + 20 * 2e-6。
+    expect(metrics.costUsd?.value).toBeCloseTo(0.00014, 12);
+    expect(metrics.costUsd?.pricing).toMatchObject({
+      coverage: "complete",
+      estimated: true,
+      estimationReason: "incomplete-usage",
+      unpricedUsageLineCount: 1
+    });
+    expect(metrics.costUsd?.pricing.breakdown).toHaveLength(1);
+  });
+
+  it("全部轮次都已封口时不打估算标记", () => {
+    const metrics = {};
+
+    addCatalogCostMetric(
+      metrics,
+      [
+        {
+          key: "turn-1:1",
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          inputTokens: 100,
+          outputTokens: 20,
+          completed: true,
+          timestamp: "2026-08-16T00:00:01.000Z"
+        },
+        {
+          key: "turn-2:1",
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          inputTokens: 50,
+          outputTokens: 10,
+          completed: true,
+          timestamp: "2026-08-16T00:00:02.000Z"
+        }
+      ],
+      {
+        billing: {
+          billingStartedAt: "2026-08-16T00:00:00.000Z",
+          pricingProfileId: "direct-api",
+          priceBookVersion: "test"
+        }
+      },
+      { kind: "source-timestamp", value: "2026-08-16T00:00:02.000Z" },
+      {
+        version: "test",
+        entries: [{
+          provider: "codex",
+          model: "gpt-5.3-codex",
+          inputUsdPerToken: 1e-6,
+          outputUsdPerToken: 2e-6
+        }]
+      }
+    );
+
+    expect(metrics.costUsd?.semantic).toBe("priced-final-events");
+    expect(metrics.costUsd?.pricing).not.toHaveProperty("estimated");
+    expect(metrics.costUsd?.pricing).not.toHaveProperty("unpricedUsageLineCount");
+  });
 });

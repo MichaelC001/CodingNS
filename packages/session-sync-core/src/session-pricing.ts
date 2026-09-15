@@ -102,7 +102,7 @@ export interface VerifiedUsageLine {
   timestamp: string;
   /** 费用来自累计快照的近似归因，而不是可逐轮核验的最终 usage。 */
   estimated?: boolean;
-  estimationReason?: "concurrent-turns";
+  estimationReason?: "concurrent-turns" | "incomplete-usage";
   unavailableReason?: ProviderSessionCostUnavailableReason;
 }
 
@@ -260,23 +260,28 @@ export function addCatalogCostMetric(
 
   let total = 0;
   const estimatedLine = lines.find((line) => line.estimated);
+  const pricedLines: VerifiedUsageLine[] = [];
+  let unpricedLineCount = 0;
+  let invalidReason: ProviderSessionCostUnavailableReason | null = null;
 
   for (const line of lines) {
+    // 只有 provider 自己承认“这一行算不出钱”时才放弃整场会话；
+    // 缺模型的归属失败属于已知的读取边界问题，按未计价轮次处理。
     if (line.unavailableReason) {
-      addUnavailableCostMetric(metrics, line.unavailableReason, watermark, "catalog-estimate", billing);
-      return;
+      invalidReason = line.unavailableReason;
+      break;
     }
 
     if (!line.completed || !line.model.trim() || !line.timestamp) {
-      addUnavailableCostMetric(metrics, "usage-incomplete", watermark, "catalog-estimate", billing);
-      return;
+      // 关键取舍：正在进行的 turn、被截断的日志都会留下未封口用量。
+      // 这类行不能连累已经核验完成的轮次，否则用户会看到“一分钱都不显示”。
+      unpricedLineCount += 1;
+      continue;
     }
 
     if (line.timestamp < billing.billingStartedAt) {
-      addUnavailableCostMetric(metrics, "usage-unavailable", watermark, "catalog-estimate", billing);
-      return;
+      continue;
     }
-
     const entry = findPriceBookEntry(effectivePriceBook, line.provider, line.model);
 
     if (!entry) {
@@ -298,6 +303,12 @@ export function addCatalogCostMetric(
     }
 
     total += cost;
+    pricedLines.push(line);
+  }
+
+  if (invalidReason) {
+    addUnavailableCostMetric(metrics, invalidReason, watermark, "catalog-estimate", billing);
+    return;
   }
 
   if (!Number.isFinite(total) || total < 0) {
@@ -305,24 +316,36 @@ export function addCatalogCostMetric(
     return;
   }
 
+  if (pricedLines.length === 0) {
+    // 一行都核验不出来时，仍然如实告诉用户是“用量记录尚未完成”而不是没有花费。
+    addUnavailableCostMetric(metrics, "usage-incomplete", watermark, "catalog-estimate", billing);
+    return;
+  }
+
+  const incomplete = unpricedLineCount > 0;
+
   metrics.costUsd = {
     value: total,
     source: "derived-provider-metrics",
-    semantic: estimatedLine ? "latest-snapshot" : "priced-final-events",
+    semantic: estimatedLine || incomplete ? "latest-snapshot" : "priced-final-events",
     watermark,
     pricing: {
       kind: "catalog-estimate",
       coverage: "complete",
-      ...(estimatedLine
+      ...(estimatedLine || incomplete
         ? {
             estimated: true,
-            estimationReason: estimatedLine.estimationReason ?? ("concurrent-turns" as const)
+            // 有未封口轮次时优先说明数据缺口，免得“并发估算”盖过更重要的原因。
+            estimationReason: incomplete
+              ? ("incomplete-usage" as const)
+              : estimatedLine?.estimationReason ?? ("concurrent-turns" as const)
           }
         : {}),
+      ...(incomplete ? { unpricedUsageLineCount: unpricedLineCount } : {}),
       pricingProfileId: billing.pricingProfileId,
       priceBookVersion: billing.priceBookVersion,
-      breakdown: buildCostBreakdown(lines, effectivePriceBook),
-      priceBook: buildPriceBookSnapshot(effectivePriceBook, lines),
+      breakdown: buildCostBreakdown(pricedLines, effectivePriceBook),
+      priceBook: buildPriceBookSnapshot(effectivePriceBook, pricedLines),
       priceBookSource: effectivePriceBook.source ?? "builtin",
       ...(effectivePriceBook.fetchedAt
         ? { priceBookFetchedAt: effectivePriceBook.fetchedAt }
