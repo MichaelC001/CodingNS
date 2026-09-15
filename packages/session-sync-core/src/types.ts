@@ -78,6 +78,13 @@ export interface ProviderCapabilities {
   supportsSessionShare?: boolean;
   supportsAsyncPrompt?: boolean;
   supportsNativeAgents?: boolean;
+  /**
+   * 是否支持会话级「计划模式」开关。
+   *
+   * 只对真有只读计划能力的 provider 为 true；开关打开后 provider 应该先产出计划、
+   * 等用户确认再动文件。
+   */
+  supportsPlanMode?: boolean;
   modelOptions?: ProviderModelOption[];
   agentPresetOptions?: ProviderAgentPresetOption[];
   selectedAgentPreset?: string | null;
