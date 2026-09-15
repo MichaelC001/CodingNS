@@ -26,6 +26,7 @@ interface AffairsLightweightStartBody {
   content?: string;
   sourceWorkspaceId?: string | null;
   parentSessionId?: string | null;
+  anchorMessageId?: string | null;
   clientRequestId?: string | null;
   model?: string | null;
   reasoningLevel?: string | null;
@@ -266,6 +267,7 @@ export class AffairsLightweightSessionController {
         workspaceId: request.params.workspaceId,
         sourceWorkspaceId: request.body.sourceWorkspaceId ?? null,
         parentSessionId: request.body.parentSessionId?.trim() || null,
+        anchorMessageId: request.body.anchorMessageId?.trim() || null,
         userId: requireUserId(request),
         provider,
         content,
@@ -307,6 +309,7 @@ export class AffairsLightweightSessionController {
         workspaceId: request.params.workspaceId,
         sourceWorkspaceId: request.body.sourceWorkspaceId ?? null,
         parentSessionId: request.body.parentSessionId?.trim() || null,
+        anchorMessageId: request.body.anchorMessageId?.trim() || null,
         userId: requireUserId(request),
         provider,
         content,

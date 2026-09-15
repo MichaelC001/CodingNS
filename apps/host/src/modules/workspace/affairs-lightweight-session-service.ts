@@ -51,6 +51,7 @@ export interface AffairsLightweightSessionSummary {
   providerConfigMode?: SessionProviderConfigMode;
   providerPresetId?: string | null;
   parentSessionId?: string | null;
+  anchorMessageId?: string | null;
   isSubagent?: boolean;
   subagentLabel?: string | null;
   isArchived?: boolean;
@@ -98,6 +99,7 @@ export interface StartAffairsLightweightSessionInput {
   workspaceId: string;
   sourceWorkspaceId?: string | null;
   parentSessionId?: string | null;
+  anchorMessageId?: string | null;
   userId: string;
   provider: ProviderId;
   content: string;
@@ -350,6 +352,7 @@ export class AffairsLightweightSessionService {
       providerConfigMode: providerBinding.providerConfigMode,
       providerPresetId: providerBinding.providerPresetId,
       parentSessionId: input.parentSessionId?.trim() || null,
+      anchorMessageId: input.anchorMessageId?.trim() || null,
       isSubagent: false,
       subagentLabel: null,
       isArchived: false,
@@ -431,6 +434,7 @@ export class AffairsLightweightSessionService {
       providerConfigMode: providerBinding.providerConfigMode,
       providerPresetId: providerBinding.providerPresetId,
       parentSessionId: input.parentSessionId?.trim() || null,
+      anchorMessageId: input.anchorMessageId?.trim() || null,
       isSubagent: false,
       subagentLabel: null,
       isArchived: false,
