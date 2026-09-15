@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeProviderMessageContent } from "../../src/modules/sessions/session-message-attachment-service.js";
+import {
+  normalizeProviderMessageContent,
+  SessionMessageAttachmentService
+} from "../../src/modules/sessions/session-message-attachment-service.js";
 
 describe("SessionMessageAttachmentService 内容清洗", () => {
   it("会清理 Codex 消息里的内部附件提示块", () => {
@@ -23,5 +26,25 @@ describe("SessionMessageAttachmentService 内容清洗", () => {
     ].join("\n\n");
 
     expect(normalizeProviderMessageContent("codex", content)).toBe(content);
+  });
+
+  it("会为 Command Code 生成附件路径提示并清理内部提示块", () => {
+    const service = new SessionMessageAttachmentService(
+      {} as never,
+      { databasePath: "/tmp/codingns-test.sqlite" } as never
+    );
+    const prompt = service.buildProviderPrompt("command-code", "请分析这张图", [
+      {
+        id: "attachment-1",
+        kind: "image",
+        fileName: "截图.png",
+        mimeType: "image/png",
+        fileSize: 128,
+        filePath: "/tmp/session-attachments/screenshot.png"
+      }
+    ]);
+
+    expect(prompt).toContain("/tmp/session-attachments/screenshot.png");
+    expect(normalizeProviderMessageContent("command-code", prompt!)).toBe("请分析这张图");
   });
 });

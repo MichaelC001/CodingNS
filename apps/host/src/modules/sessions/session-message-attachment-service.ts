@@ -248,7 +248,12 @@ export class SessionMessageAttachmentService {
       return null;
     }
 
-    if (provider !== "claude-code" && provider !== "legna-code" && provider !== "codex") {
+    if (
+      provider !== "claude-code"
+      && provider !== "legna-code"
+      && provider !== "codex"
+      && provider !== "command-code"
+    ) {
       return null;
     }
 
@@ -318,7 +323,12 @@ export class SessionMessageAttachmentService {
 }
 
 export function normalizeProviderMessageContent(provider: string, content: string): string {
-  if (provider !== "claude-code" && provider !== "legna-code" && provider !== "codex") {
+  if (
+    provider !== "claude-code"
+    && provider !== "legna-code"
+    && provider !== "codex"
+    && provider !== "command-code"
+  ) {
     return content;
   }
 
