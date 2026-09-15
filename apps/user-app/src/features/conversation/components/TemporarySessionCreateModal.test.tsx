@@ -2,7 +2,8 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { t } from "../../../shared/i18n";
-import { TemporarySessionCreateModal } from "./TemporarySessionCreateModal";
+import { TemporarySessionCreateModal, TemporarySessionHeaderAction } from "./TemporarySessionCreateModal";
+import type { SessionSummaryDto } from "../api/conversation-api";
 
 const {
   mockListAffairsLightweightSessions,
@@ -132,6 +133,20 @@ describe("TemporarySessionCreateModal", () => {
         { targetHostId: "peer-host-1" }
       );
     });
+  });
+
+  it("从会话头部打开非阻塞浮层，并显示临时会话在当前会话中的序号", async () => {
+    mockListAffairsLightweightSessions.mockResolvedValue({
+      items: [createSession("temporary-1", "第一条临时记录", "parent-1")]
+    });
+    mockGetAffairsLightweightSessionMessages.mockResolvedValue({ messages: [] });
+
+    render(<TemporarySessionHeaderAction session={createSession("parent-1", "父会话", "") as SessionSummaryDto} />);
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.temporarySessionAction") }));
+
+    const dialog = await screen.findByRole("dialog", { name: t("conversation.temporarySessionTitle") });
+    expect(dialog).toHaveClass("conversation-temporary-session-popover");
+    expect(within(dialog).getByText(t("conversation.temporarySessionPosition", { position: 1 }))).toBeInTheDocument();
   });
 });
 
