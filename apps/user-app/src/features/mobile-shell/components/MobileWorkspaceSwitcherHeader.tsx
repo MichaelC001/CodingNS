@@ -49,6 +49,7 @@ interface MobileWorkspaceSwitcherHeaderProps {
   readonly triggerClassName?: string;
   readonly showTriggerChevron?: boolean;
   readonly showWorkspaceMenuButton?: boolean;
+  readonly showWorkspaceSubtitle?: boolean;
   readonly onTriggerClick?: () => void;
   readonly trailing?: ReactNode;
   readonly gestureHandlers?: {
@@ -75,6 +76,7 @@ export function MobileWorkspaceSwitcherHeader({
   triggerClassName,
   showTriggerChevron = true,
   showWorkspaceMenuButton = false,
+  showWorkspaceSubtitle = true,
   onTriggerClick,
   trailing,
   gestureHandlers
@@ -234,7 +236,7 @@ export function MobileWorkspaceSwitcherHeader({
             </div>
           </div>
 
-          {headerSubtitle ? <p className="mobile-workspace-home-path">{headerSubtitle}</p> : null}
+          {showWorkspaceSubtitle && headerSubtitle ? <p className="mobile-workspace-home-path">{headerSubtitle}</p> : null}
           {content}
         </section>
       </MobileTopHeaderFrame>

@@ -179,7 +179,7 @@ describe("ChatIndexPage", () => {
   it("渲染所有工作区的轻量聊天，不混入普通会话", () => {
     renderPage();
 
-    expect(screen.getByRole("heading", { level: 1, name: "项目一" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: t("shell.mobileChatEntry") })).toBeInTheDocument();
     expect(screen.getByText("聊天 Alpha")).toBeInTheDocument();
     expect(screen.getAllByText("聊天 Alpha")).toHaveLength(1);
     expect(screen.queryByText("普通会话 Alpha")).not.toBeInTheDocument();

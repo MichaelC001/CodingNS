@@ -61,6 +61,18 @@ export function buildWorkspaceChatIndexPath(workspaceId: string, workspaceRef?: 
   return appendTargetHostId(`/workspaces/${encodeURIComponent(workspaceId)}/chats`, workspaceRef);
 }
 
+export function buildChatIndexPath(): string {
+  return "/chats";
+}
+
+export function buildNewChatPath(): string {
+  return "/chats/new";
+}
+
+export function buildChatPath(chatId: string): string {
+  return `/chats/${encodeURIComponent(chatId)}`;
+}
+
 export function buildWorkspaceNewChatPath(workspaceId: string, workspaceRef?: WorkspaceRef | null): string {
   return appendTargetHostId(`/workspaces/${encodeURIComponent(workspaceId)}/chats/new`, workspaceRef);
 }

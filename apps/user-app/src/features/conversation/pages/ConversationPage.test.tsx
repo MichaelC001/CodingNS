@@ -1884,46 +1884,15 @@ describe("ConversationPage", () => {
     });
   });
 
-  it("移动端点击顶部工作区切换后，仍会进入目标工作区会话列表", async () => {
-    const selectWorkspace = vi.fn();
-    mockUseWorkbenchShell.mockReturnValue(
-      createMobileWorkbenchShellValue({
-        selectWorkspace,
-        navigationGroups: [
-          {
-            workspace: {
-              id: "workspace-1",
-              name: "工作区一",
-              path: "/Users/jackson/workspace-1"
-            },
-            sessions: []
-          },
-          {
-            workspace: {
-              id: "workspace-2",
-              name: "工作区二",
-              path: "/Users/jackson/workspace-2"
-            },
-            sessions: []
-          }
-        ]
-      })
-    );
+  it("移动端消息页不显示工作区切换器，只保留会话列表入口", async () => {
+    const view = renderDraftConversationPage();
 
-    renderDraftConversationPage({ withRouteProbe: true });
-
-    fireEvent.click(screen.getByRole("button", { name: t("shell.workspaceHomeSwitcherLabel") }));
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: /工作区二/
-      })
-    );
-
-    await waitFor(() => {
-      // 当前 Host 不需要把 current 伪作用域写进路由或 shell；远程 Host 才透传明确的 hostId。
-      expect(selectWorkspace).toHaveBeenCalledWith("workspace-2", undefined);
-      expect(screen.getByTestId("route-probe")).toHaveTextContent("/workspaces/workspace-2/sessions");
-    });
+    expect(
+      view.container.querySelector(".mobile-workspace-home-switcher:not(.mobile-conversation-session-list-trigger)")
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: t("shell.mobileConversationSessionListAction") })
+    ).toBeInTheDocument();
   });
 
   it("子工作树里的并行会话也会把导航摘要同步给 runtime store", async () => {

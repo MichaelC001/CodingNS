@@ -988,7 +988,7 @@ function LiveConversationPage({
             triggerAriaLabel={t("shell.mobileConversationSessionListAction")}
             triggerClassName="mobile-conversation-session-list-trigger"
             showTriggerChevron={false}
-            showWorkspaceMenuButton
+            showWorkspaceSubtitle={false}
             onTriggerClick={mobilePreview.togglePreview}
             heading={mobileSessionTitlePresentation.fullTitle}
             trailing={
@@ -1706,7 +1706,7 @@ function DraftConversationPage({
           triggerAriaLabel={t("shell.mobileConversationSessionListAction")}
           triggerClassName="mobile-conversation-session-list-trigger"
           showTriggerChevron={false}
-          showWorkspaceMenuButton
+          showWorkspaceSubtitle={false}
           onTriggerClick={mobilePreview.togglePreview}
           heading={mobileSessionTitlePresentation.fullTitle}
            trailing={

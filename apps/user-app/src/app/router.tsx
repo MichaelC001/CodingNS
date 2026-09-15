@@ -4,7 +4,8 @@ import {
   Outlet,
   createBrowserRouter,
   createMemoryRouter,
-  useLocation
+  useLocation,
+  useParams
 } from "react-router-dom";
 
 import { useClientConfigSelector } from "../config/client-config-store";
@@ -86,6 +87,25 @@ function WorkbenchIndexRedirect() {
   const shellMode = resolveWorkbenchShellMode(platform);
 
   return <Navigate to={shellMode === "mobile" ? "/workspaces" : "/landing"} replace />;
+}
+
+function LegacyWorkspaceChatRedirect() {
+  const { workspaceId, chatId } = useParams<{ workspaceId?: string; chatId?: string }>();
+  const location = useLocation();
+  const isNewChat = location.pathname.endsWith("/chats/new") || chatId === "new";
+  const destination = isNewChat
+    ? "/chats/new"
+    : chatId
+      ? `/chats/${encodeURIComponent(chatId)}`
+      : "/chats";
+
+  return (
+    <Navigate
+      to={`${destination}${location.search}`}
+      replace
+      state={workspaceId ? { workspaceId } : undefined}
+    />
+  );
 }
 
 function lazyRouteComponent<T extends Record<string, unknown>, K extends keyof T>(
@@ -192,25 +212,37 @@ const appRoutes = [
             element: null
           },
           {
-            path: "workspaces/:workspaceId/chats",
+            path: "chats",
             lazy: lazyRouteComponent(
               () => import("../features/mobile-chats/pages/ChatIndexPage"),
               "ChatIndexPage"
             )
           },
           {
-            path: "workspaces/:workspaceId/chats/new",
+            path: "chats/new",
             lazy: lazyRouteComponent(
               () => import("../features/pure-conversation/PureConversationPage"),
               "PureConversationPage"
             )
           },
           {
-            path: "workspaces/:workspaceId/chats/:chatId",
+            path: "chats/:chatId",
             lazy: lazyRouteComponent(
               () => import("../features/pure-conversation/PureConversationPage"),
               "PureConversationPage"
             )
+          },
+          {
+            path: "workspaces/:workspaceId/chats",
+            element: <LegacyWorkspaceChatRedirect />
+          },
+          {
+            path: "workspaces/:workspaceId/chats/new",
+            element: <LegacyWorkspaceChatRedirect />
+          },
+          {
+            path: "workspaces/:workspaceId/chats/:chatId",
+            element: <LegacyWorkspaceChatRedirect />
           },
           {
             path: "workspaces/:workspaceId/tools",

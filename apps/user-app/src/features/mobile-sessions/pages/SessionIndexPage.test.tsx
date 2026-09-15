@@ -229,7 +229,7 @@ describe("SessionIndexPage", () => {
     renderPage();
 
     expect(screen.queryByText("对话")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "项目一" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: t("shell.mobileSessionsEntry") })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: /^(当前工作区|Current Workspace)$/ })).toBeInTheDocument();
   });
 
@@ -381,7 +381,7 @@ describe("SessionIndexPage", () => {
 
     renderPage();
 
-    expect(screen.getByRole("heading", { level: 1, name: "feat/login-codex" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: t("shell.mobileSessionsEntry") })).toBeInTheDocument();
 
     const workspaceSection = screen.getByRole("heading", { level: 2, name: /^(当前工作区|Current Workspace)$/ }).closest("section");
 

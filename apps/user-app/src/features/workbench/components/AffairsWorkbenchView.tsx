@@ -220,7 +220,7 @@ import {
 import { usePlatform } from "../../../platform/platform-provider";
 import { listWorkspaceBridgeDir } from "../../../platform/preview/codingns-workspace-bridge";
 import { resolveContextMenuPosition } from "../utils/context-menu-position";
-import { buildWorkspaceChatIndexPath, buildWorkspaceChatPath } from "../utils/workbench-navigation";
+import { buildChatIndexPath } from "../utils/workbench-navigation";
 import { SessionListItem } from "../../mobile-sessions/components/SessionListItem";
 import { MobileArchivedSessionsDialog } from "../../mobile-sessions/components/MobileArchivedSessionsDialog";
 import { userPreferenceStore } from "../../../preferences/user-preference-store";
@@ -7403,7 +7403,7 @@ function AffairsLightweightChatPreviewPanel(input: {
 
     await archiveLightweightChat(activeWorkspace, activeChat);
     input.preview.closePreview();
-    navigate(buildWorkspaceChatIndexPath(activeWorkspace.id));
+    navigate(buildChatIndexPath());
   }
 
   async function handleRestoreArchivedChat(sessionId: string) {
@@ -7534,8 +7534,7 @@ export function AffairsLightweightConversationDraftState(input: {
     setLightweightRuntimeSnapshot,
     navigationGroups
   } = useAffairsWorkbenchInternal();
-  const { shellMode, currentWorkspaceRef } = useWorkbenchShell();
-  const navigate = useNavigate();
+  const { shellMode } = useWorkbenchShell();
   const { composerPortalTarget } = useMobileConversationBottomLayer();
   const isMobileChatShell = shellMode === "mobile";
   const mobilePreview = useMobileConversationPreviewController(isMobileChatShell);
@@ -7619,15 +7618,12 @@ export function AffairsLightweightConversationDraftState(input: {
             containerRef={mobilePreviewHeaderRef}
             className="mobile-conversation-page-header"
             currentWorkspace={mobileWorkspace}
-            workspaces={navigationGroups.map((group) => group.workspace)}
-            onSelectWorkspace={(workspaceId, workspaceRef) => {
-              navigate(buildWorkspaceChatIndexPath(workspaceId, workspaceRef ?? currentWorkspaceRef));
-            }}
+            workspaces={[]}
             triggerLabel={<ConversationListActionIcon />}
             triggerAriaLabel={t("shell.mobileConversationSessionListAction")}
             triggerClassName="mobile-conversation-session-list-trigger"
             showTriggerChevron={false}
-            showWorkspaceMenuButton
+            showWorkspaceSubtitle={false}
             onTriggerClick={mobilePreview.togglePreview}
             heading={session.title}
             trailing={(
@@ -7874,8 +7870,7 @@ export function AffairsLightweightConversationLiveState(input: {
   sessionId: string;
   runtimeSeed: AffairsConversationRuntimeSeed;
 }) {
-  const { currentTargetHostId, shellMode, currentWorkspaceRef, navigationGroups } = useWorkbenchShell();
-  const navigate = useNavigate();
+  const { currentTargetHostId, shellMode, navigationGroups } = useWorkbenchShell();
   const { composerPortalTarget } = useMobileConversationBottomLayer();
   const runtime = useAffairsLightweightSessionController({
     sessionId: input.sessionId,
@@ -7987,15 +7982,12 @@ export function AffairsLightweightConversationLiveState(input: {
             containerRef={mobilePreviewHeaderRef}
             className="mobile-conversation-page-header"
             currentWorkspace={mobileWorkspace}
-            workspaces={navigationGroups.map((group) => group.workspace)}
-            onSelectWorkspace={(workspaceId, workspaceRef) => {
-              navigate(buildWorkspaceChatIndexPath(workspaceId, workspaceRef ?? currentWorkspaceRef));
-            }}
+            workspaces={[]}
             triggerLabel={<ConversationListActionIcon />}
             triggerAriaLabel={t("shell.mobileConversationSessionListAction")}
             triggerClassName="mobile-conversation-session-list-trigger"
             showTriggerChevron={false}
-            showWorkspaceMenuButton
+            showWorkspaceSubtitle={false}
             onTriggerClick={mobilePreview.togglePreview}
             heading={session?.title ?? t("conversation.titleFallback")}
             trailing={(

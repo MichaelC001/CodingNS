@@ -50,9 +50,9 @@ const chatSummary = {
 
 function renderChatPage() {
   return render(
-    <MemoryRouter initialEntries={[`/workspaces/${WORKSPACE_ID}/chats/chat-1`]}>
+    <MemoryRouter initialEntries={["/chats/chat-1"]}>
       <Routes>
-        <Route path="/workspaces/:workspaceId/chats/:chatId" element={<PureConversationPage />} />
+        <Route path="/chats/:chatId" element={<PureConversationPage />} />
       </Routes>
     </MemoryRouter>
   );

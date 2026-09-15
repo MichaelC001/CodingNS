@@ -255,7 +255,7 @@ describe("PureConversationPage", () => {
       <MemoryRouter initialEntries={["/workspaces/workspace-1/chats/new?provider=codex"]}>
         <Routes>
           <Route path="/workspaces/:workspaceId/chats/new" element={<PureConversationPage />} />
-          <Route path="/workspaces/:workspaceId/chats/:chatId" element={<PureConversationPage />} />
+          <Route path="/chats/:chatId" element={<PureConversationPage />} />
         </Routes>
       </MemoryRouter>
     );

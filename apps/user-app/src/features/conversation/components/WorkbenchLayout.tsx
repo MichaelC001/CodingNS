@@ -183,9 +183,9 @@ import { buildSessionTitlePresentation } from "../session-title";
 import { toViewMessage, type SessionMessageViewModel } from "../runtime/session-runtime-machine";
 import {
   buildDraftSessionPath,
-  buildWorkspaceChatIndexPath,
-  buildWorkspaceChatPath,
-  buildWorkspaceNewChatPath,
+  buildChatIndexPath,
+  buildChatPath,
+  buildNewChatPath,
   buildDocumentsPath,
   buildWorkspaceHomePath,
   buildWorkspaceDetailPath,
@@ -993,6 +993,30 @@ function resolveRouteLightweightChatMatch(pathname: string): {
   chatId: string | null;
   workspaceId: string | null;
 } | null {
+  if (matchPath("/chats/new", pathname)) {
+    return {
+      chatId: null,
+      workspaceId: null
+    };
+  }
+
+  const standaloneChatMatch = matchPath("/chats/:chatId", pathname);
+  const standaloneChatId = standaloneChatMatch?.params.chatId?.trim();
+
+  if (standaloneChatId) {
+    return {
+      chatId: standaloneChatId,
+      workspaceId: null
+    };
+  }
+
+  if (matchPath("/chats", pathname)) {
+    return {
+      chatId: null,
+      workspaceId: null
+    };
+  }
+
   const newChatMatch = matchPath("/workspaces/:workspaceId/chats/new", pathname);
   const newChatWorkspaceId = newChatMatch?.params.workspaceId?.trim();
 
@@ -1033,7 +1057,9 @@ function isLightweightChatRoute(pathname: string) {
 
 function isLightweightChatDetailRoute(pathname: string) {
   return Boolean(
-    matchPath("/workspaces/:workspaceId/chats/new", pathname)
+    matchPath("/chats/new", pathname)
+    || matchPath("/chats/:chatId", pathname)
+    || matchPath("/workspaces/:workspaceId/chats/new", pathname)
     || matchPath("/workspaces/:workspaceId/chats/:chatId", pathname)
   );
 }
@@ -9680,7 +9706,7 @@ function SidebarContent({
       setLightweightChatDeletionTarget(null);
 
       if (activeLightweightChatId === session.sessionId) {
-        navigate(buildWorkspaceChatIndexPath(workspace.id));
+        navigate(buildChatIndexPath());
       }
 
       showToast({
@@ -15438,8 +15464,10 @@ export function WorkbenchLayout({
     }
   }, [navigate]);
   const openLightweightChat = useCallback((workspace: WorkspaceDto, session: SessionSummaryDto) => {
-    navigate(buildWorkspaceChatPath(workspace.id, session.sessionId, workspace.id === currentWorkspaceId ? currentWorkspaceRef : null));
-  }, [currentWorkspaceId, currentWorkspaceRef, navigate]);
+    navigate(buildChatPath(session.sessionId), {
+      state: { workspaceId: workspace.id }
+    });
+  }, [navigate]);
   const createLightweightChat = useCallback((workspace: WorkspaceDto) => {
     setLightweightChatCreateWorkspace(workspace);
     setLightweightChatCreateAffairsState({
@@ -15460,11 +15488,12 @@ export function WorkbenchLayout({
       return;
     }
 
-    const workspaceRef = lightweightChatCreateWorkspace.id === currentWorkspaceId ? currentWorkspaceRef : null;
-    const newChatPath = buildWorkspaceNewChatPath(lightweightChatCreateWorkspace.id, workspaceRef);
-    navigate(appendLightweightChatProviderParam(newChatPath, draft.provider));
+    const newChatPath = buildNewChatPath();
+    navigate(appendLightweightChatProviderParam(newChatPath, draft.provider), {
+      state: { workspaceId: lightweightChatCreateWorkspace.id }
+    });
     closeLightweightChatCreateModal();
-  }, [closeLightweightChatCreateModal, currentWorkspaceId, currentWorkspaceRef, lightweightChatCreateWorkspace, navigate]);
+  }, [closeLightweightChatCreateModal, lightweightChatCreateWorkspace, navigate]);
 
   const toggleNotificationArchive = useCallback(async (notificationId: string, archived: boolean) => {
     if (!BUTLER_FEATURE_ENABLED) {
@@ -17944,11 +17973,7 @@ export function WorkbenchLayout({
               setMobileNavOpen(false);
               setMobileInfoOpen(false);
               setCodeEmbeddedAffairsState(null);
-              navigate(
-                currentWorkspaceId
-                  ? buildWorkspaceChatIndexPath(currentWorkspaceId, currentWorkspaceRef)
-                  : buildWorkspaceHomePath()
-              );
+              navigate(buildChatIndexPath());
             }}
             onNavigateSessions={() => {
               setMobileNavOpen(false);
@@ -18039,11 +18064,7 @@ export function WorkbenchLayout({
                     onNavigateConversation={goToConversationTab}
                     onNavigateChat={() => {
                       setCodeEmbeddedAffairsState(null);
-                      navigate(
-                        currentWorkspaceId
-                          ? buildWorkspaceChatIndexPath(currentWorkspaceId, currentWorkspaceRef)
-                          : buildWorkspaceHomePath()
-                      );
+                      navigate(buildChatIndexPath());
                     }}
                     onOpenTerminalDock={openCodeTerminalDock}
                     onNavigateButler={() =>

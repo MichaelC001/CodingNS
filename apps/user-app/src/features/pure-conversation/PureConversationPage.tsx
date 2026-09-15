@@ -9,7 +9,7 @@ import {
   buildAffairsConversationDraftNodeId,
   buildAffairsConversationSessionNodeId
 } from "../workbench/components/AffairsWorkbenchView";
-import { buildWorkspaceChatPath } from "../workbench/utils/workbench-navigation";
+import { buildChatPath } from "../workbench/utils/workbench-navigation";
 import { createDefaultAffairsViewState } from "../workbench/utils/workbench-mode";
 import type { AffairsViewState } from "../workbench/types/workbench-mode";
 import "../mobile-sessions/styles.css";
@@ -43,12 +43,30 @@ export function PureConversationPage() {
   const navigate = useNavigate();
   const {
     navigationGroups,
-    currentWorkspaceRef,
+    lightweightChatSessionsByWorkspaceId,
     currentWorkspaceId,
     refreshNavigation
   } = useWorkbenchShell();
-  const workspaceId = params.workspaceId?.trim() || currentWorkspaceId;
   const routeChatId = params.chatId?.trim() ?? null;
+  const routeWorkspaceId = params.workspaceId?.trim() || null;
+  const navigationStateWorkspaceId = useMemo(() => {
+    if (!location.state || typeof location.state !== "object") {
+      return null;
+    }
+
+    const value = (location.state as { workspaceId?: unknown }).workspaceId;
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }, [location.state]);
+  const chatWorkspaceId = useMemo(() => {
+    if (!routeChatId) {
+      return null;
+    }
+
+    return Object.entries(lightweightChatSessionsByWorkspaceId).find(([, sessions]) =>
+      sessions.some((session) => session.sessionId === routeChatId)
+    )?.[0] ?? null;
+  }, [lightweightChatSessionsByWorkspaceId, routeChatId]);
+  const workspaceId = routeWorkspaceId || navigationStateWorkspaceId || chatWorkspaceId || currentWorkspaceId;
   const isNewChat = !routeChatId || routeChatId === "new";
   const workspaceName = useMemo(
     () => navigationGroups.find((group) => group.workspace.id === workspaceId)?.workspace.name ?? null,
@@ -83,11 +101,14 @@ export function PureConversationPage() {
     const nextSessionId = resolveLightweightChatSessionId(nextState.selectedNodeId);
 
     if (workspaceId && nextSessionId && nextSessionId !== routeChatId) {
-      navigate(buildWorkspaceChatPath(workspaceId, nextSessionId, currentWorkspaceRef), { replace: true });
+      navigate(buildChatPath(nextSessionId), {
+        replace: true,
+        state: { workspaceId }
+      });
       return;
     }
 
-  }, [currentWorkspaceRef, navigate, routeChatId, workspaceId]);
+  }, [navigate, routeChatId, workspaceId]);
 
   if (!workspaceId || !state) {
     return null;

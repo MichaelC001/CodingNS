@@ -5,7 +5,7 @@ import { t } from "../../../shared/i18n";
 import type { ProviderId, SessionSummaryDto } from "../../conversation/api/conversation-api";
 import { useWorkbenchShell } from "../../conversation/components/WorkbenchLayout";
 import { isArchivedSessionVisibleInArchive } from "../../conversation/session-fork-display";
-import { MobileWorkspaceSwitcherHeader } from "../../mobile-shell/components/MobileWorkspaceSwitcherHeader";
+import { MobilePageHeader } from "../../mobile-shell/components/MobilePageHeader";
 import { MobileArchivedSessionsDialog } from "../components/MobileArchivedSessionsDialog";
 import { MobileCreateSessionSheet } from "../components/MobileCreateSessionSheet";
 import {
@@ -43,7 +43,6 @@ export function SessionIndexPage() {
     currentWorkspaceId,
     currentSessionId,
     navigationLoading,
-    selectWorkspace,
     toggleFavoriteSession,
     archiveSession,
     unarchiveSession,
@@ -343,23 +342,9 @@ export function SessionIndexPage() {
 
   return (
     <main className="session-index-page mobile-feature-page mobile-page-scroll-root mobile-page-with-top-header">
-      <MobileWorkspaceSwitcherHeader
-        currentWorkspace={
-          currentWorkspaceSummary
-            ? {
-                id: currentWorkspaceSummary.workspace.id,
-                name: currentWorkspaceSummary.label,
-                path: currentWorkspaceSummary.subtitle
-              }
-            : null
-        }
-        workspaces={navigationGroups.map((group) => group.workspace)}
-        workspaceOptions={workspaceOptions}
-        onSelectWorkspace={(workspaceId, workspaceRef) => {
-          selectWorkspace(workspaceId, workspaceRef);
-          navigate(buildWorkspaceSessionIndexPath(workspaceId, workspaceRef));
-        }}
-        content={
+      <MobilePageHeader
+        title={t("shell.mobileSessionsEntry")}
+        actions={(
           <button
             type="button"
             className="primary-button mobile-session-index-create-button"
@@ -368,7 +353,7 @@ export function SessionIndexPage() {
           >
             {t("shell.createSession")}
           </button>
-        }
+        )}
       />
 
       <div className="mobile-page-top-body">

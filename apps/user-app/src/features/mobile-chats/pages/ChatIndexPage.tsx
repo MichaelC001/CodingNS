@@ -1,31 +1,23 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 
 import { t } from "../../../shared/i18n";
 import type { SessionSummaryDto } from "../../conversation/api/conversation-api";
 import { useWorkbenchShell } from "../../conversation/components/WorkbenchLayout";
-import { MobileWorkspaceSwitcherHeader } from "../../mobile-shell/components/MobileWorkspaceSwitcherHeader";
+import { MobilePageHeader } from "../../mobile-shell/components/MobilePageHeader";
 import { MobileArchivedSessionsDialog } from "../../mobile-sessions/components/MobileArchivedSessionsDialog";
 import { SessionListItem } from "../../mobile-sessions/components/SessionListItem";
 import { writeMobileConversationPreviewMode } from "../../mobile-sessions/mobile-conversation-state";
-import {
-  findNavigationWorkspaceTarget,
-  flattenMobileWorkspaceOptions
-} from "../../workbench/utils/mobile-workspace-tree";
-import { buildWorkspaceChatIndexPath } from "../../workbench/utils/workbench-navigation";
+import { findNavigationWorkspaceTarget } from "../../workbench/utils/mobile-workspace-tree";
 import { buildWorkspaceVisualContextMap } from "../../workbench/utils/worktree-visual-context";
 import "../../mobile-sessions/styles.css";
 
 export function ChatIndexPage() {
-  const navigate = useNavigate();
   const {
     navigationGroups,
     currentWorkspaceId,
-    currentWorkspaceRef,
     lightweightChatSessionsByWorkspaceId,
     lightweightArchivedChatSessionsByWorkspaceId,
     activeLightweightChatId,
-    selectWorkspace,
     openLightweightChat,
     createLightweightChat,
     toggleLightweightChatFavorite,
@@ -33,7 +25,6 @@ export function ChatIndexPage() {
     unarchiveLightweightChat,
     renameLightweightChat
   } = useWorkbenchShell();
-  const workspaceOptions = flattenMobileWorkspaceOptions(navigationGroups);
   const workspaceVisualContextMap = useMemo(
     () => buildWorkspaceVisualContextMap(navigationGroups),
     [navigationGroups]
@@ -119,23 +110,9 @@ export function ChatIndexPage() {
 
   return (
     <main className="session-index-page mobile-feature-page mobile-page-scroll-root mobile-page-with-top-header">
-      <MobileWorkspaceSwitcherHeader
-        currentWorkspace={
-          workspace
-            ? {
-                id: workspace.id,
-                name: workspace.name,
-                path: workspace.path
-              }
-            : null
-        }
-        workspaces={navigationGroups.map((group) => group.workspace)}
-        workspaceOptions={workspaceOptions}
-        onSelectWorkspace={(workspaceId, workspaceRef) => {
-          selectWorkspace(workspaceId, workspaceRef);
-          navigate(buildWorkspaceChatIndexPath(workspaceId, workspaceRef));
-        }}
-        content={
+      <MobilePageHeader
+        title={t("shell.mobileChatEntry")}
+        actions={(
           <button
             type="button"
             className="primary-button mobile-session-index-create-button"
@@ -148,7 +125,7 @@ export function ChatIndexPage() {
           >
             {t("shell.chatNewAction")}
           </button>
-        }
+        )}
       />
 
       <div className="mobile-page-top-body">
