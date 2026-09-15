@@ -77,7 +77,8 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     sink: ProviderRuntimeEventSink,
     mode: "start" | "continue"
   ): ProviderRuntimeLaunchResult {
-    const homeDir = request.runtimeHomeDir?.trim() || this.homeDir;
+    // Command Code 的会话文件跟随真实 HOME，工作区 runtime 目录只承载 Host 注入的环境与规则。
+    const homeDir = this.homeDir;
     const args = buildCommandCodeArgs(request, mode);
     const pendingProviderSessionId = request.providerSessionId?.trim()
       || `pending://${request.sessionId}`;
@@ -268,7 +269,9 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       try {
         const parsed = JSON.parse(trimmed) as unknown;
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          handleEvent(parsed as CommandCodeEvent);
+          const event = parsed as CommandCodeEvent;
+          const nestedEvent = event.type === "event" ? asRecord(event.event) : null;
+          handleEvent((nestedEvent ?? event) as CommandCodeEvent);
         } else {
           console.warn(`[session-sync-core] Command Code runtime ignored non-object event at line ${lineNumber}`);
         }
@@ -482,6 +485,24 @@ function emitMessageFromPayload(
 ): void {
   const payload = asRecord(event.message ?? event.data ?? event);
   const role = payload.role === "user" || payload.role === "system" ? payload.role : "assistant";
+
+  if (Array.isArray(payload.content)) {
+    for (const block of payload.content) {
+      const contentBlock = asRecord(block);
+      const blockType = readText(contentBlock.type).toLowerCase();
+      const blockContent = readText(
+        blockType === "thinking"
+          ? contentBlock.thinking ?? contentBlock.text
+          : contentBlock.text ?? contentBlock.content
+      );
+
+      if (blockContent) {
+        emitMessage(blockType === "thinking" ? "thinking" : "text", role, blockContent, null, event);
+      }
+    }
+    return;
+  }
+
   const content = readText(payload.text ?? payload.content ?? event.text ?? event.content);
   if (content) emitMessage("text", role, content, null, event);
 }

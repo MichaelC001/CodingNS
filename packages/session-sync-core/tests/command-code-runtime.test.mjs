@@ -79,11 +79,14 @@ test("CommandCodeRuntimeAdapter 解析 NDJSON、绑定 transcript 并保持增�
         return spawn(command, [scriptPath, ...args], options);
       }
     });
-    const launch = await adapter.startSession(createRequest(), sink);
+    const launch = await adapter.startSession(createRequest({
+      runtimeHomeDir: join(homeDir, "workspace-runtime")
+    }), sink);
     await launch.completed;
 
     assert.equal(seenArgs[0], "-p");
     assert.equal(seenArgs[1], "检查项目");
+    assert.deepEqual(seenArgs.slice(2, 5), ["--output-format", "json", "--skip-onboarding"]);
     assert.equal(seenArgs.includes("--resume"), false);
     assert.equal(bindings[0].providerSessionId, "command-code-session-1");
     assert.match(bindings[0].rawStoreRef, /\/projects\/users-jackson-code-coding-ns\/command-code-session-1\.jsonl$/);
@@ -95,6 +98,37 @@ test("CommandCodeRuntimeAdapter 解析 NDJSON、绑定 transcript 并保持增�
     assert.equal(textEvents[1].message.sequence, 5);
     assert.equal(textEvents[1].message.content, "你好，Command Code");
     assert.equal(events.filter((event) => event.type === "status" && event.detail?.startsWith("COMMAND_CODE_UNKNOWN_EVENT")).length, 1);
+    assert.equal(events.at(-1).type, "complete");
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeRuntimeAdapter 解包 Command Code 的 event 包装并实时转发文本", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-wrapped-runtime-"));
+  const scriptPath = join(homeDir, "wrapped.mjs");
+  writeFileSync(scriptPath, `
+console.log(JSON.stringify({ type: "event", event: { type: "run_start", sessionId: "wrapped-session" } }));
+console.log(JSON.stringify({ type: "event", event: { type: "text_delta", delta: "第一段" } }));
+console.log(JSON.stringify({ type: "event", event: { type: "text_delta", delta: "第二段" } }));
+console.log(JSON.stringify({ type: "event", event: { type: "message_update", content: [{ type: "text", text: "第一段第二段" }] } }));
+console.log(JSON.stringify({ type: "event", event: { type: "run_end" } }));
+`, "utf8");
+  const { events, sink } = createSink();
+
+  try {
+    const adapter = new CommandCodeRuntimeAdapter({
+      commandPath: process.execPath,
+      homeDir,
+      spawnFactory: (command, args, options) => spawn(command, [scriptPath, ...args], options)
+    });
+    await (await adapter.startSession(createRequest(), sink)).completed;
+
+    const textEvents = events.filter((event) => event.type === "message" && event.message.kind === "text");
+    assert.equal(textEvents.length, 3);
+    assert.equal(textEvents[0].message.content, "第一段");
+    assert.equal(textEvents[1].message.content, "第一段第二段");
+    assert.equal(textEvents[2].message.content, "第一段第二段");
     assert.equal(events.at(-1).type, "complete");
   } finally {
     rmSync(homeDir, { recursive: true, force: true });

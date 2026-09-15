@@ -375,6 +375,119 @@ describe("SessionHistoryService", () => {
 
     expect(page.messages.map((message) => message.sequence)).toEqual([10, 11]);
   });
+
+  it("provider binding 仍为 pending 时，changed-files 只返回缓存，不读取不存在的 provider 会话", async () => {
+    const readPage = vi.fn();
+    const service = Object.create(SessionHistoryService.prototype) as SessionHistoryService;
+    Object.assign(service as unknown as {
+      sessionChangedFileService: {
+        hasIndexedSession: (sessionId: string) => boolean;
+        listBySessionId: (sessionId: string) => unknown[];
+      };
+      getSession: (sessionId: string, userId: string) => unknown;
+      getBindingOrThrow: (sessionId: string) => {
+        providerSessionId: string;
+        rawStoreRef: string;
+      };
+      readPage: typeof readPage;
+    }, {
+      sessionChangedFileService: {
+        hasIndexedSession: () => false,
+        listBySessionId: () => []
+      },
+      getSession: vi.fn(),
+      getBindingOrThrow: () => ({
+        providerSessionId: "pending://command-code/session-1",
+        rawStoreRef: "pending://command-code/session-1"
+      }),
+      readPage
+    });
+
+    await expect((service as unknown as {
+      ensureSessionChangedFilesIndexed: (sessionId: string) => Promise<void>;
+    }).ensureSessionChangedFilesIndexed("session-1")).resolves.toBeUndefined();
+
+    expect(readPage).not.toHaveBeenCalled();
+  });
+
+  it("command-code transcript 尚未落盘时，changed-files 返回空列表而不是抛出 404", async () => {
+    const service = Object.create(SessionHistoryService.prototype) as SessionHistoryService;
+    const markSessionIndexed = vi.fn();
+
+    Object.assign(service as unknown as {
+      sessionChangedFileService: {
+        hasIndexedSession: (sessionId: string) => boolean;
+        listBySessionId: (sessionId: string) => unknown[];
+        markSessionIndexed: (sessionId: string, indexedAt: string) => void;
+      };
+      getBindingOrThrow: (sessionId: string) => {
+        provider: string;
+        providerSessionId: string;
+        rawStoreRef: string;
+      };
+      readPage: () => Promise<never>;
+    }, {
+      sessionChangedFileService: {
+        hasIndexedSession: () => false,
+        listBySessionId: () => [],
+        markSessionIndexed
+      },
+      getBindingOrThrow: () => ({
+        provider: "command-code",
+        providerSessionId: "command-code-session-1",
+        rawStoreRef: "/Users/jackson/.commandcode/projects/workspace/command-code-session-1.jsonl"
+      }),
+      readPage: async () => {
+        throw new AppError({
+          statusCode: 404,
+          errorCode: "PROVIDER_SESSION_NOT_FOUND",
+          message: "provider 会话不存在或已被删除"
+        });
+      }
+    });
+
+    await expect((service as unknown as {
+      ensureSessionChangedFilesIndexed: (sessionId: string) => Promise<void>;
+    }).ensureSessionChangedFilesIndexed("session-1")).resolves.toBeUndefined();
+    expect(markSessionIndexed).toHaveBeenCalledWith("session-1", expect.any(String));
+  });
+
+  it("command-code pending binding 的历史订阅返回空页，不把 pending ID 交给 provider", async () => {
+    const service = Object.create(SessionHistoryService.prototype) as SessionHistoryService;
+
+    Object.assign(service as unknown as {
+      assertProviderEnabledForHistory: (provider: string) => void;
+    }, {
+      assertProviderEnabledForHistory: vi.fn()
+    });
+
+    const page = await (service as unknown as {
+      readPage: (
+        sessionId: string,
+        provider: string,
+        providerSessionId: string,
+        rawStoreRef: string,
+        cursor: string | null,
+        limit: number,
+        direction: "forward" | "backward"
+      ) => Promise<{ messages: unknown[]; cursor: string | null; nextCursor: string | null; total: number }>;
+    }).readPage(
+      "session-1",
+      "command-code",
+      "pending://command-code/session-1",
+      "pending://command-code/session-1",
+      null,
+      50,
+      "backward"
+    );
+
+    expect(page).toEqual({
+      messages: [],
+      cursor: null,
+      nextCursor: null,
+      total: 0
+    });
+  });
 });
 
 function createService(overrides?: {

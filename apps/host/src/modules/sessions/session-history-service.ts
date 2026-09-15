@@ -4057,7 +4057,7 @@ export class SessionHistoryService {
   ): Promise<HistoryPage> {
     this.assertProviderEnabledForHistory(provider);
 
-    if (shouldShortCircuitClaudePendingHistory(provider, providerSessionId, rawStoreRef)) {
+    if (shouldShortCircuitPendingHistory(provider, providerSessionId, rawStoreRef)) {
       return {
         messages: [],
         cursor,
@@ -5519,19 +5519,41 @@ export class SessionHistoryService {
     }
 
     const binding = this.getBindingOrThrow(sessionId);
+
+    // 新会话的 provider binding 可能还在等待 CLI 返回真实会话 ID。
+    // 此时只返回已经由 runtime 事件写入的缓存，下一次读取再继续补索引。
+    if (
+      isPendingBindingValue(binding.providerSessionId)
+      || isPendingBindingValue(binding.rawStoreRef)
+    ) {
+      return;
+    }
+
     const seenCursors = new Set<string>();
     let cursor: string | null = null;
 
     while (true) {
-      const page = await this.readPage(
-        sessionId,
-        binding.provider,
-        binding.providerSessionId,
-        binding.rawStoreRef,
-        cursor,
-        100,
-        "forward"
-      );
+      let page: HistoryPage;
+
+      try {
+        page = await this.readPage(
+          sessionId,
+          binding.provider,
+          binding.providerSessionId,
+          binding.rawStoreRef,
+          cursor,
+          100,
+          "forward"
+        );
+      } catch (error) {
+        // Command Code 可能先发出真实 session ID，再异步落盘 transcript。
+        // changed-files 只是辅助展示，暂时没有文件时等下一次索引即可。
+        if (binding.provider === "command-code" && isProviderSessionNotFoundError(error)) {
+          this.sessionChangedFileService.markSessionIndexed(sessionId, nowIso());
+          return;
+        }
+        throw error;
+      }
 
       if (!page.nextCursor || seenCursors.has(page.nextCursor)) {
         this.sessionChangedFileService.markSessionIndexed(sessionId, nowIso());
@@ -8095,6 +8117,12 @@ function isPendingBindingValue(value: string): boolean {
   return value.trim().toLowerCase().startsWith("pending://");
 }
 
+function isProviderSessionNotFoundError(error: unknown): boolean {
+  return error instanceof AppError
+    ? error.errorCode === "PROVIDER_SESSION_NOT_FOUND"
+    : error instanceof Error && error.message === "PROVIDER_SESSION_NOT_FOUND";
+}
+
 function shouldRepairClaudeEmptyHistoryBinding(
   binding: Pick<SessionBinding, "provider" | "providerSessionId" | "rawStoreRef" | "runtimeHomeDir">
 ): boolean {
@@ -8260,12 +8288,12 @@ function isClaudePendingRuntimeRawStoreRef(rawStoreRef: string): boolean {
   return normalizedRawStoreRef.includes("/.pending-");
 }
 
-function shouldShortCircuitClaudePendingHistory(
+function shouldShortCircuitPendingHistory(
   provider: string,
   providerSessionId: string,
   rawStoreRef: string
 ): boolean {
-  if (provider !== "claude-code" && provider !== "gemini") {
+  if (provider !== "claude-code" && provider !== "gemini" && provider !== "command-code") {
     return false;
   }
 

@@ -6,7 +6,7 @@
 
 ## 2. 会话生命周期
 
-- 新建：`cmd -p <prompt> --output-format json`
+- 新建：`cmd -p <prompt> --output-format json --skip-onboarding`（Command Code 的 `json` 输出本身是 NDJSON 事件流，最后追加一行结果）
 - 继续：追加 `--continue`
 - 恢复：追加 `--resume <sessionId>`
 - 分叉：追加 `--fork-session`
