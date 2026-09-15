@@ -3093,6 +3093,104 @@ export class SessionHistoryService {
       });
     }
 
+    if (binding.provider === "deepseek-harness" || binding.provider === "opencode") {
+      let providerSubscription: ProviderSubscription | null = null;
+      let fallbackPolling = false;
+      let lastProviderEventAt = Date.now();
+
+      providerSubscription = this.sessionSyncService.subscribe(
+        binding.provider,
+        binding.providerSessionId,
+        binding.rawStoreRef,
+        currentCursor,
+        safeLimit,
+        async (event) => {
+          if (closed || event.messages.length === 0) {
+            return;
+          }
+
+          lastProviderEventAt = Date.now();
+          if (this.shouldSuppressStreamingSessionDelta(sessionId, userId)) {
+            return;
+          }
+
+          const currentBinding = this.getBindingOrThrow(sessionId);
+          const page: HistoryPage = {
+            messages: event.messages,
+            cursor: event.cursor ?? currentCursor,
+            nextCursor: null,
+            total: event.messages.length
+          };
+          currentCursor = page.cursor;
+          await this.publishHistoryEnvelope(
+            sessionId,
+            currentBinding,
+            page,
+            deliveredMessages,
+            onEnvelope,
+            "session.delta"
+          );
+        }
+      );
+
+      // 实时流断开或 provider 暂时没有推送时，用低频历史读取兜底，避免恢复后丢消息。
+      const fallbackTimer = setInterval(() => {
+        if (closed || fallbackPolling) {
+          return;
+        }
+
+        if (this.shouldSuppressStreamingSessionDelta(sessionId, userId)) {
+          lastProviderEventAt = Date.now();
+          return;
+        }
+
+        if (Date.now() - lastProviderEventAt < 5_000) {
+          return;
+        }
+
+        fallbackPolling = true;
+        void this.pullSessionHistory(
+          sessionId,
+          currentCursor,
+          safeLimit,
+          deliveredMessages,
+          onEnvelope,
+          "session.delta",
+          () => closed
+        )
+          .then((nextCursor) => {
+            currentCursor = nextCursor;
+            lastProviderEventAt = Date.now();
+          })
+          .catch((error) => {
+            if (this.shouldSuppressDeepSeekHarnessSubscriptionFailure(sessionId, error)) {
+              closed = true;
+              clearInterval(fallbackTimer);
+              this.clearDeepSeekHarnessSubscriptionFailure(sessionId, currentCursor);
+              return;
+            }
+
+            this.markSessionError(sessionId, "SUBSCRIBE_FAILED", error);
+          })
+          .finally(() => {
+            fallbackPolling = false;
+          });
+      }, 5_000);
+
+      return {
+        close: () => {
+          if (closed) {
+            return;
+          }
+
+          closed = true;
+          clearInterval(fallbackTimer);
+          providerSubscription?.close();
+          this.streamingDeltaSuppressionDebugState.delete(sessionId);
+        }
+      };
+    }
+
     const timer = setInterval(() => {
       if (closed || polling) {
         return;
