@@ -1816,6 +1816,7 @@ export const zhCN = {
     sessionStatsCostModelsDescription: "列出本次会话使用的模型及其对应费用。",
     sessionStatsCostNativeBreakdownUnavailable: "当前提供商只返回总费用，暂时没有按模型拆分。",
     sessionStatsCostBreakdownUnavailable: "当前没有可用的按模型费用明细。",
+    sessionStatsCostUnpricedLines: "另有 {count} 条用量尚未封口（正在进行或日志被截断），未计入以上金额。",
     sessionStatsCostConversionTitle: "人民币换算",
     sessionStatsCostConversionDescription: "人民币金额仅用于展示，不会改变美元费用。",
     sessionStatsCostUsdLabel: "美元费用",

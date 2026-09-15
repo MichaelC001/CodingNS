@@ -12,7 +12,8 @@ export type BuiltinProviderId =
   | "kimi"
    | "deepseek-harness"
    | "grok"
-   | "command-code";
+   | "command-code"
+   | "pi";
 export type ProviderId = BuiltinProviderId | (string & {});
 export type SyncStatus = "idle" | "syncing" | "error";
 export type DeliveryState = "sending" | "sent" | "failed";
@@ -1697,7 +1698,9 @@ export interface ProviderSessionStatValueDto {
     kind: "provider-native" | "catalog-estimate";
     coverage: "complete" | "unavailable";
     estimated?: boolean;
-    estimationReason?: "concurrent-turns";
+    estimationReason?: "concurrent-turns" | "incomplete-usage";
+    /** 没有拿到最终用量、因此未计入金额的用量行数。 */
+    unpricedUsageLineCount?: number;
     unavailableReason?:
       | "billing-context-missing"
       | "pricing-profile-unsupported"

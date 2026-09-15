@@ -4445,6 +4445,13 @@ function SessionCostDetailsBody({
                   : t("conversation.sessionStatsCostBreakdownUnavailable")}
               </p>
             )}
+            {pricing?.unpricedUsageLineCount ? (
+              <p className="composer-session-cost-empty">
+                {t("conversation.sessionStatsCostUnpricedLines", {
+                  count: String(pricing.unpricedUsageLineCount)
+                })}
+              </p>
+            ) : null}
           </ModalSection>
 
           <ModalSection

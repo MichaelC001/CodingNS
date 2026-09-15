@@ -1986,6 +1986,7 @@ export const enUS = {
     sessionStatsCostModelsDescription: "Models used in this session and the cost attributed to each one.",
     sessionStatsCostNativeBreakdownUnavailable: "This provider returned only a total cost, so model-level detail is not available.",
     sessionStatsCostBreakdownUnavailable: "Model-level cost detail is not available for this session.",
+    sessionStatsCostUnpricedLines: "{count} more usage entries are not finalized yet (still running or truncated in the log) and are excluded from the amount above.",
     sessionStatsCostConversionTitle: "CNY conversion",
     sessionStatsCostConversionDescription: "The CNY amount is for display and does not change the USD cost.",
     sessionStatsCostUsdLabel: "USD cost",
