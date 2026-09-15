@@ -169,7 +169,7 @@ export class WorktreeManager {
         targetPath,
         createdWorkspace,
         worktreeCreated,
-        signal
+        signal?.aborted ? undefined : signal
       );
       throw mapCreateWorktreeError(error);
     }

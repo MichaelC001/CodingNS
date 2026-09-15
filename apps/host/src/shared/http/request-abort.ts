@@ -39,7 +39,9 @@ export function createRequestAbortSignal(request: FastifyRequest): AbortSignal {
     raw.off?.("error", onError);
   };
 
-  if (raw.aborted || raw.destroyed) {
+  // IncomingMessage.destroyed 只表示底层流已经销毁；请求体可能已经完整读取。
+  // 这种情况下不能把一个正常完成的请求误判成客户端主动取消。
+  if (raw.aborted || (raw.destroyed && raw.complete !== true)) {
     controller.abort(new Error("request aborted"));
     return controller.signal;
   }
