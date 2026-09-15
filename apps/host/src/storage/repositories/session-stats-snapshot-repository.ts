@@ -180,7 +180,10 @@ export class SessionStatsSnapshotRepository {
         internalModelUsages,
         hasCompleteCost && costMetric?.pricing?.kind === "catalog-estimate"
           ? costMetric.pricing.breakdown
-          : undefined
+          : undefined,
+        // Provider 自己给出完整金额时（例如 Pi 用供应商价格算的费用），
+        // 按模型金额也是权威值，可以一起保留；价格表估算的局部金额仍然不保留。
+        hasCompleteCost && costMetric?.pricing?.kind === "provider-native"
       );
       const insertUsage = this.db.prepare(
         `INSERT INTO session_model_usages (
@@ -248,12 +251,13 @@ interface SessionModelUsageRow {
 
 function mergeModelUsages(
   usages: readonly ProviderSessionModelUsage[] | undefined,
-  costBreakdown: readonly ProviderSessionCostBreakdown[] | undefined
+  costBreakdown: readonly ProviderSessionCostBreakdown[] | undefined,
+  includeUsageCost = false
 ): ProviderSessionModelUsage[] {
   const merged = new Map<string, ProviderSessionModelUsage>();
 
   for (const value of usages ?? []) {
-    const usage = normalizeModelUsage(value);
+    const usage = normalizeModelUsage(value, includeUsageCost);
 
     if (!usage) {
       continue;

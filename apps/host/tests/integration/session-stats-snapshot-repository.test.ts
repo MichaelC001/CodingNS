@@ -97,6 +97,65 @@ describe("会话统计快照仓储", () => {
     expect(unpricedUsage[0]).not.toHaveProperty("costUsd");
   });
 
+  it("Pi 的 provider-native 费用会落成完整账单并保留按模型归因", () => {
+    const repository = createRepository();
+    // 模型用量表带会话外键，先给 Pi 会话建一条绑定。
+    repository["db"].prepare(
+      `INSERT INTO session_bindings (
+         session_id, user_id, workspace_id, provider, provider_session_id, raw_store_ref,
+         created_at, updated_at
+       ) VALUES (?, 'user-1', 'workspace-1', 'pi', 'pi-session-1', '/tmp/pi/session-1.jsonl',
+         '2026-09-15T00:00:00.000Z', '2026-09-15T00:00:00.000Z')`
+    ).run("session-pi");
+
+    repository.replaceSnapshot("session-pi", {
+      provider: "pi",
+      capturedAt: "2026-09-15T00:10:00.000Z",
+      metrics: {
+        inputTokens: metric(2000),
+        outputTokens: metric(30),
+        costUsd: {
+          value: 0.004,
+          source: "provider-session-store",
+          semantic: "priced-final-events",
+          watermark: { kind: "source-sequence", value: "2" },
+          // Pi 自己按供应商价格算出的金额：来源必须标成 provider-native，
+          // 这样 Host 不会拿它去和价格表估算混为一谈。
+          pricing: { kind: "provider-native", coverage: "complete" }
+        }
+      },
+      modelUsages: [{
+        provider: "pi",
+        model: "deepseek/deepseek-flash",
+        inputTokens: 2000,
+        outputTokens: 30,
+        reasoningTokens: 0,
+        cacheReadTokens: 400,
+        cacheWriteTokens: 60,
+        costUsd: 0.004
+      }]
+    }, "2026-09-15T00:10:01.000Z");
+
+    expect(repository.findBillBySessionId("session-pi")).toMatchObject({
+      sessionId: "session-pi",
+      costUsd: 0.004,
+      pricing: {
+        kind: "provider-native",
+        coverage: "complete"
+      }
+    });
+    expect(repository.listModelUsages("session-pi")).toEqual([
+      expect.objectContaining({
+        provider: "pi",
+        model: "deepseek/deepseek-flash",
+        inputTokens: 2000,
+        cacheReadTokens: 400,
+        cacheWriteTokens: 60,
+        costUsd: 0.004
+      })
+    ]);
+  });
+
   it("旧数据库启动时补齐三张表，删除会话绑定后级联清理", () => {
     const directory = mkdtempSync(join(tmpdir(), "codingns-session-stats-migration-"));
     tempDirs.push(directory);
