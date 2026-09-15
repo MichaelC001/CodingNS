@@ -273,7 +273,10 @@ export class GrokAdapter implements ProviderAdapter {
       const runtimeCapabilities = [
         "session/new",
         ...(agentCapabilities.loadSession === true ? ["session/load"] : []),
-        "session/prompt"
+        "session/prompt",
+        // ACP 协议已验证会通过 session/update 发送这两类结构化工具事件。
+        "tool_call",
+        "tool_call_update"
       ];
       const modelOptions = mergeGrokModelOptions(
         parseGrokModelCatalog(asRecord(created.models).availableModels),

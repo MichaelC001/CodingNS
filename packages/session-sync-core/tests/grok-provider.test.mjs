@@ -79,6 +79,12 @@ describe("Grok provider", () => {
     expect(mapGrokUpdate("s-1", "grok://session/s-1", { type: "complete" }, 1).terminal).toBe("complete");
   });
 
+  it("没有细粒度能力列表时使用已验证的 ACP 工具事件基线", () => {
+    expect(createGrokCapabilities().supportsStructuredToolCalls).toBe(true);
+    expect(createGrokCapabilities({ ready: false }).supportsStructuredToolCalls).toBe(false);
+    expect(createGrokCapabilities({ runtimeCapabilities: ["session/prompt"] }).supportsStructuredToolCalls).toBe(false);
+  });
+
   it("兼容真实 ACP 的 sessionUpdate/content 字段", () => {
     const mapped = mapGrokUpdate("s-1", "grok://session/s-1", {
       sessionUpdate: "agent_message_chunk",
@@ -322,6 +328,7 @@ describe("Grok provider", () => {
       expect(capabilities).toMatchObject({
         runtimeVersion: "1.0.25",
         protocolVersion: "1",
+        supportsStructuredToolCalls: true,
         modelOptions: [
           {
             id: "grok-4.6",

@@ -14,8 +14,10 @@ export function createGrokCapabilities(input: GrokCapabilityInput = {}): Provide
   const hasPrompt = input.ready !== false && (capabilities.size === 0 || capabilities.has("session/prompt"));
   const hasCreate = input.ready !== false && (capabilities.size === 0 || capabilities.has("session/new"));
   const hasLoad = input.ready !== false && (capabilities.size === 0 || capabilities.has("session/load"));
+  // Grok ACP 的官方稳定更新类型包含 tool_call/tool_call_update。
+  // 没有握手能力列表时使用这条已验证的协议基线；一旦收到列表，就必须按列表严格判断。
   const structuredTools = capabilities.size === 0
-    ? false
+    ? input.ready !== false
     : capabilities.has("tool_call") && capabilities.has("tool_call_update");
   const status = input.readOnly ? "read-only" : input.ready === false ? "degraded" : "ready";
   const supportsPermissionBridge = status === "ready";
