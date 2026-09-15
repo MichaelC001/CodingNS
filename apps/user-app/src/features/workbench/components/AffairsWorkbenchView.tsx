@@ -3106,7 +3106,9 @@ export function AffairsWorkbenchProvider({
     }
 
     if (activeSection === "conversation") {
-      const lightweightNodes = (Array.isArray(lightweightConversationSessions) ? lightweightConversationSessions : []).map<AffairsSidebarNode>((session) => ({
+      const lightweightNodes = filterVisibleLightweightConversationSessions(
+        Array.isArray(lightweightConversationSessions) ? lightweightConversationSessions : []
+      ).map<AffairsSidebarNode>((session) => ({
         id: buildAffairsConversationSessionNodeId("lightweight", session.sessionId),
         label: session.title,
         summary: [
@@ -5104,6 +5106,10 @@ function sortConversationSessionSummaries(sessions: SessionSummaryDto[]): Sessio
   return [...sessions].sort((left, right) => resolveConversationSessionSortTime(right) - resolveConversationSessionSortTime(left));
 }
 
+function filterVisibleLightweightConversationSessions(sessions: SessionSummaryDto[]): SessionSummaryDto[] {
+  return sessions.filter((session) => !session.parentSessionId?.trim());
+}
+
 function upsertConversationSessionSummary(
   sessions: SessionSummaryDto[],
   session: SessionSummaryDto
@@ -5683,7 +5689,7 @@ export function AffairsSidebarPanel() {
         ? [currentAgentSession, ...agentConversationSessions]
         : agentConversationSessions;
     const allConversationListItems: AffairsConversationListItem[] = [
-      ...lightweightConversationSessions.map((session) => ({
+      ...filterVisibleLightweightConversationSessions(lightweightConversationSessions).map((session) => ({
         id: buildAffairsConversationSessionNodeId("lightweight", session.sessionId),
         kind: "lightweight" as const,
         session
@@ -10542,7 +10548,7 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
     [agentWorkspaceId, butlerControlSession]
   );
   const assistantHistoryItems = useMemo(() => {
-    const lightweightItems = lightweightConversationSessions.map((session) => ({
+    const lightweightItems = filterVisibleLightweightConversationSessions(lightweightConversationSessions).map((session) => ({
       id: buildAffairsConversationSessionNodeId("lightweight", session.sessionId),
       kind: "lightweight" as const,
       session
