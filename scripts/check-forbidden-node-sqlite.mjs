@@ -75,7 +75,7 @@ for (const file of listFiles()) {
 }
 
 if (violations.length > 0) {
-  console.error("禁止直接使用 node:sqlite。正式代码和测试必须走 better-sqlite3 封装。");
+  console.error("禁止直接使用 node:sqlite。正式代码和测试必须走项目 SQLite 适配器。");
   for (const violation of violations) {
     console.error(
       `- ${violation.file}:${violation.line} ${violation.name}: ${violation.text}`

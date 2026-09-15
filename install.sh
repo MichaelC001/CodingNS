@@ -12,10 +12,8 @@ MIRROR_NPM_REGISTRY="${CODINGNS_MIRROR_REGISTRY:-https://registry.npmmirror.com}
 PROCESS_NAME="${CODINGNS_PM2_PROCESS_NAME:-codingns}"
 DRY_RUN="${CODINGNS_INSTALL_DRY_RUN:-0}"
 REGISTRY_PROBE_PACKAGE_SPEC="${CODINGNS_REGISTRY_PROBE_SPEC:-@openai/codex-sdk}"
-WINDOWS_PRIVATE_NODE_VERSION="${CODINGNS_WINDOWS_NODE_VERSION:-22.16.0}"
-WINDOWS_PRIVATE_NODE_DIST_BASE="${CODINGNS_WINDOWS_NODE_DIST_BASE:-https://nodejs.org/dist}"
-WINDOWS_NODE_PTY_PACKAGE_NAME="${CODINGNS_WINDOWS_NODE_PTY_PACKAGE_NAME:-@codingns/node-pty}"
-WINDOWS_BETTER_SQLITE_PACKAGE_NAME="${CODINGNS_WINDOWS_BETTER_SQLITE_PACKAGE_NAME:-better-sqlite3}"
+PTY_PACKAGE_NAME="@lydell/node-pty"
+SQLITE_PACKAGE_NAME="libsql"
 DEEPSEEK_HARNESS_ROOT="${CODINGNS_DEEPSEEK_HARNESS_ROOT:-$HOME/.local/share/codingns/deepseek-harness}"
 DEEPSEEK_HARNESS_BIN="${CODINGNS_DEEPSEEK_HARNESS_BIN:-$HOME/.local/bin/dsh}"
 INSTALL_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,10 +60,6 @@ TARGET_NODE_VERSION=""
 TARGET_NODE_ABI=""
 INSTALL_ENV_ARGS=()
 RUNTIME_HOME=""
-NODE_RUNTIME_ROOT=""
-NODE_RUNTIME_VERSIONS_DIR=""
-NODE_ACTIVE_META=""
-PRIVATE_NODE_VERSION_DIR=""
 PRIVATE_NPM_PREFIX=""
 PRIVATE_NPM_CACHE_DIR=""
 PRIVATE_DOWNLOAD_CACHE_DIR=""
@@ -75,10 +69,6 @@ PRIVATE_PM2_HOME=""
 PRIVATE_SERVICE_STATE_DIR=""
 PRIVATE_NPM_USERCONFIG=""
 PRIVATE_PM2_START_SCRIPT=""
-PRIVATE_NODE_SOURCE_URL=""
-PRIVATE_NODE_ARCHIVE_SHA256=""
-PRIVATE_NPM_CMD=""
-PRIVATE_NPX_CMD=""
 TARGET_RUNTIME_UNSUPPORTED_PACKAGES=()
 TARGET_RUNTIME_FALLBACK_PACKAGES=()
 TARGET_RUNTIME_MANAGED_PACKAGE_SUMMARY=()
@@ -87,8 +77,8 @@ CODINGNS_PACKAGE_NAME=""
 CODINGNS_PACKAGE_VERSION=""
 CODINGNS_PTY_PACKAGE_NAME=""
 CODINGNS_PTY_PACKAGE_VERSION=""
-CODINGNS_BETTER_SQLITE_PACKAGE_NAME=""
-CODINGNS_BETTER_SQLITE_PACKAGE_VERSION=""
+CODINGNS_SQLITE_PACKAGE_NAME=""
+CODINGNS_SQLITE_PACKAGE_VERSION=""
 
 msg() {
   local key="$1"
@@ -109,8 +99,8 @@ msg() {
 
     zh:error_root) printf '不要直接用 sudo 整个执行脚本。请用普通用户运行，脚本会在需要管理员权限时单独请求 sudo。';;
     en:error_root) printf 'Do not run the whole installer with sudo. Run it as a normal user and the script will request sudo only when needed.';;
-    zh:error_no_node) printf '未检测到 node，请先安装 Node.js 22。';;
-    en:error_no_node) printf 'Node.js was not found. Please install Node.js 22 first.';;
+    zh:error_no_node) printf '未检测到 node，请先安装 Node.js 22 或更高版本。';;
+    en:error_no_node) printf 'Node.js was not found. Please install Node.js 22 or later first.';;
     zh:error_no_npm) printf '未检测到 npm，请先安装 npm 10 或更高版本。';;
     en:error_no_npm) printf 'npm was not found. Please install npm 10 or later first.';;
     zh:error_no_make) printf '未检测到 make，Linux 下安装 CodingNS 需要编译工具链。';;
@@ -119,8 +109,8 @@ msg() {
     en:error_no_cpp_compiler) printf 'g++ was not found. CodingNS installation on Linux needs a C++ compiler.';;
     zh:error_no_python3) printf '未检测到 python3，Linux 下安装 CodingNS 需要 Python 3。';;
     en:error_no_python3) printf 'python3 was not found. CodingNS installation on Linux needs Python 3.';;
-    zh:error_bad_node_version) printf '当前 Node.js 版本是 %s，项目要求固定为 22.x。' "$@";;
-    en:error_bad_node_version) printf 'Your current Node.js version is %s, but CodingNS requires Node.js 22.x.' "$@";;
+    zh:error_bad_node_version) printf '当前 Node.js 版本是 %s，项目要求 Node.js 22 或更高版本。' "$@";;
+    en:error_bad_node_version) printf 'Your current Node.js version is %s, but CodingNS requires Node.js 22 or later.' "$@";;
     zh:error_bad_npm_version) printf '当前 npm 版本是 %s，项目要求 >= 10。' "$@";;
     en:error_bad_npm_version) printf 'Your current npm version is %s, but CodingNS requires >= 10.' "$@";;
     zh:error_read_node_version) printf '无法识别 Node.js 版本：%s' "$@";;
@@ -155,22 +145,6 @@ msg() {
     en:error_no_supported_linux_installer) printf 'No supported automatic installer was detected for this Linux distribution. Only apt-get is supported for now.';;
     zh:error_brew_install_failed) printf 'Homebrew 安装或初始化失败，无法继续自动安装 Node.js。';;
     en:error_brew_install_failed) printf 'Homebrew installation or initialization failed, so Node.js cannot be installed automatically.';;
-    zh:error_windows_private_node_unsupported_arch) printf '当前 Windows 安装只支持 x64 架构，检测到：%s' "$@";;
-    en:error_windows_private_node_unsupported_arch) printf 'This Windows installer currently supports only x64. Detected: %s' "$@";;
-    zh:error_windows_private_node_missing_tools) printf '当前 Windows 环境缺少私有 Node.js 运行时所需工具，请先安装 curl 和 unzip，或设置 CODINGNS_WINDOWS_NODE_DIST_BASE 指向已可访问的分发源。';;
-    en:error_windows_private_node_missing_tools) printf 'The Windows environment is missing tools required for the private Node.js runtime. Install curl and unzip first, or set CODINGNS_WINDOWS_NODE_DIST_BASE to a reachable distribution source.';;
-    zh:error_windows_private_node_download_failed) printf '无法下载 Windows 私有 Node.js 运行时：%s' "$@";;
-    en:error_windows_private_node_download_failed) printf 'Unable to download the private Windows Node.js runtime: %s' "$@";;
-    zh:error_windows_private_node_extract_failed) printf '无法解压 Windows 私有 Node.js 运行时：%s' "$@";;
-    en:error_windows_private_node_extract_failed) printf 'Unable to extract the private Windows Node.js runtime: %s' "$@";;
-    zh:error_windows_private_node_incomplete) printf 'Windows 私有 Node.js 运行时不完整：%s' "$@";;
-    en:error_windows_private_node_incomplete) printf 'The private Windows Node.js runtime is incomplete: %s' "$@";;
-    zh:error_windows_private_node_checksum_missing) printf '无法获取 Windows 私有 Node.js 运行时的 SHA256 校验值：%s' "$@";;
-    en:error_windows_private_node_checksum_missing) printf 'Unable to determine the SHA256 checksum for the private Windows Node.js runtime: %s' "$@";;
-    zh:error_windows_private_node_checksum_failed) printf 'Windows 私有 Node.js 运行时校验失败：%s' "$@";;
-    en:error_windows_private_node_checksum_failed) printf 'The private Windows Node.js runtime checksum verification failed: %s' "$@";;
-    zh:error_windows_target_runtime_unsupported) printf '目标私有运行时不受支持：%s' "$@";;
-    en:error_windows_target_runtime_unsupported) printf 'The target private runtime is unsupported: %s' "$@";;
 
     zh:info_need_sudo) printf '检测到 npm 全局目录需要管理员权限，后续全局安装会使用 sudo。';;
     en:info_need_sudo) printf 'The npm global directory needs administrator permission. The installer will use sudo for global installs.';;
@@ -252,26 +226,16 @@ msg() {
     en:warn_no_startup_platform) printf 'This system does not expose a supported start-on-boot platform for automatic setup, so that step was skipped. You can still run pm2 startup manually later.';;
     zh:warn_linux_startup_no_sudo) printf '当前 Linux 平台需要 sudo 才能写入 systemd 启动项，已跳过自动配置。';;
     en:warn_linux_startup_no_sudo) printf 'This Linux machine needs sudo to write the systemd startup entry, so automatic startup setup was skipped.';;
-    zh:warn_windows_missing_build_tools) printf '当前是 Windows 环境，但未检测到 Visual Studio C++ Build Tools。CodingNS 依赖 better-sqlite3、node-pty 这类原生模块；如果预编译包下载失败，npm 会回退到本机编译，并要求你先安装 Visual Studio Build Tools 2022，勾选“Desktop development with C++”。';;
-    en:warn_windows_missing_build_tools) printf 'This is a Windows environment, but Visual Studio C++ Build Tools were not detected. CodingNS depends on native modules such as better-sqlite3 and node-pty. If the prebuilt binaries cannot be downloaded, npm falls back to local compilation and requires Visual Studio Build Tools 2022 with the "Desktop development with C++" workload.';;
-    zh:warn_windows_node24_native_modules) printf '当前是 Windows + Node.js %s。这个组合安装原生模块时更容易暴露预编译包下载或本机编译问题，建议优先使用 Node.js 22 LTS。' "$@";;
-    en:warn_windows_node24_native_modules) printf 'You are using Windows + Node.js %s. This combination is more likely to surface native module prebuild or local compilation issues, so Node.js 22 LTS is recommended first.' "$@";;
-    zh:warn_windows_registry_not_enough) printf '补充说明：切换 npm 源只会影响 npm 包下载，不会解决 better-sqlite3 或 node-pty 从 GitHub Releases 下载预编译包失败的问题。';;
-    en:warn_windows_registry_not_enough) printf 'Important: switching the npm registry only affects npm package downloads. It does not fix failures when better-sqlite3 or node-pty try to download prebuilt binaries from GitHub Releases.';;
+    zh:warn_windows_missing_build_tools) printf '当前是 Windows 环境，但未检测到 Visual Studio C++ Build Tools。CodingNS 依赖 libsql、@lydell/node-pty 这类原生模块；如果预编译包下载失败，npm 会回退到本机编译，并要求你先安装 Visual Studio Build Tools 2022，勾选“Desktop development with C++”。';;
+    en:warn_windows_missing_build_tools) printf 'This is a Windows environment, but Visual Studio C++ Build Tools were not detected. CodingNS depends on native modules such as libsql and @lydell/node-pty. If the prebuilt binaries cannot be downloaded, npm falls back to local compilation and requires Visual Studio Build Tools 2022 with the "Desktop development with C++" workload.';;
+    zh:warn_windows_registry_not_enough) printf '补充说明：切换 npm 源只会影响 npm 包下载，不会解决 libsql 或 @lydell/node-pty 从 GitHub Releases 下载预编译包失败的问题。';;
+    en:warn_windows_registry_not_enough) printf 'Important: switching the npm registry only affects npm package downloads. It does not fix failures when libsql or @lydell/node-pty try to download prebuilt binaries from GitHub Releases.';;
     zh:warn_windows_install_failed_vs) printf '安装日志里已经看到 node-gyp 找不到 Visual Studio。请先安装 Visual Studio Build Tools 2022，并勾选“Desktop development with C++”，然后重试。';;
     en:warn_windows_install_failed_vs) printf 'The install log shows that node-gyp could not find Visual Studio. Install Visual Studio Build Tools 2022 with the "Desktop development with C++" workload, then retry.';;
     zh:warn_windows_install_failed_prebuild_network) printf '安装日志里已经看到原生模块预编译包下载失败（例如 ECONNRESET 或 timed out）。这通常是访问 GitHub Releases 失败，不是 npm 源本身的问题。';;
     en:warn_windows_install_failed_prebuild_network) printf 'The install log shows that downloading native prebuilt binaries failed (for example ECONNRESET or timed out). This is usually a GitHub Releases connectivity problem, not an npm registry problem.';;
-    zh:warn_windows_using_private_node) printf 'Windows 正式安装将使用 CodingNS 私有 Node.js %s 运行时，系统 Node 仅用于诊断。' "$@";;
-    en:warn_windows_using_private_node) printf 'Windows installation will use the private CodingNS Node.js %s runtime. The system Node.js is used for diagnostics only.' "$@";;
-    zh:warn_windows_target_runtime_fallback_build) printf '目标私有运行时下，以下原生依赖仍可能回退本机编译：%s' "$@";;
-    en:warn_windows_target_runtime_fallback_build) printf 'Under the target private runtime, these native dependencies may still fall back to local compilation: %s' "$@";;
-    zh:info_runtime_better_sqlite) printf '实际 SQLite 依赖：%s' "$@";;
-    en:info_runtime_better_sqlite) printf 'Runtime SQLite dependency: %s' "$@";;
-    zh:warn_windows_system_node_diagnostics) printf '检测到系统 Node.js：%s（ABI %s）' "$@";;
-    en:warn_windows_system_node_diagnostics) printf 'Detected system Node.js: %s (ABI %s)' "$@";;
-    zh:info_windows_target_runtime_summary) printf '目标私有运行时：Windows x64 + Node.js %s（ABI %s）' "$@";;
-    en:info_windows_target_runtime_summary) printf 'Target private runtime: Windows x64 + Node.js %s (ABI %s)' "$@";;
+    zh:info_runtime_sqlite) printf '实际 SQLite 依赖：%s' "$@";;
+    en:info_runtime_sqlite) printf 'Runtime SQLite dependency: %s' "$@";;
     zh:info_windows_managed_package_summary) printf '受管原生依赖检查：%s' "$@";;
     en:info_windows_managed_package_summary) printf 'Managed native package check: %s' "$@";;
     zh:warn_install_log_path) printf '失败日志位置：%s' "$@";;
@@ -454,10 +418,6 @@ refresh_runtime_binaries() {
 
 build_windows_runtime_paths() {
   RUNTIME_HOME="$SELECTED_DATA_DIR/runtime"
-  NODE_RUNTIME_ROOT="$RUNTIME_HOME/node-22"
-  NODE_RUNTIME_VERSIONS_DIR="$NODE_RUNTIME_ROOT/versions"
-  NODE_ACTIVE_META="$NODE_RUNTIME_ROOT/active.json"
-  PRIVATE_NODE_VERSION_DIR="$NODE_RUNTIME_VERSIONS_DIR/node-v${WINDOWS_PRIVATE_NODE_VERSION}-win-x64"
   PRIVATE_NPM_PREFIX="$RUNTIME_HOME/npm-global"
   PRIVATE_NPM_CACHE_DIR="$RUNTIME_HOME/cache/npm"
   PRIVATE_DOWNLOAD_CACHE_DIR="$RUNTIME_HOME/cache/downloads"
@@ -470,7 +430,6 @@ build_windows_runtime_paths() {
 
 ensure_windows_runtime_dirs() {
   mkdir -p \
-    "$NODE_RUNTIME_VERSIONS_DIR" \
     "$PRIVATE_NPM_PREFIX" \
     "$PRIVATE_NPM_CACHE_DIR" \
     "$PRIVATE_DOWNLOAD_CACHE_DIR" \
@@ -775,13 +734,13 @@ try {
 EOF
 }
 
-resolve_required_better_sqlite_package_name() {
-  printf 'better-sqlite3\n'
+resolve_required_sqlite_package_name() {
+  printf 'libsql\n'
 }
 
-resolve_codingns_better_sqlite_dependency_metadata() {
-  CODINGNS_BETTER_SQLITE_PACKAGE_NAME=""
-  CODINGNS_BETTER_SQLITE_PACKAGE_VERSION=""
+resolve_codingns_sqlite_dependency_metadata() {
+  CODINGNS_SQLITE_PACKAGE_NAME=""
+  CODINGNS_SQLITE_PACKAGE_VERSION=""
 
   if [[ -z "$CODINGNS_PACKAGE_ROOT" ]]; then
     return 0
@@ -791,15 +750,8 @@ resolve_codingns_better_sqlite_dependency_metadata() {
   local dependency_package_root=""
   local dependency_package_json=""
 
-  required_package_name="$(resolve_required_better_sqlite_package_name)"
+  required_package_name="$(resolve_required_sqlite_package_name)"
   dependency_package_root="$(resolve_package_root_from_dependency "$CODINGNS_PACKAGE_ROOT" "$required_package_name" 2>/dev/null || true)"
-
-  if [[ -z "$dependency_package_root" && "$required_package_name" != "better-sqlite3" ]]; then
-    dependency_package_root="$(resolve_package_root_from_dependency "$CODINGNS_PACKAGE_ROOT" "better-sqlite3" 2>/dev/null || true)"
-    if [[ -n "$dependency_package_root" ]]; then
-      required_package_name="better-sqlite3"
-    fi
-  fi
 
   if [[ -z "$dependency_package_root" ]]; then
     return 0
@@ -810,28 +762,15 @@ resolve_codingns_better_sqlite_dependency_metadata() {
     return 0
   fi
 
-  CODINGNS_BETTER_SQLITE_PACKAGE_NAME="$(read_package_json_field "$dependency_package_json" "name" || true)"
-  CODINGNS_BETTER_SQLITE_PACKAGE_VERSION="$(read_package_json_field "$dependency_package_json" "version" || true)"
+  CODINGNS_SQLITE_PACKAGE_NAME="$(read_package_json_field "$dependency_package_json" "name" || true)"
+  CODINGNS_SQLITE_PACKAGE_VERSION="$(read_package_json_field "$dependency_package_json" "version" || true)"
 
-  [[ -n "$CODINGNS_BETTER_SQLITE_PACKAGE_NAME" ]] || CODINGNS_BETTER_SQLITE_PACKAGE_NAME="$required_package_name"
+  [[ -n "$CODINGNS_SQLITE_PACKAGE_NAME" ]] || CODINGNS_SQLITE_PACKAGE_NAME="$required_package_name"
   return 0
 }
 
 resolve_required_pty_package_name() {
-  if ! is_windows_environment; then
-    printf 'node-pty\n'
-    return
-  fi
-
-  local target_major=""
-  target_major="$(read_major_version "${TARGET_NODE_VERSION:-}")"
-
-  if [[ "$target_major" == "22" ]] && [[ "$(uname -m)" == "x86_64" || "$(uname -m)" == "amd64" ]]; then
-    printf '%s\n' "$WINDOWS_NODE_PTY_PACKAGE_NAME"
-    return
-  fi
-
-  printf 'node-pty\n'
+  printf '%s\n' "$PTY_PACKAGE_NAME"
 }
 
 resolve_codingns_pty_dependency_metadata() {
@@ -848,13 +787,6 @@ resolve_codingns_pty_dependency_metadata() {
 
   required_package_name="$(resolve_required_pty_package_name)"
   dependency_package_root="$(resolve_package_root_from_dependency "$CODINGNS_PACKAGE_ROOT" "$required_package_name" 2>/dev/null || true)"
-
-  if [[ -z "$dependency_package_root" && "$required_package_name" != "node-pty" ]]; then
-    dependency_package_root="$(resolve_package_root_from_dependency "$CODINGNS_PACKAGE_ROOT" "node-pty" 2>/dev/null || true)"
-    if [[ -n "$dependency_package_root" ]]; then
-      required_package_name="node-pty"
-    fi
-  fi
 
   if [[ -z "$dependency_package_root" ]]; then
     return 0
@@ -937,273 +869,6 @@ download_file_with_fallback() {
   fi
 
   return 1
-}
-
-extract_zip_with_fallback() {
-  local archive_path="$1"
-  local output_dir="$2"
-  local native_archive_path=""
-  local native_output_dir=""
-
-  if command_exists unzip; then
-    unzip -oq "$archive_path" -d "$output_dir"
-    return
-  fi
-
-  if command_exists tar; then
-    tar -xf "$archive_path" -C "$output_dir"
-    return
-  fi
-
-  if command_exists powershell.exe; then
-    native_archive_path="$(to_native_windows_path "$archive_path")"
-    native_output_dir="$(to_native_windows_path "$output_dir")"
-    CODINGNS_ZIP_PATH="$native_archive_path" \
-    CODINGNS_ZIP_OUT="$native_output_dir" \
-      powershell.exe -NoLogo -NoProfile -Command \
-        '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:CODINGNS_ZIP_PATH -DestinationPath $env:CODINGNS_ZIP_OUT -Force'
-    return
-  fi
-
-  return 1
-}
-
-compute_file_sha256() {
-  local target_path="$1"
-  local native_target_path=""
-
-  if command_exists sha256sum; then
-    sha256sum "$target_path" | awk '{print $1}'
-    return
-  fi
-
-  if command_exists shasum; then
-    shasum -a 256 "$target_path" | awk '{print $1}'
-    return
-  fi
-
-  if command_exists certutil.exe; then
-    certutil.exe -hashfile "$target_path" SHA256 2>/dev/null | awk 'NR==2 {print $1}' | tr -d '\r'
-    return
-  fi
-
-  if command_exists powershell.exe; then
-    native_target_path="$(to_native_windows_path "$target_path")"
-    CODINGNS_HASH_PATH="$native_target_path" \
-      powershell.exe -NoLogo -NoProfile -Command \
-        '$ErrorActionPreference = "Stop"; (Get-FileHash -LiteralPath $env:CODINGNS_HASH_PATH -Algorithm SHA256).Hash.ToLowerInvariant()' | tr -d '\r'
-    return
-  fi
-
-  return 1
-}
-
-write_private_node_active_meta() {
-  local node_exe="$PRIVATE_NODE_VERSION_DIR/node.exe"
-  local npm_cmd="$PRIVATE_NODE_VERSION_DIR/npm.cmd"
-  local npx_cmd="$PRIVATE_NODE_VERSION_DIR/npx.cmd"
-
-  cat >"$NODE_ACTIVE_META" <<EOF
-{
-  "version": "${WINDOWS_PRIVATE_NODE_VERSION}",
-  "platform": "win32",
-  "arch": "x64",
-  "nodeDir": "${PRIVATE_NODE_VERSION_DIR}",
-  "nodeExe": "${node_exe}",
-  "npmCmd": "${npm_cmd}",
-  "npxCmd": "${npx_cmd}",
-  "installedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-  "sourceUrl": "${PRIVATE_NODE_SOURCE_URL}",
-  "sha256": "${PRIVATE_NODE_ARCHIVE_SHA256}"
-}
-EOF
-}
-
-resolve_private_node_paths() {
-  local node_exe="$PRIVATE_NODE_VERSION_DIR/node.exe"
-  local npm_cmd="$PRIVATE_NODE_VERSION_DIR/npm.cmd"
-  local npx_cmd="$PRIVATE_NODE_VERSION_DIR/npx.cmd"
-
-  [[ -x "$node_exe" ]] || die error_windows_private_node_incomplete "$node_exe"
-  [[ -f "$npm_cmd" ]] || die error_windows_private_node_incomplete "$npm_cmd"
-  [[ -f "$npx_cmd" ]] || die error_windows_private_node_incomplete "$npx_cmd"
-
-  NODE_BIN="$node_exe"
-  NPM_BIN="$npm_cmd"
-  PRIVATE_NPM_CMD="$npm_cmd"
-  PRIVATE_NPX_CMD="$npx_cmd"
-  TARGET_NODE_VERSION="$(read_node_version_text "$NODE_BIN")"
-  TARGET_NODE_ABI="$(read_node_abi_text "$NODE_BIN")"
-  write_private_node_active_meta
-}
-
-download_windows_private_node_runtime() {
-  local archive_name="node-v${WINDOWS_PRIVATE_NODE_VERSION}-win-x64.zip"
-  local archive_path="$PRIVATE_DOWNLOAD_CACHE_DIR/$archive_name"
-  local shasums_path="$PRIVATE_DOWNLOAD_CACHE_DIR/SHASUMS256-v${WINDOWS_PRIVATE_NODE_VERSION}.txt"
-  local archive_url="${WINDOWS_PRIVATE_NODE_DIST_BASE}/v${WINDOWS_PRIVATE_NODE_VERSION}/${archive_name}"
-  local shasums_url="${WINDOWS_PRIVATE_NODE_DIST_BASE}/v${WINDOWS_PRIVATE_NODE_VERSION}/SHASUMS256.txt"
-  local extract_dir="$PRIVATE_NODE_VERSION_DIR"
-  local expected_sha256=""
-  local actual_sha256=""
-
-  PRIVATE_NODE_SOURCE_URL="$archive_url"
-  mkdir -p "$NODE_RUNTIME_VERSIONS_DIR"
-
-  if [[ "$DRY_RUN" == "1" ]]; then
-    say_info_custom "download \"$archive_url\" -> \"$archive_path\""
-    say_info_custom "download \"$shasums_url\" -> \"$shasums_path\""
-    say_info_custom "verify sha256 \"$archive_path\""
-    say_info_custom "extract \"$archive_path\" -> \"$NODE_RUNTIME_VERSIONS_DIR\""
-    PRIVATE_NODE_ARCHIVE_SHA256="dry-run"
-    return
-  fi
-
-  if [[ ! -f "$shasums_path" ]]; then
-    if ! download_file_with_fallback "$shasums_url" "$shasums_path"; then
-      die error_windows_private_node_download_failed "$shasums_url"
-    fi
-  fi
-
-  expected_sha256="$(awk -v target="$archive_name" '$2 == target {print $1; exit}' "$shasums_path" | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
-  [[ -n "$expected_sha256" ]] || die error_windows_private_node_checksum_missing "$shasums_path"
-  PRIVATE_NODE_ARCHIVE_SHA256="$expected_sha256"
-
-  if [[ -f "$archive_path" ]]; then
-    actual_sha256="$(compute_file_sha256 "$archive_path" | tr -d '\r' | tr '[:upper:]' '[:lower:]' || true)"
-    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-      rm -f "$archive_path"
-    fi
-  fi
-
-  if [[ ! -f "$archive_path" ]]; then
-    if ! download_file_with_fallback "$archive_url" "$archive_path"; then
-      die error_windows_private_node_download_failed "$archive_url"
-    fi
-  fi
-
-  actual_sha256="$(compute_file_sha256 "$archive_path" | tr -d '\r' | tr '[:upper:]' '[:lower:]' || true)"
-  [[ -n "$actual_sha256" ]] || die error_windows_private_node_checksum_missing "$archive_path"
-  if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-    rm -f "$archive_path"
-    die error_windows_private_node_checksum_failed "$archive_name"
-  fi
-
-  rm -rf "$extract_dir"
-  if ! extract_zip_with_fallback "$archive_path" "$NODE_RUNTIME_VERSIONS_DIR"; then
-    die error_windows_private_node_extract_failed "$archive_path"
-  fi
-}
-
-ensure_private_node_runtime() {
-  if ! is_windows_environment; then
-    return
-  fi
-
-  local machine_arch=""
-  machine_arch="$(uname -m)"
-  case "$machine_arch" in
-    x86_64|amd64)
-      ;;
-    *)
-      die error_windows_private_node_unsupported_arch "$machine_arch"
-      ;;
-  esac
-
-  build_windows_runtime_paths
-  ensure_windows_runtime_dirs
-
-  say_warn warn_windows_using_private_node "$WINDOWS_PRIVATE_NODE_VERSION"
-
-  if [[ -n "$SYSTEM_NODE_VERSION" ]]; then
-    say_warn warn_windows_system_node_diagnostics "${SYSTEM_NODE_VERSION:-unknown}" "${SYSTEM_NODE_ABI:-unknown}"
-  fi
-
-  if [[ -x "$PRIVATE_NODE_VERSION_DIR/node.exe" && -f "$PRIVATE_NODE_VERSION_DIR/npm.cmd" && -f "$PRIVATE_NODE_VERSION_DIR/npx.cmd" ]]; then
-    resolve_private_node_paths
-    return
-  fi
-
-  download_windows_private_node_runtime
-
-  if [[ "$DRY_RUN" == "1" ]]; then
-    NODE_BIN="$PRIVATE_NODE_VERSION_DIR/node.exe"
-    NPM_BIN="$PRIVATE_NODE_VERSION_DIR/npm.cmd"
-    TARGET_NODE_VERSION="v${WINDOWS_PRIVATE_NODE_VERSION}"
-    TARGET_NODE_ABI="unknown"
-    return
-  fi
-
-  resolve_private_node_paths
-}
-
-collect_target_runtime_native_support() {
-  TARGET_RUNTIME_UNSUPPORTED_PACKAGES=()
-  TARGET_RUNTIME_FALLBACK_PACKAGES=()
-  TARGET_RUNTIME_MANAGED_PACKAGE_SUMMARY=()
-
-  if ! is_windows_environment; then
-    return
-  fi
-
-  [[ -n "$TARGET_NODE_VERSION" ]] || TARGET_NODE_VERSION="$(read_node_version_text "$NODE_BIN")"
-  [[ -n "$TARGET_NODE_ABI" ]] || TARGET_NODE_ABI="$(read_node_abi_text "$NODE_BIN")"
-
-  local target_major=""
-  target_major="$(read_major_version "$TARGET_NODE_VERSION")"
-
-  TARGET_RUNTIME_MANAGED_PACKAGE_SUMMARY+=("${WINDOWS_NODE_PTY_PACKAGE_NAME}: 目标是 win32 + x64 + Node 22，预期使用随包预编译，不接受本机编译")
-  TARGET_RUNTIME_MANAGED_PACKAGE_SUMMARY+=("${WINDOWS_BETTER_SQLITE_PACKAGE_NAME}: 目标是 win32 + x64 + Node 22，预期使用随包预编译，不接受本机编译")
-
-  if [[ "$target_major" != "22" ]]; then
-    TARGET_RUNTIME_UNSUPPORTED_PACKAGES+=("${WINDOWS_NODE_PTY_PACKAGE_NAME}: requires Node 22")
-  fi
-
-  if [[ "$(uname -m)" != "x86_64" && "$(uname -m)" != "amd64" ]]; then
-    TARGET_RUNTIME_UNSUPPORTED_PACKAGES+=("${WINDOWS_NODE_PTY_PACKAGE_NAME}: requires x64")
-  fi
-
-}
-
-ensure_windows_target_runtime_supported() {
-  if ! is_windows_environment; then
-    return
-  fi
-
-  collect_target_runtime_native_support
-
-  say_info info_windows_target_runtime_summary "${TARGET_NODE_VERSION:-unknown}" "${TARGET_NODE_ABI:-unknown}"
-  local package_summary=""
-  for package_summary in "${TARGET_RUNTIME_MANAGED_PACKAGE_SUMMARY[@]}"; do
-    say_info info_windows_managed_package_summary "$package_summary"
-  done
-
-  if (( ${#TARGET_RUNTIME_UNSUPPORTED_PACKAGES[@]} > 0 )); then
-    die error_windows_target_runtime_unsupported "$(IFS=', '; printf '%s' "${TARGET_RUNTIME_UNSUPPORTED_PACKAGES[*]}")"
-  fi
-
-}
-
-build_private_install_env() {
-  INSTALL_ENV_ARGS=()
-  PRIVATE_INSTALL_CONTEXT="0"
-
-  if ! is_windows_environment; then
-    return
-  fi
-
-  PRIVATE_INSTALL_CONTEXT="1"
-  INSTALL_ENV_ARGS=(
-    "PATH=${PRIVATE_NODE_VERSION_DIR}:${PRIVATE_NPM_PREFIX}:${SYSTEM_PATH_SNAPSHOT}"
-    "PM2_HOME=${PRIVATE_PM2_HOME}"
-    "npm_config_prefix=${PRIVATE_NPM_PREFIX}"
-    "npm_config_cache=${PRIVATE_NPM_CACHE_DIR}"
-    "npm_config_userconfig=${PRIVATE_NPM_USERCONFIG}"
-    "CODINGNS_DATA_DIR=${SELECTED_DATA_DIR}"
-    "CODINGNS_RUNTIME_ROOT=${RUNTIME_HOME}"
-    "CODINGNS_RUNTIME_NODE_VERSION=${WINDOWS_PRIVATE_NODE_VERSION}"
-    "CODINGNS_PM2_PROCESS_NAME=${PROCESS_NAME}"
-  )
 }
 
 path_or_parent_writable() {
@@ -1382,7 +1047,7 @@ collect_prerequisite_issues() {
       if ! is_windows_environment; then
         PREREQUISITE_ISSUES+=("error_read_node_version|$node_version")
       fi
-    elif (( node_major != 22 )) && ! is_windows_environment; then
+    elif (( node_major < 22 )) && ! is_windows_environment; then
       PREREQUISITE_ISSUES+=("error_bad_node_version|$node_version")
     fi
   fi
@@ -1526,18 +1191,18 @@ install_prerequisites_macos() {
   say_info info_installing_nodejs
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    say_info_custom "$BREW_BIN install node@22"
-    say_info_custom "$BREW_BIN link --force --overwrite node@22"
+    say_info_custom "$BREW_BIN install node"
+    say_info_custom "$BREW_BIN link --force --overwrite node"
     return
   fi
 
-  if "$BREW_BIN" list node@22 >/dev/null 2>&1; then
-    "$BREW_BIN" upgrade node@22 || "$BREW_BIN" install node@22
+  if "$BREW_BIN" list node >/dev/null 2>&1; then
+    "$BREW_BIN" upgrade node || "$BREW_BIN" install node
   else
-    "$BREW_BIN" install node@22
+    "$BREW_BIN" install node
   fi
 
-  "$BREW_BIN" link --force --overwrite node@22 >/dev/null 2>&1 || true
+  "$BREW_BIN" link --force --overwrite node >/dev/null 2>&1 || true
 
   hash -r
 }
@@ -1567,7 +1232,6 @@ install_prerequisites_linux_apt() {
       say_info_custom "apt-get install -y ca-certificates curl gnupg build-essential python3"
       say_info_custom "mkdir -p /etc/apt/keyrings"
       say_info_custom "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg"
-      say_info_custom "echo \"deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\" > /etc/apt/sources.list.d/nodesource.list"
       say_info_custom "apt-get update"
       say_info_custom "apt-get install -y nodejs"
     else
@@ -1575,7 +1239,6 @@ install_prerequisites_linux_apt() {
       say_info_custom "sudo apt-get install -y ca-certificates curl gnupg build-essential python3"
       say_info_custom "sudo mkdir -p /etc/apt/keyrings"
       say_info_custom "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg"
-      say_info_custom "echo \"deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\" | sudo tee /etc/apt/sources.list.d/nodesource.list >/dev/null"
       say_info_custom "sudo apt-get update"
       say_info_custom "sudo apt-get install -y nodejs"
     fi
@@ -1585,14 +1248,6 @@ install_prerequisites_linux_apt() {
   "${apt_prefix[@]}" apt-get update
   "${apt_prefix[@]}" apt-get install -y ca-certificates curl gnupg build-essential python3
   "${apt_prefix[@]}" mkdir -p /etc/apt/keyrings
-  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | "${gpg_target_prefix[@]}" gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-
-  if is_root_user; then
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
-  else
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | "${tee_prefix[@]}" tee /etc/apt/sources.list.d/nodesource.list >/dev/null
-  fi
-
   "${apt_prefix[@]}" apt-get update
   "${apt_prefix[@]}" apt-get install -y nodejs
   hash -r
@@ -1619,13 +1274,6 @@ auto_install_prerequisites() {
 }
 
 ensure_npm_install_context() {
-  if is_windows_environment; then
-    [[ -n "$NPM_BIN" ]] || die error_no_npm
-    NPM_GLOBAL_PREFIX="$PRIVATE_NPM_PREFIX"
-    USE_SUDO_FOR_NPM="0"
-    return
-  fi
-
   refresh_runtime_binaries
 
   NPM_GLOBAL_PREFIX="$(trim "$("$NPM_BIN" config get prefix 2>/dev/null || true)")"
@@ -1649,10 +1297,28 @@ prepare_windows_install_runtime() {
     return
   fi
 
-  ensure_private_node_runtime
-  ensure_windows_target_runtime_supported
-  build_private_install_env
-  ensure_npm_install_context
+  build_windows_runtime_paths
+  ensure_windows_runtime_dirs
+  # 依赖包已经提供跨 Node 主版本的预编译 N-API 二进制，Windows 不再下载私有 Node 运行时。
+  refresh_runtime_binaries
+  [[ -n "$NODE_BIN" ]] || die error_no_node
+  [[ -n "$NPM_BIN" ]] || die error_no_npm
+  TARGET_NODE_VERSION="$(read_node_version_text "$NODE_BIN")"
+  TARGET_NODE_ABI="$(read_node_abi_text "$NODE_BIN")"
+  NPM_GLOBAL_PREFIX="$PRIVATE_NPM_PREFIX"
+  PRIVATE_INSTALL_CONTEXT="1"
+  INSTALL_ENV_ARGS=(
+    "PATH=${PRIVATE_NPM_PREFIX}:${SYSTEM_PATH_SNAPSHOT}"
+    "PM2_HOME=${PRIVATE_PM2_HOME}"
+    "npm_config_prefix=${PRIVATE_NPM_PREFIX}"
+    "npm_config_cache=${PRIVATE_NPM_CACHE_DIR}"
+    "npm_config_userconfig=${PRIVATE_NPM_USERCONFIG}"
+    "CODINGNS_DATA_DIR=${SELECTED_DATA_DIR}"
+    "CODINGNS_RUNTIME_ROOT=${RUNTIME_HOME}"
+    "CODINGNS_RUNTIME_NODE_VERSION=${TARGET_NODE_VERSION}"
+    "CODINGNS_PM2_PROCESS_NAME=${PROCESS_NAME}"
+  )
+  USE_SUDO_FOR_NPM="0"
 }
 
 ensure_prerequisites() {
@@ -2085,11 +1751,11 @@ write_private_runtime_state() {
   CODINGNS_STATE_PACKAGE_VERSION="${CODINGNS_PACKAGE_VERSION}" \
   CODINGNS_STATE_PTY_PACKAGE_NAME="${CODINGNS_PTY_PACKAGE_NAME}" \
   CODINGNS_STATE_PTY_PACKAGE_VERSION="${CODINGNS_PTY_PACKAGE_VERSION}" \
-  CODINGNS_STATE_BETTER_SQLITE_PACKAGE_NAME="${CODINGNS_BETTER_SQLITE_PACKAGE_NAME}" \
-  CODINGNS_STATE_BETTER_SQLITE_PACKAGE_VERSION="${CODINGNS_BETTER_SQLITE_PACKAGE_VERSION}" \
+  CODINGNS_STATE_SQLITE_PACKAGE_NAME="${CODINGNS_SQLITE_PACKAGE_NAME}" \
+  CODINGNS_STATE_SQLITE_PACKAGE_VERSION="${CODINGNS_SQLITE_PACKAGE_VERSION}" \
   CODINGNS_STATE_PACKAGE_SPEC="${PACKAGE_SPEC}" \
   CODINGNS_STATE_REGISTRY="${ACTIVE_NPM_REGISTRY}" \
-  CODINGNS_STATE_NODE_VERSION="$(normalize_version_text "${TARGET_NODE_VERSION:-$WINDOWS_PRIVATE_NODE_VERSION}")" \
+  CODINGNS_STATE_NODE_VERSION="$(normalize_version_text "${TARGET_NODE_VERSION:-unknown}")" \
   CODINGNS_STATE_NODE_EXE="${NODE_BIN}" \
   CODINGNS_STATE_NPM_CMD="${NPM_BIN}" \
   CODINGNS_STATE_NPM_PREFIX="${NPM_GLOBAL_PREFIX}" \
@@ -2110,8 +1776,8 @@ const payload = {
   packageVersion: process.env.CODINGNS_STATE_PACKAGE_VERSION ?? "",
   ptyPackageName: process.env.CODINGNS_STATE_PTY_PACKAGE_NAME ?? "",
   ptyPackageVersion: process.env.CODINGNS_STATE_PTY_PACKAGE_VERSION ?? "",
-  betterSqlitePackageName: process.env.CODINGNS_STATE_BETTER_SQLITE_PACKAGE_NAME ?? "",
-  betterSqlitePackageVersion: process.env.CODINGNS_STATE_BETTER_SQLITE_PACKAGE_VERSION ?? "",
+  sqlitePackageName: process.env.CODINGNS_STATE_SQLITE_PACKAGE_NAME ?? "",
+  sqlitePackageVersion: process.env.CODINGNS_STATE_SQLITE_PACKAGE_VERSION ?? "",
   packageSpec: process.env.CODINGNS_STATE_PACKAGE_SPEC ?? "",
   registry: process.env.CODINGNS_STATE_REGISTRY ?? "",
   nodeVersion: process.env.CODINGNS_STATE_NODE_VERSION ?? "",
@@ -2130,14 +1796,14 @@ const payload = {
 fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
 EOF
 
-  CODINGNS_LAUNCH_PATH="${PRIVATE_NODE_VERSION_DIR}:${PRIVATE_NPM_PREFIX}:${SYSTEM_PATH_SNAPSHOT}" \
+  CODINGNS_LAUNCH_PATH="${PRIVATE_NPM_PREFIX}:${SYSTEM_PATH_SNAPSHOT}" \
   CODINGNS_LAUNCH_PM2_HOME="${PRIVATE_PM2_HOME}" \
   CODINGNS_LAUNCH_NPM_PREFIX="${PRIVATE_NPM_PREFIX}" \
   CODINGNS_LAUNCH_NPM_CACHE="${PRIVATE_NPM_CACHE_DIR}" \
   CODINGNS_LAUNCH_NPM_USERCONFIG="${PRIVATE_NPM_USERCONFIG}" \
   CODINGNS_LAUNCH_DATA_DIR="${SELECTED_DATA_DIR}" \
   CODINGNS_LAUNCH_RUNTIME_ROOT="${RUNTIME_HOME}" \
-  CODINGNS_LAUNCH_RUNTIME_NODE_VERSION="${WINDOWS_PRIVATE_NODE_VERSION}" \
+  CODINGNS_LAUNCH_RUNTIME_NODE_VERSION="${TARGET_NODE_VERSION}" \
   CODINGNS_LAUNCH_PM2_PROCESS_NAME="${PROCESS_NAME}" \
     "$NODE_BIN" - "$launch_env_path" <<'EOF'
 const fs = require("node:fs");
@@ -2289,7 +1955,7 @@ install_or_resolve_codingns() {
 
   [[ -n "$CODINGNS_PACKAGE_NAME" ]] || CODINGNS_PACKAGE_NAME="$(extract_package_name_from_spec "$PACKAGE_SPEC")"
   resolve_codingns_pty_dependency_metadata
-  resolve_codingns_better_sqlite_dependency_metadata
+  resolve_codingns_sqlite_dependency_metadata
 }
 
 refresh_deepseek_harness_launcher() {
@@ -2588,7 +2254,7 @@ print_success_summary() {
     printf -- '- %s\n' "$(msg info_registry "$ACTIVE_NPM_REGISTRY")"
   fi
   if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
-    printf -- '- %s\n' "$(msg info_runtime_node "${TARGET_NODE_VERSION:-v$WINDOWS_PRIVATE_NODE_VERSION}")"
+    printf -- '- %s\n' "$(msg info_runtime_node "${TARGET_NODE_VERSION:-unknown}")"
     printf -- '- %s\n' "$(msg info_runtime_prefix "$NPM_GLOBAL_PREFIX")"
     printf -- '- %s\n' "$(msg info_runtime_pm2_home "$PRIVATE_PM2_HOME")"
     if [[ -n "$CODINGNS_PTY_PACKAGE_NAME" ]]; then
@@ -2599,12 +2265,12 @@ print_success_summary() {
       printf -- '- %s\n' "$(msg info_runtime_pty "$runtime_pty_summary")"
     fi
 
-    if [[ -n "$CODINGNS_BETTER_SQLITE_PACKAGE_NAME" ]]; then
-      local runtime_better_sqlite_summary="$CODINGNS_BETTER_SQLITE_PACKAGE_NAME"
-      if [[ -n "$CODINGNS_BETTER_SQLITE_PACKAGE_VERSION" ]]; then
-        runtime_better_sqlite_summary="${runtime_better_sqlite_summary}@${CODINGNS_BETTER_SQLITE_PACKAGE_VERSION}"
+    if [[ -n "$CODINGNS_SQLITE_PACKAGE_NAME" ]]; then
+      local runtime_sqlite_summary="$CODINGNS_SQLITE_PACKAGE_NAME"
+      if [[ -n "$CODINGNS_SQLITE_PACKAGE_VERSION" ]]; then
+        runtime_sqlite_summary="${runtime_sqlite_summary}@${CODINGNS_SQLITE_PACKAGE_VERSION}"
       fi
-      printf -- '- %s\n' "$(msg info_runtime_better_sqlite "$runtime_better_sqlite_summary")"
+      printf -- '- %s\n' "$(msg info_runtime_sqlite "$runtime_sqlite_summary")"
     fi
   fi
 

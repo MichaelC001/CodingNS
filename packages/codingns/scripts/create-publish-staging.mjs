@@ -2,9 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  cleanupVendorRoot,
   collectWorkspacePackageVersions,
-  copyWorkspaceDependency,
   readJson,
   rewritePackageJsonForPublish,
   stripPackLifecycleScripts,
@@ -14,7 +12,6 @@ import {
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const workspaceRoot = path.resolve(packageRoot, "..", "..");
 const stagingRoot = process.argv[2];
-const vendorRoot = path.join(stagingRoot, "vendor");
 
 if (!stagingRoot) {
   throw new Error("缺少发布暂存目录参数");
@@ -28,22 +25,20 @@ fs.mkdirSync(stagingRoot, { recursive: true });
 fs.cpSync(packageRoot, stagingRoot, {
   recursive: true,
   filter: (sourcePath) => {
+    const relativePath = path.relative(packageRoot, sourcePath);
     const baseName = path.basename(sourcePath);
-    return baseName !== ".DS_Store" && !baseName.endsWith(".tgz");
+    const firstPathSegment = relativePath.split(path.sep)[0];
+
+    // pnpm 的 node_modules 含有大量指向工作区外部的符号链接，不能原样带入发布暂存区。
+    return (
+      baseName !== ".DS_Store" &&
+      !baseName.endsWith(".tgz") &&
+      firstPathSegment !== "node_modules"
+    );
   }
 });
 
-cleanupVendorRoot(vendorRoot);
-copyWorkspaceDependency({
-  packageDir: path.join(workspaceRoot, "packages", "node-pty-fork"),
-  targetDir: path.join(vendorRoot, "node-pty-fork"),
-  includeBuildScript: false
-});
-copyWorkspaceDependency({
-  packageDir: path.join(workspaceRoot, "packages", "codingns", "vendor-src", "better-sqlite3-win32-x64-node22"),
-  targetDir: path.join(vendorRoot, "better-sqlite3-win32-x64-node22"),
-  includeBuildScript: true
-});
+copyBundledSessionSyncCore();
 
 const packageJson = rewritePackageJsonForPublish(
   readJson(packageJsonPath),
@@ -53,3 +48,25 @@ stripPackLifecycleScripts(packageJson);
 writeJson(stagingPackageJsonPath, packageJson);
 
 console.info(`[codingns] 已生成发布暂存目录：${stagingRoot}`);
+
+function copyBundledSessionSyncCore() {
+  const sourceRoot = path.join(workspaceRoot, "packages", "session-sync-core");
+  const sourceDistRoot = path.join(sourceRoot, "dist");
+  const targetRoot = path.join(
+    stagingRoot,
+    "node_modules",
+    "@codingns",
+    "session-sync-core"
+  );
+
+  if (!fs.existsSync(sourceDistRoot)) {
+    throw new Error(`缺少 session-sync-core 构建产物：${sourceDistRoot}`);
+  }
+
+  fs.mkdirSync(targetRoot, { recursive: true });
+  fs.cpSync(sourceDistRoot, path.join(targetRoot, "dist"), { recursive: true });
+  fs.copyFileSync(
+    path.join(sourceRoot, "package.json"),
+    path.join(targetRoot, "package.json")
+  );
+}

@@ -1,11 +1,4 @@
 import { spawn } from "node:child_process";
-import { buildNode22Env, ensureNode22ForCurrentScript, resolveWorkspaceRoot } from "../../../scripts/node22-runtime.mjs";
-
-const node22Runtime = ensureNode22ForCurrentScript({
-  rootDir: resolveWorkspaceRoot(import.meta.url),
-  scriptLabel: "user-app-test"
-});
-
 const rawArgs = process.argv.slice(2).filter((arg) => arg !== "--");
 const TEST_TIMEOUT_MS = resolveTimeoutMs();
 const VITEST_TEST_TIMEOUT_MS = resolveVitestTimeoutMs();
@@ -28,13 +21,10 @@ const child = spawn(command, [
   ...forwardedArgs
 ], {
   stdio: "inherit",
-  env: buildNode22Env(
-    {
-      ...process.env,
-      NODE_ENV: "test"
-    },
-    node22Runtime
-  )
+  env: {
+    ...process.env,
+    NODE_ENV: "test"
+  }
 });
 let timedOut = false;
 const timeoutId = setTimeout(() => {

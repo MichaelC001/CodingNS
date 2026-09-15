@@ -4,14 +4,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureNode22ForCurrentScript, resolvePackageRoot } from "../scripts/node22-runtime.mjs";
-
-ensureNode22ForCurrentScript({
-  rootDir: resolvePackageRoot(import.meta.url),
-  scriptLabel: "codingns-cli",
-  allowWindowsPrivateRuntimeInstall: process.platform === "win32"
-});
-
 if (process.env.CODINGNS_CLI_RUNTIME_PROBE === "1") {
   console.log(JSON.stringify({
     nodeVersion: process.version,

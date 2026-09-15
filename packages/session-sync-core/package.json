@@ -25,10 +25,9 @@
   },
   "dependencies": {
     "@openai/codex-sdk": "0.147.0",
-    "better-sqlite3": "^12.8.0"
+    "libsql": "^0.5.29"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.5.2",
     "typescript": "^5.9.3"
   }

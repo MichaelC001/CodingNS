@@ -30,7 +30,7 @@ main() {
   rm -rf "$DATA_DIR"
   mkdir -p "$(dirname "$OUTPUT_LOG_PATH")"
 
-  log_info "使用系统 Node 诊断后，回放 install.sh 的 Windows 私有运行时安装链"
+  log_info "使用当前 Node，回放 install.sh 的 Windows 安装链"
 
   {
     printf '1\n'

@@ -12,14 +12,11 @@
     "README.md",
     "scripts/claude-hook-bridge.cjs",
     "scripts/codex-runtime-layout.mjs",
-    "scripts/node22-runtime.mjs",
     "scripts/postinstall.mjs",
-    "node_modules/@codingns/session-sync-core",
-    "vendor",
-    "vendor-src/better-sqlite3-win32-x64-node22/README.md"
+    "node_modules/@codingns/session-sync-core"
   ],
   "engines": {
-    "node": "22.x"
+    "node": ">=22"
   },
   "repository": {
     "type": "git",
@@ -49,13 +46,7 @@
     "ws": "^8.20.0"
   },
   "optionalDependencies": {
-    "@codingns/node-pty": "workspace:*",
-    "node-pty": "^1.0.0"
-  },
-  "codingnsRuntimeDependencies": {
-    "betterSqlite3": "^12.8.0"
-  },
-  "codingnsWindowsRuntimePackages": {
-    "betterSqlite3": "file:vendor/better-sqlite3-win32-x64-node22"
+    "@lydell/node-pty": "^1.1.0",
+    "libsql": "^0.5.29"
   }
 }

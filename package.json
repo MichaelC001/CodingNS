@@ -3,12 +3,12 @@
   "private": true,
   "packageManager": "pnpm@10.7.1",
   "engines": {
-    "node": "22.x",
+    "node": ">=22",
     "pnpm": ">=9.0.0"
   },
   "scripts": {
     "preinstall": "node scripts/ensure-pnpm.cjs",
-    "postinstall": "node scripts/fix-node-pty-helper-permissions.cjs && echo '\n✅ 依赖安装完成！现在可以运行开发命令了。\n'",
+    "postinstall": "echo '\n✅ 依赖安装完成！现在可以运行开发命令了。\n'",
     "version:sync": "node scripts/sync-version.mjs",
     "docs:dev": "vitepress dev docs/Documentation",
     "docs:build": "vitepress build docs/Documentation",
@@ -45,12 +45,9 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "@codingns/node-pty",
       "@prisma/client",
       "@prisma/engines",
-      "better-sqlite3",
       "esbuild",
-      "node-pty",
       "prisma"
     ]
   }

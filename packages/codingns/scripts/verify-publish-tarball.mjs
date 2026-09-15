@@ -24,20 +24,25 @@ if (!Array.isArray(packageJson.bundleDependencies) || !packageJson.bundleDepende
   problems.push("发布包 package.json 缺少 bundleDependencies.@codingns/session-sync-core");
 }
 
-if (packageJson.optionalDependencies?.["@codingns/node-pty"] !== "file:vendor/node-pty-fork") {
-  problems.push("发布包 package.json 没把 @codingns/node-pty 固定到 vendor/node-pty-fork");
+if (packageJson.optionalDependencies?.["@lydell/node-pty"] !== "^1.1.0") {
+  problems.push("发布包 package.json 没声明 @lydell/node-pty");
 }
 
-if (packageJson.dependencies?.["better-sqlite3"]) {
-  problems.push("发布包 package.json 仍然保留了 dependencies.better-sqlite3");
+if (packageJson.optionalDependencies?.libsql !== "^0.5.29") {
+  problems.push("发布包 package.json 没声明 libsql");
 }
 
-if (packageJson.codingnsRuntimeDependencies?.betterSqlite3 !== "^12.8.0") {
-  problems.push("发布包 package.json 没保留 better-sqlite3 的默认上游版本元信息");
+const sqliteDependencyNames = Object.keys({
+  ...packageJson.dependencies,
+  ...packageJson.optionalDependencies
+}).filter((name) => name.toLowerCase().includes("sqlite") && name !== "libsql");
+
+if (sqliteDependencyNames.length > 0) {
+  problems.push(`发布包 package.json 保留了非 libsql SQLite 依赖：${sqliteDependencyNames.join(", ")}`);
 }
 
-if (packageJson.codingnsWindowsRuntimePackages?.betterSqlite3 !== "file:vendor/better-sqlite3-win32-x64-node22") {
-  problems.push("发布包 package.json 没记录 Windows 专用 better-sqlite3 受控包路径");
+if (packageJson.codingnsRuntimeDependencies || packageJson.codingnsWindowsRuntimePackages) {
+  problems.push("发布包 package.json 仍然保留私有运行时配置");
 }
 
 if (!tarEntries.has(bundledSessionSyncPath)) {
@@ -49,16 +54,11 @@ if (!tarEntries.has(bundledSessionSyncPath)) {
   problems.push("发布包 package.json 没把 @codingns/session-sync-core 改写成 bundled 实际版本号");
 }
 
-if (!tarEntries.has("package/vendor/node-pty-fork/package.json")) {
-  problems.push("发布包缺少 vendor/node-pty-fork");
-}
-
-if (!tarEntries.has("package/vendor/better-sqlite3-win32-x64-node22/package.json")) {
-  problems.push("发布包缺少 vendor/better-sqlite3-win32-x64-node22");
-}
-
-if (!tarEntries.has("package/vendor/better-sqlite3-win32-x64-node22/build/Release/better_sqlite3.node")) {
-  problems.push("发布包缺少 better-sqlite3 Windows Node 22 预编译产物");
+for (const entry of tarEntries.keys()) {
+  if (entry.startsWith("package/vendor/") || entry.startsWith("package/vendor-src/")) {
+    problems.push(`发布包不应包含本地原生 vendor：${entry}`);
+    break;
+  }
 }
 
 if (problems.length > 0) {
@@ -100,6 +100,9 @@ function readTarEntriesFromGzipTarball(targetTarballPath) {
     const sizeOctal = readTarString(header, 124, 12);
     const prefix = readTarString(header, 345, 155);
     const fullName = prefix ? `${prefix}/${entryName}` : entryName;
+    if (isUnsafeTarEntryPath(fullName)) {
+      throw new Error(`发布包包含不安全的 tar 路径：${fullName}`);
+    }
     const size = Number.parseInt(sizeOctal.trim() || "0", 8);
     const bodyStart = offset + 512;
     const bodyEnd = bodyStart + size;
@@ -117,6 +120,14 @@ function readTarEntriesFromGzipTarball(targetTarballPath) {
   }
 
   return entries;
+}
+
+function isUnsafeTarEntryPath(entryPath) {
+  return (
+    entryPath.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/u.test(entryPath) ||
+    entryPath.split("/").some((segment) => segment === "..")
+  );
 }
 
 function readTarString(buffer, start, length) {

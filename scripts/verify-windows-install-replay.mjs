@@ -25,16 +25,10 @@ const installOutput = installOutputLogPath && fs.existsSync(installOutputLogPath
   : "";
 
 assertEqual(installState.packageName, "@jingyi0605/codingns", "正式包名不对");
-assertEqual(installState.ptyPackageName, "@codingns/node-pty", "PTY 包名不对");
-assertEqual(installState.ptyPackageVersion, "1.0.0-cns.1", "PTY 包版本不对");
-assertEqual(installState.betterSqlitePackageName, "better-sqlite3", "SQLite 包名不对");
-assertEqual(installState.betterSqlitePackageVersion, "12.8.0-cns.1", "SQLite 包版本不对");
-
-if (!String(installState.nodeVersion || "").startsWith("22.")) {
-  throw new Error(`私有运行时 Node 版本不对：${installState.nodeVersion || "unknown"}`);
-}
-
-assertPathContains(installState.nodeExe, `${path.sep}runtime${path.sep}node-22${path.sep}`, "nodeExe 没有落在私有运行时目录");
+assertEqual(installState.ptyPackageName, "@lydell/node-pty", "PTY 包名不对");
+assertEqual(installState.ptyPackageVersion, "1.1.0", "PTY 包版本不对");
+assertEqual(installState.sqlitePackageName, "libsql", "SQLite 包名不对");
+assertEqual(installState.sqlitePackageVersion, "0.5.29", "SQLite 包版本不对");
 assertPathContains(installState.npmPrefix, `${path.sep}runtime${path.sep}npm-global`, "npmPrefix 没有落在私有前缀目录");
 assertPathContains(installState.pm2Home, `${path.sep}runtime${path.sep}pm2`, "pm2Home 没有落在私有目录");
 assertPathContains(installState.pm2Command, `${path.sep}runtime${path.sep}npm-global`, "pm2Command 没有落在私有 npm 前缀");
@@ -45,11 +39,11 @@ verifyWindowsPm2LaunchMode(pm2Process, installState);
 assertTextContains(launchEnv.PATH, "runtime", "launch-env PATH 缺少私有运行时");
 assertTextContains(launchEnv.PATH, "npm-global", "launch-env PATH 缺少私有 npm 前缀");
 
-assertExists(installState.nodeExe, "私有 node.exe");
+assertExists(installState.nodeExe, "node 可执行文件");
 assertExists(installState.codingnsCommand, "codingns 命令");
 assertExists(installState.pm2Command, "pm2 命令");
 
-verifyPrivateNodeExecutable(installState.nodeExe);
+verifyNodeExecutable(installState.nodeExe);
 verifyInstallLogs(logsRoot);
 verifyInstallOutput(installOutput);
 
@@ -82,19 +76,20 @@ function assertTextContains(text, expectedFragment, message) {
   }
 }
 
-function verifyPrivateNodeExecutable(nodeExePath) {
+function verifyNodeExecutable(nodeExePath) {
   const result = spawnSync(nodeExePath, ["-p", "process.version"], {
     encoding: "utf8",
     shell: process.platform === "win32"
   });
 
   if (result.status !== 0) {
-    throw new Error(`私有 node.exe 无法执行：${formatSpawnFailure(result)}`);
+    throw new Error(`node 无法执行：${formatSpawnFailure(result)}`);
   }
 
   const versionText = (result.stdout || "").trim();
-  if (!versionText.startsWith("v22.")) {
-    throw new Error(`私有 node.exe 版本不对：${versionText || "unknown"}`);
+  const major = Number.parseInt(versionText.replace(/^v/, "").split(".")[0] || "", 10);
+  if (!Number.isFinite(major) || major < 22) {
+    throw new Error(`Node.js 版本不受支持：${versionText || "unknown"}`);
   }
 }
 
@@ -135,7 +130,7 @@ function verifyWindowsPm2LaunchMode(matchedProcess, installState) {
 
   const pm2Env = matchedProcess?.pm2_env ?? {};
   assertPathContains(pm2Env.pm_exec_path, `${path.sep}runtime${path.sep}service${path.sep}start-codingns.mjs`, "PM2 没有启动受控包装脚本");
-  assertEqual(path.normalize(pm2Env.exec_interpreter || ""), path.normalize(installState.nodeExe || ""), "PM2 interpreter 没有使用私有 node.exe");
+  assertEqual(path.normalize(pm2Env.exec_interpreter || ""), path.normalize(installState.nodeExe || ""), "PM2 interpreter 没有使用当前 node");
 }
 
 function verifyInstallLogs(logsRoot) {
@@ -156,12 +151,8 @@ function verifyInstallLogs(logsRoot) {
     throw new Error(`安装日志仍触发了本机编译：${latestLogPath}`);
   }
 
-  if (/better-sqlite3[\s\S]{0,200}node-gyp rebuild/i.test(latestLogText) || /prebuild-install warn install aborted/i.test(latestLogText)) {
-    throw new Error(`安装日志仍触发了 better-sqlite3 本机编译回退：${latestLogPath}`);
-  }
-
-  if (/node_modules[\\/](?:node-pty)[\\/]/i.test(latestLogText)) {
-    throw new Error(`安装日志仍出现官方 node-pty 安装路径，说明回放包没有收口干净：${latestLogPath}`);
+  if (/prebuild-install warn install aborted/i.test(latestLogText)) {
+    throw new Error(`安装日志仍触发预编译模块回退：${latestLogPath}`);
   }
 }
 
@@ -170,12 +161,8 @@ function verifyInstallOutput(installOutput) {
     return;
   }
 
-  assertTextContains(installOutput, "Windows 正式安装将使用 CodingNS 私有 Node.js 22.16.0 运行时", "安装输出缺少私有 Node 提示");
-  assertTextContains(installOutput, "PTY 运行时依赖已就绪：@codingns/node-pty", "安装输出缺少 PTY 命中结果");
-  assertTextContains(installOutput, "SQLite 运行时依赖已就绪：better-sqlite3@12.8.0-cns.1", "安装输出缺少 SQLite 命中结果");
-  assertTextContains(installOutput, "实际运行时 Node.js：v22.16.0", "安装输出缺少最终运行时 Node");
-  assertTextContains(installOutput, "实际 PTY 依赖：@codingns/node-pty@1.0.0-cns.1", "安装输出缺少最终 PTY 依赖");
-  assertTextContains(installOutput, "实际 SQLite 依赖：better-sqlite3@12.8.0-cns.1", "安装输出缺少最终 SQLite 依赖");
+  assertTextContains(installOutput, "@lydell/node-pty", "安装输出缺少 PTY 命中结果");
+  assertTextContains(installOutput, "libsql", "安装输出缺少 SQLite 命中结果");
 }
 
 function formatSpawnFailure(result) {
