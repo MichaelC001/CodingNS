@@ -103,6 +103,8 @@ export { resolveMacSelectPopoverWidth as resolveComposerMacSelectPopoverWidth } 
 interface ComposerPanelProps {
   capabilities: ProviderCapabilitiesDto | null;
   placeholder?: string;
+  /** 临时会话等嵌入场景可以沿用输入逻辑，但使用自己的发送按钮文案。 */
+  sendButtonLabelOverride?: string;
   draftStorageId?: string;
   initialModel?: string | null;
   initialReasoningLevel?: ReasoningLevel | null;
@@ -612,6 +614,7 @@ function isComposerImeConfirming(
 export function ComposerPanel({
   capabilities,
   placeholder,
+  sendButtonLabelOverride,
   draftStorageId,
   initialModel = null,
   initialReasoningLevel = null,
@@ -1327,13 +1330,13 @@ export function ComposerPanel({
   const activityButtonLabel = canInterruptNow
     ? t("conversation.capabilityInterrupt")
     : t("conversation.runtimeRunning");
-  const sendButtonLabel = effectiveIsRunning
+  const sendButtonLabel = sendButtonLabelOverride ?? (effectiveIsRunning
     ? canQueueDuringRun
         ? t("conversation.queueGuidanceButton")
         : canStreamDuringRun
           ? t("conversation.sendGuidanceButton")
           : t("conversation.sendButton")
-    : t("conversation.sendButton");
+    : t("conversation.sendButton"));
 
   const persistSessionSelection = useCallback((selection: {
     selectedModel: string | null;

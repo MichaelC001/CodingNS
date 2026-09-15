@@ -1,5 +1,6 @@
 import {
   createContext,
+  Fragment,
   isValidElement,
   memo,
   useContext,
@@ -78,6 +79,13 @@ import type {
 import type { SessionMessageViewModel } from "../runtime/session-runtime-machine";
 import { shouldFoldRulesMessages } from "../capability/provider-ui";
 
+export interface TemporarySessionAnchor {
+  sessionId: string;
+  title: string;
+  ordinal: number;
+  anchorMessageId?: string;
+}
+
 interface MessageTimelineProps {
   sessionId?: string;
   sessionSummary?: SessionSummaryDto | null;
@@ -98,6 +106,11 @@ interface MessageTimelineProps {
   permissionRequests?: SessionPermissionRequestDto[];
   replyingPermissionRequestId?: string | null;
   onReplyPermissionRequest?: (requestId: string, payload: { action: string; answers?: Record<string, string[]> }) => Promise<void> | void;
+  temporarySessionAnchorsByMessageId?: ReadonlyMap<string, readonly TemporarySessionAnchor[]>;
+  onTemporarySessionAnchorClick?: (anchor: TemporarySessionAnchor) => void;
+  jumpToMessageId?: string | null;
+  /** 临时会话将用户输入按 DeepSeek 系统提示词风格默认收起。 */
+  collapseUserMessages?: boolean;
 }
 
 interface MessageActionState {
@@ -5478,6 +5491,67 @@ function RulesMessageCard({
   );
 }
 
+function TemporarySessionMessageCard({
+  message,
+  actionState,
+  onRetry,
+  onForkMessage
+}: {
+  message: SessionMessageViewModel;
+  actionState: MessageActionState;
+  onRetry: (clientRequestId: string) => void;
+  onForkMessage?: ((message: SessionMessageViewModel) => Promise<void> | void) | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const summary = getFoldedPromptSummary("rules", message.content);
+  const actionLabel = expanded
+    ? t("conversation.temporarySessionCollapse")
+    : t("conversation.temporarySessionExpand");
+
+  return (
+    <article className="message-item user-message rules-message-row" data-message-id={message.id}>
+      <div className="message-content-wrapper">
+        <div className="rules-message-card temporary-session-message-card">
+          <button
+            type="button"
+            className="rules-message-toggle"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            <div className="rules-message-heading">
+              <span className="rules-message-badge">{t("conversation.temporarySessionTitle")}</span>
+              <span className="rules-message-summary">{summary}</span>
+            </div>
+            <span className="rules-message-action">{actionLabel}</span>
+          </button>
+          {expanded ? (
+            <div className="rules-message-body">
+              <MessageMarkdownBody
+                content={message.content}
+                className="message-text message-content markdown-content"
+              />
+            </div>
+          ) : null}
+          <UserMessageFooter timestamp={message.timestamp}>
+            <MessageMetadataBar
+              text={message.content}
+              canCopy={actionState.canCopy}
+              canFork={actionState.canFork && Boolean(onForkMessage && message.deliveryState === "sent")}
+              compact
+              onFork={onForkMessage ? () => onForkMessage(message) : null}
+            />
+          </UserMessageFooter>
+        </div>
+        {message.deliveryState === "failed" && message.clientRequestId ? (
+          <button className="retry-button" type="button" onClick={() => onRetry(message.clientRequestId!)}>
+            {t("conversation.resendButton")}
+          </button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
 /**
  * 多张折叠卡片合并后的呈现。
  *
@@ -5565,7 +5639,8 @@ function MessageItem({
   onForkMessage,
   assistantAvatar,
   exportMode = false,
-  onSubmitStructuredQuestion
+  onSubmitStructuredQuestion,
+  collapseUserMessage = false
 }: {
   message: SessionMessageViewModel;
   provider: ProviderId | null;
@@ -5578,6 +5653,7 @@ function MessageItem({
   assistantAvatar?: ReactNode;
   exportMode?: boolean;
   onSubmitStructuredQuestion?: ((payload: { messageId: string; answers: Record<string, string[]> }) => Promise<void> | void) | null;
+  collapseUserMessage?: boolean;
 }) {
   const isUser = message.role === "user";
   const isThinking = message.kind === "thinking";
@@ -5613,6 +5689,17 @@ function MessageItem({
   const [originDetailLoading, setOriginDetailLoading] = useState(false);
   const [originDetailError, setOriginDetailError] = useState<string | null>(null);
   const [originDetail, setOriginDetail] = useState<ButlerFollowUpTaskDto | null>(null);
+
+  if (collapseUserMessage && isUser && !exportMode) {
+    return (
+      <TemporarySessionMessageCard
+        message={message}
+        actionState={actionState}
+        onRetry={onRetry}
+        onForkMessage={onForkMessage}
+      />
+    );
+  }
 
   if (promptKind) {
     const tone =
@@ -5927,6 +6014,7 @@ const MemoizedMessageItem = memo(MessageItem, (previous, next) => {
     && previous.onForkMessage === next.onForkMessage
     && previous.assistantAvatar === next.assistantAvatar
     && previous.exportMode === next.exportMode
+    && previous.collapseUserMessage === next.collapseUserMessage
     && previous.onSubmitStructuredQuestion === next.onSubmitStructuredQuestion;
 });
 
@@ -6455,7 +6543,11 @@ export function MessageTimeline({
   followTailUpdates = false,
   onSubmitStructuredQuestion,
   permissionRequests = [],
-  replyingPermissionRequestId = null
+  replyingPermissionRequestId = null,
+  temporarySessionAnchorsByMessageId,
+  onTemporarySessionAnchorClick,
+  jumpToMessageId = null,
+  collapseUserMessages = false
 }: MessageTimelineProps) {
   const { showToast } = useToast();
   const shouldVirtualizeTimeline =
@@ -6472,6 +6564,8 @@ export function MessageTimeline({
   const followInitialTailRef = useRef(true);
   const pendingOlderLoadOffsetRef = useRef<number | null>(null);
   const pendingOlderLoadHeadSignatureRef = useRef<string | null>(null);
+  const lastJumpToMessageIdRef = useRef<string | null>(null);
+  const jumpOlderLoadTargetRef = useRef<string | null>(null);
   const olderLoadLockRef = useRef(false);
   const seenTailSignatureRef = useRef<string | null>(null);
   const touchStartYRef = useRef<number | null>(null);
@@ -6538,6 +6632,53 @@ export function MessageTimeline({
     instance
   ) => !instance.isScrolling;
   const showTimelineSkeleton = historyState === "loading" && messages.length === 0;
+
+  useEffect(() => {
+    if (!jumpToMessageId) {
+      lastJumpToMessageIdRef.current = null;
+      jumpOlderLoadTargetRef.current = null;
+      return;
+    }
+
+    if (lastJumpToMessageIdRef.current === jumpToMessageId) {
+      return;
+    }
+
+    const targetIndex = renderItems.findIndex(
+      (item) => item.type === "message" && item.message.id === jumpToMessageId
+    );
+
+    if (targetIndex < 0) {
+      // 锚点可能位于尚未加载的历史消息中。沿用现有历史加载接口逐页向前取，
+      // 直到找到目标消息或服务端明确没有更早消息，避免跳转静默失败。
+      if (jumpOlderLoadTargetRef.current === jumpToMessageId && loadingOlderMessages) {
+        return;
+      }
+      jumpOlderLoadTargetRef.current = null;
+      if (
+        historyState === "ready"
+        && hasOlderMessages
+        && !loadingOlderMessages
+        && jumpOlderLoadTargetRef.current !== jumpToMessageId
+      ) {
+        jumpOlderLoadTargetRef.current = jumpToMessageId;
+        onLoadOlderMessages();
+      }
+      return;
+    }
+
+    jumpOlderLoadTargetRef.current = null;
+    lastJumpToMessageIdRef.current = jumpToMessageId;
+    timelineVirtualizer.scrollToIndex(targetIndex, { align: "center" });
+  }, [
+    hasOlderMessages,
+    historyState,
+    jumpToMessageId,
+    loadingOlderMessages,
+    onLoadOlderMessages,
+    renderItems,
+    timelineVirtualizer
+  ]);
 
   useEffect(() => {
     renderCycleIdRef.current += 1;
@@ -7218,9 +7359,9 @@ export function MessageTimeline({
       return renderSessionErrorItem(item);
     }
 
-    return (
+    const anchors = temporarySessionAnchorsByMessageId?.get(item.message.id) ?? [];
+    const messageItem = (
       <MemoizedMessageItem
-        key={item.key}
         message={item.message}
         provider={provider}
         foldedPromptKind={
@@ -7238,9 +7379,34 @@ export function MessageTimeline({
         onForkMessage={onForkMessage}
         interruptedSource={interruptedSource}
         assistantAvatar={assistantAvatar}
+        collapseUserMessage={collapseUserMessages}
         thinkingInProgress={item.message.id === activeThinkingMessageId}
         onSubmitStructuredQuestion={onSubmitStructuredQuestion}
       />
+    );
+
+    if (anchors.length === 0) {
+      return <Fragment key={item.key}>{messageItem}</Fragment>;
+    }
+
+    return (
+      <div key={item.key} className="message-with-temporary-session-anchors">
+        {messageItem}
+        <div className="temporary-session-message-anchors" aria-label={t("conversation.temporarySessionListTitle")}>
+          {anchors.map((anchor) => (
+            <button
+              key={anchor.sessionId}
+              type="button"
+              className="temporary-session-message-anchor"
+              aria-label={anchor.title}
+              title={anchor.title}
+              onClick={() => onTemporarySessionAnchorClick?.(anchor)}
+            >
+              <span aria-hidden="true">{anchor.ordinal}</span>
+            </button>
+          ))}
+        </div>
+      </div>
     );
   }
 
