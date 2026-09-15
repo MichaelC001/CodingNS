@@ -111,6 +111,20 @@ function requireTextOrAttachments(
   return normalized;
 }
 
+/**
+ * 流式响应必须直接操作 raw response，但不能用 writeHead 覆盖 Fastify
+ * 请求钩子已经写入的响应头（尤其是跨域头）。先设置状态和业务头，再
+ * flushHeaders，让浏览器尽早拿到一个完整、可读取的响应头。
+ */
+function beginNdjsonStream(reply: FastifyReply): void {
+  reply.hijack();
+  reply.raw.statusCode = 200;
+  reply.raw.setHeader("content-type", "application/x-ndjson; charset=utf-8");
+  reply.raw.setHeader("cache-control", "no-cache, no-transform");
+  reply.raw.setHeader("x-accel-buffering", "no");
+  reply.raw.flushHeaders();
+}
+
 
 function normalizeProviderConfigMode(
   value: string | null | undefined
@@ -297,13 +311,7 @@ export class AffairsLightweightSessionController {
       "provider",
       "事务轻量会话必须提供 provider"
     );
-    reply.hijack();
-    reply.raw.writeHead(200, {
-      "content-type": "application/x-ndjson; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      "x-accel-buffering": "no"
-    });
+    beginNdjsonStream(reply);
     try {
       await this.affairsLightweightSessionService.startSessionStream({
         workspaceId: request.params.workspaceId,
@@ -374,13 +382,7 @@ export class AffairsLightweightSessionController {
       "content",
       "事务轻量会话发送消息必须提供 content 或附件"
     );
-    reply.hijack();
-    reply.raw.writeHead(200, {
-      "content-type": "application/x-ndjson; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      "x-accel-buffering": "no"
-    });
+    beginNdjsonStream(reply);
     try {
       await this.affairsLightweightSessionService.sendMessageStream({
         workspaceId: request.params.workspaceId,

@@ -78,7 +78,9 @@ export function inspectSessionActivity(
   const inspectionBase =
     provider === "claude-code"
       ? inspectClaudeActivity(records, stats.mtimeMs, now)
-      : inspectCodexActivity(records, stats.mtimeMs, now);
+      : provider === "pi"
+        ? inspectPiActivity(records, stats.mtimeMs, now)
+        : inspectCodexActivity(records, stats.mtimeMs, now);
 
   touchActivityCache(rawStoreRef, {
     provider,
@@ -147,6 +149,136 @@ function inspectClaudeActivity(
     errorCode: null,
     errorDetail: null,
     terminalState: hasExplicitCompletion ? "completed" : "none"
+  };
+}
+
+/**
+ * Pi 会话文件（`<sessionDir>/<id>.jsonl`）的活动推断。
+ *
+ * Pi 的记录类型是 session / model_change / thinking_level_change / message / session_info，
+ * 和 Codex 的 event_msg / response_item 完全不是一套；按 Codex 的规则去读只会全部落空，
+ * 于是 lastEventAt 永远是 null、终态永远推不出来，列表里就会把已经跑完的会话显示成还在运行。
+ *
+ * 判定规则和 Pi 自己的语义对齐：
+ * - 最后一条 assistant 消息带 stopReason=error → failed，aborted → interrupted；
+ * - 最后一条 assistant 消息里的工具调用都拿到了 toolResult → completed（这一轮真的结束了）；
+ * - 还有没配对的工具调用 → running（等工具结果）；
+ * - 最后一条是 user 消息、文件还在动 → running。
+ */
+function inspectPiActivity(
+  records: Array<Record<string, unknown>>,
+  mtimeMs: number,
+  now: number
+): SessionActivityInspectionBase {
+  const pendingToolCalls = new Set<string>();
+  let lastEventAt: string | null = null;
+  let lastUserAt: string | null = null;
+  let lastAssistantAt: string | null = null;
+  let lastAssistantCompletedAt: string | null = null;
+  let lastAssistantAbortedAt: string | null = null;
+  let lastAssistantFailedAt: string | null = null;
+  let lastAssistantFailedDetail: string | null = null;
+
+  for (const record of records) {
+    if (readText(record.type) !== "message") {
+      continue;
+    }
+
+    const message = asRecord(record.message);
+    const role = readText(message.role);
+    const timestamp = normalizeTimestamp(record.timestamp) ?? normalizePiMessageTimestamp(message.timestamp);
+
+    if (role !== "user" && role !== "assistant" && role !== "toolResult") {
+      continue;
+    }
+
+    lastEventAt = maxTimestamp(lastEventAt, timestamp);
+
+    if (role === "user") {
+      lastUserAt = maxTimestamp(lastUserAt, timestamp);
+      continue;
+    }
+
+    if (role === "toolResult") {
+      const callId = readText(message.toolCallId);
+
+      if (callId) {
+        pendingToolCalls.delete(callId);
+      }
+
+      continue;
+    }
+
+    lastAssistantAt = maxTimestamp(lastAssistantAt, timestamp);
+
+    for (const content of Array.isArray(message.content) ? message.content : []) {
+      if (readText(asRecord(content).type) !== "toolCall") {
+        continue;
+      }
+
+      const callId = readText(asRecord(content).id);
+
+      if (callId) {
+        pendingToolCalls.add(callId);
+      }
+    }
+
+    const stopReason = readText(message.stopReason);
+    const errorMessage = readText(message.errorMessage);
+
+    if (stopReason === "aborted") {
+      lastAssistantAbortedAt = maxTimestamp(lastAssistantAbortedAt, timestamp);
+      continue;
+    }
+
+    if (stopReason === "error" || errorMessage) {
+      lastAssistantFailedAt = maxTimestamp(lastAssistantFailedAt, timestamp);
+      lastAssistantFailedDetail = errorMessage || "pi assistant turn failed";
+      continue;
+    }
+
+    if (pendingToolCalls.size === 0) {
+      lastAssistantCompletedAt = maxTimestamp(lastAssistantCompletedAt, timestamp);
+    }
+  }
+
+  // 「最后一条 assistant 消息已经收尾」= 它没有被更新的 user 消息盖过，且它发起的工具调用都拿到了结果。
+  const hasExplicitFailure =
+    !!lastAssistantFailedAt
+    && lastAssistantFailedAt === lastAssistantAt
+    && (!lastUserAt || lastAssistantAt.localeCompare(lastUserAt) >= 0);
+  const hasExplicitInterrupt =
+    !hasExplicitFailure
+    && !!lastAssistantAbortedAt
+    && lastAssistantAbortedAt === lastAssistantAt
+    && (!lastUserAt || lastAssistantAt.localeCompare(lastUserAt) >= 0);
+  const hasExplicitCompletion =
+    !hasExplicitFailure
+    && !hasExplicitInterrupt
+    && pendingToolCalls.size === 0
+    && !!lastAssistantCompletedAt
+    && lastAssistantCompletedAt === lastAssistantAt
+    && (!lastUserAt || lastAssistantAt.localeCompare(lastUserAt) >= 0);
+  const hasPendingTools = pendingToolCalls.size > 0;
+  const isRunning =
+    !hasExplicitFailure
+    && !hasExplicitInterrupt
+    && !hasExplicitCompletion
+    && hasRecentActivity(lastEventAt, mtimeMs, now);
+
+  return {
+    hasPendingTools,
+    lastEventAt,
+    completedAtCandidate: hasExplicitCompletion ? lastAssistantCompletedAt : null,
+    errorCode: hasExplicitFailure ? "PI_ASSISTANT_TURN_FAILED" : null,
+    errorDetail: hasExplicitFailure ? lastAssistantFailedDetail : null,
+    terminalState: hasExplicitFailure
+      ? "failed"
+      : hasExplicitInterrupt
+        ? "interrupted"
+        : hasExplicitCompletion
+          ? "completed"
+          : "none"
   };
 }
 
@@ -443,6 +575,15 @@ function normalizeTimestamp(value: unknown): string | null {
   const trimmed = value.trim();
 
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Pi 的 message 里时间是毫秒数；记录外层的 timestamp 才是 ISO 字符串。 */
+function normalizePiMessageTimestamp(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return new Date(value).toISOString();
 }
 
 function maxTimestamp(left: string | null, right: string | null): string | null {

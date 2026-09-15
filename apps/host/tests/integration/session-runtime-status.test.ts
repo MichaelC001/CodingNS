@@ -1040,6 +1040,142 @@ describe("session runtime status", () => {
     expect(inspection.completedAtCandidate).toBeNull();
   });
 
+  it("Pi 会话里最后一条 assistant 已经答完时，不再判定为运行中", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-runtime-status-"));
+    tempDirs.push(tempDir);
+    const rawStoreRef = path.join(tempDir, "pi-finished.jsonl");
+
+    writeFileSync(
+      rawStoreRef,
+      [
+        JSON.stringify({
+          type: "session",
+          id: "pi-1",
+          cwd: tempDir,
+          timestamp: "2026-09-15T10:00:00.000Z"
+        }),
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-09-15T10:00:01.000Z",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "帮我看下项目" }],
+            timestamp: Date.parse("2026-09-15T10:00:01.000Z")
+          }
+        }),
+        // Pi 把工具调用写在 assistant 消息的 content 里，结果单独一条 toolResult。
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-09-15T10:00:02.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "先看目录" },
+              { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } }
+            ],
+            timestamp: Date.parse("2026-09-15T10:00:02.000Z")
+          }
+        }),
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-09-15T10:00:03.000Z",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "bash",
+            content: [{ type: "text", text: "README.md" }],
+            timestamp: Date.parse("2026-09-15T10:00:03.000Z")
+          }
+        }),
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-09-15T10:00:04.000Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "看完了，没问题。" }],
+            stopReason: "stop",
+            timestamp: Date.parse("2026-09-15T10:00:04.000Z")
+          }
+        })
+      ].join("\n"),
+      "utf8"
+    );
+
+    const inspection = inspectSessionActivity(
+      "pi",
+      rawStoreRef,
+      // 用远超「最近活动」窗口的时间点，证明结论来自文件内容而不是 mtime。
+      Date.parse("2026-09-15T10:10:00.000Z")
+    );
+
+    expect(inspection.runningState).toBe("idle");
+    expect(inspection.hasPendingTools).toBe(false);
+    expect(inspection.completedAtCandidate).toBe("2026-09-15T10:00:04.000Z");
+  });
+
+  it("Pi 还有没配对的工具调用时，仍然判定为运行中", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-runtime-status-"));
+    tempDirs.push(tempDir);
+    const rawStoreRef = path.join(tempDir, "pi-pending-tool.jsonl");
+
+    writeFileSync(
+      rawStoreRef,
+      [
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-09-15T10:20:00.000Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call-9", name: "bash", arguments: { command: "sleep 30" } }],
+            timestamp: Date.parse("2026-09-15T10:20:00.000Z")
+          }
+        })
+      ].join("\n"),
+      "utf8"
+    );
+
+    const inspection = inspectSessionActivity(
+      "pi",
+      rawStoreRef,
+      Date.parse("2026-09-15T10:20:05.000Z")
+    );
+
+    expect(inspection.runningState).toBe("running");
+    expect(inspection.hasPendingTools).toBe(true);
+    expect(inspection.completedAtCandidate).toBeNull();
+  });
+
+  it("Pi 用户刚发消息还没回复时，判定为运行中", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-runtime-status-"));
+    tempDirs.push(tempDir);
+    const rawStoreRef = path.join(tempDir, "pi-user-only.jsonl");
+
+    writeFileSync(
+      rawStoreRef,
+      [
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-09-15T10:30:00.000Z",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "在吗" }],
+            timestamp: Date.parse("2026-09-15T10:30:00.000Z")
+          }
+        })
+      ].join("\n"),
+      "utf8"
+    );
+
+    const inspection = inspectSessionActivity(
+      "pi",
+      rawStoreRef,
+      Date.parse("2026-09-15T10:30:05.000Z")
+    );
+
+    expect(inspection.runningState).toBe("running");
+    expect(inspection.completedAtCandidate).toBeNull();
+  });
+
   it("runtime 接口在 active run 不存在时，会回退到原始记录里的最近活动状态", async () => {
     const fixture = createProviderFixture();
     activeFixtures.push(fixture);

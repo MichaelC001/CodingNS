@@ -61,7 +61,13 @@ describe("affairs lightweight session routes", () => {
       updateSessionFavoriteState: vi.fn(async () => null),
       deleteSession: vi.fn(async () => undefined),
       startSession: vi.fn(async () => null),
+      startSessionStream: vi.fn(async (_input, onEvent) => {
+        await onEvent({ type: "completed", result: { session: { sessionId: "light-1" }, messages: [] } });
+      }),
       sendMessage: vi.fn(async () => null),
+      sendMessageStream: vi.fn(async (_input, onEvent) => {
+        await onEvent({ type: "completed", result: { session: { sessionId: "light-1" }, messages: [] } });
+      }),
       ...serviceOverrides
     } as unknown as AffairsLightweightSessionService);
 
@@ -90,7 +96,19 @@ describe("affairs lightweight session routes", () => {
       renameSessionTitle: vi.fn(async () => ({ sessionId: "light-1", title: "新标题" })),
       updateSessionArchiveState: vi.fn(async () => ({ sessionId: "light-1", isArchived: true })),
       updateSessionFavoriteState: vi.fn(async () => ({ sessionId: "light-1", isFavorite: true })),
-      deleteSession: vi.fn(async () => undefined)
+      deleteSession: vi.fn(async () => undefined),
+      startSessionStream: vi.fn(async (_input, onEvent) => {
+        await onEvent({
+          type: "completed",
+          result: { session: { sessionId: "light-1" }, messages: [] }
+        });
+      }),
+      sendMessageStream: vi.fn(async (_input, onEvent) => {
+        await onEvent({
+          type: "completed",
+          result: { session: { sessionId: "light-1" }, messages: [] }
+        });
+      })
     };
     const { app } = await createApp(service);
 
@@ -120,6 +138,18 @@ describe("affairs lightweight session routes", () => {
       parentSessionId: "parent-1",
       anchorMessageId: "message-7"
     }));
+
+    const streamResponse = await app.inject({
+      method: "POST",
+      url: "/api/workspaces/workspace-1/affairs/lightweight-sessions/stream",
+      payload: {
+        provider: "codex",
+        content: "流式测试"
+      }
+    });
+    expect(streamResponse.statusCode).toBe(200);
+    expect(streamResponse.headers["content-type"]).toContain("application/x-ndjson");
+    expect(streamResponse.body).toContain('"type":"completed"');
 
     const sendResponse = await app.inject({
       method: "POST",
