@@ -4,6 +4,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { canConfigureHostBaseUrl } from "../../../config/client-config-service";
 import { useClientConfigSelector } from "../../../config/client-config-store";
 import { getEffectiveActiveHostId } from "../../../config/client-config-types";
+import { hostSwitchCoordinator } from "../../../config/host-switch-coordinator";
+import { getVisibleDiscoveredHosts, localHostDiscoveryStore } from "../../../config/local-host-discovery-store";
 import { serverConfigStore, useServerConfigSelector } from "../../../config/server-config";
 import { authGateway } from "../../../auth/auth-gateway";
 import { consumeAuthExpiredFlag } from "../../../network/auth-expired-flag";
@@ -12,6 +14,7 @@ import { LanguageSwitcher, t, useT } from "../../../shared/i18n";
 import { ApiError } from "../../../shared/network/api-error";
 import { useTheme } from "../../../shared/theme";
 import { useAppVersion } from "../../../shared/version/app-version";
+import { HostConnectionEmptyState } from "../components/HostConnectionEmptyState";
 import { authStore, useAuthSelector } from "../store/auth-store";
 import {
   clearRememberedLoginCredentials,
@@ -173,6 +176,8 @@ function TypewriterText({ text }: { text: string }) {
   );
 }
 
+type HostReachability = "unknown" | "reachable" | "unreachable";
+
 interface LoginCaptchaChallenge {
   captchaId: string;
   imageDataUrl: string;
@@ -205,7 +210,18 @@ export function LoginPage() {
   const platform = usePlatform();
   const appVersion = useAppVersion();
   const activeHostId = useClientConfigSelector((state) => getEffectiveActiveHostId(state));
+  const savedHosts = useClientConfigSelector((state) => state.hosts);
+  const discoveredHosts = useClientConfigSelector((state) => state.discoveredHosts);
   const canConfigureServerAddress = canConfigureHostBaseUrl(platform.platform);
+  const localHostCandidate = useMemo(
+    () =>
+      platform.platform === "desktop"
+        ? getVisibleDiscoveredHosts({ hosts: savedHosts, discoveredHosts }).find(
+            (host) => host.id !== activeHostId
+          ) ?? null
+        : null,
+    [activeHostId, discoveredHosts, platform.platform, savedHosts]
+  );
   const rememberPasswordSupported = useMemo(() => supportsRememberPassword(platform), [platform]);
   const rememberedLoginSnapshot = useMemo(
     () =>
@@ -225,6 +241,9 @@ export function LoginPage() {
   const persistedServerBaseUrl = useServerConfigSelector((state) => state.baseUrl);
   const [probeServerBaseUrl, setProbeServerBaseUrl] = useState(persistedServerBaseUrl);
   const [statusText, setStatusText] = useState<string | null>(null);
+  const [hostReachability, setHostReachability] = useState<HostReachability>("unknown");
+  const [retryingHostProbe, setRetryingHostProbe] = useState(false);
+  const [connectingLocalHost, setConnectingLocalHost] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showServerModal, setShowServerModal] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
@@ -292,6 +311,10 @@ export function LoginPage() {
   }, [persistedServerBaseUrl, rememberPasswordSupported, rememberedServerBaseUrl]);
 
   useEffect(() => {
+    setProbeServerBaseUrl(persistedServerBaseUrl);
+  }, [persistedServerBaseUrl]);
+
+  useEffect(() => {
     if (authSession) {
       navigate(returnTo, { replace: true });
       return;
@@ -307,6 +330,7 @@ export function LoginPage() {
         .then(({ probeHost }) => probeHost(probeServerBaseUrl))
         .then((status) => {
           if (disposed) return;
+          setHostReachability(status.reachable ? "reachable" : "unreachable");
           if (status.demoMode) {
             setDemoMode(true);
             // 检测是否因 token 过期被踢回登录页
@@ -320,6 +344,7 @@ export function LoginPage() {
         })
         .catch(() => {
           if (!disposed) {
+            setHostReachability("unreachable");
             setStatusText(t("auth.authUnavailable"));
           }
         });
@@ -420,6 +445,53 @@ export function LoginPage() {
     setStatusText(null);
   }
 
+  function handleInstallLocalHost(): void {
+    navigate("/setup?role=server");
+  }
+
+  async function handleConnectLocalHost(): Promise<void> {
+    if (!localHostCandidate) {
+      return;
+    }
+
+    setConnectingLocalHost(true);
+    setStatusText(null);
+
+    try {
+      await hostSwitchCoordinator.switchHost(localHostCandidate.id);
+    } catch {
+      setStatusText(t("auth.hostConnectionEmptyConnectFailed"));
+    } finally {
+      setConnectingLocalHost(false);
+    }
+  }
+
+  async function handleRetryHostProbe(): Promise<void> {
+    setRetryingHostProbe(true);
+    setStatusText(null);
+
+    try {
+      const { probeHost } = await import("../../../network/host-probe");
+      const status = await probeHost(probeServerBaseUrl);
+
+      setHostReachability(status.reachable ? "reachable" : "unreachable");
+
+      if (status.reachable && !status.initialized) {
+        navigate("/bootstrap", { replace: true });
+        return;
+      }
+
+      void localHostDiscoveryStore.refresh({ force: true });
+    } catch {
+      setHostReachability("unreachable");
+    } finally {
+      setRetryingHostProbe(false);
+    }
+  }
+
+  const showHostConnectionEmptyState =
+    platform.platform === "desktop" && hostReachability === "unreachable";
+
   const usernameInputId = "login-username";
   const passwordInputId = "login-password";
   const captchaInputId = "login-captcha";
@@ -473,11 +545,32 @@ export function LoginPage() {
             <div className="cyber-card-header">
               <div className="cyber-line" />
               <span className="cyber-card-label">
-                {t("auth.loginTitle").toUpperCase()}
+                {showHostConnectionEmptyState
+                  ? t("auth.hostConnectionEmptySectionLabel").toUpperCase()
+                  : t("auth.loginTitle").toUpperCase()}
               </span>
               <div className="cyber-line" />
             </div>
 
+            {showHostConnectionEmptyState ? (
+              <HostConnectionEmptyState
+                serverBaseUrl={probeServerBaseUrl}
+                localHost={localHostCandidate}
+                connecting={connectingLocalHost}
+                retrying={retryingHostProbe}
+                onConnectLocalHost={() => {
+                  void handleConnectLocalHost();
+                }}
+                onInstallLocalHost={handleInstallLocalHost}
+                onChangeServerAddress={() => {
+                  setShowServerModal(true);
+                }}
+                onRetry={() => {
+                  void handleRetryHostProbe();
+                }}
+              />
+            ) : (
+              <>
             {/* Demo Mode Banner */}
             {demoMode ? (
               <div className="cyber-demo-banner">
@@ -626,6 +719,8 @@ export function LoginPage() {
                 </button>
               </div>
             ) : null}
+              </>
+            )}
           </div>
         </div>
 

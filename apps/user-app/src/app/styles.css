@@ -23220,6 +23220,137 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   opacity: 0.6;
 }
 
+/* Host Connection Empty State */
+.cyber-host-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.cyber-host-empty-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cyber-host-empty-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: var(--cyber-text);
+}
+
+.cyber-host-empty-description {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--cyber-text-secondary);
+}
+
+.cyber-host-empty-address {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--cyber-bg-input);
+  border: 1px solid var(--cyber-border);
+  font-size: 11px;
+  color: var(--cyber-text-dim);
+}
+
+.cyber-host-empty-address-label {
+  flex-shrink: 0;
+}
+
+.cyber-host-empty-address-value {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  color: var(--cyber-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+}
+
+.cyber-host-empty-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cyber-host-empty-action {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.cyber-host-empty-action[data-variant="primary"] {
+  background: linear-gradient(135deg, var(--cyber-primary), var(--cyber-accent));
+  border: 1px solid var(--cyber-border);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.cyber-host-empty-action[data-variant="primary"]:hover {
+  filter: brightness(1.08);
+}
+
+.cyber-host-empty-action[data-variant="secondary"] {
+  background: var(--cyber-bg-input);
+  border: 1px solid var(--cyber-border);
+  color: var(--cyber-text-dim);
+}
+
+.cyber-host-empty-action[data-variant="secondary"]:hover {
+  background: var(--cyber-bg-hover);
+  border-color: var(--cyber-primary-dim);
+  color: var(--cyber-text);
+}
+
+.cyber-host-empty-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.cyber-host-empty-action:disabled:hover {
+  filter: none;
+}
+
+.cyber-host-empty-retry {
+  align-self: center;
+  padding: 4px;
+  background: none;
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--cyber-text-dim);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.cyber-host-empty-retry:hover {
+  color: var(--cyber-text);
+}
+
+.cyber-host-empty-retry:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
 .cyber-login-page[data-native-mobile="true"] {
   --cyber-safe-top: env(safe-area-inset-top, 0px);
   --cyber-safe-right: env(safe-area-inset-right, 0px);
