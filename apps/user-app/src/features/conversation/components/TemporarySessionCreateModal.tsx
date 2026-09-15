@@ -155,6 +155,21 @@ export function TemporarySessionCreateModal({
     if (visibleProviders[0]) setProvider(visibleProviders[0]);
   }, [provider, visibleProviders]);
 
+  useEffect(() => {
+    if (!open || presentation !== "floating") {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, open, presentation]);
+
   async function createSession() {
     if (!source || !prompt.trim() || !provider || submitting) return;
     setSubmitting(true);
@@ -271,7 +286,10 @@ export function TemporarySessionCreateModal({
     <div className="conversation-temporary-session-modal">
       <aside className="conversation-temporary-session-sidebar">
         <div className="conversation-temporary-session-sidebar-header">
-          <strong>{t("conversation.temporarySessionListTitle")}</strong>
+          <div className="conversation-temporary-session-list-heading">
+            <strong>{t("conversation.temporarySessionListTitle")}</strong>
+            <span className="conversation-temporary-session-count" aria-label={t("conversation.temporarySessionListTitle")}>{sessions.length}</span>
+          </div>
           <button type="button" className="secondary-button" onClick={() => { setPrompt(""); setCreateOpen(true); }}>{t("conversation.temporarySessionNewAction")}</button>
         </div>
         {listBody}
