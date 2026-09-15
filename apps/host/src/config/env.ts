@@ -51,6 +51,19 @@ export interface HostConfig {
   grokApiBaseUrl: string | null;
   commandCodeCliPath: string;
   commandCodeHomeDir: string;
+  /** Pi Agent CLI 路径；缺省走 PATH 里的 `pi`。 */
+  piCliPath: string;
+  /**
+   * Pi 数据根目录。Pi 的 agent/session 目录按工作区建在这下面，
+   * 不写进用户工作区，也保证同一工作区的会话能被扫描到。
+   */
+  piDataRootDir: string;
+  /** Pi 受控扩展文件；为空时不加载任何扩展。 */
+  piExtensionPaths: string[];
+  /** 受控 question 扩展是否可用；不可用时能力快照里明确关闭。 */
+  piQuestionExtensionAvailable: boolean;
+  /** 受控 Plan Mode 扩展是否可用；不可用时前端不显示计划入口。 */
+  piPlanExtensionAvailable: boolean;
   sessionBillingProfileId: string | null;
   sessionBillingPriceBookVersion: string;
   chromeExecutablePath: string;
@@ -162,6 +175,17 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
   const configuredOpenCodeBaseUrl = normalizeOptionalText(
     overrides.opencodeBaseUrl ?? process.env.CODINGNS_OPENCODE_BASE_URL ?? null
   );
+  const piCliPath =
+    overrides.piCliPath
+    ?? process.env.CODINGNS_PI_COMMAND
+    ?? process.env.PI_COMMAND
+    ?? "pi";
+  // 受控扩展默认指向仓库里固定版本的 RPC 兼容扩展；显式配置会整体覆盖。
+  const piExtensionPaths = (
+    overrides.piExtensionPaths
+    ?? resolvePiExtensionPathsFromEnv(process.env.CODINGNS_PI_EXTENSIONS)
+    ?? resolveDefaultPiExtensionPaths()
+  ).map((entry) => entry.trim()).filter(Boolean);
 
   return {
     host: overrides.host ?? process.env.CODINGNS_HOST ?? "0.0.0.0",
@@ -256,6 +280,12 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
     grokApiBaseUrl,
     commandCodeCliPath,
     commandCodeHomeDir,
+    piCliPath,
+    // 测试会显式传一个隔离目录；不传时才落在数据库目录下，不污染用户工作区。
+    piDataRootDir: overrides.piDataRootDir ?? path.dirname(databasePath),
+    piExtensionPaths,
+    piQuestionExtensionAvailable: isPiExtensionAvailable("question-rpc", piExtensionPaths),
+    piPlanExtensionAvailable: isPiExtensionAvailable("plan-mode-rpc", piExtensionPaths),
     sessionBillingProfileId:
       overrides.sessionBillingProfileId
       ?? normalizeOptionalText(process.env.CODINGNS_SESSION_BILLING_PROFILE),
@@ -396,6 +426,42 @@ function normalizeOriginList(values: readonly string[] | null | undefined): stri
     .filter((value): value is string => Boolean(value));
 
   return uniqueStrings(normalized);
+}
+
+/**
+ * 默认只加载仓库里固定版本的 RPC 兼容扩展。
+ *
+ * 这是安全边界：Pi 扩展拥有进程级权限，所以不接受工作区里的任意扩展自动加载，
+ * 只有这里列出的受控文件会通过 `--extension` 传给 Pi，并配合 `--no-extensions` 关闭自动发现。
+ */
+function resolveDefaultPiExtensionPaths(): string[] {
+  const candidates = [
+    path.join(resolveAppRootDir(), "pi-extensions", "question-rpc", "index.ts"),
+    path.join(resolveAppRootDir(), "pi-extensions", "plan-mode-rpc", "index.ts")
+  ];
+
+  return candidates.filter((candidate) => existsSync(candidate));
+}
+
+/** 判断某个受控扩展是否真的在白名单里（能力快照据此关闭对应入口）。 */
+function isPiExtensionAvailable(extensionDirName: string, extensionPaths: string[]): boolean {
+  return extensionPaths.some((extensionPath) =>
+    extensionPath.split(/[\\/]/).includes(extensionDirName)
+  );
+}
+
+/** 环境变量里用路径分隔符或逗号分隔的扩展白名单。 */
+function resolvePiExtensionPathsFromEnv(value: string | undefined): string[] | null {
+  const normalized = normalizeOptionalText(value);
+
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized
+    .split(path.delimiter === ";" ? /[;,]/ : /[,]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function resolveAppRootDir(): string {

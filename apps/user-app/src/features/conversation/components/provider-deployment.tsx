@@ -24,12 +24,17 @@ export interface ProviderDeploymentSelection {
 export const PROVIDER_DEFAULT_MODEL_ID = "provider-default";
 export const GLOBAL_DEFAULT_PRESET_VALUE = "__global_default__";
 
-/** 返回 DeepSeek 模型所属供应商名称，兼容旧响应中的 ID 前缀。 */
+/**
+ * 返回模型所属供应商名称，兼容旧响应中的 ID 前缀。
+ *
+ * Pi 的模型目录天生跨供应商（同一个模型可能来自 anthropic、openrouter 等），
+ * 不带前缀时下拉里会出现两条一模一样的模型名，用户没法区分。
+ */
 export function getModelProviderPrefix(
   model: Pick<ProviderModelOptionDto, "id" | "providerName">,
   provider: ProviderId
 ): string | null {
-  if (provider !== "deepseek-harness") return null;
+  if (provider !== "deepseek-harness" && provider !== "pi") return null;
   const providerName = model.providerName?.trim();
   if (providerName) return providerName;
   const separator = model.id.indexOf(":");

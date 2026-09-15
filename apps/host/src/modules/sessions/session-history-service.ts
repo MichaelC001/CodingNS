@@ -6,6 +6,7 @@ import {
   CapabilityService,
   ClaudeCodeAdapter,
   CommandCodeAdapter,
+  PiAdapter,
   type CodexForkTransport,
   type CodexThreadControlTransport,
   type ContextUsageSnapshot,
@@ -624,7 +625,11 @@ export class SessionHistoryService {
       opencodeDbPath: config.opencodeDbPath,
       grokHomeDir: config.grokHomeDir,
       commandCodeCliPath: config.commandCodeCliPath,
-      commandCodeHomeDir: config.commandCodeHomeDir
+      commandCodeHomeDir: config.commandCodeHomeDir,
+      piCliPath: config.piCliPath,
+      piDataRootDir: config.piDataRootDir,
+      piQuestionExtensionAvailable: config.piQuestionExtensionAvailable,
+      piPlanExtensionAvailable: config.piPlanExtensionAvailable
     };
     this.providerRegistry = new ProviderRegistry([
       new ClaudeCodeAdapter({ homeDir: config.claudeCodeHomeDir }),
@@ -659,6 +664,14 @@ export class SessionHistoryService {
        new CommandCodeAdapter({
          homeDir: config.commandCodeHomeDir,
          commandPath: config.commandCodeCliPath
+       }),
+       new PiAdapter({
+         commandPath: config.piCliPath,
+         dataRootDir: config.piDataRootDir,
+         capabilityInput: {
+           questionExtensionAvailable: config.piQuestionExtensionAvailable,
+           planExtensionAvailable: config.piPlanExtensionAvailable
+         }
        }),
       ...(adapterOverrides.additionalAdapters ?? [])
     ]);
@@ -1919,6 +1932,20 @@ export class SessionHistoryService {
         }
       }
 
+      // Pi 的模型目录只能起一次 RPC 才拿得到，这里和 Grok 一样同步等结果：
+      // 后台刷新的写法会让用户第一次打开输入框只看到“默认”，拿不到真实模型。
+      if (baseCapabilities.provider === "pi" && workspacePath) {
+        try {
+          return this.applyProviderEnabledState(
+            await this.refreshProviderCapabilities(baseCapabilities, workspacePath)
+          );
+        } catch {
+          return this.applyProviderEnabledState(
+            this.resolveProviderCapabilitiesImmediate(baseCapabilities, workspacePath)
+          );
+        }
+      }
+
       if (baseCapabilities.provider === "claude-code" && baseCapabilities.canSendMessage) {
         const refreshed = await this.refreshProviderCapabilities(baseCapabilities, workspacePath);
         return this.applyProviderEnabledState(refreshed);
@@ -1952,7 +1979,7 @@ export class SessionHistoryService {
           return this.applyProviderEnabledState(normalizedCapabilities);
         }
 
-        if (normalizedCapabilities.provider === "grok" && workspacePath) {
+        if ((normalizedCapabilities.provider === "grok" || normalizedCapabilities.provider === "pi") && workspacePath) {
           try {
             return this.applyProviderEnabledState(
               await this.refreshProviderCapabilities(normalizedCapabilities, workspacePath)
@@ -1985,7 +2012,10 @@ export class SessionHistoryService {
       );
     }
 
-    if (capabilities.provider === "command-code" && workspacePath) {
+    if (
+      (capabilities.provider === "command-code" || capabilities.provider === "pi")
+      && workspacePath
+    ) {
       return this.capabilityService.getProviderCapabilitiesForWorkspace(
         capabilities.provider,
         workspacePath
@@ -2786,6 +2816,12 @@ export class SessionHistoryService {
     }
 
     switch (provider) {
+      case "pi":
+        // Pi 的会话文件按工作区存放，和 ProviderRegistry 里的实例用同一套目录规则。
+        return new PiAdapter({
+          commandPath: this.providerSessionDiscoveryConfig.piCliPath,
+          dataRootDir: this.providerSessionDiscoveryConfig.piDataRootDir
+        }).startSession(workspacePath, options);
       case "claude-code":
         return new ClaudeCodeAdapter({ homeDir: scopedRuntimeHomeDir }).startSession(workspacePath, options);
       case "codex":
@@ -3399,7 +3435,9 @@ export class SessionHistoryService {
     providerSessionId: string;
     rawStoreRef: string;
   }): Promise<void> {
-    if (input.provider === "grok") {
+    // Grok 和 Pi 的会话就是受控目录下的文件/目录，Host 进程内直接删更省事，
+    // 也避免 CLI 侧再维护一份 provider 白名单和目录配置。
+    if (input.provider === "grok" || input.provider === "pi") {
       await this.sessionSyncService.deleteSession(input.provider, input.providerSessionId, input.rawStoreRef);
       return;
     }
