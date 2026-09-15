@@ -1410,6 +1410,22 @@ describe("ConversationPage", () => {
     expect(view.container.querySelector(".mobile-conversation-preview-rail")).toBeInTheDocument();
   });
 
+  it("移动端聊天顶部的会话列表按钮可以打开侧滑会话列表", async () => {
+    window.localStorage.setItem("mobile.conversation.preview.mode", "immersive");
+    const view = renderDraftConversationPage();
+
+    expect(view.container.querySelector(".mobile-conversation-preview-rail")).toBeNull();
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: t("shell.mobileConversationSessionListAction")
+      })
+    );
+
+    expect(await screen.findByText("父会话")).toBeInTheDocument();
+    expect(view.container.querySelector(".mobile-conversation-preview-rail")).toBeInTheDocument();
+  });
+
   it("移动端会话列表会显示收藏会话和归档入口，没有收藏时会自动隐藏收藏分组", async () => {
     mockUseWorkbenchShell.mockReturnValue(
       createMobileWorkbenchShellValue({
