@@ -39,7 +39,7 @@ verifyWindowsPm2LaunchMode(pm2Process, installState);
 assertTextContains(launchEnv.PATH, "runtime", "launch-env PATH 缺少私有运行时");
 assertTextContains(launchEnv.PATH, "npm-global", "launch-env PATH 缺少私有 npm 前缀");
 
-assertExists(installState.nodeExe, "node 可执行文件");
+assertExecutableExists(installState.nodeExe, "node 可执行文件");
 assertExists(installState.codingnsCommand, "codingns 命令");
 assertExists(installState.pm2Command, "pm2 命令");
 
@@ -53,6 +53,18 @@ function assertExists(targetPath, label) {
   if (!fs.existsSync(targetPath)) {
     throw new Error(`缺少 ${label}：${targetPath}`);
   }
+}
+
+function assertExecutableExists(targetPath, label) {
+  if (fs.existsSync(targetPath)) {
+    return;
+  }
+
+  if (process.platform === "win32" && fs.existsSync(`${targetPath}.exe`)) {
+    return;
+  }
+
+  throw new Error(`缺少 ${label}：${targetPath}`);
 }
 
 function assertEqual(actual, expected, message) {
