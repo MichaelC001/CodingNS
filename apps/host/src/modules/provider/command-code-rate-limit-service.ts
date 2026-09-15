@@ -6,6 +6,8 @@ export interface CommandCodeRateLimitWindow {
   remainingPercent: number;
   windowDurationMins: number | null;
   resetsAt: number | null;
+  remainingCredits?: number;
+  totalCredits?: number;
 }
 
 export interface CommandCodeRateLimits {
@@ -13,6 +15,7 @@ export interface CommandCodeRateLimits {
   planType: string | null;
   primary: CommandCodeRateLimitWindow | null;
   secondary: CommandCodeRateLimitWindow | null;
+  monthly: CommandCodeRateLimitWindow | null;
   rateLimitReachedType: string | null;
   resetCredits: null;
   capturedAt: string;
@@ -38,11 +41,17 @@ export class CommandCodeRateLimitService {
         ? await subscriptionResponse.json() as Record<string, unknown>
         : null;
       const windows = credits.windowLimits && typeof credits.windowLimits === "object" ? credits.windowLimits as Record<string, unknown> : {};
+      const planId = readText((subscription?.data as Record<string, unknown> | undefined)?.planId);
+      const monthlyRemaining = readNumber((credits.credits as Record<string, unknown> | undefined)?.monthlyCredits);
+      const monthlyTotal = resolveMonthlyCreditLimit(planId);
       return {
         authenticated: true,
-        planType: readText((subscription?.data as Record<string, unknown> | undefined)?.planId),
+        planType: planId,
         primary: normalizeWindow(windows.fiveHour),
         secondary: normalizeWindow(windows.weekly),
+        monthly: monthlyRemaining === null
+          ? null
+          : normalizeMonthlyWindow(monthlyRemaining, monthlyTotal, readTimestamp((subscription?.data as Record<string, unknown> | undefined)?.currentPeriodEnd)),
         rateLimitReachedType: readText(windows.exceeded),
         resetCredits: null,
         capturedAt: new Date().toISOString()
@@ -77,12 +86,52 @@ function normalizeWindow(value: unknown): CommandCodeRateLimitWindow | null {
     usedPercent,
     remainingPercent: Math.max(0, 100 - usedPercent),
     windowDurationMins: null,
-    resetsAt: readNumber(source.resetAt)
+    resetsAt: normalizeResetTimestamp(readNumber(source.resetAt))
   };
+}
+
+function normalizeMonthlyWindow(
+  remainingCredits: number,
+  totalCredits: number | null,
+  resetAt: number | null
+): CommandCodeRateLimitWindow {
+  const remainingPercent = totalCredits && totalCredits > 0
+    ? Math.max(0, Math.min(100, (remainingCredits / totalCredits) * 100))
+    : 0;
+  return {
+    usedPercent: totalCredits && totalCredits > 0 ? 100 - remainingPercent : 0,
+    remainingPercent,
+    windowDurationMins: null,
+    resetsAt: normalizeResetTimestamp(resetAt),
+    remainingCredits,
+    ...(totalCredits === null ? {} : { totalCredits })
+  };
+}
+
+function resolveMonthlyCreditLimit(planId: string | null): number | null {
+  const normalized = planId?.trim().toLowerCase() ?? "";
+  if (normalized.endsWith("-go") || normalized === "go") return 10;
+  if (normalized.endsWith("-goat") || normalized === "goat") return 70;
+  if (normalized.endsWith("-max") || normalized === "max") return 150;
+  return null;
+}
+
+function normalizeResetTimestamp(value: number | null): number | null {
+  if (value === null) return null;
+  // Command Code API 返回毫秒时间戳，前端 DTO 与 Codex 统一使用秒。
+  return value > 10_000_000_000 ? Math.round(value / 1000) : Math.round(value);
 }
 
 function readNumber(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readTimestamp(value: unknown): number | null {
+  const numeric = readNumber(value);
+  if (numeric !== null) return numeric;
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 

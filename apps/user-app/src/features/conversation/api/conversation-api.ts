@@ -1234,6 +1234,8 @@ export interface CodexRateLimitWindowDto {
   remainingPercent: number;
   windowDurationMins: number | null;
   resetsAt: number | null;
+  remainingCredits?: number;
+  totalCredits?: number;
 }
 
 export interface CodexRateLimitResetCreditDto {
@@ -1248,6 +1250,7 @@ export interface CodexRateLimitsDto {
   planType: string | null;
   primary: CodexRateLimitWindowDto | null;
   secondary: CodexRateLimitWindowDto | null;
+  monthly?: CodexRateLimitWindowDto | null;
   rateLimitReachedType: string | null;
   resetCredits: {
     availableCount: number;
