@@ -42,18 +42,17 @@ describe("Command Code model capabilities", () => {
       {
         id: "provider-default",
         name: "跟随 Command Code 默认模型",
-        usesProviderDefault: true,
-        supportedReasoningEfforts: ["low", "medium", "high"]
+        usesProviderDefault: true
       },
       {
         id: "deepseek/deepseek-v4-flash",
         name: "deepseek/deepseek-v4-flash",
-        supportedReasoningEfforts: ["low", "medium", "high"]
+        supportedReasoningEfforts: ["high", "max"]
       },
       {
         id: "claude-sonnet-4-6",
         name: "claude-sonnet-4-6",
-        supportedReasoningEfforts: ["low", "medium", "high"]
+        supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"]
       }
     ]);
   });

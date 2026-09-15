@@ -182,12 +182,12 @@ test("CommandCodeRuntimeAdapter 会把思考强度传给 CLI", async () => {
       }
     });
     const request = createRequest({
-      options: { ...createRequest().options, reasoningLevel: "high" }
+      options: { ...createRequest().options, reasoningLevel: " xhigh " }
     });
     await (await adapter.startSession(request, { updateSessionBinding() {}, async emit() {} })).completed;
 
     const effortIndex = captured[0].indexOf("--effort");
-    assert.deepEqual(captured[0].slice(effortIndex, effortIndex + 2), ["--effort", "high"]);
+    assert.deepEqual(captured[0].slice(effortIndex, effortIndex + 2), ["--effort", "xhigh"]);
     assert.equal(capturedOptions[0].env.HOME, process.env.HOME);
     assert.notEqual(capturedOptions[0].env.HOME, homeDir);
   } finally {

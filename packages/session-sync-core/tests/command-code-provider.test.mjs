@@ -133,7 +133,8 @@ test("CommandCodeAdapter 能把 CLI 模型列表转换为模型和思考强度�
   try {
     const adapter = new CommandCodeAdapter({
       homeDir,
-      listModels: async () => ["deepseek/deepseek-v4-flash", "claude-sonnet-4-6"]
+      listModels: async () => ["deepseek/deepseek-v4-flash", "claude-sonnet-4-6"],
+      readStatus: async () => null
     });
     const capabilities = await adapter.getProviderCapabilitiesForWorkspace("/Users/jackson/Code/CodingNS");
 
@@ -142,7 +143,9 @@ test("CommandCodeAdapter 能把 CLI 模型列表转换为模型和思考强度�
       "deepseek/deepseek-v4-flash",
       "claude-sonnet-4-6"
     ]);
-    assert.deepEqual(capabilities.modelOptions?.[1].supportedReasoningEfforts, ["low", "medium", "high"]);
+    assert.deepEqual(capabilities.modelOptions?.[0].supportedReasoningEfforts, undefined);
+    assert.deepEqual(capabilities.modelOptions?.[1].supportedReasoningEfforts, ["high", "max"]);
+    assert.deepEqual(capabilities.modelOptions?.[2].supportedReasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
     assert.deepEqual(parseCommandCodeModelList([
       "Available models  ·  2 models",
       "Open Source",
@@ -150,6 +153,40 @@ test("CommandCodeAdapter 能把 CLI 模型列表转换为模型和思考强度�
       "claude-sonnet-4-6                        fast model",
       "Docs: https://commandcode.ai/docs"
     ].join("\n")), ["deepseek/deepseek-v4-flash", "claude-sonnet-4-6"]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeAdapter 按 status 中的默认模型返回默认 effort", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-default-effort-"));
+
+  try {
+    const adapter = new CommandCodeAdapter({
+      homeDir,
+      listModels: async () => ["Qwen/Qwen3.8-27B"],
+      readStatus: async () => ({ model: "Qwen/Qwen3.8-27B" })
+    });
+    const capabilities = await adapter.getProviderCapabilitiesForWorkspace("/Users/jackson/Code/CodingNS");
+
+    assert.deepEqual(capabilities.modelOptions?.[0].supportedReasoningEfforts, ["low", "medium", "xhigh"]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeAdapter 对目录中没有可调 effort 的模型返回空列表", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-no-effort-"));
+
+  try {
+    const adapter = new CommandCodeAdapter({
+      homeDir,
+      listModels: async () => ["moonshotai/Kimi-K2.7-Code"],
+      readStatus: async () => null
+    });
+    const capabilities = await adapter.getProviderCapabilitiesForWorkspace("/Users/jackson/Code/CodingNS");
+
+    assert.deepEqual(capabilities.modelOptions?.[1].supportedReasoningEfforts, []);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }

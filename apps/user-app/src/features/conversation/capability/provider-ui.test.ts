@@ -65,7 +65,7 @@ describe("provider-ui", () => {
     expect(createDraftCapabilities("command-code").supportsInterrupt).toBe(true);
     expect(createDraftCapabilities("command-code").supportsAttachments).toBe(false);
     expect(createDraftCapabilities("command-code").modelOptions?.[0]?.supportedReasoningEfforts)
-      .toEqual(["low", "medium", "high"]);
+      .toBeUndefined();
     expect(shouldPersistReasoningLevel("command-code")).toBe(true);
   });
 
