@@ -69,11 +69,13 @@ function sortTemporarySessions(sessions: SessionSummaryDto[]): SessionSummaryDto
 export function TemporarySessionCreateModal({
   open,
   source,
-  onClose
+  onClose,
+  presentation = "modal"
 }: {
   open: boolean;
   source: TemporarySessionCreateSource | null;
   onClose: () => void;
+  presentation?: "modal" | "floating";
 }) {
   const platform = usePlatform();
   const { currentTargetHostId } = useWorkbenchShell();
@@ -201,11 +203,15 @@ export function TemporarySessionCreateModal({
     <div className="affairs-sidebar-empty">{t("common.loading")}</div>
   ) : sessions.length > 0 ? (
     <ModalList className="conversation-temporary-session-list">
-      {sessions.map((item) => (
+      {sessions.map((item, index) => (
         <ModalListItem key={item.sessionId} selected={item.sessionId === selectedSessionId}>
           <button type="button" className="conversation-temporary-session-list-button" onClick={() => setSelectedSessionId(item.sessionId)}>
-            <strong title={item.title}>{item.title || t("common.unknown")}</strong>
-            <span>{getProviderDisplayName(item.provider, "full")}</span>
+            <span className="conversation-temporary-session-list-position" aria-hidden="true">{index + 1}</span>
+            <span className="conversation-temporary-session-list-copy">
+              <strong title={item.title}>{item.title || t("common.unknown")}</strong>
+              <span>{t("conversation.temporarySessionPosition", { position: index + 1 })}</span>
+              <span>{getProviderDisplayName(item.provider, "full")}</span>
+            </span>
           </button>
         </ModalListItem>
       ))}
@@ -277,6 +283,37 @@ export function TemporarySessionCreateModal({
     </div>
   );
 
+  if (presentation === "floating") {
+    if (!open) {
+      return null;
+    }
+
+    return (
+      <section
+        className="conversation-temporary-session-popover"
+        role="dialog"
+        aria-label={t("conversation.temporarySessionTitle")}
+      >
+        <header className="conversation-temporary-session-popover-header">
+          <div>
+            <strong>{t("conversation.temporarySessionTitle")}</strong>
+            <span>{t("conversation.temporarySessionDescription")}</span>
+          </div>
+          <button
+            type="button"
+            className="conversation-temporary-session-popover-close"
+            aria-label={t("common.close")}
+            title={t("common.close")}
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        {body}
+      </section>
+    );
+  }
+
   if (platform.isMobile) {
     return <MobileSheet open={open} title={t("conversation.temporarySessionTitle")} description={t("conversation.temporarySessionDescription")} height="three-quarter" kind="form" showHandle showCancelButton={false} onClose={onClose}>{body}</MobileSheet>;
   }
@@ -287,15 +324,16 @@ export function TemporarySessionHeaderAction({ session }: { session: SessionSumm
   const [open, setOpen] = useState(false);
   if (!session) return null;
   return (
-    <>
-      <button type="button" className="conversation-header-ai-button" aria-label={t("conversation.temporarySessionAction")} title={t("conversation.temporarySessionAction")} onClick={() => setOpen(true)}>
+    <span className="conversation-temporary-session-action">
+      <button type="button" className="conversation-header-ai-button conversation-temporary-session-trigger" aria-label={t("conversation.temporarySessionAction")} title={t("conversation.temporarySessionAction")} aria-expanded={open} onClick={() => setOpen((current) => !current)}>
         <span className="conversation-header-ai-button-label" aria-hidden="true">+</span>
       </button>
       <TemporarySessionCreateModal
         open={open}
         source={{ workspaceId: session.workspaceId, parentSessionId: session.sessionId, parentTitle: session.title, provider: session.provider }}
         onClose={() => setOpen(false)}
+        presentation="floating"
       />
-    </>
+    </span>
   );
 }
