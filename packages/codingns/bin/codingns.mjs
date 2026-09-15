@@ -31,7 +31,8 @@ const PROVIDER_SESSION_DELETE_PROVIDERS = new Set([
   "opencode",
   "gemini",
   "kimi",
-  "deepseek-harness"
+  "deepseek-harness",
+  "command-code"
 ]);
 
 const [command, ...argv] = process.argv.slice(2);
@@ -1430,6 +1431,25 @@ async function runProviderSessionsCommand(argv) {
         fail(
           `provider-sessions delete 仅支持 ${[...PROVIDER_SESSION_DELETE_PROVIDERS].join(", ")}`
         );
+      }
+
+      if (provider === "command-code") {
+        try {
+          deleteCommandCodeSessionFiles(providerSessionId, rawStoreRef);
+        } catch (error) {
+          console.error(
+            JSON.stringify(normalizeProviderSessionDeleteFailure(error), null, 2)
+          );
+          process.exit(1);
+        }
+
+        await printAssistantResponse({
+          ok: true,
+          provider,
+          providerSessionId,
+          rawStoreRef
+        });
+        return;
       }
 
       const { deleteDeepSeekHarnessSessionFiles } = await import("@codingns/session-sync-core");
@@ -3420,13 +3440,13 @@ codingns provider-sessions delete
   直接删除底层 provider 会话，不经过项目会话索引。适合给 Host 或脚本层做真实删除调用。
 
 用法：
-  codingns provider-sessions delete --provider <claude-code|legna-code|codex|opencode|gemini|kimi|deepseek-harness> --provider-session-id <id> --raw-store-ref <ref>
+      codingns provider-sessions delete --provider <claude-code|legna-code|codex|opencode|gemini|kimi|deepseek-harness|command-code> --provider-session-id <id> --raw-store-ref <ref>
 `.trim();
     default:
       return `
 codingns provider-sessions 用法：
 
-  codingns provider-sessions delete --provider <claude-code|legna-code|codex|opencode|gemini|kimi|deepseek-harness> --provider-session-id <id> --raw-store-ref <ref>
+  codingns provider-sessions delete --provider <claude-code|legna-code|codex|opencode|gemini|kimi|deepseek-harness|command-code> --provider-session-id <id> --raw-store-ref <ref>
 
 环境变量：
 
@@ -3601,6 +3621,69 @@ function buildProviderSessionsHelpTopic(action) {
 
 function isHelpToken(value) {
   return value === "help" || value === "--help" || value === "-h";
+}
+
+function deleteCommandCodeSessionFiles(providerSessionId, rawStoreRef) {
+  const homeDir = readStringOption(
+    process.env.CODINGNS_COMMAND_CODE_HOME,
+    path.join(os.homedir(), ".commandcode")
+  );
+  const projectsRoot = path.resolve(homeDir, "projects");
+  const rawStorePath = path.resolve(rawStoreRef);
+  const relativeRawStorePath = path.relative(projectsRoot, rawStorePath);
+  const isSafeRawStorePath = relativeRawStorePath !== ""
+    && !relativeRawStorePath.startsWith("..")
+    && !path.isAbsolute(relativeRawStorePath)
+    && rawStorePath.endsWith(".jsonl");
+
+  if (isSafeRawStorePath && fs.existsSync(rawStorePath)) {
+    fs.rmSync(rawStorePath, { force: true });
+    return;
+  }
+
+  const found = findCommandCodeSessionFile(projectsRoot, providerSessionId);
+
+  if (!found) {
+    throw new Error("PROVIDER_SESSION_NOT_FOUND");
+  }
+
+  fs.rmSync(found, { force: true });
+}
+
+function findCommandCodeSessionFile(rootDir, providerSessionId) {
+  if (!fs.existsSync(rootDir)) {
+    return null;
+  }
+
+  const pending = [rootDir];
+  const expectedSessionId = JSON.stringify(providerSessionId);
+
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const entryPath = path.join(currentDir, entry.name);
+
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+        continue;
+      }
+
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {
+        continue;
+      }
+
+      if (path.basename(entry.name, ".jsonl") === providerSessionId) {
+        return entryPath;
+      }
+
+      if (fs.readFileSync(entryPath, "utf8").includes(expectedSessionId)) {
+        return entryPath;
+      }
+    }
+  }
+
+  return null;
 }
 
 function normalizeProviderSessionDeleteFailure(error) {

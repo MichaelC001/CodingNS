@@ -155,6 +155,32 @@ describe("provider session delete", () => {
     expect(context.sessionStateRepository.findBySessionAndUser("session-1", "user-1")).toBeNull();
   });
 
+  it("兼容旧的 code provider 名称并按 command-code 删除", async () => {
+    const fixture = createEmptyFixture();
+    cleanupTargets.push(fixture.rootDir);
+    const cliDelete = {
+      deleteSession: vi.fn(async () => {})
+    };
+    const context = createServiceContext(fixture, cliDelete);
+
+    seedSession(context, {
+      sessionId: "session-command-code",
+      provider: "code",
+      providerSessionId: "command-code-session-1",
+      rawStoreRef: "command-code://session/command-code-session-1",
+      runningState: "idle"
+    });
+
+    await context.service.deleteSession("session-command-code", "user-1");
+
+    expect(cliDelete.deleteSession).toHaveBeenCalledWith({
+      provider: "command-code",
+      providerSessionId: "command-code-session-1",
+      rawStoreRef: "command-code://session/command-code-session-1"
+    });
+    expect(context.sessionBindingRepository.findBySessionId("session-command-code")).toBeNull();
+  });
+
   it("底层 provider 会话已经不存在时，SessionHistoryService 仍会删除本地索引", async () => {
     const fixture = createEmptyFixture();
     cleanupTargets.push(fixture.rootDir);
