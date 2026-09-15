@@ -634,6 +634,10 @@ export interface ProviderSessionDiscoveryHelperConfig {
   grokHomeDir: string;
   commandCodeCliPath: string;
   commandCodeHomeDir: string;
+  piCliPath: string;
+  piDataRootDir: string;
+  piQuestionExtensionAvailable?: boolean;
+  piPlanExtensionAvailable?: boolean;
 }
 
 function resolveHelperLaunch(): { command: string; args: string[] } {

@@ -1,6 +1,7 @@
 import {
   ClaudeCodeAdapter,
   CommandCodeAdapter,
+  PiAdapter,
   CodexAdapter,
   GeminiAdapter,
   GrokAdapter,
@@ -333,6 +334,14 @@ function getWorkspaceDiscoveryService(
     ["command-code", [config.commandCodeHomeDir, config.commandCodeCliPath], () => new CommandCodeAdapter({
       homeDir: config.commandCodeHomeDir,
       commandPath: config.commandCodeCliPath
+    })],
+    ["pi", [config.piCliPath, config.piDataRootDir], () => new PiAdapter({
+      commandPath: config.piCliPath,
+      dataRootDir: config.piDataRootDir,
+      capabilityInput: {
+        questionExtensionAvailable: config.piQuestionExtensionAvailable,
+        planExtensionAvailable: config.piPlanExtensionAvailable
+      }
     })]
   ];
   const registry = new ProviderRegistry(factories

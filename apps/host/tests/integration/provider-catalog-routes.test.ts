@@ -104,6 +104,7 @@ describe("provider catalog routes", () => {
       "kimi",
       "opencode",
       "command-code",
+      "pi",
       "deepseek-harness",
       "grok"
     ]);

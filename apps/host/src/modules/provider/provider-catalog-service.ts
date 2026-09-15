@@ -7,6 +7,7 @@ import {
   LegnaCodeAdapter,
   OpenCodeAdapter,
   CommandCodeAdapter,
+  PiAdapter,
   ProviderRegistry,
   type ProviderCapabilities,
   type ProviderId,
@@ -30,7 +31,8 @@ const STREAMING_OUTPUT_PROVIDER_IDS = new Set<ProviderId>([
   "kimi",
   "deepseek-harness",
   "grok",
-  "command-code"
+  "command-code",
+  "pi"
 ]);
 // 会话互动（原“助手服务”）：既要产品侧有正式入口，也要 CLI 本身支持审批、问题这类交互。
 // deepseek-harness 与 affairs-lightweight-session-service 里的轻量会话支持范围保持一致。
@@ -53,6 +55,7 @@ const RECONSTRUCTED_FORK_PROVIDER_IDS = new Set<ProviderId>([
   "deepseek-harness",
   "command-code"
 ]);
+// Pi 走原生 fork/clone，不需要重建式分叉。
 
 export interface ProviderCatalogEntryDto {
   provider: ProviderId;
@@ -118,6 +121,14 @@ export class ProviderCatalogService {
       new CommandCodeAdapter({
         homeDir: config.commandCodeHomeDir,
         commandPath: config.commandCodeCliPath
+      }),
+      new PiAdapter({
+        commandPath: config.piCliPath,
+        dataRootDir: config.piDataRootDir,
+        capabilityInput: {
+          questionExtensionAvailable: config.piQuestionExtensionAvailable,
+          planExtensionAvailable: config.piPlanExtensionAvailable
+        }
       }),
       ...additionalAdapters
     ]);
@@ -291,6 +302,8 @@ function resolveProviderDisplayName(provider: ProviderId): string {
       return "Grok Build";
     case "command-code":
       return "Command Code";
+    case "pi":
+      return "Pi Agent";
     default:
       return provider;
   }
@@ -316,6 +329,8 @@ function buildProviderMissingMessage(provider: ProviderId): string {
       return "未检测到 Grok CLI";
     case "command-code":
       return "未检测到 Command Code CLI";
+    case "pi":
+      return "未检测到 Pi CLI（npm i -g @earendil-works/pi-coding-agent）";
     default:
       return "未检测到对应 provider 运行环境";
   }
