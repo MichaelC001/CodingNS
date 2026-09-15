@@ -2910,6 +2910,16 @@ export function getCodexRateLimits(options?: ScopedRequestOptions) {
   );
 }
 
+export function getCommandCodeRateLimits(options?: ScopedRequestOptions) {
+  return httpClient.request<{ rateLimits: CodexRateLimitsDto | null }>(
+    "/api/providers/command-code/rate-limits",
+    {
+      targetHostId: options?.targetHostId ?? undefined,
+      signal: options?.signal
+    }
+  );
+}
+
 export function resetCodexRateLimits(creditId?: string | null, options?: ScopedRequestOptions) {
   return httpClient.request<{ outcome: string; rateLimits: CodexRateLimitsDto | null }>(
     "/api/providers/codex/rate-limits/reset",

@@ -10,6 +10,7 @@ import type { SessionProviderConfigService } from "../sessions/session-provider-
 import type { ProviderCatalogService } from "./provider-catalog-service.js";
 import type { ProviderPriceBookService } from "./provider-price-book-service.js";
 import type { CodexRateLimitService } from "./codex-rate-limit-service.js";
+import type { CommandCodeRateLimitService } from "./command-code-rate-limit-service.js";
 import {
   isClaudeCompatibleProvider,
   type ClaudeCompatibleProviderId
@@ -51,6 +52,7 @@ export class ProviderController {
     >,
     private readonly providerPriceBookService: Pick<ProviderPriceBookService, "getCurrentCatalogPriceBook">,
     private readonly codexRateLimitService: Pick<CodexRateLimitService, "read" | "consume">,
+    private readonly commandCodeRateLimitService: Pick<CommandCodeRateLimitService, "read">,
     private readonly config: HostConfig
   ) {}
 
@@ -58,10 +60,12 @@ export class ProviderController {
     request: FastifyRequest<{ Params: ProviderParams }>,
     reply: FastifyReply
   ): Promise<void> => {
-    if (request.params.provider.trim() !== "codex") {
-      throw new AppError({ statusCode: 404, errorCode: "NOT_FOUND", detail: "仅 Codex 支持订阅余量查询" });
+    const provider = request.params.provider.trim();
+    if (provider === "command-code") {
+      reply.send({ rateLimits: await this.commandCodeRateLimitService.read() });
+      return;
     }
-
+    if (provider !== "codex") throw new AppError({ statusCode: 404, errorCode: "NOT_FOUND", detail: "该 Provider 不支持订阅余量查询" });
     reply.send({ rateLimits: await this.codexRateLimitService.read() });
   };
 

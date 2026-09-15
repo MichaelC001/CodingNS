@@ -50,6 +50,7 @@ import type { PreferenceReasoningLevel as ReasoningLevel } from "../../../prefer
 import {
   getProviderCapabilities,
   getCodexRateLimits,
+  getCommandCodeRateLimits,
   resetCodexRateLimits,
   getProviderPriceBook,
   listProviderCapabilities,
@@ -661,6 +662,7 @@ export function ComposerPanel({
   const [deploymentCapabilities, setDeploymentCapabilities] = useState<ProviderCapabilitiesDto | null>(null);
   const [deploymentCapabilitiesLoading, setDeploymentCapabilitiesLoading] = useState(false);
   const [codexRateLimits, setCodexRateLimits] = useState<CodexRateLimitsDto | null>(null);
+  const [commandCodeRateLimits, setCommandCodeRateLimits] = useState<CodexRateLimitsDto | null>(null);
   const [codexRateLimitsLoading, setCodexRateLimitsLoading] = useState(false);
   const [codexRateLimitsResetting, setCodexRateLimitsResetting] = useState(false);
   const initialProviderSelection = useMemo(
@@ -729,18 +731,24 @@ export function ComposerPanel({
   const modelSwitchApp = mapProviderToModelSwitchApp(provider);
 
   useEffect(() => {
-    if (provider !== "codex" || Boolean(forkDraft)) {
+    if ((provider !== "codex" && provider !== "command-code") || Boolean(forkDraft)) {
       setCodexRateLimits(null);
+      setCommandCodeRateLimits(null);
       setCodexRateLimitsLoading(false);
       return;
     }
 
     let cancelled = false;
     setCodexRateLimits(null);
+    setCommandCodeRateLimits(null);
     setCodexRateLimitsLoading(true);
-    void getCodexRateLimits({ targetHostId: currentTargetHostId })
+    const readRateLimits = provider === "command-code" ? getCommandCodeRateLimits : getCodexRateLimits;
+    void readRateLimits({ targetHostId: currentTargetHostId })
       .then((response) => {
-        if (!cancelled) setCodexRateLimits(response.rateLimits);
+        if (!cancelled) {
+          if (provider === "command-code") setCommandCodeRateLimits(response.rateLimits);
+          else setCodexRateLimits(response.rateLimits);
+        }
       })
       .catch(() => {
         if (!cancelled) setCodexRateLimits(null);
@@ -3049,7 +3057,8 @@ export function ComposerPanel({
                   contextUsage={contextUsage}
                   sessionStats={sessionStats}
                   codexRateLimits={provider === "codex" && !hasForkDraft ? codexRateLimits : null}
-                  codexRateLimitsLoading={provider === "codex" && !hasForkDraft ? codexRateLimitsLoading : false}
+                  commandCodeRateLimits={provider === "command-code" && !hasForkDraft ? commandCodeRateLimits : null}
+                  codexRateLimitsLoading={(provider === "codex" || provider === "command-code") && !hasForkDraft ? codexRateLimitsLoading : false}
                   codexRateLimitsResetting={codexRateLimitsResetting}
                   onCodexRateLimitReset={() => {
                     const creditId = codexRateLimits?.resetCredits?.credits?.[0]?.id;
@@ -3720,6 +3729,7 @@ function SessionStatsIndicators({
   contextUsage,
   sessionStats,
   codexRateLimits,
+  commandCodeRateLimits,
   codexRateLimitsLoading,
   codexRateLimitsResetting,
   onCodexRateLimitReset,
@@ -3728,6 +3738,7 @@ function SessionStatsIndicators({
   contextUsage: ContextUsageDto | null;
   sessionStats: ProviderSessionStatsDto | null;
   codexRateLimits: CodexRateLimitsDto | null;
+  commandCodeRateLimits: CodexRateLimitsDto | null;
   codexRateLimitsLoading: boolean;
   codexRateLimitsResetting: boolean;
   onCodexRateLimitReset: () => void;
@@ -3773,11 +3784,12 @@ function SessionStatsIndicators({
     : hasSessionStats
       ? t("conversation.sessionStatsTitle")
       : t("conversation.contextUsageUnavailable");
-  const codexRemainingPercent = codexRateLimits
-    ? resolveCodexRemainingPercent(codexRateLimits)
+  const activeRateLimits = codexRateLimits ?? commandCodeRateLimits;
+  const codexRemainingPercent = activeRateLimits
+    ? resolveCodexRemainingPercent(activeRateLimits)
     : null;
-  const codexPlanTypeLabel = codexRateLimits
-    ? formatCodexPlanType(codexRateLimits.planType)
+  const codexPlanTypeLabel = activeRateLimits
+    ? formatCodexPlanType(activeRateLimits.planType)
     : null;
   const codexRateLimitLabel = codexRemainingPercent === null
     ? t("conversation.codexRateLimitLoading")
@@ -4028,10 +4040,10 @@ function SessionStatsIndicators({
                   ) : null}
                 </section>
               ) : null}
-              {activeIndicator === "codex" && codexRateLimits && codexRemainingPercent !== null ? (
+              {activeIndicator === "codex" && activeRateLimits && codexRemainingPercent !== null ? (
                 <section className="composer-codex-rate-limit-tooltip">
                   <div className="composer-codex-rate-limit-tooltip-heading">
-                    <div className="composer-context-tooltip-title">{t("conversation.codexRateLimitTitle")}</div>
+                    <div className="composer-context-tooltip-title">{t(commandCodeRateLimits ? "conversation.commandCodeRateLimitTitle" : "conversation.codexRateLimitTitle")}</div>
                     <strong>{codexRemainingPercent}%</strong>
                   </div>
                   {codexPlanTypeLabel ? (
@@ -4042,15 +4054,15 @@ function SessionStatsIndicators({
                       )}
                     </div>
                   ) : null}
-                  {resolveCodexNextReset(codexRateLimits) ? (
+                  {resolveCodexNextReset(activeRateLimits) ? (
                     <div className="composer-codex-rate-limit-tooltip-meta">
-                      {t("conversation.codexRateLimitNextReset").replace("{time}", formatCodexResetTime(resolveCodexNextReset(codexRateLimits)!))}
+                      {t("conversation.codexRateLimitNextReset").replace("{time}", formatCodexResetTime(resolveCodexNextReset(activeRateLimits)!))}
                     </div>
                   ) : null}
-                  {codexRateLimits.resetCredits ? (
+                  {activeRateLimits.resetCredits ? (
                     <div className="composer-codex-rate-limit-tooltip-actions">
-                      <span>{t("conversation.codexRateLimitCredits").replace("{count}", String(codexRateLimits.resetCredits.availableCount))}</span>
-                      {codexRateLimits.resetCredits.availableCount > 0 ? (
+                      <span>{t("conversation.codexRateLimitCredits").replace("{count}", String(activeRateLimits.resetCredits.availableCount))}</span>
+                      {activeRateLimits.resetCredits.availableCount > 0 ? (
                         <button
                           type="button"
                           className="composer-codex-rate-limit-reset-button"
