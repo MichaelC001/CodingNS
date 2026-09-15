@@ -130,6 +130,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
   const baseTimelineItems = useSessionRuntimeStore(store, (state) => state.timelineItems);
   const permissionRequests = useSessionRuntimeStore(store, (state) => state.permissionRequests);
   const queuedMessages = useSessionRuntimeStore(store, (state) => state.queuedMessages);
+  const planMode = useSessionRuntimeStore(store, (state) => state.planMode);
   const contextUsage = useSessionRuntimeStore(store, (state) => state.contextUsage);
   const sessionStats = useSessionRuntimeStore(store, (state) => state.sessionStats);
   const permissionStatus = useSessionRuntimeStore(store, (state) => state.permissionStatus);
@@ -548,6 +549,10 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
     }
   }, [forkDraft, sendForkDraftMessage, store]);
 
+  const setPlanModeCallback = useCallback((enabled: boolean): void => {
+    store.setPlanMode(enabled);
+  }, [store]);
+
   const replyPermissionRequest = useCallback(async (
     requestId: string,
     payload: { action: string; answers?: Record<string, string[]> }
@@ -644,6 +649,8 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
     steeringQueueItemId,
     forkDraft,
     setForkDraft,
+    planMode,
+    setPlanMode: setPlanModeCallback,
     composerHasActiveRun,
     composerCanInterrupt,
     composerIsRunning,

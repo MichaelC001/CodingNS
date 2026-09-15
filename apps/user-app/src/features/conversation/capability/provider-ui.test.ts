@@ -1,14 +1,21 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { userPreferenceStore } from "../../../preferences/user-preference-store";
 import {
+  isPreferenceProviderId,
+  userPreferenceStore
+} from "../../../preferences/user-preference-store";
+import {
+  REGISTERED_PROVIDER_IDS,
   SESSION_PROVIDER_PICKER_IDS,
+  allowsQueueDuringRun,
   createDraftCapabilities,
   getDraftTitle,
   getProviderDisplayName,
   getProviderIcon,
   shouldPersistReasoningLevel,
   shouldFoldRulesMessages,
+  shouldShowPlanModeToggle,
+  shouldSupportRunSteering,
   warmProviderIconCache
 } from "./provider-ui";
 
@@ -67,6 +74,58 @@ describe("provider-ui", () => {
     expect(createDraftCapabilities("command-code").modelOptions?.[0]?.supportedReasoningEfforts)
       .toBeUndefined();
     expect(shouldPersistReasoningLevel("command-code")).toBe(true);
+  });
+
+  it("会把 Pi Agent 暴露为会话创建入口并保持 queued_guidance 语义", () => {
+    userPreferenceStore.hydrate({
+      ...initialPreferenceState,
+      profile: {
+        ...initialPreferenceState.profile,
+        language: "zh-CN"
+      }
+    });
+    expect(SESSION_PROVIDER_PICKER_IDS.includes("pi")).toBe(true);
+    expect(REGISTERED_PROVIDER_IDS.includes("pi")).toBe(true);
+    expect(getProviderDisplayName("pi")).toBe("Pi Agent");
+    expect(getDraftTitle("pi")).toBe("新的 Pi Agent 会话");
+    expect(getProviderIcon("pi")).toContain("data:image/svg+xml");
+
+    const capabilities = createDraftCapabilities("pi");
+    expect(capabilities.inRunInputMode).toBe("queued_guidance");
+    expect(capabilities.supportsInterrupt).toBe(true);
+    expect(capabilities.supportsAttachments).toBe(true);
+    // Pi 只有扩展级交互，不伪装成结构化权限审批。
+    expect(capabilities.supportsPermissionPrompt).toBe(false);
+    expect(allowsQueueDuringRun(capabilities, true)).toBe(true);
+    expect(shouldSupportRunSteering(capabilities)).toBe(true);
+    expect(shouldPersistReasoningLevel("pi")).toBe(true);
+    // 新建 Pi 会话时要套用账户里记住的模型和思考强度，所以必须在偏好白名单里。
+    expect(isPreferenceProviderId("pi")).toBe(true);
+  });
+
+  it("只对声明支持的 provider 显示计划模式开关", () => {
+    userPreferenceStore.hydrate({
+      ...initialPreferenceState,
+      profile: {
+        ...initialPreferenceState.profile,
+        language: "zh-CN"
+      }
+    });
+
+    // Pi 加载了受控 plan-mode 扩展，扩展可用时开关打开。
+    expect(createDraftCapabilities("pi").supportsPlanMode).toBe(true);
+    expect(shouldShowPlanModeToggle(createDraftCapabilities("pi"))).toBe(true);
+
+    // Host 明确回报扩展不可用时，开关必须关掉。
+    expect(shouldShowPlanModeToggle({
+      ...createDraftCapabilities("pi"),
+      supportsPlanMode: false
+    })).toBe(false);
+
+    // 其他 provider 没有计划模式能力，不显示这个按钮。
+    expect(shouldShowPlanModeToggle(createDraftCapabilities("codex"))).toBe(false);
+    expect(shouldShowPlanModeToggle(createDraftCapabilities("claude-code"))).toBe(false);
+    expect(shouldShowPlanModeToggle(null)).toBe(false);
   });
 
   it("会把 legna-code 排在 kimi 之后", () => {

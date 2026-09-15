@@ -529,6 +529,8 @@ function LiveConversationPage({
     steeringQueueItemId,
     forkDraft,
     setForkDraft,
+    planMode,
+    setPlanMode,
     composerHasActiveRun,
     composerCanInterrupt,
     composerIsRunning,
@@ -1200,6 +1202,8 @@ function LiveConversationPage({
                 isSubmitting={sending}
                 isRunning={composerIsRunning}
                 onInterrupt={interrupt}
+                planMode={planMode}
+                onTogglePlanMode={setPlanMode}
                 onSend={send}
                 onQueueSend={queue}
               />

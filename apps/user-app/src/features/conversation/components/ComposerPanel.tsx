@@ -30,6 +30,7 @@ import {
   createDraftCapabilities,
   getProviderDisplayName,
   getProviderFromCapabilities,
+  shouldShowPlanModeToggle,
   shouldShowSlashMenu,
   shouldSupportRunSteering,
   supportsReasoningSelector
@@ -148,6 +149,9 @@ interface ComposerPanelProps {
   contextUsage?: ContextUsageDto | null;
   sessionStats?: ProviderSessionStatsDto | null;
   permissionStatus?: SessionRuntimePermissionStatusDto | null;
+  /** 会话级计划模式开关状态；只对声明支持的 provider 有意义。 */
+  planMode?: boolean;
+  onTogglePlanMode?: (enabled: boolean) => void;
   taskProvider?: ProviderId | null;
   taskMessages?: SessionMessageViewModel[];
   hasPendingQueuedMessages?: boolean;
@@ -631,6 +635,8 @@ export function ComposerPanel({
   canInterrupt = null,
   contextUsage = null,
   sessionStats = null,
+  planMode = false,
+  onTogglePlanMode,
   taskProvider = null,
   taskMessages = [],
   hasPendingQueuedMessages = false,
@@ -1142,6 +1148,7 @@ export function ComposerPanel({
     ],
     []
   );
+  const showPlanModeToggle = Boolean(onTogglePlanMode) && shouldShowPlanModeToggle(capabilities);
   const providerForMention = capabilities?.provider ?? taskProvider ?? null;
   const inRunInputMode = capabilities?.inRunInputMode ?? "none";
   const hasForkDraft = Boolean(forkDraft);
@@ -2734,6 +2741,22 @@ export function ComposerPanel({
             </div>
           ) : null}
 
+          {showPlanModeToggle ? (
+            <div className="composer-plan-mode">
+              <button
+                type="button"
+                className={planMode ? "composer-plan-mode-toggle is-active" : "composer-plan-mode-toggle"}
+                aria-pressed={planMode}
+                onClick={() => onTogglePlanMode?.(!planMode)}
+                title={planMode
+                  ? t("conversation.planModeOnHint")
+                  : t("conversation.planModeOffHint")}
+              >
+                <span className="composer-plan-mode-dot" aria-hidden="true" />
+                <span>{t("conversation.planModeToggle")}</span>
+              </button>
+            </div>
+          ) : null}
           <div className="composer-input-wrapper">
             {mentionSelections.length > 0 ? (
               <div className="composer-selected-mentions" aria-label={t("conversation.mentionSelectedListLabel")}>

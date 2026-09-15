@@ -15,6 +15,7 @@ import openCodeIcon from "../../../assets/provider-icons/opencode.png";
 import deepSeekHarnessIcon from "../../../assets/provider-icons/deepseek-harness.svg";
 import grokIcon from "../../../assets/provider-icons/grok.png";
 import commandCodeIcon from "../../../assets/provider-icons/command-code.svg";
+import piIcon from "../../../assets/provider-icons/pi.svg";
 
 const REASONING_LEVEL_SET = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 
@@ -36,6 +37,8 @@ interface ProviderMetadata {
   supportsQueueWhileRunningByDefault?: boolean;
   supportsSessionDeleteByDefault?: boolean;
   foldRulesMessagesByDefault?: boolean;
+  /** 是否默认提供会话级计划模式开关。 */
+  supportsPlanModeByDefault?: boolean;
 }
 
 export const REGISTERED_PROVIDER_IDS: BuiltinProviderId[] = [
@@ -47,7 +50,8 @@ export const REGISTERED_PROVIDER_IDS: BuiltinProviderId[] = [
   "legna-code",
   "deepseek-harness",
   "grok",
-  "command-code"
+  "command-code",
+  "pi"
 ];
 
 export const SESSION_PROVIDER_PICKER_IDS: BuiltinProviderId[] = [
@@ -59,7 +63,8 @@ export const SESSION_PROVIDER_PICKER_IDS: BuiltinProviderId[] = [
   "legna-code",
   "deepseek-harness",
   "grok",
-  "command-code"
+  "command-code",
+  "pi"
 ];
 
 /**
@@ -234,6 +239,28 @@ const PROVIDER_METADATA: Record<BuiltinProviderId, ProviderMetadata> = {
     supportsSlashMenuByDefault: false,
     supportsSessionDeleteByDefault: true,
     foldRulesMessagesByDefault: false
+  },
+  pi: {
+    displayNameKey: "conversation.providerPi",
+    fullDisplayNameKey: "shell.providerPi",
+    draftTitleKey: "conversation.draftTitlePi",
+    defaultModelLabelKey: "conversation.modelUseCliDefault",
+    icon: piIcon,
+    // Pi 支持 steer 和 follow_up，统一按排队指导处理。
+    defaultRunInputMode: "queued_guidance",
+    reasoningLevelPersists: true,
+    defaultReasoningLevel: null,
+    supportsInterrupt: true,
+    supportsAttachments: true,
+    // Pi 只有扩展级 select/confirm/input/editor，没有结构化权限范围审批。
+    supportsPermissionPrompt: false,
+    supportsSlashMenuByDefault: false,
+    supportsRunSteeringByDefault: true,
+    supportsQueueWhileRunningByDefault: true,
+    supportsSessionDeleteByDefault: true,
+    foldRulesMessagesByDefault: false,
+    // Pi 加载了受控 plan-mode 扩展，可以先出计划、确认后再改文件。
+    supportsPlanModeByDefault: true
   }
 };
 
@@ -349,6 +376,7 @@ export function createDraftCapabilities(provider: ProviderId): ProviderCapabilit
     defaultReasoningLevel: metadata?.defaultReasoningLevel,
     supportsRunSteering: metadata?.supportsRunSteeringByDefault,
     supportsQueueWhileRunning: metadata?.supportsQueueWhileRunningByDefault,
+    supportsPlanMode: metadata?.supportsPlanModeByDefault,
     limitations: []
   };
 }
@@ -400,6 +428,24 @@ export function allowsQueueDuringRun(
     || inRunInput === "none"
     || (inRunInput === "streaming_guidance" && hasActiveRun === false)
   );
+}
+
+/**
+ * 是否显示「计划模式」开关。
+ *
+ * 只有 provider 明确声明支持时才显示，避免在不支持的后端上给一个点了没用的按钮。
+ */
+export function shouldShowPlanModeToggle(capabilities: ProviderCapabilitiesDto | null): boolean {
+  if (!capabilities) {
+    return false;
+  }
+
+  if (capabilities.supportsPlanMode !== undefined) {
+    return capabilities.supportsPlanMode;
+  }
+
+  const provider = capabilities.provider ?? null;
+  return getProviderMetadata(provider)?.supportsPlanModeByDefault ?? false;
 }
 
 export function shouldSupportRunSteering(capabilities: ProviderCapabilitiesDto | null): boolean {

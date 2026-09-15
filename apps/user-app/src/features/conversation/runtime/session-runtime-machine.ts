@@ -50,6 +50,13 @@ export interface SessionRuntimeState {
   timelineItems: ConversationTimelineSourceItem[];
   permissionRequests: SessionPermissionRequestDto[];
   queuedMessages: SessionQueueItemDto[];
+  /**
+   * 会话级「计划模式」开关。
+   *
+   * 打开后发送消息会带 permissionMode="plan"，由 provider 决定要不要先出计划再执行；
+   * 目前只有 Pi（加载了受控 plan-mode 扩展时）会用到。
+   */
+  planMode: boolean;
   historyState: RuntimeHistoryState;
   loadingOlderMessages: boolean;
   olderCursor: string | null;
@@ -87,6 +94,7 @@ export function createInitialRuntimeState(
       | "timelineItems"
       | "permissionRequests"
       | "queuedMessages"
+      | "planMode"
       | "olderCursor"
       | "hasOlderMessages"
       | "lastCursor"
@@ -107,6 +115,7 @@ export function createInitialRuntimeState(
     timelineItems: seed?.timelineItems ?? [],
     permissionRequests: seed?.permissionRequests ?? [],
     queuedMessages: seed?.queuedMessages ?? [],
+    planMode: seed?.planMode ?? false,
     historyState: "idle",
     loadingOlderMessages: false,
     olderCursor: seed?.olderCursor ?? null,

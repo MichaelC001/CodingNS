@@ -118,6 +118,7 @@ interface SessionRuntimeSnapshot {
   timelineItems?: ConversationTimelineSourceItem[];
   permissionRequests: SessionPermissionRequestDto[];
   queuedMessages: SessionQueueItemDto[];
+  planMode: boolean;
   olderCursor: string | null;
   hasOlderMessages: boolean;
   lastCursor: string | null;
@@ -277,6 +278,7 @@ export class SessionRuntimeStore {
       ),
       permissionRequests: cachedSnapshot?.permissionRequests ?? [],
       queuedMessages: cachedSnapshot?.queuedMessages ?? [],
+      planMode: cachedSnapshot?.planMode ?? false,
       olderCursor: cachedSnapshot?.olderCursor ?? null,
       hasOlderMessages: cachedSnapshot?.hasOlderMessages ?? false,
       lastCursor: cachedSnapshot?.lastCursor ?? null,
@@ -400,6 +402,7 @@ export class SessionRuntimeStore {
       messages: reloadedTimeline.messages,
       permissionRequests: cachedSnapshot?.permissionRequests ?? [],
       queuedMessages: cachedSnapshot?.queuedMessages ?? [],
+      planMode: cachedSnapshot?.planMode ?? false,
       olderCursor: cachedSnapshot?.olderCursor ?? null,
       hasOlderMessages: cachedSnapshot?.hasOlderMessages ?? false,
       lastCursor: cachedSnapshot?.lastCursor ?? null,
@@ -408,6 +411,19 @@ export class SessionRuntimeStore {
     this.seenWatermark = this.state.session?.lastSeenAt ?? null;
     this.emit();
     await this.initialize();
+  }
+
+  /**
+   * 打开/关闭会话级计划模式。
+   *
+   * 只改本地发送参数，不触发任何请求；下一条消息会带 permissionMode="plan"。
+   */
+  setPlanMode(enabled: boolean): void {
+    if (this.state.planMode === enabled) {
+      return;
+    }
+
+    this.patch({ planMode: enabled });
   }
 
   applyNavigationSession(session: SessionSummaryDto | null): void {
@@ -585,7 +601,7 @@ export class SessionRuntimeStore {
         model: options?.model ?? null,
         reasoningLevel: options?.reasoningLevel ?? null,
         agentPreset: options?.agentPreset ?? null,
-        permissionMode: getDefaultSessionPermissionMode(),
+        permissionMode: this.state.planMode ? "plan" : getDefaultSessionPermissionMode(),
         attachments: options?.attachments ?? [],
         providerConfigMode: options?.providerConfigMode,
         providerPresetId: options?.providerPresetId ?? null
@@ -1758,7 +1774,7 @@ export class SessionRuntimeStore {
         model: options?.model ?? null,
         reasoningLevel: options?.reasoningLevel ?? null,
         agentPreset: options?.agentPreset ?? null,
-        permissionMode: getDefaultSessionPermissionMode(),
+        permissionMode: this.state.planMode ? "plan" : getDefaultSessionPermissionMode(),
         attachments: options?.attachments ?? [],
         providerConfigMode: options?.providerConfigMode,
         providerPresetId: options?.providerPresetId ?? null
@@ -2011,6 +2027,7 @@ export class SessionRuntimeStore {
       messages: snapshotMessages,
       permissionRequests: buildSnapshotPermissionRequests(this.state.permissionRequests),
       queuedMessages: buildSnapshotQueuedMessages(this.state.queuedMessages),
+      planMode: this.state.planMode,
       olderCursor: this.state.olderCursor,
       hasOlderMessages: this.state.hasOlderMessages,
       lastCursor: this.state.lastCursor,

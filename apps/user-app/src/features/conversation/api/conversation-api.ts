@@ -1224,6 +1224,7 @@ export interface ProviderCapabilitiesDto {
   supportsReasoningSelector?: boolean;
   supportsRunSteering?: boolean;
   supportsQueueWhileRunning?: boolean;
+  supportsPlanMode?: boolean;
   supportsRulesMessageFolding?: boolean;
   runtimeStatus?: "ready" | "degraded" | "read-only";
   runtimeVersion?: string | null;

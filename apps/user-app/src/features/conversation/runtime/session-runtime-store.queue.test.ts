@@ -554,6 +554,40 @@ describe("SessionRuntimeStore queue", () => {
     );
   });
 
+  it("打开计划模式后发送会带 permissionMode=plan", async () => {
+    // 计划模式是会话级开关，优先于全局默认权限模式。
+    userPreferenceStore.hydrate(
+      createPreferenceState({
+        defaultPermissionMode: "default"
+      })
+    );
+    const store = new SessionRuntimeStore("session-1");
+    store.setPlanMode(true);
+
+    await store.enqueueMessage("先给方案");
+
+    expect(mocked.enqueueSessionMessage).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({
+        content: "先给方案",
+        permissionMode: "plan"
+      }),
+      { targetHostId: undefined }
+    );
+
+    store.setPlanMode(false);
+    await store.enqueueMessage("直接执行");
+
+    expect(mocked.enqueueSessionMessage).toHaveBeenLastCalledWith(
+      "session-1",
+      expect.objectContaining({
+        content: "直接执行",
+        permissionMode: null
+      }),
+      { targetHostId: undefined }
+    );
+  });
+
   it("deleteQueuedMessage 会删除等待项并刷新队列", async () => {
     const store = new SessionRuntimeStore("session-1");
     mocked.getSessionQueue.mockResolvedValueOnce({
