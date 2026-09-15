@@ -106,6 +106,7 @@ import {
   getAffairsLightweightSessionMessages,
   getAffairsLightweightSession,
   getAffairsAssistantSessionsSnapshot,
+  getProviderCapabilities,
   getAffairsDocumentTagDetails,
   getAffairsDocumentTagTask,
   getGlobalAffairsDashboardState,
@@ -156,6 +157,8 @@ import { ConversationTranscriptExport, MessageTimeline } from "../../conversatio
 import { PermissionRequestList } from "../../conversation/components/PermissionRequestList";
 import { SessionProviderPicker } from "../../conversation/components/SessionProviderPicker";
 import { SessionHeader } from "../../conversation/components/SessionHeader";
+import { ConversationSelectionActions } from "../../conversation/components/ConversationSelectionActions";
+import { TemporarySessionHeaderAction } from "../../conversation/components/TemporarySessionCreateModal";
 import { WorkbenchModal } from "../../conversation/components/WorkbenchModal";
 import { WorkspaceImportBrowserModal } from "../../conversation/components/WorkspaceImportBrowserModal";
 import { resolveSessionActivityBadgeClassName, resolveSessionActivityBadgeLabel, resolveSessionIndicatorClassName } from "../../conversation/session-activity-display";
@@ -7245,10 +7248,7 @@ export function AffairsLightweightConversationDraftState(input: {
     lightweightRuntimeBySessionId,
     setLightweightRuntimeSnapshot
   } = useAffairsWorkbenchInternal();
-  const capabilities = useMemo(
-    () => createAffairsLightweightCapabilities(input.draft.provider),
-    [input.draft.provider]
-  );
+  const capabilities = useAffairsLightweightCapabilities(input.draft.provider, input.workspaceId);
   const session = useMemo(
     () => createAffairsConversationDraftSessionSummary(input.workspaceId, input.draft),
     [input.draft, input.workspaceId]
@@ -7263,6 +7263,7 @@ export function AffairsLightweightConversationDraftState(input: {
     [input.draft]
   );
   const currentDraftNodeIdRef = useRef<string | null>(draftNodeId);
+  const timelineSelectionContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     currentDraftNodeIdRef.current = draftNodeId;
@@ -7276,9 +7277,9 @@ export function AffairsLightweightConversationDraftState(input: {
   return (
     <main className="workbench-page conversation-page-shell affairs-conversation-page-shell" data-affairs-section="conversation">
       <div className="conversation-main affairs-conversation-main">
-        <SessionHeader session={session} />
+        <SessionHeader session={session} actions={<TemporarySessionHeaderAction session={session} />} />
         <AffairsLightweightStreamingStatusBar status={runtimeSnapshot.streamingToolStatus} />
-        <div className="conversation-timeline-shell affairs-conversation-timeline-shell">
+        <div ref={timelineSelectionContainerRef} className="conversation-timeline-shell affairs-conversation-timeline-shell">
           <MessageTimeline
             sessionId={session.sessionId}
             sessionSummary={session}
@@ -7290,6 +7291,7 @@ export function AffairsLightweightConversationDraftState(input: {
             onRetryMessage={() => {}}
           />
         </div>
+        <ConversationSelectionActions containerRef={timelineSelectionContainerRef} session={session} currentCapabilities={capabilities} />
         <ComposerPanel
           capabilities={capabilities}
           draftStorageId={draftNodeId}
@@ -7516,18 +7518,19 @@ export function AffairsLightweightConversationLiveState(input: {
         : []
   });
   const session = runtime.session;
+  const timelineSelectionContainerRef = useRef<HTMLDivElement | null>(null);
 
   return (
     <main className="workbench-page conversation-page-shell affairs-conversation-page-shell" data-affairs-section="conversation">
       <div className="conversation-main affairs-conversation-main">
-        <SessionHeader session={session} />
+        <SessionHeader session={session} actions={<TemporarySessionHeaderAction session={session} />} />
         <AffairsLightweightStreamingStatusBar status={runtime.streamingToolStatus} />
         <PermissionRequestList
           requests={runtime.permissionRequests}
           replyingRequestId={runtime.replyingPermissionRequestId}
           onReply={runtime.replyPermissionRequest}
         />
-        <div className="conversation-timeline-shell affairs-conversation-timeline-shell">
+        <div ref={timelineSelectionContainerRef} className="conversation-timeline-shell affairs-conversation-timeline-shell">
           <MessageTimeline
             sessionId={input.sessionId}
             sessionSummary={session}
@@ -7543,6 +7546,7 @@ export function AffairsLightweightConversationLiveState(input: {
             onRetryMessage={runtime.retryMessage}
           />
         </div>
+        <ConversationSelectionActions containerRef={timelineSelectionContainerRef} session={session} currentCapabilities={runtime.capabilities} />
         <ComposerPanel
           capabilities={runtime.capabilities}
           draftStorageId={input.sessionId}
@@ -7708,6 +7712,10 @@ function useAffairsLightweightSessionController(input: {
   });
   const session = effectiveSnapshot.session ?? input.externalSession;
   const messages = effectiveSnapshot.messages;
+  const capabilities = useAffairsLightweightCapabilities(
+    session?.provider ?? input.externalSession?.provider ?? "codex",
+    workspaceId
+  );
 
   return {
     session,
@@ -7716,9 +7724,7 @@ function useAffairsLightweightSessionController(input: {
     historyState: effectiveSnapshot.historyState,
     sending: effectiveSnapshot.sending,
     streamingToolStatus: effectiveSnapshot.streamingToolStatus,
-    capabilities: createAffairsLightweightCapabilities(
-      session?.provider ?? input.externalSession?.provider ?? "codex"
-    ),
+    capabilities,
     send: async (
       content: string,
       options?: {
@@ -8120,6 +8126,54 @@ function createAffairsLightweightCapabilities(provider: ProviderId): ProviderCap
     supportsRunSteering: false,
     supportsQueueWhileRunning: false,
     limitations: [t("shell.affairsConversationLightweightCapabilityHint")]
+  };
+}
+
+function useAffairsLightweightCapabilities(
+  provider: ProviderId,
+  workspaceId: string
+): ProviderCapabilitiesDto {
+  const fallbackCapabilities = useMemo(
+    () => createAffairsLightweightCapabilities(provider),
+    [provider]
+  );
+  const [modelOptionsByProvider, setModelOptionsByProvider] = useState<{
+    provider: ProviderId;
+    modelOptions: NonNullable<ProviderCapabilitiesDto["modelOptions"]>;
+  } | null>(null);
+
+  useEffect(() => {
+    if (provider !== "deepseek-harness") {
+      return;
+    }
+
+    let cancelled = false;
+
+    void getProviderCapabilities(provider, workspaceId)
+      .then((capabilities) => {
+        if (cancelled || capabilities.provider !== provider || !capabilities.modelOptions?.length) {
+          return;
+        }
+
+        setModelOptionsByProvider({
+          provider,
+          modelOptions: capabilities.modelOptions
+        });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, workspaceId]);
+
+  if (modelOptionsByProvider?.provider !== provider) {
+    return fallbackCapabilities;
+  }
+
+  return {
+    ...fallbackCapabilities,
+    modelOptions: modelOptionsByProvider.modelOptions
   };
 }
 

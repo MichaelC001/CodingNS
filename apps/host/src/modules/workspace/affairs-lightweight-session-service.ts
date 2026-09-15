@@ -94,6 +94,7 @@ interface AffairsLightweightRuntimeAttachment extends AffairsLightweightAttachme
 export interface StartAffairsLightweightSessionInput {
   workspaceId: string;
   sourceWorkspaceId?: string | null;
+  parentSessionId?: string | null;
   userId: string;
   provider: ProviderId;
   content: string;
@@ -345,7 +346,7 @@ export class AffairsLightweightSessionService {
       rawStoreRef: sessionFilePath,
       providerConfigMode: providerBinding.providerConfigMode,
       providerPresetId: providerBinding.providerPresetId,
-      parentSessionId: null,
+      parentSessionId: input.parentSessionId?.trim() || null,
       isSubagent: false,
       subagentLabel: null,
       isArchived: false,
@@ -426,7 +427,7 @@ export class AffairsLightweightSessionService {
       rawStoreRef: sessionFilePath,
       providerConfigMode: providerBinding.providerConfigMode,
       providerPresetId: providerBinding.providerPresetId,
-      parentSessionId: null,
+      parentSessionId: input.parentSessionId?.trim() || null,
       isSubagent: false,
       subagentLabel: null,
       isArchived: false,

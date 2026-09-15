@@ -11,7 +11,8 @@ const {
   mockListProviderCapabilities,
   mockFetchModelManagementSnapshot,
   mockListProviderCatalog,
-  mockStartLiveSession,
+   mockStartLiveSession,
+  mockStartAffairsLightweightSession,
   mockGetSessionDetail,
   mockNavigate,
   mockSelectWorkspace
@@ -21,6 +22,7 @@ const {
   mockFetchModelManagementSnapshot: vi.fn(),
   mockListProviderCatalog: vi.fn(),
   mockStartLiveSession: vi.fn(),
+  mockStartAffairsLightweightSession: vi.fn(),
   mockGetSessionDetail: vi.fn(),
   mockNavigate: vi.fn(),
   mockSelectWorkspace: vi.fn()
@@ -67,6 +69,7 @@ vi.mock("../api/conversation-api", () => ({
   listProviderCapabilities: mockListProviderCapabilities,
   getSessionDetail: mockGetSessionDetail,
   startLiveSession: mockStartLiveSession,
+  startAffairsLightweightSession: mockStartAffairsLightweightSession,
   sendLiveMessage: vi.fn()
 }));
 
@@ -195,6 +198,15 @@ describe("ConversationSelectionActions", () => {
         provider: "codex"
       }
     });
+    mockStartAffairsLightweightSession.mockResolvedValue({
+      sessionId: "temporary-session",
+      session: {
+        sessionId: "temporary-session",
+        workspaceId: "workspace-1",
+        provider: "codex",
+        parentSessionId: "session-1"
+      }
+    });
     mockGetSessionDetail.mockResolvedValue({
       sessionId: "session-selection-action",
       workspaceId: "workspace-1",
@@ -285,7 +297,7 @@ describe("ConversationSelectionActions", () => {
     ).toBeInTheDocument();
   });
 
-  it("点击操作会打开对话框，不会因为选区被清掉而失效", async () => {
+  it("点击询问会打开临时会话弹窗，不会因为选区被清掉而失效", () => {
     render(<TestHarness />);
 
     const messageText = screen.getByTestId("message-text");
@@ -307,7 +319,7 @@ describe("ConversationSelectionActions", () => {
     });
 
     const actionButton = screen.getByRole("button", {
-      name: t("conversation.selectionActionButton")
+      name: t("conversation.selectionAskButton")
     });
 
     fireEvent.mouseDown(actionButton);
@@ -319,55 +331,12 @@ describe("ConversationSelectionActions", () => {
       vi.advanceTimersByTime(60);
     });
 
-    expect(
-      screen.getByRole("dialog", { name: t("conversation.selectionActionButton") })
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: t("conversation.copyAction") })
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: t("conversation.temporarySessionTitle") })).toBeInTheDocument();
+    expect(screen.getByDisplayValue(/保留这段文字/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("conversation.copyAction") })).not.toBeInTheDocument();
   });
 
-  it("操作弹框里的目标模型会显示 deployment 多配置文件选择器", async () => {
-    render(<TestHarness />);
-
-    const messageText = screen.getByTestId("message-text");
-    const textNode = messageText.firstChild;
-
-    expect(textNode).not.toBeNull();
-
-    currentSelection = createSelection(textNode!, "带 deployment 选择", {
-      left: 160,
-      top: 220,
-      width: 112,
-      height: 22
-    });
-
-    document.dispatchEvent(new Event("selectionchange"));
-
-    act(() => {
-      vi.advanceTimersByTime(60);
-    });
-
-    const actionButton = screen.getByRole("button", {
-      name: t("conversation.selectionActionButton")
-    });
-    fireEvent.mouseDown(actionButton);
-    fireEvent.click(actionButton);
-
-    expect(
-      screen.getByRole("dialog", { name: t("conversation.selectionActionButton") })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: t("conversation.forkTargetModelLabel") })
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: t("conversation.forkTargetModelLabel") }));
-
-    expect(screen.getByText(t("conversation.deploymentConfigColumn"))).toBeInTheDocument();
-    expect(screen.getByText(t("conversation.deploymentModelColumn"))).toBeInTheDocument();
-  });
-
-  it("没有 click 事件时，pointerup 仍然会打开对话框", () => {
+  it("完整的 pointer 点击序列会打开临时会话弹窗", () => {
     render(<TestHarness />);
 
     const messageText = screen.getByTestId("message-text");
@@ -388,22 +357,13 @@ describe("ConversationSelectionActions", () => {
       vi.advanceTimersByTime(60);
     });
 
-    const actionButton = screen.getByRole("button", {
-      name: t("conversation.selectionActionButton")
-    });
+    const actionButton = screen.getByRole("button", { name: t("conversation.selectionAskButton") });
 
     fireEvent.pointerDown(actionButton);
     fireEvent.pointerUp(actionButton);
-    currentSelection = null;
-    document.dispatchEvent(new Event("selectionchange"));
+    fireEvent.click(actionButton);
 
-    act(() => {
-      vi.advanceTimersByTime(60);
-    });
-
-    expect(
-      screen.getByRole("dialog", { name: t("conversation.selectionActionButton") })
-    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: t("conversation.temporarySessionTitle") })).toBeInTheDocument();
   });
 
   it("点击复制后会收起选区工具条", async () => {
@@ -434,61 +394,7 @@ describe("ConversationSelectionActions", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("操作弹框里的 provider 列表会过滤掉 catalog 中已禁用的项", async () => {
-    mockListProviderCatalog.mockResolvedValueOnce([
-      {
-        provider: "codex",
-        displayName: "Codex",
-        enabled: true
-      },
-      {
-        provider: "claude-code",
-        displayName: "Claude Code",
-        enabled: false
-      }
-    ]);
-
-    render(<TestHarness />);
-
-    const messageText = screen.getByTestId("message-text");
-    const textNode = messageText.firstChild;
-
-    expect(textNode).not.toBeNull();
-
-    currentSelection = createSelection(textNode!, "只保留启用 provider", {
-      left: 160,
-      top: 220,
-      width: 112,
-      height: 22
-    });
-
-    document.dispatchEvent(new Event("selectionchange"));
-
-    act(() => {
-      vi.advanceTimersByTime(60);
-    });
-
-    const actionButton = screen.getByRole("button", {
-      name: t("conversation.selectionActionButton")
-    });
-    fireEvent.mouseDown(actionButton);
-    fireEvent.click(actionButton);
-
-    const dialog = screen.getByRole("dialog", {
-      name: t("conversation.selectionActionButton")
-    });
-    const providerSelect = within(dialog).getByRole("combobox");
-
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(within(providerSelect).getByRole("option", { name: "Codex" })).toBeInTheDocument();
-    expect(within(providerSelect).queryByRole("option", { name: "Claude Code" })).not.toBeInTheDocument();
-  });
-
-  it("PeerHOST 下执行选区动作会带 targetHostId，并跳回 PeerHOST 会话路径", async () => {
+  it("会使用当前 PeerHOST 和父会话创建临时会话", async () => {
     render(<TestHarness />);
 
     const messageText = screen.getByTestId("message-text");
@@ -510,12 +416,12 @@ describe("ConversationSelectionActions", () => {
     });
 
     const actionButton = screen.getByRole("button", {
-      name: t("conversation.selectionActionButton")
+      name: t("conversation.selectionAskButton")
     });
     fireEvent.mouseDown(actionButton);
     fireEvent.click(actionButton);
 
-    const dialog = screen.getByRole("dialog", { name: t("conversation.selectionActionButton") });
+    const dialog = screen.getByRole("dialog", { name: t("conversation.temporarySessionTitle") });
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -524,31 +430,21 @@ describe("ConversationSelectionActions", () => {
     expect(mockListProviderCatalog).toHaveBeenCalledWith({
       targetHostId: "peer-host-1"
     });
-    expect(mockFetchModelManagementSnapshot).toHaveBeenCalledWith({
-      targetHostId: "peer-host-1"
-    });
-
-    fireEvent.click(within(dialog).getByRole("button", { name: t("conversation.selectionActionSubmit") }));
+    fireEvent.click(within(dialog).getByRole("button", { name: t("conversation.temporarySessionCreateAction") }));
 
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(mockStartLiveSession).toHaveBeenCalledWith(
+    expect(mockStartAffairsLightweightSession).toHaveBeenCalledWith(
+      "workspace-1",
       expect.objectContaining({
-        workspaceId: "workspace-1",
+        sourceWorkspaceId: "workspace-1",
+        parentSessionId: "session-1",
         provider: "codex"
       }),
       { targetHostId: "peer-host-1" }
-    );
-
-    expect(mockSelectWorkspace).toHaveBeenCalledWith("workspace-1", {
-      hostId: "peer-host-1",
-      workspaceId: "remote-workspace-1"
-    });
-    expect(mockNavigate).toHaveBeenCalledWith(
-      "/workspaces/workspace-1/sessions/session-selection-action?targetHostId=peer-host-1"
     );
   });
 });

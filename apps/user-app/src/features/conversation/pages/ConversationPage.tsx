@@ -55,6 +55,7 @@ import { QueuedMessageList } from "../components/QueuedMessageList";
 import { SessionBranchTreePanel } from "../components/SessionBranchTreePanel";
 import { SessionHeader } from "../components/SessionHeader";
 import { SessionButlerActionButton } from "../components/SessionButlerActionButton";
+import { TemporarySessionHeaderAction } from "../components/TemporarySessionCreateModal";
 import { useArchiveSessionSearch } from "../components/useArchiveSessionSearch";
 import {
   BranchTreeActionIcon
@@ -867,19 +868,7 @@ function LiveConversationPage({
                 {canOpenBranchTree ? (
                   <ConversationBranchTreeButton onOpenBranchTree={openBranchTree} />
                 ) : null}
-                {currentSessionSummary ? (
-                  <button
-                    type="button"
-                    className="conversation-header-ai-button"
-                    aria-label={t("shell.parallelCreateAction")}
-                    title={t("shell.parallelCreateAction")}
-                    onClick={() => setParallelCreateOpen(true)}
-                  >
-                    <span className="conversation-header-ai-button-label" aria-hidden="true">
-                      <ParallelForkIcon />
-                    </span>
-                  </button>
-                ) : null}
+                <TemporarySessionHeaderAction session={session ?? navigationSession} />
                 <SessionButlerActionButton session={session ?? navigationSession} />
               </>
             )}
@@ -1602,11 +1591,14 @@ function DraftConversationPage({
           workspaceOptions={mobileWorkspaceOptions}
           onSelectWorkspace={handleMobileWorkspaceSwitch}
           heading={mobileSessionTitlePresentation.fullTitle}
-          trailing={
-            <span className="mobile-conversation-toolbar-title" title={mobileSessionTitlePresentation.fullTitle}>
-              {mobileSessionTitlePresentation.displayTitle}
-            </span>
-          }
+           trailing={
+               <div className="mobile-conversation-toolbar-main">
+                 <span className="mobile-conversation-toolbar-title" title={mobileSessionTitlePresentation.fullTitle}>
+                   {mobileSessionTitlePresentation.displayTitle}
+                 </span>
+                 <TemporarySessionHeaderAction session={session} />
+               </div>
+             }
         />
       ) : null}
       {!showInlineHeader ? (
@@ -3684,27 +3676,6 @@ function ConversationBranchTreeButton(input: {
         <BranchTreeActionIcon />
       </span>
     </button>
-  );
-}
-
-function ParallelForkIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path
-        d="M4 3.25a1.75 1.75 0 1 1 0 3.5a1.75 1.75 0 0 1 0-3.5Zm0 6a1.75 1.75 0 1 1 0 3.5a1.75 1.75 0 0 1 0-3.5Zm8-3a1.75 1.75 0 1 1 0 3.5a1.75 1.75 0 0 1 0-3.5Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-      />
-      <path
-        d="M5.75 5h2.15c1.35 0 2.45 1.1 2.45 2.45v.1M5.75 11h2.15c1.35 0 2.45-1.1 2.45-2.45V8.4"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.4"
-      />
-    </svg>
   );
 }
 

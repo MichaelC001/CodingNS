@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ParallelSessionGroupDetailDto, ProviderCapabilitiesDto, ProviderId } from "../api/conversation-api";
 import { t } from "../../../shared/i18n";
+import { clearProviderCatalogStore } from "../capability/provider-catalog-store";
 import { ParallelSessionCreateModal } from "./ParallelSessionCreateModal";
 
 const mockCreateParallelGroupFromWorkspace = vi.fn();
@@ -72,6 +73,7 @@ vi.mock("../../settings/api/model-switch-api", async () => {
 describe("ParallelSessionCreateModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearProviderCatalogStore();
     mockProviderPreferences.codex.defaultModel = null;
     mockFetchModelManagementSnapshot.mockResolvedValue({
       scannedAt: "2026-04-25T10:00:00.000Z",
@@ -181,7 +183,8 @@ describe("ParallelSessionCreateModal", () => {
       "workspace-1",
       expect.objectContaining({
         permissionMode: "bypassPermissions"
-      })
+      }),
+      { targetHostId: null }
     );
   });
 
@@ -347,7 +350,8 @@ describe("ParallelSessionCreateModal", () => {
       {
         providerConfigMode: "cc-switch-preset",
         providerPresetId: "preset-team-a"
-      }
+      },
+      { targetHostId: null }
     );
     expect(mockCreateParallelGroupFromWorkspace).toHaveBeenCalledWith(
       "workspace-1",
@@ -360,7 +364,8 @@ describe("ParallelSessionCreateModal", () => {
             providerPresetId: "preset-team-a"
           })
         ])
-      })
+      }),
+      { targetHostId: null }
     );
   });
 

@@ -6,9 +6,46 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { conversationApiMock } from "../workbench/components/AffairsWorkbenchView.test-support";
-import { PureConversationPage } from "./PureConversationPage";
+import { PureConversationPage, resolveLightweightProviderFromSearch } from "./PureConversationPage";
 
 describe("PureConversationPage", () => {
+  it("会保留 DeepSeek Harness 轻量会话的 provider", () => {
+    expect(resolveLightweightProviderFromSearch("?provider=deepseek-harness")).toBe("deepseek-harness");
+  });
+
+  it("新建 DeepSeek Harness 轻量会话时会读取其模型目录", async () => {
+    conversationApiMock.getProviderCapabilities.mockResolvedValue({
+      provider: "deepseek-harness",
+      canStartSession: true,
+      canResumeSession: true,
+      inRunInputMode: "queued_guidance",
+      supportsSubagents: false,
+      supportsInterrupt: true,
+      supportsStructuredToolCalls: true,
+      supportsTokenUsage: false,
+      supportsAttachments: false,
+      supportsPermissionPrompt: false,
+      supportsCheckpoint: false,
+      limitations: [],
+      modelOptions: [{ id: "deepseek-official:deepseek-flash", name: "DeepSeek Flash" }]
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/workspaces/workspace-1/chats/new?provider=deepseek-harness"]}>
+        <Routes>
+          <Route path="/workspaces/:workspaceId/chats/new" element={<PureConversationPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(conversationApiMock.getProviderCapabilities).toHaveBeenCalledWith(
+        "deepseek-harness",
+        "workspace-1"
+      );
+    });
+  });
+
   it("新建轻量会话切到真实 chatId 后，列表未刷新前仍保留流式状态", async () => {
     const user = userEvent.setup();
     let releaseCompletion: (() => void) | null = null;

@@ -10,8 +10,9 @@ export type BuiltinProviderId =
   | "opencode"
   | "gemini"
   | "kimi"
-  | "deepseek-harness"
-  | "grok";
+   | "deepseek-harness"
+   | "grok"
+   | "command-code";
 export type ProviderId = BuiltinProviderId | (string & {});
 export type SyncStatus = "idle" | "syncing" | "error";
 export type DeliveryState = "sending" | "sent" | "failed";
@@ -1540,6 +1541,7 @@ export interface SendSessionMessagePayload {
 
 export interface StartAffairsLightweightSessionPayload {
   sourceWorkspaceId?: string | null;
+  parentSessionId?: string | null;
   provider: ProviderId;
   content: string;
   clientRequestId?: string | null;
@@ -3249,12 +3251,14 @@ export function deleteAffairsLightweightSession(workspaceId: string, sessionId: 
 
 export function startAffairsLightweightSession(
   workspaceId: string,
-  payload: StartAffairsLightweightSessionPayload
+  payload: StartAffairsLightweightSessionPayload,
+  options?: { targetHostId?: string | null }
 ) {
   return httpClient.request<AffairsLightweightSessionTurnResponseDto>(
     "/api/affairs/lightweight-sessions",
     {
       method: "POST",
+      targetHostId: options?.targetHostId ?? undefined,
       body: JSON.stringify(payload)
     }
   );

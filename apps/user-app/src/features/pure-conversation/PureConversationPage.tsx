@@ -14,10 +14,15 @@ import { createDefaultAffairsViewState } from "../workbench/utils/workbench-mode
 import type { AffairsViewState } from "../workbench/types/workbench-mode";
 
 const DEFAULT_LIGHTWEIGHT_PROVIDER = "codex" as const;
+type LightweightProvider = "codex" | "claude-code" | "deepseek-harness";
 
-function resolveLightweightProviderFromSearch(search: string): "codex" | "claude-code" {
+export function resolveLightweightProviderFromSearch(search: string): LightweightProvider {
   const provider = new URLSearchParams(search).get("provider")?.trim();
-  return provider === "claude-code" ? "claude-code" : DEFAULT_LIGHTWEIGHT_PROVIDER;
+  if (provider === "claude-code" || provider === "deepseek-harness") {
+    return provider;
+  }
+
+  return DEFAULT_LIGHTWEIGHT_PROVIDER;
 }
 
 function resolveLightweightChatSessionId(nodeId: string | null | undefined): string | null {

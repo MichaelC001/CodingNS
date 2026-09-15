@@ -48,6 +48,7 @@ import {
 } from "./provider-deployment";
 import { useWorkbenchShell } from "./WorkbenchLayout";
 import { WorkspaceInboxModal } from "./WorkspaceInboxModal";
+import { TemporarySessionCreateModal } from "./TemporarySessionCreateModal";
 import { buildWorkspaceSessionPath } from "../../workbench/utils/workbench-navigation";
 
 interface ConversationSelectionActionsProps {
@@ -302,6 +303,8 @@ export function ConversationSelectionActions({
   const [todoModalOpen, setTodoModalOpen] = useState(false);
   const [todoCreationRequestId, setTodoCreationRequestId] = useState(0);
   const [todoDraft, setTodoDraft] = useState<{ title: string; content: string } | null>(null);
+  const [temporarySessionOpen, setTemporarySessionOpen] = useState(false);
+  const [temporarySessionPrompt, setTemporarySessionPrompt] = useState("");
   const [viewportSize, setViewportSize] = useState(() => ({
     width: typeof window === "undefined" ? 0 : window.innerWidth,
     height: typeof window === "undefined" ? 0 : window.innerHeight
@@ -913,6 +916,14 @@ export function ConversationSelectionActions({
     actionDialogLockedRef.current = false;
   }
 
+  function handleAskTemporary() {
+    if (!selection || !session) return;
+    setTemporarySessionPrompt(buildSelectionPrompt(selection.text, ""));
+    setTemporarySessionOpen(true);
+    setSelection(null);
+    if (typeof window !== "undefined") window.getSelection()?.removeAllRanges?.();
+  }
+
   function handleOpenActionDialog() {
     if (!selection || !session) {
       return;
@@ -933,27 +944,6 @@ export function ConversationSelectionActions({
     if (typeof window !== "undefined") {
       window.getSelection()?.removeAllRanges?.();
     }
-  }
-
-  function handleActionButtonPressStart(event: {
-    preventDefault: () => void;
-  }) {
-    event.preventDefault();
-    actionDialogLockedRef.current = true;
-  }
-
-  function handleActionButtonPressEnd() {
-    skipNextActionButtonClickRef.current = true;
-    handleOpenActionDialog();
-  }
-
-  function handleActionButtonClick() {
-    if (skipNextActionButtonClickRef.current) {
-      skipNextActionButtonClickRef.current = false;
-      return;
-    }
-
-    handleOpenActionDialog();
   }
 
   async function handleSubmitAction() {
@@ -1202,14 +1192,27 @@ export function ConversationSelectionActions({
 
   if (!session || (!showToolbar && !showActionDialog) || typeof document === "undefined") {
     return (
-      <WorkspaceInboxModal
-        open={todoModalOpen}
-        preferredWorkspaceId={session?.workspaceId ?? null}
-        preferredSessionId={session?.sessionId ?? null}
-        creationRequestId={todoCreationRequestId}
-        initialDraft={todoDraft}
-        onClose={() => setTodoModalOpen(false)}
-      />
+      <>
+        <WorkspaceInboxModal
+          open={todoModalOpen}
+          preferredWorkspaceId={session?.workspaceId ?? null}
+          preferredSessionId={session?.sessionId ?? null}
+          creationRequestId={todoCreationRequestId}
+          initialDraft={todoDraft}
+          onClose={() => setTodoModalOpen(false)}
+        />
+        <TemporarySessionCreateModal
+          open={temporarySessionOpen}
+          source={session ? { workspaceId: session.workspaceId, parentSessionId: session.sessionId, parentTitle: session.title, provider: session.provider, initialPrompt: temporarySessionPrompt } : null}
+          onClose={() => setTemporarySessionOpen(false)}
+          onCreated={async (created) => {
+            upsertNavigationSession(created);
+            await requestNavigationRefresh();
+            selectWorkspace(created.workspaceId, currentWorkspaceRef);
+            navigate(buildWorkspaceSessionPath(created.workspaceId, created.sessionId, currentWorkspaceRef));
+          }}
+        />
+      </>
     );
   }
 
@@ -1231,12 +1234,9 @@ export function ConversationSelectionActions({
             <button
               type="button"
               className="conversation-selection-action is-primary"
-              onPointerDown={handleActionButtonPressStart}
-              onMouseDown={handleActionButtonPressStart}
-              onPointerUp={handleActionButtonPressEnd}
-              onClick={handleActionButtonClick}
+               onClick={handleAskTemporary}
             >
-              {t("conversation.selectionActionButton")}
+              {t("conversation.selectionAskButton")}
             </button>
           </div>
         ) : null,
@@ -1278,6 +1278,26 @@ export function ConversationSelectionActions({
         creationRequestId={todoCreationRequestId}
         initialDraft={todoDraft}
         onClose={() => setTodoModalOpen(false)}
+      />
+      <TemporarySessionCreateModal
+        open={temporarySessionOpen}
+        source={session ? {
+          workspaceId: session.workspaceId,
+          parentSessionId: session.sessionId,
+          parentTitle: session.title,
+          provider: session.provider,
+          initialPrompt: temporarySessionPrompt
+        } : null}
+        onClose={() => setTemporarySessionOpen(false)}
+        onCreated={async (created) => {
+          upsertNavigationSession(created);
+          await requestNavigationRefresh();
+          const workspaceRef = currentTargetHostId && currentWorkspaceRef
+            ? { hostId: currentTargetHostId, workspaceId: currentWorkspaceRef.workspaceId }
+            : currentWorkspaceRef;
+          selectWorkspace(created.workspaceId, workspaceRef);
+          navigate(buildWorkspaceSessionPath(created.workspaceId, created.sessionId, workspaceRef));
+        }}
       />
     </>
   );

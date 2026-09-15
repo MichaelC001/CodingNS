@@ -25,6 +25,7 @@ interface AffairsLightweightStartBody {
   provider?: string;
   content?: string;
   sourceWorkspaceId?: string | null;
+  parentSessionId?: string | null;
   clientRequestId?: string | null;
   model?: string | null;
   reasoningLevel?: string | null;
@@ -264,6 +265,7 @@ export class AffairsLightweightSessionController {
       await this.affairsLightweightSessionService.startSession({
         workspaceId: request.params.workspaceId,
         sourceWorkspaceId: request.body.sourceWorkspaceId ?? null,
+        parentSessionId: request.body.parentSessionId?.trim() || null,
         userId: requireUserId(request),
         provider,
         content,
@@ -304,6 +306,7 @@ export class AffairsLightweightSessionController {
       await this.affairsLightweightSessionService.startSessionStream({
         workspaceId: request.params.workspaceId,
         sourceWorkspaceId: request.body.sourceWorkspaceId ?? null,
+        parentSessionId: request.body.parentSessionId?.trim() || null,
         userId: requireUserId(request),
         provider,
         content,
