@@ -12,7 +12,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { buildWindowsLauncherVbs, resolveHostServiceLogPath } from "../packages/codingns/scripts/host-install.mjs";
+import {
+  ensureWindowsHostLauncher,
+  resolveHostServiceLogPath
+} from "../packages/codingns/scripts/host-install.mjs";
 
 if (process.platform !== "win32") {
   console.log("跳过：启动包装只在 Windows 上有意义。");
@@ -54,21 +57,33 @@ const context = {
   logFilePath: path.join(dataDir, "runtime", "logs", "host-service.log")
 };
 
-const vbs = buildWindowsLauncherVbs(context);
 const logPath = resolveHostServiceLogPath(context);
+const logger = { log: () => {} };
 let servicePid = null;
+let launcherContent = "";
 
 try {
-  if (!/, 0, False/.test(vbs)) {
-    throw new Error("启动包装没有用 0 号窗口模式，子进程会弹黑窗。");
+  // 走产品自己的写入路径：它同时负责把日志目录建出来（cmd 不会自己建）。
+  const launcherPathFromProduct = ensureWindowsHostLauncher(context, logger);
+
+  if (path.resolve(launcherPathFromProduct) !== path.resolve(launcherPath)) {
+    throw new Error(`启动包装路径不对：${launcherPathFromProduct}`);
   }
 
-  fs.writeFileSync(launcherPath, vbs, "utf8");
+  launcherContent = fs.readFileSync(launcherPath, "utf8");
+
+  if (!/, 0, False/.test(launcherContent)) {
+    throw new Error("启动包装没有用 0 号窗口模式，子进程会弹黑窗。");
+  }
 
   const launched = spawnSync("wscript.exe", [launcherPath], { encoding: "utf8", windowsHide: true });
 
   if (launched.error) {
     throw new Error(`wscript 没跑起来：${launched.error.message}`);
+  }
+
+  if (launched.status !== 0) {
+    throw new Error(`wscript 退出码 ${launched.status}：${launched.stderr || launched.stdout}`);
   }
 
   const log = waitForLog(logPath, markers);
@@ -86,9 +101,10 @@ try {
 } catch (error) {
   console.error(`启动包装验证失败：${error instanceof Error ? error.message : String(error)}`);
   console.error(`工作目录：${workRoot}`);
-  console.error(`包装内容：\n${vbs}`);
-  console.error(`日志内容：\n${readIfExists(logPath)}`);
-  console.error(`pid 文件：${readIfExists(pidPath)}`);
+  console.error(`包装内容：\n${launcherContent}`);
+  console.error(`日志：${describePath(logPath)}`);
+  console.error(`pid 文件：${describePath(pidPath)}`);
+  console.error(`拿同一条命令直接问 cmd（这样能看到 cmd 自己的报错）：\n${runInnerCommandForDiagnostics()}`);
   cleanup(servicePid);
   process.exit(1);
 }
@@ -113,6 +129,25 @@ function waitForLog(filePath, expectedMarkers, timeoutMs = 20_000) {
 
 function readIfExists(filePath) {
   return fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
+}
+
+function describePath(filePath) {
+  return fs.existsSync(filePath) ? `已生成\n${readIfExists(filePath)}` : "没生成";
+}
+
+/** 失败时的现场：把包装里那条命令拆出来交给 cmd 跑，拿它的报错原文。 */
+function runInnerCommandForDiagnostics() {
+  const quote = (value) => `"${value}"`;
+  const nodeCommand = [process.execPath, fakeServicePath, "start", "--data-dir", dataDir, "--port", "3999", "--host", "127.0.0.1"]
+    .map(quote)
+    .join(" ");
+  const result = spawnSync(
+    "cmd.exe",
+    ["/d", "/s", "/c", `${quote(quote("") + nodeCommand + " >> " + quote(logPath) + " 2>&1")}`],
+    { encoding: "utf8", windowsHide: true, timeout: 15_000 }
+  );
+
+  return `退出码 ${result.status}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`;
 }
 
 function sleepSync(milliseconds) {

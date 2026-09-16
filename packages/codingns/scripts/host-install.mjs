@@ -760,10 +760,13 @@ export function resolveWindowsLauncherPath(context) {
 
 export function ensureWindowsHostLauncher(context, logger) {
   const filePath = resolveWindowsLauncherPath(context);
+  const serviceLogPath = resolveHostServiceLogPath(context);
 
+  // cmd 的重定向不会自己建目录，目录不在的话整条命令直接失败：服务起不来，日志也没有。
+  fs.mkdirSync(path.dirname(serviceLogPath), { recursive: true });
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, buildWindowsLauncherVbs(context), "utf8");
-  logger.log("已写入启动包装", { filePath });
+  logger.log("已写入启动包装", { filePath, serviceLogPath });
 
   return filePath;
 }
