@@ -535,7 +535,8 @@ export class CommandCodeAdapter implements ProviderAdapter {
     addCommandCodeMetric(metrics, "cacheReadTokens", cacheReadTokens, watermark);
     addCommandCodeMetric(metrics, "cacheWriteTokens", cacheWriteTokens, watermark);
     addCommandCodeMetric(metrics, "totalTokens", inputTokens + outputTokens, watermark);
-    addCommandCodeMetric(metrics, "turns", snapshots.length, watermark);
+    addCommandCodeMetric(metrics, "turns", countCommandCodeTurns(records), watermark);
+    addCommandCodeMetric(metrics, "steps", snapshots.length, watermark);
     // inputTokens 已包含缓存读取与缓存写入，重复计入分母会把命中率算低一半。
     addDerivedCacheHitRate(metrics, { denominator: ["inputTokens"] });
     const nativeCost = snapshots.reduce((sum, item) => sum + (item.costUsd ?? 0), 0);
@@ -1044,7 +1045,7 @@ function normalizeTranscriptPart(input: {
       status: "running"
     });
   }
-  if (type === "tool_result" || type === "tool_return" || type === "function_result") {
+  if (isToolResultPartType(type)) {
     const isError = part.is_error === true || part.error !== undefined;
     return createMessage("tool", "tool_result", extractTextBlocks(part.content ?? part.output ?? part.result ?? part.error), {
       callId: callId || messageId,
@@ -1222,6 +1223,10 @@ function readArchivedFlag(filePath: string): boolean {
   }
 }
 
+function isToolResultPartType(type: string): boolean {
+  return type === "tool_result" || type === "tool_return" || type === "function_result";
+}
+
 function normalizeRole(value: unknown): NormalizedMessage["role"] {
   const role = ensureText(value).trim().toLowerCase();
   if (role === "assistant" || role === "system" || role === "tool") return role;
@@ -1271,6 +1276,31 @@ function collectCommandCodeUsage(records: RawJsonLine[]): CommandCodeUsageSnapsh
     byMessage.set(messageId, snapshot);
   }
   return [...byMessage.values()];
+}
+
+/**
+ * 数用户轮次：一条真实用户消息触发一次 agent 循环，工具结果也以 user 角色写回。
+ *
+ * Command Code 的 transcript 没有原生轮次字段，这里的轮次和“模型请求次数”是两个量：
+ * 同一条用户消息可能产生几十条 usage 记录，混用会把 5 轮对话显示成 247 轮。
+ */
+function countCommandCodeTurns(records: RawJsonLine[]): number {
+  let turns = 0;
+
+  for (const record of records) {
+    if (record.data.type !== "message") continue;
+    const message = asRecord(record.data.message);
+    if (ensureText(message.role).trim().toLowerCase() !== "user") continue;
+    const parts = Array.isArray(message.content) ? message.content : [];
+    if (parts.length === 0) continue;
+    const isToolResult = parts.some(
+      (part) => isToolResultPartType(ensureText(asRecord(part).type).trim().toLowerCase())
+    );
+    if (isToolResult) continue;
+    turns += 1;
+  }
+
+  return turns;
 }
 
 function findLatestCommandCodeUsage(records: RawJsonLine[]): CommandCodeUsageSnapshot | null {

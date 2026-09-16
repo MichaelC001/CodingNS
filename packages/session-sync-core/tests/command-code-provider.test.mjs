@@ -262,6 +262,8 @@ test("CommandCodeAdapter 读取 transcript usage、上下文占用和费用", as
     assert.equal(stats.metrics.cacheWriteTokens.value, 5);
     assert.equal(stats.metrics.totalTokens.value, 120);
     assert.equal(stats.metrics.cacheHitRate.value, 40);
+    assert.equal(stats.metrics.turns.value, 1);
+    assert.equal(stats.metrics.steps.value, 1);
     assert.equal(stats.metrics.costUsd.value, 0.12);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
@@ -335,6 +337,54 @@ test("CommandCodeAdapter 对目录外的会话模型不伪造上下文窗口", a
     });
 
     assert.equal(await adapter.readContextUsage(fixture.sessionId, fixture.filePath), null);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeAdapter 把用户轮次与模型请求步骤分开统计", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-turns-"));
+  const fixture = createTranscript(homeDir, "/Users/jackson/Code/CodingNS");
+  appendUsageRecord(fixture.filePath, fixture.sessionId, "qwen/test", {
+    inputTokens: 1000,
+    outputTokens: 20,
+    cacheReadTokens: 900,
+    cacheWriteTokens: 0
+  });
+  appendFileSync(fixture.filePath, [
+    JSON.stringify({
+      type: "message",
+      id: "tool-result-1",
+      sessionId: fixture.sessionId,
+      timestamp: "2026-09-14T10:00:05.000Z",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call-1", content: [{ type: "text", text: "目录已列出" }] }]
+      }
+    }),
+    JSON.stringify({
+      type: "message",
+      id: "user-2",
+      sessionId: fixture.sessionId,
+      timestamp: "2026-09-14T10:00:06.000Z",
+      message: { role: "user", content: [{ type: "text", text: "继续下一步" }] }
+    })
+  ].join("\n") + "\n", "utf8");
+  appendUsageRecord(fixture.filePath, fixture.sessionId, "qwen/test", {
+    inputTokens: 2000,
+    outputTokens: 30,
+    cacheReadTokens: 1500,
+    cacheWriteTokens: 0
+  });
+
+  try {
+    const adapter = new CommandCodeAdapter({ homeDir });
+    const stats = await adapter.readSessionStats(fixture.sessionId, fixture.filePath);
+
+    // 两轮真实用户消息（“读取项目”和“继续下一步”），工具结果不算轮次。
+    assert.equal(stats.metrics.turns.value, 2);
+    // 两次模型请求各写一条 usage。
+    assert.equal(stats.metrics.steps.value, 2);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
