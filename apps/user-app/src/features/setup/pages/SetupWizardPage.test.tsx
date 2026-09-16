@@ -118,6 +118,86 @@ describe("首次运行向导页面", () => {
     });
   });
 
+  it("服务端装完后收尾：写本机档案、记完成标记、回登录页", async () => {
+    const updateSpy = vi
+      .spyOn(clientConfigStore, "update")
+      .mockResolvedValue(clientConfigStore.getState());
+
+    renderWizardPage("/setup?role=server");
+
+    await screen.findByText(t("setup.serverEnvironmentTitle"));
+    await userEvent.click(screen.getByRole("button", { name: t("setup.nextAction") }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: t("setup.startInstallAction") })
+    );
+    await screen.findByText(t("setup.serverInstallingTitle"));
+
+    // 装完之前不给收尾。
+    expect(screen.getByRole("button", { name: t("setup.nextAction") })).toBeDisabled();
+
+    setupWizardStore.applyInstallEvent({ taskId: "host-install-1", type: "result" });
+
+    await userEvent.click(await screen.findByRole("button", { name: t("setup.finishAction") }));
+
+    expect(await screen.findByText("LOGIN_PAGE")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activeHostId: "local-host",
+          hosts: expect.arrayContaining([
+            expect.objectContaining({
+              id: "local-host",
+              kind: "local",
+              baseUrl: "http://127.0.0.1:3002"
+            })
+          ])
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          onboardingCompletedAt: expect.any(String),
+          onboardingRole: "server"
+        })
+      );
+    });
+  });
+
+  it("服务端改动后的端口会写进本机档案", async () => {
+    const updateSpy = vi
+      .spyOn(clientConfigStore, "update")
+      .mockResolvedValue(clientConfigStore.getState());
+
+    renderWizardPage("/setup?role=server");
+
+    await screen.findByText(t("setup.serverEnvironmentTitle"));
+    await userEvent.click(screen.getByRole("button", { name: t("setup.nextAction") }));
+
+    const portInput = await screen.findByLabelText(t("setup.portFieldLabel"));
+    await userEvent.clear(portInput);
+    await userEvent.type(portInput, "4100");
+
+    await userEvent.click(screen.getByRole("button", { name: t("setup.startInstallAction") }));
+    await screen.findByText(t("setup.serverInstallingTitle"));
+
+    setupWizardStore.applyInstallEvent({ taskId: "host-install-2", type: "result" });
+
+    await userEvent.click(await screen.findByRole("button", { name: t("setup.finishAction") }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hosts: expect.arrayContaining([
+            expect.objectContaining({ id: "local-host", baseUrl: "http://127.0.0.1:4100" })
+          ])
+        })
+      );
+    });
+  });
+
   it("带 role=server 进来会直接进服务端分支", async () => {
     renderWizardPage("/setup?role=server");
 

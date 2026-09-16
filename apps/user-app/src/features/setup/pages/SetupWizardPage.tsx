@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
+import { clientConfigStore } from "../../../config/client-config-store";
+import { buildLocalHostProfile } from "../../../config/client-config-service";
 import { t } from "../../../shared/i18n";
 import { SetupClientEndpointStep } from "../components/SetupClientEndpointStep";
 import { SetupRoleStep } from "../components/SetupRoleStep";
@@ -53,6 +55,7 @@ export function SetupWizardPage() {
   const role = useSetupWizardSelector((state) => state.role);
   const stepId = useSetupWizardSelector((state) => state.stepId);
   const clientEndpointReady = useSetupWizardSelector((state) => state.clientEndpointReady);
+  const installStatus = useSetupWizardSelector((state) => state.install.status);
   const [skipping, setSkipping] = useState(false);
   const [finishing, setFinishing] = useState(false);
 
@@ -73,7 +76,10 @@ export function SetupWizardPage() {
   const isClientFinish = stepId === "client-endpoint" && clientEndpointReady;
   const isServerOptions = stepId === "server-options";
   const isServerInstalling = stepId === "server-installing";
-  const primaryActionLabel = isClientFinish
+  // 服务装上以后这一步才有收尾动作：装完之前页脚按钮保持禁用。
+  const isServerFinish = isServerInstalling && installStatus === "succeeded";
+  const isFinishStep = isClientFinish || isServerFinish;
+  const primaryActionLabel = isFinishStep
     ? finishing
       ? t("setup.finishingAction")
       : t("setup.finishAction")
@@ -105,9 +111,34 @@ export function SetupWizardPage() {
     navigate("/login", { replace: true });
   }
 
+  async function handleFinishServer(): Promise<void> {
+    setFinishing(true);
+
+    try {
+      const { serverOptions } = setupWizardStore.getState();
+
+      // 本机服务用固定的 local-host 档案，重复安装只会更新它，不会多出一条。
+      await clientConfigStore.update(
+        buildLocalHostProfile(clientConfigStore.getState(), {
+          baseUrl: `http://127.0.0.1:${serverOptions.port}`
+        })
+      );
+      await markOnboardingCompleted("server");
+    } finally {
+      setFinishing(false);
+    }
+
+    navigate("/login", { replace: true });
+  }
+
   function handlePrimaryAction(): void {
     if (isClientFinish) {
       void handleFinishClient();
+      return;
+    }
+
+    if (isServerFinish) {
+      void handleFinishServer();
       return;
     }
 
@@ -161,7 +192,7 @@ export function SetupWizardPage() {
           <button
             type="button"
             className="primary-button"
-            disabled={finishing || isServerInstalling || (!isClientFinish && !canGoNext)}
+            disabled={finishing || (isServerInstalling && !isServerFinish) || (!isFinishStep && !canGoNext)}
             onClick={handlePrimaryAction}
           >
             {primaryActionLabel}
