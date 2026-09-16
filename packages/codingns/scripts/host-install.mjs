@@ -23,6 +23,7 @@ const DEFAULT_DATA_DIR = "~/.codingns";
 const DEFAULT_PORT = 3002;
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_PACKAGE_NAME = "@jingyi0605/codingns";
+const WINDOWS_LAUNCH_COMMAND_NAME = "codingns-host-launcher.cmd";
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 const MIRROR_REGISTRY = "https://registry.npmmirror.com";
 const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -713,42 +714,41 @@ function vbsLiteral(text) {
   return `"${String(text).replace(/"/g, '""')}"`;
 }
 
-/** VBS 里拼一个带引号的参数：q 就是 Chr(34)。 */
-function vbsQuotedArgument(text) {
-  return `q & ${vbsLiteral(text)} & q`;
+/** 真正干活的批处理：命令和输出重定向都在这里，避开 cmd /s /c 的外层引号问题。 */
+export function resolveWindowsLaunchCommandPath(context) {
+  return path.join(context.launcherDirectory, WINDOWS_LAUNCH_COMMAND_NAME);
 }
 
-function vbsCommandExpression(values) {
-  return values.join(` & " " & `);
+export function buildWindowsLaunchCommandContent(context) {
+  const commandLine = [normalizeNodePath(context.nodeBinary), ...buildAutostartArguments(context)]
+    .map((value) => `"${String(value)}"`)
+    .join(" ");
+
+  return [
+    "@echo off",
+    `${commandLine} >> "${resolveHostServiceLogPath(context)}" 2>&1`,
+    ""
+  ].join("\r\n");
 }
 
 /**
- * Windows 启动包装：用 0 号窗口模式跑服务。
+ * Windows 启动包装：用 0 号窗口模式拉起同目录的批处理。
  *
- * 为什么非要包一层：服务进程是从一个没有控制台的父进程里起来的，Windows 会让它一路都没有控制台。
- * 服务自己没控制台，它再拉起 helper、git、终端这些控制台子进程时，系统会为每个子进程单独开一个新控制台——
- * 也就是用户看到的一叠黑窗。0 号窗口模式给的是「有控制台、窗口隐藏」：子进程继承它，不再各自开窗，
+ * 为什么要包一层：服务进程是从没有控制台的父进程里起来的，Windows 会让它一路都没有控制台。
+ * 服务自己没控制台，它再拉起 helper、git、终端这些控制台子进程时，系统会给每个子进程单独开一个新控制台——
+ * 用户看到的就是一叠黑窗。0 号窗口模式给的是「有控制台、窗口隐藏」：子进程继承它，不再各自开窗，
  * 服务也不会因为控制台被关掉而跟着退出。
  *
- * 输出用 cmd 重定向落到服务日志，服务崩了才有现场可看。
- * 引号一律用 Chr(34) 拼，不在 VBS 里写双写引号——引号错一层，服务就直接起不来。
+ * 命令和重定向放在 .cmd 里而不是拼成 `cmd /d /s /c ""...""`：后者那套外层引号在真机上和 CI 上都翻过车
+ * （cmd 报 The filename, directory name, or volume label syntax is incorrect），批处理里按普通命令行写就行。
  */
 export function buildWindowsLauncherVbs(context) {
-  const nodeCommand = vbsCommandExpression([
-    vbsQuotedArgument(normalizeNodePath(context.nodeBinary)),
-    ...buildAutostartArguments(context).map((value) => vbsQuotedArgument(value))
-  ]);
-
   return [
     "' CodingNS Host 启动包装：0 号窗口模式 = 服务进程有一个存在但看不见的控制台，",
-    "' 它拉起的子进程不会各自弹黑窗；输出重定向到服务日志。",
+    "' 它拉起的子进程不会各自弹黑窗；命令和输出重定向在同一个目录的 .cmd 里。",
     'Set shell = CreateObject("WScript.Shell")',
     "q = Chr(34)",
-    `nodeCommand = ${nodeCommand}`,
-    `commandLine = "cmd /d /s /c " & q & q & nodeCommand & " >> " & q & ${vbsLiteral(
-      resolveHostServiceLogPath(context)
-    )} & q & " 2>&1" & q`,
-    "shell.Run commandLine, 0, False",
+    `shell.Run q & ${vbsLiteral(resolveWindowsLaunchCommandPath(context))} & q, 0, False`,
     ""
   ].join("\r\n");
 }
@@ -759,16 +759,18 @@ export function resolveWindowsLauncherPath(context) {
 }
 
 export function ensureWindowsHostLauncher(context, logger) {
-  const filePath = resolveWindowsLauncherPath(context);
+  const launcherPath = resolveWindowsLauncherPath(context);
+  const commandPath = resolveWindowsLaunchCommandPath(context);
   const serviceLogPath = resolveHostServiceLogPath(context);
 
   // cmd 的重定向不会自己建目录，目录不在的话整条命令直接失败：服务起不来，日志也没有。
   fs.mkdirSync(path.dirname(serviceLogPath), { recursive: true });
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, buildWindowsLauncherVbs(context), "utf8");
-  logger.log("已写入启动包装", { filePath, serviceLogPath });
+  fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
+  fs.writeFileSync(commandPath, buildWindowsLaunchCommandContent(context), "utf8");
+  fs.writeFileSync(launcherPath, buildWindowsLauncherVbs(context), "utf8");
+  logger.log("已写入启动包装", { launcherPath, commandPath, serviceLogPath });
 
-  return filePath;
+  return launcherPath;
 }
 
 /** 直接拉 node：其它平台的正常路径，也是 Windows 上包装起不来时的兜底。 */
