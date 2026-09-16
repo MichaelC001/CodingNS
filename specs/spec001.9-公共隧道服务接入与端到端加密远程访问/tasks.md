@@ -88,17 +88,42 @@
       werift 上行 3–6 MB/s 下行 21–31 MB/s、分片与水位调优无效、多 DataChannel 无效、
       STUN 必需、PeerConnection 必须进程隔离
 
-- [ ] W0.2 确认 Host 侧接入进程的形态
-  - 状态：TODO
+- [x] W0.2 确认 Host 侧接入进程的形态
+  - 状态：DONE
   - 这一步到底做什么：定清楚 WebRTC 接入进程怎么跑、和主进程怎么通信、崩了怎么拉起
   - 做完以后能看到什么结果：有一份明确的进程模型说明，后面写代码不用现拍
   - 依赖什么：W0.1
   - 主要改哪些文件：
     - `specs/spec001.9-公共隧道服务接入与端到端加密远程访问/design.md`
-    - 可能新增 `docs/20260916-Host接入进程模型.md`
+    - `docs/20260916-Host接入进程模型.md`（新增）
   - 这一步明确不做什么：不写代码
   - 怎么验证：
     - 方案评审，重点确认「PeerConnection 必须隔离」这条怎么落实
+  - 验证结果：
+    - 已落库 `docs/20260916-Host接入进程模型.md`
+    - 定下：主进程管配置 / 状态 / 设置页，werift PeerConnection 全部跑独立子进程；
+      IPC 只传控制信号不传业务数据；崩溃按 1/2/4/8/16s 退避拉起，上限 30s，连续 5 次失败置 `error`；
+      重启后主进程重新下发配置；不做多进程池
+    - 后台任务命名沿用 `spec001.2` 规范：`webrtc.peer_supervise`、`relay_tunnel.state_refresh`、`relay_tunnel.usage_report`
+
+- [x] W0.4 补一轮 Host 侧实现交替 A/B 实测并拍板
+  - 状态：DONE
+  - 这一步到底做什么：把 libdatachannel 与 werift 在 5 MB / 20 MB 两档上交替跑，各 5 轮，用失败率和 Host 侧实测吞吐决定选谁
+  - 做完以后能看到什么结果：Host 侧实现不再有悬念，后面写接入层不用再摇摆
+  - 依赖什么：W0.1
+  - 主要改哪些文件：
+    - `apps/codingns-proxy/local/webrtc-datachannel-demo/ab-bench.mjs`（新增）
+    - `apps/codingns-proxy/local/webrtc-datachannel-demo/public/index.html`（补机器可读结果导出）
+    - `specs/spec001.9-公共隧道服务接入与端到端加密远程访问/docs/20260916-Host侧WebRTC实现A-B定论.md`（新增）
+  - 这一步明确不做什么：不再调分片 / 水位 / 多通道参数
+  - 怎么验证：
+    - `node ab-bench.mjs --mb=5,20 --rounds=5`
+    - 只认 Host 侧打点吞吐，页面侧数字不计入
+  - 验证结果：
+    - **werift 10/10 通过（0% 失败），上行平均 11.12 MB/s，下行平均 28.32 MB/s**
+    - **node-datachannel 6/10 通过（40% 失败），失败全部是 ICE 从 completed 直接跳 failed**
+    - 结论：**Host 侧固定 werift，node-datachannel 不进生产依赖**
+    - 原始数据：`apps/codingns-proxy/local/webrtc-datachannel-demo/ab-bench-result.json`
 
 - [ ] W0.3 确认计费模型切换范围
   - 状态：TODO
@@ -211,8 +236,8 @@
 
 ## 阶段 W3：信令与 TURN
 
-- [ ] W3.1 实现信令服务器
-  - 状态：TODO
+- [x] W3.1 实现信令服务器
+  - 状态：DONE
   - 这一步到底做什么：在子仓库实现信令服务，负责注册、房间、SDP / ICE 转发和凭据校验
   - 做完以后能看到什么结果：Host 和客户端能通过它完成建连
   - 依赖什么：W0.2
@@ -223,22 +248,44 @@
   - 怎么验证：
     - 信令层并发、重连、凭据过期测试
     - 抓包确认信令只经手 SDP / ICE
+  - 验证结果：
+    - 新增 `apps/codingns-proxy/apps/relay-signaling/`：Fastify + WebSocket，房间模型在 `signaling-hub.ts`
+    - 票据签发与校验放在 `shared-contracts/src/signaling-ticket.ts`，HMAC-SHA256，控制面与信令服务共用同一份实现
+    - 覆盖：票据过期 / 篡改 / 换密钥 / 无票据拒绝、Host 与客户端完整信令交换、
+      Host 不在线明确报错、角色越权拒绝、同绑定 Host 重连顶号、客户端上限、在线快照
+    - `pnpm --filter @codingns-proxy/relay-signaling test` → 24/24 通过
+    - `pnpm --filter @codingns-proxy/shared-contracts test` → 13/13 通过
+    - 信令服务器不解析 SDP 内容，只做转发，代码层面没有接触业务数据的路径
+    - **真实端到端联调（本地栈）**：造真实账号 → `POST /api/v1/hosts/bind` 绑定 →
+      分别换 client / host 票据 → 两个 WebSocket 连上 nginx 反代的 `/signaling/signal` →
+      客户端发 offer 被 Host 收到 → Host 回 answer 被客户端收到 → 双方都收到 `peer-ready`
+    - 信令服务已接入本地栈（`pnpm local:stack:start`），监听 18085，nginx 反代 `/signaling/*`
 
 - [ ] W3.2 部署 coturn 并接入控制面
-  - 状态：TODO
+  - 状态：PARTIAL（模板与文档就绪，目标机器上的实际部署待执行）
   - 这一步到底做什么：部署 TURN 服务，控制面负责下发 ICE 配置和临时凭据
   - 做完以后能看到什么结果：NAT 打洞失败的用户能通过 TURN 连上
   - 依赖什么：W3.1
   - 主要改哪些文件：
-    - `apps/codingns-proxy/deploy/*`
+    - `apps/codingns-proxy/deploy/templates/coturn.conf.template`（新增）
     - `apps/codingns-proxy/apps/control-api/*`
   - 这一步明确不做什么：不自研 TURN
   - 怎么验证：
     - 强制 `iceTransportPolicy: "relay"` 跑通
     - TURN 侧能看到用量数据
+  - 已完成：
+    - 新增 `deploy/templates/coturn.conf.template`：REST 临时凭据模式、内网地址黑名单、
+      配额、日志与运行用户都已配好
+    - 控制面侧凭据签发已完成（W3.3）：HMAC-SHA1 + 过期时间戳，不存长期密码
+    - 部署与验证步骤已落库 `docs/20260916-TURN部署与接入说明.md`
+  - 待完成（需要在目标机器上执行）：
+    - 在正式服务器上装 coturn、替换模板占位符、放行 3478/udp+tcp 与 49152-65535/udp
+    - 用 `iceTransportPolicy: "relay"` 实测一次真实跨网连接
+    - 抓包确认 TURN 上只有 DTLS 密文
+  - 备注：按账号粒度的 TURN 开关还没做，目前只有全局开关，等 W5 订阅模型落地后一起补。
 
-- [ ] W3.3 ICE 配置下发
-  - 状态：TODO
+- [x] W3.3 ICE 配置下发
+  - 状态：DONE
   - 这一步到底做什么：控制面按账号 / 订阅状态下发 STUN 与 TURN 地址，并支持关闭指定账号的 TURN
   - 做完以后能看到什么结果：客户端拿到完整 ICE 配置，不用本地硬编码
   - 依赖什么：W3.2
@@ -248,6 +295,16 @@
   - 这一步明确不做什么：不做按地域分片的 ICE 调度
   - 怎么验证：
     - 接口测试 + 客户端联调
+  - 验证结果：
+    - 新增 `POST /api/v1/relay/signaling/ticket`：一次返回信令票据、ICE 配置、传输策略、Host DTLS 指纹
+    - TURN 用 coturn REST 约定的临时凭据（HMAC-SHA1 + 过期时间戳），控制面不存长期密码
+    - STUN 恒定下发（客户端侧 STUN 是必需项，见验证结论第四节）
+    - TURN 未配置时不下发 TURN 候选，避免给出连不上的地址
+    - 全局开关 `CODINGNS_PROXY_FORCE_TURN_BY_DEFAULT` 控制 `iceTransportPolicy`
+    - 覆盖：client / host 两种票据、归属校验（别人的绑定换不到票）、未登录 / 未绑定 / 不存在的绑定
+    - `pnpm --filter @codingns-proxy/control-api test` → 64 通过，1 个既有失败与本轮无关
+      （`管理员可以查看全局账号…` 在改动前的 HEAD 上同样失败，已用干净 worktree 复现确认）
+  - 遗留：**按账号粒度的 TURN 开关还没做**，目前只有全局开关。等 W5 订阅模型落地后一起补。
 
 ---
 
