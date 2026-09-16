@@ -322,6 +322,7 @@ fn spawn_reader_thread(
 ) {
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
+        let mut saw_structured_error = false;
 
         for line in reader.lines() {
             let line = match line {
@@ -335,7 +336,14 @@ fn spawn_reader_thread(
             }
 
             match serde_json::from_str::<serde_json::Value>(trimmed) {
-                Ok(event) => emit_progress(&app, &manager_task_id, event),
+                Ok(event) => {
+                    if event.get("type").and_then(|value| value.as_str()) == Some("error") {
+                        // 安装器自己报的错最具体（含 npm 原文），后面别被"退出码 1"盖掉。
+                        saw_structured_error = true;
+                    }
+
+                    emit_progress(&app, &manager_task_id, event);
+                }
                 Err(_) => emit_progress(
                     &app,
                     &manager_task_id,
@@ -350,12 +358,25 @@ fn spawn_reader_thread(
         let exit_status = child.lock().ok().and_then(|mut handle| handle.wait().ok());
 
         if let Some(status) = exit_status {
-            if !status.success() {
-                let stderr_tail = stderr_sink
-                    .lock()
-                    .map(|guard| guard.join("\n"))
-                    .unwrap_or_default();
-                let exit_code = status.code().unwrap_or(-1);
+            let exit_code = status.code().unwrap_or(-1);
+            let stderr_tail = stderr_sink
+                .lock()
+                .map(|guard| guard.join("\n"))
+                .unwrap_or_default();
+
+            // 已经有结构化错误时，stderr 只当日志补充，不再覆盖真正的失败原因。
+            if saw_structured_error && !stderr_tail.trim().is_empty() {
+                emit_progress(
+                    &app,
+                    &manager_task_id,
+                    serde_json::json!({
+                        "type": "log",
+                        "message": stderr_tail,
+                    }),
+                );
+            }
+
+            if should_report_installer_failure(status.success(), saw_structured_error) {
                 let detail = if stderr_tail.trim().is_empty() {
                     format!("退出码 {exit_code}")
                 } else {
@@ -372,6 +393,12 @@ fn spawn_reader_thread(
             }
         }
     });
+}
+
+/// 安装器非零退出时要不要补一条 INSTALLER_FAILED。
+/// 安装器自己已经报过错（比如 NPM_INSTALL_FAILED 带 npm 原文）就别再盖一层。
+fn should_report_installer_failure(exit_success: bool, saw_structured_error: bool) -> bool {
+    !exit_success && !saw_structured_error
 }
 
 fn check_not_already_running(manager: &HostInstallerManager) -> Result<(), String> {
@@ -728,6 +755,13 @@ mod tests {
         thread::sleep(std::time::Duration::from_millis(600));
 
         assert!(!is_process_alive(nested_pid), "子进程也应该被一起收掉");
+    }
+
+    #[test]
+    fn keeps_the_specific_error_instead_of_exit_code_noise() {
+        assert!(should_report_installer_failure(false, false));
+        assert!(!should_report_installer_failure(false, true));
+        assert!(!should_report_installer_failure(true, false));
     }
 
     #[test]
