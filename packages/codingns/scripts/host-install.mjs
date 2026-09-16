@@ -492,15 +492,6 @@ export function isPrivateNodeBinary(dataDir, nodeBinary) {
 }
 
 /**
- * 服务进程要不要 detached。
- * Windows 上不能：detached 让服务进程完全没有控制台，它再拉起控制台子进程时，
- * 系统会给每个子进程单独开一个黑窗口。其它平台要 detached 才能脱离父进程组活下去。
- */
-export function shouldDetachHost(platform = process.platform) {
-  return platform !== "win32";
-}
-
-/**
  * 服务进程的工作目录。
  * 不能用安装包本身：Windows 上子进程的 cwd 会把那个目录锁住，下次升级 npm 换包时报 EBUSY。
  */
@@ -538,9 +529,10 @@ export function spawnDetachedHost(context, logger) {
   const serviceLog = openHostServiceLog(context, logger);
   const child = spawn(normalizeNodePath(context.nodeBinary), [normalizeNodePath(context.cliEntryPath), ...args], {
     cwd: resolveHostWorkingDirectory(context),
-    // Windows 上不 detached：windowsHide 给的是一个「存在但看不见」的控制台，
-    // 子进程会继承它，全程没有窗口；detached 会让服务进程没有控制台，子进程反而各自弹窗。
-    detached: shouldDetachHost(),
+    // Windows 上也要 detached：不 detached 时服务进程会跟着安装器一起退出——
+    // 装完那一下健康检查是通的，安装器一走服务就没了（真机复现过）。
+    // 黑窗口不归这里管，由子进程侧自己加 windowsHide（apps/host 里的 helper）。
+    detached: true,
     stdio: serviceLog === null ? "ignore" : ["ignore", serviceLog.fd, serviceLog.fd],
     windowsHide: true
   });

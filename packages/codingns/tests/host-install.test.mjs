@@ -24,7 +24,6 @@ import {
   resolvePackageRootPath,
   resolveHostServiceLogPath,
   resolveHostWorkingDirectory,
-  shouldDetachHost,
   resolveRegistryCandidates,
   resolveStateFilePath,
   runAutostart,
@@ -987,7 +986,7 @@ test("EBUSY 重试仍然失败时给出占用提示，而不是让用户去查�
   assert.match(error.detail, /EBUSY/);
 });
 
-test("服务进程的启动方式：工作目录是数据目录，Windows 上不 detached", () => {
+test("服务进程的启动方式：工作目录是数据目录，输出落到服务日志", () => {
   const dataDir = createTempDataDir();
 
   assert.equal(resolveHostWorkingDirectory({ dataDir }), dataDir);
@@ -998,11 +997,6 @@ test("服务进程的启动方式：工作目录是数据目录，Windows 上不
 
   // 数据目录还没建出来时不给 cwd，避免 spawn 直接报 ENOENT。
   assert.equal(resolveHostWorkingDirectory({ dataDir: path.join(dataDir, "missing") }), undefined);
-
-  // Windows 上 detached 会让服务进程没有控制台，它的子进程就会一个个弹出黑窗口。
-  assert.equal(shouldDetachHost("win32"), false);
-  assert.equal(shouldDetachHost("darwin"), true);
-  assert.equal(shouldDetachHost("linux"), true);
 
   // 服务进程的输出要落到文件：之前是 stdio ignore，服务在启动阶段崩掉时没有任何线索。
   assert.equal(
