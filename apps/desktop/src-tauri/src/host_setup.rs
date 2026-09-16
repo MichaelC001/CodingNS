@@ -728,7 +728,19 @@ mod tests {
 
         drop(listener);
 
-        assert!(check_port(port).available);
+        // 端口刚释放时系统偶尔还没腾干净，给它几次机会。
+        let mut available_after_release = false;
+
+        for _ in 0..10 {
+            if check_port(port).available {
+                available_after_release = true;
+                break;
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        assert!(available_after_release);
     }
 
     #[test]

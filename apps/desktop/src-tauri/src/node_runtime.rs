@@ -12,6 +12,10 @@ pub const NODE_DOWNLOAD_FAILED: &str = "NODE_DOWNLOAD_FAILED";
 pub const NODE_CHECKSUM_MISMATCH: &str = "NODE_CHECKSUM_MISMATCH";
 pub const INVALID_NODE_VERSION: &str = "INVALID_NODE_VERSION";
 
+/// 桌面端准备私有 Node 时用的版本，跟仓库 .nvmrc 与包 engines 对齐。
+pub const PLANNED_NODE_VERSION: &str = "22.19.0";
+const MINIMUM_NODE_VERSION: (u64, u64, u64) = (22, 19, 0);
+
 const NODE_DIST_BASE_URL: &str = "https://nodejs.org/dist";
 const NODE_DIST_MIRROR_BASE_URL: &str = "https://npmmirror.com/mirrors/node";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -158,14 +162,33 @@ fn read_node_version(node_path: &Path) -> Option<String> {
 }
 
 /// 返回一个当前可用的 node 可执行文件：优先私有运行时，其次系统 node。
+/// 版本低于下限的一律不算可用，交给上层去准备私有运行时。
 pub fn resolve_usable_node(data_dir: &Path) -> Option<PathBuf> {
     let private_binary = resolve_private_node_binary(data_dir);
 
-    if private_binary.is_file() && read_node_version(&private_binary).is_some() {
-        return Some(private_binary);
+    if private_binary.is_file() {
+        if let Some(version) = read_node_version(&private_binary) {
+            if node_version_supported(&version) {
+                return Some(private_binary);
+            }
+        }
     }
 
-    find_system_node().map(|(path, _)| PathBuf::from(path))
+    find_system_node()
+        .filter(|(_, version)| node_version_supported(version))
+        .map(|(path, _)| PathBuf::from(path))
+}
+
+fn node_version_supported(version: &str) -> bool {
+    let trimmed = version.trim().trim_start_matches('v');
+    let mut parts = trimmed.split('.');
+
+    let parse = |value: Option<&str>| value.and_then(|part| part.parse::<u64>().ok());
+
+    match (parse(parts.next()), parse(parts.next()), parse(parts.next())) {
+        (Some(major), Some(minor), Some(patch)) => (major, minor, patch) >= MINIMUM_NODE_VERSION,
+        _ => false,
+    }
 }
 
 fn find_system_node() -> Option<(String, String)> {
@@ -430,7 +453,7 @@ fn extract_archive(archive_path: &Path, target_dir: &Path) -> Result<(), String>
     Ok(())
 }
 
-async fn install_private_runtime(
+pub async fn install_private_runtime(
     app: Option<&AppHandle>,
     data_dir: &Path,
     version: &str,

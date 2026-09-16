@@ -26,6 +26,7 @@ const DEFAULT_PACKAGE_NAME = "@jingyi0605/codingns";
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 const MIRROR_REGISTRY = "https://registry.npmmirror.com";
 const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const MINIMUM_NODE_MAJOR = 22;
 
 const KNOWN_ACTIONS = [
   "check",
@@ -1439,6 +1440,23 @@ function printUsage() {
   );
 }
 
+/** 版本太老的 Node 跑不动服务，先明确报出来，别让它变成一句"退出码 1"。 */
+export function assertNodeRuntime(logger = null) {
+  const major = Number.parseInt(String(process.versions?.node ?? "").split(".")[0], 10);
+
+  if (!Number.isFinite(major) || major < MINIMUM_NODE_MAJOR) {
+    emitError(
+      "NODE_UNAVAILABLE",
+      `当前 Node 版本太低（${process.versions?.node ?? "unknown"}），服务需要 Node ${MINIMUM_NODE_MAJOR} 及以上`,
+      "请升级 Node，或者在桌面端向导里让它自动准备运行时。",
+      logger?.logPath ?? null
+    );
+    return false;
+  }
+
+  return true;
+}
+
 export async function runCli(argv) {
   const { action, options } = parseArgv(argv);
 
@@ -1460,6 +1478,10 @@ export async function runCli(argv) {
   const logger = createRunLogger(dataDir, action);
 
   try {
+    if (!assertNodeRuntime(logger)) {
+      return EXIT_FAILURE;
+    }
+
     if (action === "check") {
       return runCheck(options, logger);
     }

@@ -16,6 +16,10 @@ pub const TASK_NOT_FOUND: &str = "TASK_NOT_FOUND";
 
 const PROGRESS_EVENT: &str = "codingns://host-setup/progress";
 const INSTALLER_SCRIPT_NAME: &str = "host-install.mjs";
+/// 安装器 stderr 里最多往界面转发多少行，以及保留多少行用于失败详情。
+const STDERR_FORWARD_LIMIT: usize = 40;
+const STDERR_BUFFER_LINES: usize = 50;
+const STDERR_LINE_MAX_CHARS: usize = 500;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +94,10 @@ impl HostInstallerManager {
 
         guard.as_ref().map(|task| task.task_id.clone())
     }
+}
+
+struct NodeRuntimeResultCheck {
+    node_path: PathBuf,
 }
 
 fn resolve_installer_script(app: &AppHandle) -> Option<PathBuf> {
@@ -250,11 +258,63 @@ fn kill_process_tree(pid: u32) -> bool {
     true
 }
 
+/// 安装器写 stderr 的内容不能丢：既转发给界面，也留一份给失败详情。
+fn spawn_stderr_thread(
+    app: AppHandle,
+    task_id: String,
+    stderr: std::process::ChildStderr,
+    sink: Arc<Mutex<Vec<String>>>,
+) {
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        let mut forwarded = 0_usize;
+
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let clipped = if trimmed.chars().count() > STDERR_LINE_MAX_CHARS {
+                let head: String = trimmed.chars().take(STDERR_LINE_MAX_CHARS).collect();
+                format!("{head}…")
+            } else {
+                trimmed.to_string()
+            };
+
+            if forwarded < STDERR_FORWARD_LIMIT {
+                emit_progress(
+                    &app,
+                    &task_id,
+                    serde_json::json!({
+                        "type": "log",
+                        "message": clipped,
+                    }),
+                );
+                forwarded += 1;
+            }
+
+            if let Ok(mut guard) = sink.lock() {
+                if guard.len() >= STDERR_BUFFER_LINES {
+                    guard.remove(0);
+                }
+
+                guard.push(clipped);
+            }
+        }
+    });
+}
+
 fn spawn_reader_thread(
     app: AppHandle,
     manager_task_id: String,
     stdout: std::process::ChildStdout,
     child: Arc<Mutex<Child>>,
+    stderr_sink: Arc<Mutex<Vec<String>>>,
 ) {
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -287,12 +347,23 @@ fn spawn_reader_thread(
 
         if let Some(status) = exit_status {
             if !status.success() {
+                let stderr_tail = stderr_sink
+                    .lock()
+                    .map(|guard| guard.join("\n"))
+                    .unwrap_or_default();
+                let exit_code = status.code().unwrap_or(-1);
+                let detail = if stderr_tail.trim().is_empty() {
+                    format!("退出码 {exit_code}")
+                } else {
+                    format!("退出码 {exit_code}\n{stderr_tail}")
+                };
+
                 emit_task_error(
                     &app,
                     &manager_task_id,
                     "INSTALLER_FAILED",
                     "安装器提前退出了",
-                    &format!("退出码 {}", status.code().unwrap_or(-1)),
+                    &detail,
                 );
             }
         }
@@ -320,9 +391,6 @@ pub async fn run_host_installer(
         format!("{INSTALLER_NOT_FOUND}: 没有找到 {INSTALLER_SCRIPT_NAME}，桌面端可能没有打全")
     })?;
     let data_dir = resolve_data_dir(options.data_dir.as_deref())?;
-    let node_binary = node_runtime::resolve_usable_node(&data_dir).ok_or_else(|| {
-        format!("{INSTALLER_NOT_FOUND}: 没有可用的 Node，先准备 Node 运行时")
-    })?;
 
     let task_id = format!(
         "host-install-{}",
@@ -331,6 +399,61 @@ pub async fn run_host_installer(
             .map(|duration| duration.as_millis())
             .unwrap_or_default()
     );
+
+    // 机器上没有够用的 Node 时，先准备一个私有运行时，再让安装器跑起来。
+    let node_binary = match node_runtime::resolve_usable_node(&data_dir) {
+        Some(path) => path,
+        None => {
+            emit_progress(
+                &app,
+                &task_id,
+                serde_json::json!({
+                    "type": "step",
+                    "stepId": "prepare-node",
+                    "status": "running",
+                    "message": format!("准备 Node {}", node_runtime::PLANNED_NODE_VERSION),
+                }),
+            );
+
+            let installed = node_runtime::install_private_runtime(
+                Some(&app),
+                &data_dir,
+                node_runtime::PLANNED_NODE_VERSION,
+            )
+            .await;
+
+            let NodeRuntimeResultCheck { node_path } = match installed {
+                Ok(result) => NodeRuntimeResultCheck {
+                    node_path: PathBuf::from(result.node_path),
+                },
+                Err(error) => {
+                    emit_progress(
+                        &app,
+                        &task_id,
+                        serde_json::json!({
+                            "type": "step",
+                            "stepId": "prepare-node",
+                            "status": "failed",
+                        }),
+                    );
+
+                    return Err(format!("NODE_UNAVAILABLE: 准备 Node 运行时失败：{error}"));
+                }
+            };
+
+            emit_progress(
+                &app,
+                &task_id,
+                serde_json::json!({
+                    "type": "step",
+                    "stepId": "prepare-node",
+                    "status": "done",
+                }),
+            );
+
+            node_path
+        }
+    };
 
     let mut command = Command::new(&node_binary);
     command
@@ -352,12 +475,10 @@ pub async fn run_host_installer(
     let pid = child.id();
     let stdout = child.stdout.take().ok_or_else(|| "拿不到安装器输出".to_string())?;
 
-    if let Some(stderr) = child.stderr.take() {
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
+    let stderr_sink: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-            for _line in reader.lines() {}
-        });
+    if let Some(stderr) = child.stderr.take() {
+        spawn_stderr_thread(app.clone(), task_id.clone(), stderr, Arc::clone(&stderr_sink));
     }
 
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -368,7 +489,13 @@ pub async fn run_host_installer(
         pid,
     });
 
-    spawn_reader_thread(app.clone(), task_id.clone(), stdout, Arc::clone(&shared_child));
+    spawn_reader_thread(
+        app.clone(),
+        task_id.clone(),
+        stdout,
+        Arc::clone(&shared_child),
+        Arc::clone(&stderr_sink),
+    );
 
     // 安装器结束或被取消后，把任务位腾出来。
     let cleanup_app = app.clone();
