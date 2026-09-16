@@ -10343,6 +10343,25 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   z-index: 1500;
 }
 
+/* 移动端浮窗固定在屏幕正中，避免跟随选中文字落到屏幕底部，也不再需要拖拽。 */
+.conversation-temporary-session-popover.is-viewport.is-centered {
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  width: min(580px, calc(100vw - 24px));
+  max-height: min(760px, calc(100dvh - 32px));
+  transform: translate(-50%, -50%);
+}
+
+.conversation-temporary-session-popover.is-centered::before {
+  display: none;
+}
+
+.conversation-temporary-session-popover.is-centered .conversation-temporary-session-popover-header {
+  cursor: default;
+}
+
 .message-with-temporary-session-anchors {
   position: relative;
 }

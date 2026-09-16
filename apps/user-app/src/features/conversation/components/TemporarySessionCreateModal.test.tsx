@@ -12,14 +12,16 @@ const {
   mockGetProviderCapabilities,
   mockFetchModelManagementSnapshot,
   mockStartAffairsLightweightSessionStream,
-  mockSendAffairsLightweightSessionMessageStream
+  mockSendAffairsLightweightSessionMessageStream,
+  mockWorkbenchShellState
 } = vi.hoisted(() => ({
   mockListAffairsLightweightSessions: vi.fn(),
   mockGetAffairsLightweightSessionMessages: vi.fn(),
   mockGetProviderCapabilities: vi.fn(),
   mockFetchModelManagementSnapshot: vi.fn(),
   mockStartAffairsLightweightSessionStream: vi.fn(),
-  mockSendAffairsLightweightSessionMessageStream: vi.fn()
+  mockSendAffairsLightweightSessionMessageStream: vi.fn(),
+  mockWorkbenchShellState: { shellMode: "desktop" as "desktop" | "mobile" }
 }));
 
 vi.mock("../../../platform/platform-provider", () => ({
@@ -31,7 +33,8 @@ vi.mock("../../../platform/platform-provider", () => ({
 
 vi.mock("./WorkbenchLayout", () => ({
   useWorkbenchShell: () => ({
-    currentTargetHostId: "peer-host-1"
+    currentTargetHostId: "peer-host-1",
+    shellMode: mockWorkbenchShellState.shellMode
   })
 }));
 
@@ -145,6 +148,7 @@ describe("TemporarySessionCreateModal", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    mockWorkbenchShellState.shellMode = "desktop";
   });
 
   it("只列出当前父会话绑定的临时会话，并加载选中内容", async () => {
@@ -298,10 +302,33 @@ describe("TemporarySessionCreateModal", () => {
 
     const dialog = await screen.findByRole("dialog", { name: t("conversation.temporarySessionTitle") });
     expect(dialog).toHaveClass("conversation-temporary-session-popover");
+    expect(dialog).not.toHaveClass("is-centered");
     fireEvent.click(within(dialog).getByRole("button", { name: t("conversation.temporarySessionShowList") }));
     expect(within(dialog).getAllByText("第一条临时记录")).toHaveLength(2);
     fireEvent.pointerDown(document.body);
     expect(within(dialog).queryByRole("listbox", { name: t("conversation.temporarySessionListTitle") })).not.toBeInTheDocument();
+  });
+
+  it("移动端浮层固定在屏幕居中，且拖动表头不会改变位置", async () => {
+    mockWorkbenchShellState.shellMode = "mobile";
+    mockListAffairsLightweightSessions.mockResolvedValue({
+      items: [createSession("temporary-1", "第一条临时记录", "parent-1")]
+    });
+    mockGetAffairsLightweightSessionMessages.mockResolvedValue({ messages: [] });
+
+    render(<TemporarySessionHeaderAction session={createSession("parent-1", "父会话", "") as SessionSummaryDto} />);
+    fireEvent.click(screen.getByRole("button", { name: t("conversation.temporarySessionAction") }));
+
+    const dialog = await screen.findByRole("dialog", { name: t("conversation.temporarySessionTitle") });
+    expect(dialog).toHaveClass("is-centered");
+    expect(dialog).not.toHaveAttribute("style");
+
+    const header = dialog.querySelector(".conversation-temporary-session-popover-header");
+    expect(header).not.toBeNull();
+    fireEvent.pointerDown(header!, { button: 0, clientX: 12, clientY: 12 });
+    fireEvent.pointerMove(header!, { clientX: 200, clientY: 360 });
+    fireEvent.pointerUp(header!, { clientX: 200, clientY: 360 });
+    expect(dialog).not.toHaveAttribute("style");
   });
 });
 

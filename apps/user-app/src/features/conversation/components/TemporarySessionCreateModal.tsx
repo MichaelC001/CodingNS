@@ -115,8 +115,10 @@ export function TemporarySessionCreateModal({
   onSessionCreated?: (session: SessionSummaryDto) => void;
 }) {
   const platform = usePlatform();
-  const { currentTargetHostId } = useWorkbenchShell();
+  const { currentTargetHostId, shellMode } = useWorkbenchShell();
   const instanceId = useId();
+  // 移动端浮窗固定居中，既不跟随选中文字位置，也不接受拖拽。
+  const floatingCentered = presentation === "floating" && floatingPortal && shellMode === "mobile";
   const sourceWorkspaceId = source?.workspaceId ?? null;
   const sourceParentSessionId = source?.parentSessionId ?? null;
   const sourceProvider = source?.provider ?? null;
@@ -774,7 +776,7 @@ export function TemporarySessionCreateModal({
   );
 
   function handleDragStart(event: ReactPointerEvent<HTMLElement>) {
-    if (!floatingPortal || event.button !== 0 || (event.target as HTMLElement).closest("button")) {
+    if (floatingCentered || !floatingPortal || event.button !== 0 || (event.target as HTMLElement).closest("button")) {
       return;
     }
     const rect = event.currentTarget.parentElement?.getBoundingClientRect();
@@ -814,10 +816,12 @@ export function TemporarySessionCreateModal({
 
     const floatingContent = (
       <section
-        className={`conversation-temporary-session-popover${floatingPortal ? " is-viewport" : ""}`}
+        className={`conversation-temporary-session-popover${floatingPortal ? " is-viewport" : ""}${floatingCentered ? " is-centered" : ""}`}
         role="dialog"
         aria-label={t("conversation.temporarySessionTitle")}
-        style={{ ...floatingStyle, ...(floatingPosition ? { left: floatingPosition.left, top: floatingPosition.top, right: "auto" } : {}) }}
+        style={floatingCentered
+          ? undefined
+          : { ...floatingStyle, ...(floatingPosition ? { left: floatingPosition.left, top: floatingPosition.top, right: "auto" } : {}) }}
       >
         <header
           className="conversation-temporary-session-popover-header"
