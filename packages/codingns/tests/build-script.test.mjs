@@ -75,6 +75,36 @@ test("rewritePackageJsonForPublish 会改写 workspace 依赖并补齐 bundle �
   assert.equal(rewritten.codingnsWindowsRuntimePackages, undefined);
 });
 
+test("发布包的 files 必须列出两个打进目录，否则 npm 不会把它们收进 tarball", () => {
+  // 这条守的是一个已经踩过的坑：spec001.9 加了 @codingns/relay-tunnel-wire，
+  // 它在 create-server.ts 里是启动时静态 import——漏了这个包，装完 Host 直接
+  // ERR_MODULE_NOT_FOUND 起不来。
+  //
+  // 只改 bundleDependencies 不够：bundleDependencies 决定「不打 registry、用包进去的实体」，
+  // files 决定「哪些路径会进 tarball」，两处都要有。
+  // 发布自检脚本（verify-publish-tarball.mjs）也能拦，但那要到发布时才跑；
+  // 这里放一条单测，让问题在 pnpm test 阶段就暴露。
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(workspaceRoot, "codingns", "package.json"), "utf8")
+  );
+
+  const bundledPaths = [
+    "node_modules/@codingns/session-sync-core",
+    "node_modules/@codingns/relay-tunnel-wire"
+  ];
+
+  for (const bundledPath of bundledPaths) {
+    assert.ok(
+      Array.isArray(packageJson.files) && packageJson.files.includes(bundledPath),
+      `package.json 的 files 里缺少 ${bundledPath}`
+    );
+    assert.ok(
+      packageJson.dependencies?.[bundledPath.replace("node_modules/", "")]?.startsWith("workspace:"),
+      `dependencies 里缺少 ${bundledPath.replace("node_modules/", "")} 的 workspace 声明`
+    );
+  }
+});
+
 test("stripPackLifecycleScripts 会移除 prepack 和 postpack，避免 staging 再跑一遍打包脚本", () => {
   const packageJson = {
     scripts: {
