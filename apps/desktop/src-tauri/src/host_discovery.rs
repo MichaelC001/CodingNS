@@ -3,6 +3,8 @@ use serde::Serialize;
 use serde::Deserialize;
 use std::process::Command;
 
+use crate::process_util;
+
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 3002;
 
@@ -84,7 +86,7 @@ pub fn scan_local_hosts() -> Result<Vec<DesktopLocalHostProcessHit>, String> {
 
 #[cfg(target_os = "macos")]
 fn collect_process_entries() -> Result<Vec<LocalProcessEntry>, String> {
-    let output = Command::new("ps")
+    let output = process_util::hidden_command("ps")
         .args(["-axo", "pid=,comm=,command="])
         .output()
         .map_err(|error| format!("执行 ps 失败: {error}"))?;
@@ -102,7 +104,7 @@ fn collect_process_entries() -> Result<Vec<LocalProcessEntry>, String> {
 
 #[cfg(target_os = "windows")]
 fn collect_process_entries() -> Result<Vec<LocalProcessEntry>, String> {
-    let output = Command::new("powershell")
+    let output = process_util::hidden_command("powershell")
         .args([
             "-NoProfile",
             "-Command",

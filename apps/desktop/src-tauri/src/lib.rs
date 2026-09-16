@@ -5,6 +5,7 @@ mod host_discovery;
 mod host_installer;
 mod host_setup;
 mod node_runtime;
+mod process_util;
 mod rollback;
 mod updater;
 mod window_manager;

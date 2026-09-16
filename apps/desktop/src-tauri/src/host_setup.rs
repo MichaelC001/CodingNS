@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::host_discovery;
+use crate::process_util;
 
 pub const INVALID_URL_ERROR: &str = "INVALID_URL";
 
@@ -266,7 +267,7 @@ fn private_node_path(data_dir: &Path) -> PathBuf {
 }
 
 fn run_command_capture(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new(program)
+    let mut child = process_util::hidden_command(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

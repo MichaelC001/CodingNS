@@ -8,6 +8,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 
+use crate::process_util;
+
 pub const NODE_DOWNLOAD_FAILED: &str = "NODE_DOWNLOAD_FAILED";
 pub const NODE_CHECKSUM_MISMATCH: &str = "NODE_CHECKSUM_MISMATCH";
 pub const INVALID_NODE_VERSION: &str = "INVALID_NODE_VERSION";
@@ -141,7 +143,7 @@ fn resolve_private_node_binary(data_dir: &Path) -> PathBuf {
 }
 
 fn read_node_version(node_path: &Path) -> Option<String> {
-    let mut child = Command::new(node_path)
+    let mut child = process_util::hidden_command(node_path)
         .arg("-v")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -216,7 +218,7 @@ fn find_system_node() -> Option<(String, String)> {
         ("which", &["node"])
     };
 
-    let output = Command::new(program)
+    let output = process_util::hidden_command(program)
         .args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -415,7 +417,7 @@ fn extract_archive(archive_path: &Path, target_dir: &Path) -> Result<(), String>
             fs::remove_dir_all(&staging_dir).ok();
         }
 
-        let status = Command::new("powershell")
+        let status = process_util::hidden_command("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -453,7 +455,7 @@ fn extract_archive(archive_path: &Path, target_dir: &Path) -> Result<(), String>
         return Ok(());
     }
 
-    let status = Command::new("tar")
+    let status = process_util::hidden_command("tar")
         .args([
             "-xzf",
             &archive_path.display().to_string(),

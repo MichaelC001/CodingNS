@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::node_runtime;
+use crate::process_util;
 
 pub const INSTALLER_NOT_FOUND: &str = "INSTALLER_NOT_FOUND";
 pub const INSTALL_ALREADY_RUNNING: &str = "INSTALL_ALREADY_RUNNING";
@@ -228,7 +229,7 @@ fn emit_task_error(app: &AppHandle, task_id: &str, code: &str, message: &str, de
 
 fn kill_process_tree(pid: u32) -> bool {
     if cfg!(target_os = "windows") {
-        return Command::new("taskkill")
+        return process_util::hidden_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -486,7 +487,7 @@ pub async fn run_host_installer(
         }
     };
 
-    let mut command = Command::new(&node_binary);
+    let mut command = process_util::hidden_command(&node_binary);
     command
         .arg(&installer_script)
         .args(build_installer_args(&options, &data_dir))
@@ -600,7 +601,7 @@ pub async fn get_host_install_state(
         .ok_or_else(|| format!("{INSTALLER_NOT_FOUND}: 没有可用的 Node"))?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        let output = Command::new(&node_binary)
+        let output = process_util::hidden_command(&node_binary)
             .arg(&installer_script)
             .args(["check", "--data-dir", &data_dir.display().to_string()])
             .stdin(Stdio::null())
