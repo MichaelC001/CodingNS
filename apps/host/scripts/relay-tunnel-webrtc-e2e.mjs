@@ -17,6 +17,9 @@
  * 3. `http.response.start/chunk/end` 能回传到客户端，字节一致
  * 4. 上行吞吐只认 **Host 侧实测**（本地业务服务收到首字节 → 收完），
  *    不用客户端「写完本地缓冲区」的时间
+ * 5. **大请求体分片**：DataChannel 单条消息上限 64 KB，
+ *    所以 1 MB / 16 MB 上传必须走 `http.request` + `http.request.chunk` + `http.request.end`，
+ *    并逐字节校验 Host 侧收到的内容（这正是原来漏掉的路径）
  *
  * 用法：
  * ```bash
@@ -30,8 +33,12 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { RTCDtlsTransport, RTCPeerConnection } from "werift";
-import { WebSocket } from "ws";
-import { createFrameDecoder, encodeFrame } from "@codingns/relay-tunnel-wire";
+import { WebSocket, WebSocketServer } from "ws";
+import {
+  TUNNEL_MAX_FRAME_BODY_BYTES,
+  createFrameDecoder,
+  encodeFrame
+} from "@codingns/relay-tunnel-wire";
 
 import { formatDtlsFingerprint } from "../src/modules/relay-tunnel/webrtc/webrtc-dtls-certificate.js";
 import { parseIceCandidateSdp } from "../src/modules/relay-tunnel/webrtc/webrtc-peer-process.js";
@@ -41,6 +48,11 @@ const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@example.com";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "ChangeMe123!";
 const BUSINESS_PORT = Number(process.env.BUSINESS_PORT ?? 19517);
 const UPLOAD_MB = Number(process.env.UPLOAD_MB ?? 8);
+/** 分片上传的两个档位，单位 MB。 */
+const CHUNKED_UPLOAD_MB = (process.env.CHUNKED_UPLOAD_MB ?? "1,16")
+  .split(",")
+  .map((item) => Number(item.trim()))
+  .filter((item) => Number.isFinite(item) && item > 0);
 const HOST_LABEL = process.env.HOST_LABEL ?? "e2e-webrtc-host";
 const READY_TIMEOUT_MS = 20_000;
 const RESPONSE_TIMEOUT_MS = 120_000;
@@ -188,25 +200,30 @@ async function ensureBinding(accessToken, dtlsFingerprint, hostPublicKey) {
 async function startBusinessServer() {
   // Host 侧实测口径：第一个请求体字节到达 → 最后一个请求体字节收完。
   // 这是唯一可信的上行吞吐来源；客户端「写完本地缓冲区」的时间不算。
-  const uploadAggregate = {
-    requests: 0,
-    totalBytes: 0,
-    firstByteAt: null,
-    lastByteAt: null
+  // 按 label 分开记，这样 1 MB 和 16 MB 各自有自己的数字。
+  const uploads = new Map();
+  const received = new Map();
+
+  const pickStats = (label) => {
+    if (!uploads.has(label)) {
+      uploads.set(label, { label, requests: 0, totalBytes: 0, firstByteAt: null, lastByteAt: null });
+    }
+
+    return uploads.get(label);
   };
-  const perRequest = [];
 
   const server = createServer((request, response) => {
-    const url = request.url ?? "/";
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const pathname = url.pathname;
 
-    if (url.startsWith("/ping")) {
+    if (pathname === "/ping") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true, path: url }));
+      response.end(JSON.stringify({ ok: true, path: request.url }));
       return;
     }
 
-    if (url.startsWith("/download")) {
-      const mb = Number(new URL(url, "http://127.0.0.1").searchParams.get("mb") ?? "1");
+    if (pathname === "/download") {
+      const mb = Number(url.searchParams.get("mb") ?? "1");
       const total = Math.max(1, mb) * 1024 * 1024;
       const chunk = Buffer.alloc(64 * 1024, 0x5a);
       let sent = 0;
@@ -235,7 +252,9 @@ async function startBusinessServer() {
       return;
     }
 
-    if (url.startsWith("/upload")) {
+    if (pathname === "/upload") {
+      const label = url.searchParams.get("label") ?? "default";
+      const expectedBytes = Number(url.searchParams.get("bytes") ?? "0");
       const chunks = [];
       let requestFirstByteAt = null;
 
@@ -246,8 +265,10 @@ async function startBusinessServer() {
           requestFirstByteAt = now;
         }
 
-        if (uploadAggregate.firstByteAt === null) {
-          uploadAggregate.firstByteAt = now;
+        const stats = pickStats(label);
+
+        if (stats.firstByteAt === null) {
+          stats.firstByteAt = now;
         }
 
         chunks.push(buffer);
@@ -256,35 +277,127 @@ async function startBusinessServer() {
       request.on("end", () => {
         const body = Buffer.concat(chunks);
         const finishedAt = Date.now();
+        const stats = pickStats(label);
 
-        uploadAggregate.requests += 1;
-        uploadAggregate.totalBytes += body.length;
-        uploadAggregate.lastByteAt = finishedAt;
+        stats.requests += 1;
+        stats.totalBytes += body.length;
+        stats.lastByteAt = finishedAt;
 
-        perRequest.push({
-          bytes: body.length,
-          elapsedMs: requestFirstByteAt === null ? 0 : finishedAt - requestFirstByteAt,
-          checksum: checksum(body)
-        });
+        const digest = checksum(body);
+        received.set(label, { bytes: body.length, checksum: digest });
 
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ bytes: body.length, checksum: checksum(body) }));
+        response.end(JSON.stringify({
+          label,
+          bytes: body.length,
+          expectedBytes,
+          bytesMatch: expectedBytes === 0 ? true : body.length === expectedBytes,
+          checksum: digest,
+          elapsedMs: requestFirstByteAt === null ? 0 : finishedAt - requestFirstByteAt
+        }));
       });
 
       return;
     }
 
     response.writeHead(404, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: false, path: url }));
+    response.end(JSON.stringify({ ok: false, path: request.url }));
+  });
+
+  // 大 WebSocket 消息用例：本地工作台推文件树快照就是这条路。
+  // 服务端一连上就先推一条 > 64 KB 的文本消息（Host → 客户端方向要分片），
+  // 然后等客户端回推一条大消息（客户端 → Host 方向也要分片），核对校验和。
+  const wsPayloads = { pushed: null, pushedChecksum: null, receivedChecksum: null, receivedBytes: 0 };
+  const wsServer = new WebSocketServer({ server, path: "/ws/big" });
+
+  wsServer.on("connection", (socket) => {
+    // 造一个像 fileTree.snapshot 一样的大 JSON：正常仓库轻松超过 64 KB
+    const snapshot = JSON.stringify({
+      type: "fileTree.snapshot",
+      nodes: Array.from({ length: 2000 }, (_, index) => ({
+        path: `apps/host/src/modules/relay-tunnel/file-${index}.ts`,
+        name: `file-${index}.ts`,
+        kind: "file"
+      }))
+    });
+
+    wsPayloads.pushed = snapshot;
+    wsPayloads.pushedChecksum = checksum(Buffer.from(snapshot, "utf8"));
+
+    socket.send(snapshot);
+
+    socket.on("message", (data, isBinary) => {
+      const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      wsPayloads.receivedBytes = buffer.length;
+      wsPayloads.receivedChecksum = checksum(buffer);
+      wsPayloads.receivedBinary = isBinary;
+
+      // 回一条小 ack（走不分片的主路径）
+      socket.send(JSON.stringify({
+        type: "big-message-ack",
+        bytes: buffer.length,
+        checksum: wsPayloads.receivedChecksum
+      }));
+    });
   });
 
   await new Promise((resolve) => server.listen(BUSINESS_PORT, "127.0.0.1", resolve));
 
   return {
-    uploadAggregate,
-    perRequest,
-    close: () => new Promise((resolve) => server.close(resolve))
+    uploads,
+    received,
+    wsPayloads,
+    close: () => new Promise((resolve) => {
+      for (const client of wsServer.clients) {
+        client.close();
+      }
+
+      wsServer.close(() => server.close(resolve));
+    })
   };
+}
+
+/**
+ * 从接入进程的调试日志里取「Host 侧实测」上行耗时。
+ *
+ * 为什么要绕这一圈：分片之后请求体是先由接入进程收齐、再一次性写进本地业务服务的，
+ * 所以业务服务那边测到的「首字节 → 收完」只反映本地回环写 HTTP 的速度（实测能到 2000 MB/s），
+ * **已经不能代表 DataChannel 的速度**。真正可信的口径只有一个：
+ * 接入进程从收到 `http.request` 第一帧，到收到 `http.request.end` 为止。
+ */
+function readHostAssemblyStats(peerLogs, streamId) {
+  for (let index = peerLogs.length - 1; index >= 0; index -= 1) {
+    const line = peerLogs[index];
+
+    if (!line.includes("peer.request_assembled") || !line.includes(`"${streamId}"`)) {
+      continue;
+    }
+
+    const jsonStart = line.indexOf("{");
+
+    if (jsonStart < 0) {
+      continue;
+    }
+
+    try {
+      return JSON.parse(line.slice(jsonStart));
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+/** 造一份确定性的上传数据：同样的大小和种子一定得到同样的字节与校验和。 */
+function buildUploadPayload(totalBytes, seed) {
+  const output = Buffer.alloc(totalBytes);
+
+  for (let index = 0; index < totalBytes; index += 1) {
+    output[index] = (index * 31 + seed * 7 + 11) & 0xff;
+  }
+
+  return output;
 }
 
 function checksum(buffer) {
@@ -394,6 +507,8 @@ class E2EClient {
     this.decoder = createFrameDecoder();
     this.frames = [];
     this.frameWaiters = [];
+    /** 每条 WS 流已经消费到第几帧，避免第二次等待时重复匹配上一条消息。 */
+    this.wsCursor = new Map();
     this.socket = null;
     this.peerConnection = new RTCPeerConnection({ iceServers, iceTransportPolicy });
   }
@@ -511,6 +626,134 @@ class E2EClient {
 
   sendFrame(frame) {
     this.channel.send(Buffer.from(encodeFrame(frame)));
+  }
+
+  /**
+   * 发一条 HTTP 请求，自动按 DataChannel 单帧上限分片。
+   *
+   * 约定（共享包里定死的）：
+   * - `http.request` 带请求体第一段（可为空）
+   * - 超出部分用 `http.request.chunk` 一条条补
+   * - **最后一定补一条 `http.request.end`**，Host 收到它才真正发起本地请求
+   *
+   * 小请求体也会走这条路径，只是没有 chunk、只有一条 end。
+   */
+  sendRequestBody(streamId, { method, path, headers, body }) {
+    const payload = body ?? new Uint8Array(0);
+    const first = payload.subarray(0, Math.min(TUNNEL_MAX_FRAME_BODY_BYTES, payload.length));
+
+    this.sendFrame({
+      type: "http.request",
+      streamId,
+      method,
+      path,
+      headers,
+      body: first
+    });
+
+    let offset = first.length;
+    let chunkCount = 0;
+
+    while (offset < payload.length) {
+      const slice = payload.subarray(offset, Math.min(offset + TUNNEL_MAX_FRAME_BODY_BYTES, payload.length));
+      this.sendFrame({ type: "http.request.chunk", streamId, body: slice });
+      offset += slice.length;
+      chunkCount += 1;
+    }
+
+    this.sendFrame({ type: "http.request.end", streamId });
+
+    return { firstSegmentBytes: first.length, chunkCount, totalBytes: payload.length };
+  }
+
+  /**
+   * 等一条完整的入站 WebSocket 消息。
+   *
+   * 按共享包的约定：
+   * - 小消息：一条 `ws.message`，收到即完整
+   * - 大消息：`ws.message.chunk` × N + `ws.message.end`，收到 end 才算完整
+   */
+  async waitForWsMessage(streamId, timeoutMs = RESPONSE_TIMEOUT_MS) {
+    // 一条流上可能先后收到多条消息（先是大推送，再是小 ack）。
+    // 用一个游标记住「这条流上已经消费到第几帧」，否则第二次等会重复匹配到第一条。
+    const start = this.wsCursor.get(streamId) ?? 0;
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      const chunks = [];
+      let endIndex = -1;
+      let single = null;
+
+      for (let index = start; index < this.frames.length; index += 1) {
+        const frame = this.frames[index];
+
+        if (frame.streamId !== streamId) {
+          continue;
+        }
+
+        if (frame.type === "ws.message") {
+          single = { binary: frame.binary, data: Buffer.from(frame.body), chunkCount: 0 };
+          endIndex = index;
+          break;
+        }
+
+        if (frame.type === "ws.message.chunk") {
+          chunks.push(frame);
+          continue;
+        }
+
+        if (frame.type === "ws.message.end") {
+          endIndex = index;
+          break;
+        }
+      }
+
+      if (single) {
+        this.wsCursor.set(streamId, endIndex + 1);
+        return single;
+      }
+
+      if (chunks.length > 0 && endIndex >= 0) {
+        this.wsCursor.set(streamId, endIndex + 1);
+
+        return {
+          binary: chunks[0].binary,
+          data: Buffer.concat(chunks.map((frame) => Buffer.from(frame.body))),
+          chunkCount: chunks.length
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    throw new Error(`等 ${streamId} 的完整 WebSocket 消息超时`);
+  }
+
+  /** 发一条大 WebSocket 消息：只发 chunk × N + end，**不发 ws.message**。 */
+  sendBigWsMessage(streamId, binary, payload) {
+    let chunkCount = 0;
+
+    for (let offset = 0; offset < payload.length; offset += TUNNEL_MAX_FRAME_BODY_BYTES) {
+      this.sendFrame({
+        type: "ws.message.chunk",
+        streamId,
+        binary,
+        body: payload.subarray(offset, Math.min(offset + TUNNEL_MAX_FRAME_BODY_BYTES, payload.length))
+      });
+      chunkCount += 1;
+    }
+
+    this.sendFrame({ type: "ws.message.end", streamId });
+
+    return { chunkCount, totalBytes: payload.length };
+  }
+
+  async waitForResponseEnd(streamId, timeoutMs = RESPONSE_TIMEOUT_MS) {
+    await this.waitForFrame(
+      (frame) => frame.type === "http.response.end" && frame.streamId === streamId,
+      timeoutMs,
+      `${streamId} 的 response.end`
+    );
   }
 
   async waitForAllResponses(streamIds, timeoutMs = RESPONSE_TIMEOUT_MS) {
@@ -706,14 +949,12 @@ async function main() {
     protocolVersion: "1"
   });
 
-  // 业务请求 1：GET /ping
-  client.sendFrame({
-    type: "http.request",
-    streamId: "stream-ping",
+  // 业务请求 1：GET /ping（最小路径：没有请求体，也要补一条 http.request.end）
+  client.sendRequestBody("stream-ping", {
     method: "GET",
     path: "/ping?from=e2e",
     headers: {},
-    body: new Uint8Array(0)
+    body: null
   });
 
   const pingStart = await client.waitForFrame(
@@ -739,65 +980,111 @@ async function main() {
     `status=${pingStart.status} body=${JSON.stringify(pingBody)}`
   );
 
-  // 业务请求 2：上行吞吐（Host 侧实测）
-  const uploadTotalBytes = UPLOAD_MB * 1024 * 1024;
-  const perRequestBytes = 60 * 1024;
-  const requestCount = Math.ceil(uploadTotalBytes / perRequestBytes);
-  const streamIds = [];
+  // 业务请求 2：小请求体走「一条 http.request 带完，不发 chunk」的兼容路径。
+  // 这条是底线：不能因为加了分片就要求小请求也必须分片。
+  const smallBody = Buffer.from(JSON.stringify({ hello: "world", note: "single-frame request body" }));
+  const smallStreamId = "stream-small";
+  const smallSend = client.sendRequestBody(smallStreamId, {
+    method: "POST",
+    path: `/upload?label=small&bytes=${smallBody.length}`,
+    headers: { "content-type": "application/json" },
+    body: new Uint8Array(smallBody)
+  });
 
-  log(`开始上行：${requestCount} 条 http.request 帧，合计约 ${UPLOAD_MB} MB`);
-  log("口径：Host 侧业务服务「第一个请求体字节到达 → 最后一个请求体字节收完」，不用客户端写完缓冲区的时间");
+  await client.waitForResponseEnd(smallStreamId);
+  const smallReceived = business.received.get("small");
 
-  const clientWriteStartedAt = Date.now();
+  record(
+    "兼容底线：小请求体一条 http.request 带完（0 个 chunk）照常可用",
+    smallSend.chunkCount === 0
+      && smallReceived?.bytes === smallBody.length
+      && smallReceived?.checksum === checksum(smallBody),
+    `首段 ${smallSend.firstSegmentBytes} 字节 / chunk ${smallSend.chunkCount} 条 / Host 收到 ${smallReceived?.bytes} 字节，校验和一致=${
+      smallReceived?.checksum === checksum(smallBody)
+    }`
+  );
 
-  for (let index = 0; index < requestCount; index += 1) {
-    const streamId = `stream-upload-${index}`;
-    streamIds.push(streamId);
+  // 业务请求 3：大请求体分片上传（1 MB / 16 MB）。
+  // 这是原来漏掉的路径：DataChannel 单条消息上限 64 KB，整块 body 一定发不出去。
+  const chunkedResults = [];
 
-    const body = Buffer.alloc(perRequestBytes, index & 0xff);
-    client.sendFrame({
-      type: "http.request",
-      streamId,
+  for (const mb of CHUNKED_UPLOAD_MB) {
+    const totalBytes = Math.round(mb * 1024 * 1024);
+    const label = `chunked-${mb}mb`;
+    const streamId = `stream-upload-${mb}mb`;
+    const body = buildUploadPayload(totalBytes, mb);
+    const expectedChecksum = checksum(body);
+
+    log(`开始分片上行 ${mb} MB（单帧上限 ${TUNNEL_MAX_FRAME_BODY_BYTES} 字节）`);
+
+    const writeStartedAt = Date.now();
+    const sent = client.sendRequestBody(streamId, {
       method: "POST",
-      path: `/upload?index=${index}`,
+      path: `/upload?label=${label}&bytes=${totalBytes}`,
       headers: { "content-type": "application/octet-stream" },
-      body: new Uint8Array(body)
+      body
+    });
+    const writeElapsedMs = Date.now() - writeStartedAt;
+
+    log(
+      `  客户端写完 ${sent.totalBytes} 字节：首段 ${sent.firstSegmentBytes} 字节 + ${sent.chunkCount} 条 chunk + 1 条 end，`
+        + `写缓冲耗时 ${writeElapsedMs} ms（这个数字不代表吞吐）`
+    );
+
+    await client.waitForResponseEnd(streamId, RESPONSE_TIMEOUT_MS);
+
+    const receivedInfo = business.received.get(label);
+    const localStats = business.uploads.get(label);
+    const localElapsedMs = localStats?.firstByteAt && localStats?.lastByteAt
+      ? localStats.lastByteAt - localStats.firstByteAt
+      : 0;
+
+    record(
+      `大请求体 ${mb} MB：Host 侧收到的字节数与内容校验和都一致`,
+      receivedInfo?.bytes === totalBytes && receivedInfo?.checksum === expectedChecksum,
+      `收到 ${receivedInfo?.bytes ?? 0}/${totalBytes} 字节，校验和 ${receivedInfo?.checksum ?? "无"}，`
+        + `期望 ${expectedChecksum}`
+    );
+
+    const hostStats = readHostAssemblyStats(peerLogs, streamId);
+
+    if (hostStats) {
+      log(
+        `  [上行·Host 实测·接入进程] ${mb} MB：${(hostStats.bytes / (1024 * 1024)).toFixed(2)} MB / `
+          + `${hostStats.elapsedMs} ms / ${hostStats.mbps} MB/s（${hostStats.chunkCount} 条 chunk）`
+      );
+      log(
+        `  [参考·本地回环写 HTTP] ${mb} MB：${localElapsedMs} ms`
+          + `（这段只反映 Host 收到齐活之后写本地接口的速度，不能当吞吐）`
+      );
+    } else {
+      log(`  [上行·Host 实测] ${mb} MB：没拿到接入进程的组装耗时日志`);
+    }
+
+    chunkedResults.push({
+      mb,
+      totalBytes,
+      chunkCount: sent.chunkCount,
+      firstSegmentBytes: sent.firstSegmentBytes,
+      // 口径：接入进程收到第一帧 → 收到 end 帧
+      hostElapsedMs: hostStats?.elapsedMs ?? null,
+      hostMbps: hostStats?.mbps ?? null,
+      localLoopbackMs: localElapsedMs,
+      checksum: receivedInfo?.checksum ?? null
     });
   }
 
-  log(`客户端写完全部帧耗时 ${Date.now() - clientWriteStartedAt} ms（这个数字不代表吞吐，只说明本地缓冲区多快被填满）`);
-
-  await client.waitForAllResponses(streamIds);
-
-  const aggregate = business.uploadAggregate;
-  const hostElapsedMs = aggregate.firstByteAt && aggregate.lastByteAt
-    ? aggregate.lastByteAt - aggregate.firstByteAt
-    : 0;
-  const hostMbps = hostElapsedMs > 0
-    ? aggregate.totalBytes / (1024 * 1024) / (hostElapsedMs / 1000)
-    : 0;
-
-  record(
-    "上行：DataChannel 上的批量 http.request 全部收到 Host 业务响应",
-    aggregate.requests === requestCount,
-    `${aggregate.requests}/${requestCount} 条响应`
-  );
-
-  log(
-    `[上行·Host 实测] ${(aggregate.totalBytes / (1024 * 1024)).toFixed(2)} MB / ${hostElapsedMs} ms / ${hostMbps.toFixed(2)} MB/s`
-      + `（${aggregate.requests} 条请求）`
-  );
+  const largestUpload = chunkedResults[chunkedResults.length - 1] ?? null;
 
   // 业务请求 3：下行吞吐（这个只能客户端实测，口径会在报告里写清楚）
   const downloadMb = Math.min(UPLOAD_MB, 8);
   const downloadStart = Date.now();
-  client.sendFrame({
-    type: "http.request",
-    streamId: "stream-download",
+  // 同样必须补 http.request.end：Host 收到它才会真正发起本地请求。
+  client.sendRequestBody("stream-download", {
     method: "GET",
     path: `/download?mb=${downloadMb}`,
     headers: {},
-    body: new Uint8Array(0)
+    body: null
   });
 
   const downloadStartFrame = await client.waitForFrame(
@@ -834,7 +1121,80 @@ async function main() {
     `[下行·客户端实测] ${(downloadBytes / (1024 * 1024)).toFixed(2)} MB / ${downloadElapsedMs} ms / ${downloadMbps.toFixed(2)} MB/s`
   );
 
+  // 业务请求 4：大 WebSocket 消息（双向都要分片）
+  // 这条对应真实问题：工作台的 fileTree.snapshot 没有任何截断，轻松超过 64 KB。
+  const wsStreamId = "stream-ws-big";
+
+  client.sendFrame({
+    type: "ws.open",
+    streamId: wsStreamId,
+    path: "/ws/big",
+    headers: {},
+    protocols: []
+  });
+
+  const wsOpened = await client.waitForFrame(
+    (frame) => frame.type === "ws.opened" && frame.streamId === wsStreamId,
+    30_000,
+    "大 WS 用例的 ws.opened"
+  );
+
+  record(
+    "大 WS 用例：本地 WebSocket 连接建立成功",
+    wsOpened.type === "ws.opened",
+    `selectedProtocol=${wsOpened.selectedProtocol ?? "无"}`
+  );
+
+  // 方向一：本地 WS → 客户端（Host 出站分片）
+  const pushed = await client.waitForWsMessage(wsStreamId);
+  const expectedPushed = business.wsPayloads.pushed;
+
+  record(
+    "大 WS 消息（Host → 客户端）：内容与本地发出的完全一致",
+    pushed.data.toString("utf8") === expectedPushed,
+    `收到 ${pushed.data.length} 字节（${pushed.chunkCount} 条 chunk），`
+      + `校验和 ${checksum(pushed.data)} vs ${business.wsPayloads.pushedChecksum}`
+  );
+
+  log(
+    `  [大 WS·Host→客户端] ${pushed.data.length} 字节 / ${pushed.chunkCount} 条 chunk，`
+      + `超过了单帧上限 ${TUNNEL_MAX_FRAME_BODY_BYTES} 字节`
+  );
+
+  // 方向二：客户端 → 本地 WS（Host 入站组装）
+  const clientBigPayload = Buffer.from(JSON.stringify({
+    type: "terminal.input.batch",
+    lines: Array.from({ length: 3000 }, (_, index) => `line-${index}-${"x".repeat(24)}`)
+  }), "utf8");
+  const clientBigChecksum = checksum(clientBigPayload);
+
+  const sentBig = client.sendBigWsMessage(wsStreamId, false, clientBigPayload);
+  log(
+    `  [大 WS·客户端→Host] 发出 ${sentBig.totalBytes} 字节 / ${sentBig.chunkCount} 条 chunk + 1 条 end`
+  );
+
+  const ack = await client.waitForWsMessage(wsStreamId);
+  const ackPayload = JSON.parse(ack.data.toString("utf8"));
+
+  record(
+    "大 WS 消息（客户端 → Host）：本地 WS 收到内容完全一致",
+    ackPayload.type === "big-message-ack"
+      && ackPayload.bytes === clientBigPayload.length
+      && ackPayload.checksum === clientBigChecksum,
+    `本地收到 ${ackPayload.bytes} 字节，校验和 ${ackPayload.checksum}，期望 ${clientBigChecksum}`
+  );
+
+  record(
+    "小 WS 消息仍走单帧主路径（ack 只有 1 帧，没有 chunk）",
+    ack.chunkCount === 0,
+    `ack ${ack.data.length} 字节 / chunk ${ack.chunkCount} 条`
+  );
+
+  client.sendFrame({ type: "ws.closed", streamId: wsStreamId, code: 1000, reason: "e2e_done" });
+
   // 用量上报：接入进程按 5 秒窗口合并后发给主进程，所以要等窗口到点再采样。
+  const uploadedBusinessBytes = [smallBody.length, ...chunkedResults.map((item) => item.totalBytes)]
+    .reduce((sum, item) => sum + item, 0);
   const usageDeadline = Date.now() + 12_000;
   let usage = [];
   let upstreamReported = 0;
@@ -843,7 +1203,7 @@ async function main() {
     usage = peer.ipcMessages.filter((message) => message.type === "usage");
     upstreamReported = usage.reduce((sum, message) => sum + message.upstreamBytes, 0);
 
-    if (upstreamReported >= aggregate.totalBytes) {
+    if (upstreamReported >= uploadedBusinessBytes) {
       break;
     }
 
@@ -852,8 +1212,8 @@ async function main() {
 
   record(
     "接入进程上报的用量覆盖了全部上行字节（限频窗口内不丢数）",
-    upstreamReported >= aggregate.totalBytes,
-    `upstreamBytes=${upstreamReported} ≥ 业务体 ${aggregate.totalBytes}（IPC 共 ${usage.length} 条 usage）`
+    upstreamReported >= uploadedBusinessBytes,
+    `upstreamBytes=${upstreamReported} ≥ 业务体 ${uploadedBusinessBytes}（IPC 共 ${usage.length} 条 usage）`
   );
 
   record(
@@ -871,9 +1231,12 @@ async function main() {
     dtlsFingerprint,
     reused,
     fingerprintChanged,
-    hostMbps: Number(hostMbps.toFixed(2)),
-    hostElapsedMs,
-    hostBytes: aggregate.totalBytes,
+    smallSend,
+    chunkedResults,
+    largestUpload,
+    wsPushedBytes: pushed.data.length,
+    wsPushedChunkCount: pushed.chunkCount,
+    wsReceivedBytes: clientBigPayload.length,
     downloadMbps: Number(downloadMbps.toFixed(2))
   };
 }

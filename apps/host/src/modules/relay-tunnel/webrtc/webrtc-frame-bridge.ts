@@ -13,6 +13,7 @@
  * 这个文件是纯函数，方便单测。
  */
 import {
+  TUNNEL_MAX_FRAME_BODY_BYTES,
   TUNNEL_WIRE_VERSION,
   encodeFrame,
   type TunnelClientContext,
@@ -94,9 +95,26 @@ export function gatewayPacketToFrame(packet: RelayTunnelGatewayPacket): TunnelFr
   }
 }
 
-/** 帧 → 网关包。返回 null 表示这是连接级帧（hello / ping / pong），不该送给本地转发网关。 */
+/**
+ * 帧 → 网关包。
+ *
+ * 返回 null 表示「这一帧不归本地转发网关管」，有三类：
+ * - 连接级帧：`hello` / `ping` / `pong`
+ * - 请求体分片帧：`http.request.chunk` / `http.request.end`
+ *   （先在会话层按 `streamId` 拼回完整请求体，拼完了才交给网关）
+ * - 大 WebSocket 消息分片帧：`ws.message.chunk` / `ws.message.end`
+ *   （同样先在会话层拼回一条完整消息，再作为一条 `ws.message` 交给网关）
+ *
+ * 这几类都在这里显式列出来，是为了不落进「不认识的帧」分支被报成协议错误。
+ * `ws.message` 本身仍然是「一条完整消息」，小消息这条主路径不受影响。
+ */
 export function frameToGatewayPacket(frame: TunnelFrame): RelayTunnelGatewayPacket | null {
   switch (frame.type) {
+    case "http.request.chunk":
+    case "http.request.end":
+    case "ws.message.chunk":
+    case "ws.message.end":
+      return null;
     case "http.request":
       return {
         type: "http.request",
@@ -169,6 +187,42 @@ export function frameToGatewayPacket(frame: TunnelFrame): RelayTunnelGatewayPack
 export function encodeGatewayPacket(packet: RelayTunnelGatewayPacket): Uint8Array | null {
   const frame = gatewayPacketToFrame(packet);
   return frame ? encodeFrame(frame) : null;
+}
+
+/**
+ * 网关包 → 要发出去的帧列表（可能不止一条）。
+ *
+ * 只有一种情况会变成多条：**大 WebSocket 消息**。
+ * DataChannel 单条消息上限 64 KB，而本地工作台推过来的文件树快照轻松超过这个数，
+ * 所以超过单帧上限时必须按共享包的约定发
+ * `ws.message.chunk` × N + `ws.message.end`，**并且不发 `ws.message`**——
+ * 这样对端收到的 `ws.message` 永远是一条完整消息，不会出现半截投递。
+ *
+ * 其它包仍然是一一对应，保持原样。
+ */
+export function gatewayPacketToFrames(packet: RelayTunnelGatewayPacket): TunnelFrame[] {
+  if (
+    packet.type === "ws.message"
+    && packet.data.byteLength > TUNNEL_MAX_FRAME_BODY_BYTES
+  ) {
+    const frames: TunnelFrame[] = [];
+
+    for (let offset = 0; offset < packet.data.byteLength; offset += TUNNEL_MAX_FRAME_BODY_BYTES) {
+      frames.push({
+        type: "ws.message.chunk",
+        streamId: packet.streamId,
+        binary: packet.binary,
+        body: packet.data.subarray(offset, offset + TUNNEL_MAX_FRAME_BODY_BYTES)
+      });
+    }
+
+    frames.push({ type: "ws.message.end", streamId: packet.streamId });
+
+    return frames;
+  }
+
+  const frame = gatewayPacketToFrame(packet);
+  return frame ? [frame] : [];
 }
 
 /** 造一条 `hello` 帧：客户端连上 DataChannel 后必须先发它。 */

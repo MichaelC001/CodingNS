@@ -38,7 +38,15 @@ import { nowIso } from "../../../shared/utils/time.js";
 import type { RelayTunnelGatewayPacket } from "../crypto/relay-tunnel-packets.js";
 import { RelayTunnelGatewayService } from "../relay-tunnel-gateway-service.js";
 import type { RelaySessionClientContext } from "../relay-tunnel-client-context.js";
-import { encodeGatewayPacket, frameToGatewayPacket } from "./webrtc-frame-bridge.js";
+import { gatewayPacketToFrames, frameToGatewayPacket } from "./webrtc-frame-bridge.js";
+import {
+  RequestBodyAssembler,
+  type RequestAssemblyOutcome
+} from "./webrtc-request-assembler.js";
+import {
+  WsMessageAssembler,
+  type WsMessageAssemblyOutcome
+} from "./webrtc-ws-message-assembler.js";
 import {
   WEBRTC_PEER_IPC_PROTOCOL_VERSION,
   createIpcReportCoalescer,
@@ -192,6 +200,33 @@ class PeerSession {
   private helloTimer: NodeJS.Timeout | null = null;
   private channelTimer: NodeJS.Timeout | null = null;
   private channelCount = 0;
+  /**
+   * 大 WebSocket 消息组装。
+   *
+   * 注意规则和 HTTP 请求体不同：小消息只发一条 `ws.message`、**不发 end**、收到即投递；
+   * 只有大消息才走 `ws.message.chunk` × N + `ws.message.end`。
+   * 所以这个组装器只处理大消息那一半。
+   */
+  private readonly wsMessageAssembler = new WsMessageAssembler();
+
+  /** 请求体分片组装：DataChannel 单条消息上限 64 KB，大请求体必须分片。 */
+  private readonly requestAssembler = new RequestBodyAssembler({
+    onIdleTimeout: (streamId, bufferedBytes) => {
+      // 客户端发了 http.request 却一直不发 http.request.end。
+      // 这里不猜「是不是发完了」——猜错就会把半截 body 发去本地业务接口。
+      this.sendFrame({
+        type: "error",
+        streamId,
+        errorCode: "REQUEST_BODY_INCOMPLETE",
+        detail: "请求体组装超时：客户端发了 http.request 之后必须补一条 http.request.end"
+      });
+      this.options.ipc.log("peer.request_assembly_timeout", {
+        sessionId: this.sessionId,
+        streamId,
+        bufferedBytes
+      });
+    }
+  });
 
   constructor(
     readonly sessionId: string,
@@ -314,6 +349,9 @@ class PeerSession {
       this.channelTimer = null;
     }
 
+    // 连接断了，所有还没拼完的请求体和 WebSocket 消息缓冲一起丢掉，别留内存。
+    this.requestAssembler.clear();
+    this.wsMessageAssembler.clear();
     this.gateway?.close();
     this.gateway = null;
     void this.peerConnection.close().catch(() => {});
@@ -423,6 +461,22 @@ class PeerSession {
       return;
     }
 
+    // 请求体分片：这三类帧不直接转成网关包，要先按 streamId 拼回完整的请求体。
+    if (
+      frame.type === "http.request"
+      || frame.type === "http.request.chunk"
+      || frame.type === "http.request.end"
+    ) {
+      this.handleRequestBodyFrame(frame);
+      return;
+    }
+
+    // 大 WebSocket 消息的分片：拼回一条完整消息再投递，别半截投递。
+    if (frame.type === "ws.message.chunk" || frame.type === "ws.message.end") {
+      this.handleWsMessageChunkFrame(frame);
+      return;
+    }
+
     const packet = frameToGatewayPacket(frame);
 
     if (!packet) {
@@ -450,6 +504,179 @@ class PeerSession {
     });
   }
 
+  /**
+   * 处理请求体的三条帧：`http.request`（第一段）→ `http.request.chunk`（可选，多段）→ `http.request.end`。
+   *
+   * 只有收到 `end` 才会真正调 `RelayTunnelGatewayService.handlePacket()`。
+   * 小请求体也走同一条路：`http.request` 带完 body，紧接着一条空的 `http.request.end`。
+   */
+  private handleRequestBodyFrame(
+    frame: Extract<TunnelFrame, { type: "http.request" | "http.request.chunk" | "http.request.end" }>
+  ): void {
+    let outcome: RequestAssemblyOutcome;
+
+    try {
+      switch (frame.type) {
+        case "http.request":
+          outcome = this.requestAssembler.begin(frame);
+          break;
+        case "http.request.chunk":
+          outcome = this.requestAssembler.append(frame);
+          break;
+        default:
+          outcome = this.requestAssembler.end(frame);
+      }
+    } catch (error) {
+      this.sendFrame({
+        type: "error",
+        streamId: frame.streamId,
+        errorCode: "REQUEST_ASSEMBLY_FAILED",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+
+    if (outcome.kind === "rejected") {
+      this.options.ipc.log("peer.request_rejected", {
+        sessionId: this.sessionId,
+        streamId: frame.streamId,
+        errorCode: outcome.errorCode
+      });
+      this.sendFrame({
+        type: "error",
+        streamId: frame.streamId,
+        errorCode: outcome.errorCode,
+        detail: outcome.detail
+      });
+      return;
+    }
+
+    if (outcome.kind === "pending") {
+      return;
+    }
+
+    // 这是真正的 Host 侧上行耗时：从 http.request 第一帧到 http.request.end。
+    // 分片之后业务服务那边测到的只是「本地回环写 HTTP」，不能拿来当吞吐。
+    this.options.ipc.log("peer.request_assembled", {
+      sessionId: this.sessionId,
+      streamId: outcome.request.streamId,
+      bytes: outcome.request.body?.byteLength ?? 0,
+      chunkCount: outcome.chunkCount,
+      elapsedMs: outcome.elapsedMs,
+      mbps: outcome.elapsedMs > 0
+        ? Number((((outcome.request.body?.byteLength ?? 0) / (1024 * 1024)) / (outcome.elapsedMs / 1000)).toFixed(2))
+        : null
+    });
+
+    const gateway = this.gateway;
+
+    if (!gateway) {
+      this.sendFrame({
+        type: "error",
+        streamId: outcome.request.streamId,
+        errorCode: "GATEWAY_NOT_READY",
+        detail: "还没收到 hello 帧，本地转发网关尚未建立"
+      });
+      return;
+    }
+
+    void gateway
+      .handlePacket({
+        type: "http.request",
+        streamId: outcome.request.streamId,
+        method: outcome.request.method,
+        path: outcome.request.path,
+        headers: outcome.request.headers,
+        body: outcome.request.body
+      })
+      .catch((error) => {
+        this.options.ipc.log("gateway.handle_failed", {
+          sessionId: this.sessionId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+  }
+
+  /**
+   * 处理大 WebSocket 消息的两条帧：`ws.message.chunk` × N + `ws.message.end`。
+   *
+   * 只有收到 `end` 才会把拼好的消息交给本地 WebSocket——这样对端收到的永远是一条完整消息。
+   * 小消息（≤ 单帧上限）走的是 `ws.message`，根本不经过这里。
+   */
+  private handleWsMessageChunkFrame(
+    frame: Extract<TunnelFrame, { type: "ws.message.chunk" | "ws.message.end" }>
+  ): void {
+    let outcome: WsMessageAssemblyOutcome;
+
+    try {
+      outcome = frame.type === "ws.message.chunk"
+        ? this.wsMessageAssembler.append(frame)
+        : this.wsMessageAssembler.end(frame);
+    } catch (error) {
+      this.sendFrame({
+        type: "error",
+        streamId: frame.streamId,
+        errorCode: "WS_MESSAGE_ASSEMBLY_FAILED",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+
+    if (outcome.kind === "rejected") {
+      this.options.ipc.log("peer.ws_message_rejected", {
+        sessionId: this.sessionId,
+        streamId: frame.streamId,
+        errorCode: outcome.errorCode
+      });
+      this.sendFrame({
+        type: "error",
+        streamId: frame.streamId,
+        errorCode: outcome.errorCode,
+        detail: outcome.detail
+      });
+      return;
+    }
+
+    if (outcome.kind === "pending") {
+      return;
+    }
+
+    this.options.ipc.log("peer.ws_message_assembled", {
+      sessionId: this.sessionId,
+      streamId: outcome.message.streamId,
+      bytes: outcome.message.data.byteLength,
+      binary: outcome.message.binary,
+      chunkCount: outcome.chunkCount,
+      elapsedMs: outcome.elapsedMs
+    });
+
+    const gateway = this.gateway;
+
+    if (!gateway) {
+      this.sendFrame({
+        type: "error",
+        streamId: outcome.message.streamId,
+        errorCode: "GATEWAY_NOT_READY",
+        detail: "还没收到 hello 帧，本地转发网关尚未建立"
+      });
+      return;
+    }
+
+    void gateway
+      .handlePacket({
+        type: "ws.message",
+        streamId: outcome.message.streamId,
+        binary: outcome.message.binary,
+        data: outcome.message.data
+      })
+      .catch((error) => {
+        this.options.ipc.log("gateway.handle_failed", {
+          sessionId: this.sessionId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+  }
+
   private ensureGateway(): void {
     if (this.gateway || this.closed) {
       return;
@@ -466,10 +693,29 @@ class PeerSession {
   }
 
   private sendGatewayPacket(packet: RelayTunnelGatewayPacket): void {
-    const encoded = encodeGatewayPacket(packet);
+    let frames: TunnelFrame[];
 
-    if (encoded) {
-      this.sendBytes(encoded);
+    try {
+      // 大 WebSocket 消息会在这里展开成 ws.message.chunk × N + ws.message.end，
+      // 否则 DataChannel 单条消息发不出去（本地工作台的文件树快照就会加载不出来）。
+      frames = gatewayPacketToFrames(packet);
+    } catch (error) {
+      this.options.ipc.log("peer.response_frame_encode_failed", {
+        sessionId: this.sessionId,
+        packetType: packet.type,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      this.sendFrame({
+        type: "error",
+        streamId: "streamId" in packet ? packet.streamId : null,
+        errorCode: "RESPONSE_FRAME_ENCODE_FAILED",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+
+    for (const frame of frames) {
+      this.sendFrame(frame);
     }
   }
 
