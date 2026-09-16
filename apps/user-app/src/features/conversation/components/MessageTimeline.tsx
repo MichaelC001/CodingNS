@@ -2355,12 +2355,14 @@ function buildEditableToolPreview(tool: ResolvedToolCall): ApplyPatchPreview | n
   }
 
   if (editableToolKind === "edit") {
-    const oldLines = readFirstToolInputText(input, ["old_string", "oldString", "old_text", "oldText", "search", "searchText"])
-      .split(/\r?\n/);
-    const newLines = readFirstToolInputText(input, ["new_string", "newString", "new_text", "newText", "replacement", "replacementText", "replace"])
-      .split(/\r?\n/);
+    const oldText = readFirstToolInputText(input, ["old_string", "oldString", "old_text", "oldText", "search", "searchText"]);
+    const newText = readFirstToolInputText(input, ["new_string", "newString", "new_text", "newText", "replacement", "replacementText", "replace"]);
 
-    return buildUpdatePreview(filePath, [{ oldLines, newLines }]);
+    if (oldText || newText) {
+      return buildUpdatePreview(filePath, [
+        { oldLines: oldText.split(/\r?\n/), newLines: newText.split(/\r?\n/) }
+      ]);
+    }
   }
 
   const edits = Array.isArray(input.edits) ? input.edits : [];

@@ -644,6 +644,41 @@ describe("MessageTimeline apply patch", () => {
     expect(screen.getAllByText("+2").length).toBeGreaterThan(0);
   });
 
+  it("renders Pi edit tool with edits[] as the same edit-style preview", async () => {
+    render(
+      <MessageTimeline
+        historyState="ready"
+        provider="pi"
+        onRetryMessage={vi.fn()}
+        messages={[
+          createToolMessage({
+            id: "tool-call-pi-edit",
+            callId: "call-pi-edit",
+            name: "edit",
+            kind: "tool_call",
+            content: JSON.stringify({
+              path: "/Users/jackson/Code/CodingNS/notes.md",
+              edits: [
+                { oldText: "第一行", newText: "第一行（已改）\n新增行" }
+              ]
+            })
+          })
+        ]}
+      />
+    );
+
+    expect(screen.queryByText(/^edit$/)).not.toBeInTheDocument();
+    expect(screen.getByText("notes.md")).toBeInTheDocument();
+    expect(screen.getAllByText("+2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("-1").length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /notes\.md/i }));
+
+    const diffViewText = document.querySelector(".apply-patch-diff-view")?.textContent ?? "";
+    expect(diffViewText).toContain("+第一行（已改）");
+    expect(diffViewText).toContain("-第一行");
+  });
+
   it("同一文件出现多个 patch 段时不会因为重复 key 报警", () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
