@@ -756,7 +756,7 @@ test("OpenCodeAdapter session 未变化时不会重复请求完整历史", async
     dbPath: fixture.dbPath,
     baseUrl: "http://127.0.0.1:41827"
   });
-  const initialPage = await adapter.readSessionHistory(
+  await adapter.readSessionHistory(
     "ses_demo",
     "opencode://session/ses_demo",
     null,
@@ -768,33 +768,41 @@ test("OpenCodeAdapter session 未变化时不会重复请求完整历史", async
   await adapter.readSessionHistory(
     "ses_demo",
     "opencode://session/ses_demo",
-    initialPage.cursor,
+    Buffer.from(JSON.stringify({ index: 0 }), "utf8").toString("base64url"),
     20,
     "forward"
   );
-  assert.equal(historyRequests, 1);
-
-  await adapter.readSessionHistory(
-    "ses_demo",
-    "opencode://session/ses_demo",
-    initialPage.cursor,
-    20,
-    "forward"
-  );
-  assert.equal(historyRequests, 1);
+  assert.equal(historyRequests, 0);
 
   const db = new DatabaseSync(fixture.dbPath);
   db.prepare("UPDATE session SET time_updated = ? WHERE id = ?").run(1_700_000_030_000, "ses_demo");
+  db.prepare(
+    "UPDATE part SET time_updated = ?, data = ? WHERE id = ?"
+  ).run(
+    1_700_000_030_100,
+    JSON.stringify({
+      type: "tool",
+      callID: "call-1",
+      tool: "bash",
+      state: {
+        status: "completed",
+        input: { command: "ls" },
+        output: "增量读取"
+      }
+    }),
+    "prt_demo_tool_done"
+  );
   db.close();
 
-  await adapter.readSessionHistory(
+  const changedPage = await adapter.readSessionHistory(
     "ses_demo",
     "opencode://session/ses_demo",
-    initialPage.cursor,
+    Buffer.from(JSON.stringify({ index: 0 }), "utf8").toString("base64url"),
     20,
     "forward"
   );
-  assert.equal(historyRequests, 2);
+  assert.equal(historyRequests, 0);
+  assert.equal(changedPage.messages.some((message) => message.content.includes("增量读取")), true);
 });
 
 test("OpenCodeAdapter 只会保留真正的 reasoning 内容，不会把 step 事件伪装成思考", async (context) => {

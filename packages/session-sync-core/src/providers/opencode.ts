@@ -129,9 +129,16 @@ interface PartHistoryRow {
   part_id?: unknown;
   message_id?: unknown;
   part_time_created?: unknown;
+  part_time_updated?: unknown;
   part_data?: unknown;
   message_time_created?: unknown;
+  message_time_updated?: unknown;
   message_data?: unknown;
+}
+
+interface OpenCodeSessionHistoryCache {
+  sourceVersion: string;
+  messages: NormalizedMessage[];
 }
 
 interface ForkSourceSessionRow {
@@ -183,14 +190,12 @@ interface OpenCodeDiscoveryCacheEntry {
 
 const OPENCODE_DISCOVERY_CACHE_MAX_AGE_MS = 3_000;
 const OPENCODE_DISCOVERY_CACHE_LIMIT = 32;
+const OPENCODE_HISTORY_CACHE_LIMIT = 32;
 
 export class OpenCodeAdapter implements ProviderAdapter {
   readonly providerId: ProviderId = "opencode";
   private readonly discoveryCache = new Map<string, OpenCodeDiscoveryCacheEntry>();
-  private readonly sessionHistoryVersions = new Map<
-    string,
-    { sourceVersion: string; cursor: string }
-  >();
+  private readonly sessionHistoryCache = new Map<string, OpenCodeSessionHistoryCache>();
   private readonly contextModelCache = new Map<
     string,
     { expiresAt: number; value: OpenCodeContextModelSnapshot | null }
@@ -327,15 +332,19 @@ export class OpenCodeAdapter implements ProviderAdapter {
     direction: HistoryDirection = "forward"
   ): Promise<HistoryPage> {
     const sessionId = this.resolveSessionId(providerSessionId, rawStoreRef);
-    const sourceVersion = direction === "forward" && cursor !== null
+    const cached = this.sessionHistoryCache.get(sessionId);
+    const shouldCheckSourceVersion = cursor !== null || cached !== undefined;
+    const sourceVersion = shouldCheckSourceVersion
       ? this.readSessionSourceVersion(sessionId)
       : null;
 
     if (
-      sourceVersion !== null
-      && this.sessionHistoryVersions.get(sessionId)?.sourceVersion === sourceVersion
-      && this.sessionHistoryVersions.get(sessionId)?.cursor === cursor
+      direction === "forward"
+      && cursor !== null
+      && sourceVersion !== null
+      && cached?.sourceVersion === sourceVersion
     ) {
+      this.cacheSessionHistory(sessionId, cached);
       return {
         messages: [],
         cursor,
@@ -344,19 +353,53 @@ export class OpenCodeAdapter implements ProviderAdapter {
       };
     }
 
+    if (
+      direction === "backward"
+      && sourceVersion !== null
+      && cached?.sourceVersion === sourceVersion
+    ) {
+      this.cacheSessionHistory(sessionId, cached);
+      return sliceHistory(cached.messages, cursor, limit, direction);
+    }
+
+    if (
+      direction === "forward"
+      && cursor !== null
+      && sourceVersion !== null
+      && cached
+      && cached.sourceVersion !== sourceVersion
+    ) {
+      const incrementalMessages = this.readIncrementalSessionMessagesFromSqlite(
+        sessionId,
+        cached.sourceVersion
+      );
+
+      if (incrementalMessages) {
+        const messages = mergeOpenCodeSessionMessages(
+          cached.messages,
+          incrementalMessages.changedMessageIds,
+          incrementalMessages.messages
+        );
+        this.cacheSessionHistory(sessionId, {
+          sourceVersion,
+          messages
+        });
+        return sliceHistory(messages, cursor, limit, direction);
+      }
+    }
+
     const serverMessages = await this.tryReadSessionMessagesFromServer(sessionId);
     const messages = serverMessages ?? this.readSessionMessagesFromSqlite(sessionId);
+    const currentVersion = this.readSessionSourceVersion(sessionId);
 
-    const page = sliceHistory(messages, cursor, limit, direction);
-
-    if (sourceVersion !== null) {
-      this.sessionHistoryVersions.set(sessionId, {
-        sourceVersion,
-        cursor: page.cursor ?? (cursor as string)
+    if (currentVersion !== null) {
+      this.cacheSessionHistory(sessionId, {
+        sourceVersion: currentVersion,
+        messages
       });
     }
 
-    return page;
+    return sliceHistory(messages, cursor, limit, direction);
   }
 
   async readSessionStats(
@@ -1849,24 +1892,96 @@ export class OpenCodeAdapter implements ProviderAdapter {
     });
   }
 
-  private readSessionMessagesFromSqlite(sessionId: string): NormalizedMessage[] {
+  private readIncrementalSessionMessagesFromSqlite(
+    sessionId: string,
+    previousSourceVersion: string
+  ): { changedMessageIds: string[]; messages: NormalizedMessage[] } | null {
+    const since = Number(previousSourceVersion);
+
+    if (!Number.isFinite(since)) {
+      return null;
+    }
+
+    try {
+      const changedMessageIds = this.withReadonlyDb((db) => {
+        const rows = db.prepare(
+          `SELECT DISTINCT m.id AS message_id
+           FROM message m
+           LEFT JOIN part p
+             ON p.message_id = m.id
+            AND p.session_id = m.session_id
+           WHERE m.session_id = ?
+             AND (
+               COALESCE(m.time_updated, m.time_created) >= ?
+               OR COALESCE(p.time_updated, p.time_created) >= ?
+             )`
+        ).all(sessionId, since, since) as Array<{ message_id?: unknown }>;
+
+        return rows
+          .map((row) => ensureText(row.message_id).trim())
+          .filter(Boolean);
+      });
+
+      if (changedMessageIds.length === 0) {
+        return { changedMessageIds, messages: [] };
+      }
+
+      return {
+        changedMessageIds,
+        messages: this.readSessionMessagesFromSqlite(sessionId, changedMessageIds)
+      };
+    } catch {
+      // 增量查询失败时回退到现有完整读取路径，不能因为优化失败而丢历史。
+      return null;
+    }
+  }
+
+  private cacheSessionHistory(
+    sessionId: string,
+    entry: OpenCodeSessionHistoryCache
+  ): void {
+    // Map 的插入顺序作为简单 LRU，避免大量旧会话的完整历史长期占用内存。
+    this.sessionHistoryCache.delete(sessionId);
+    this.sessionHistoryCache.set(sessionId, entry);
+
+    while (this.sessionHistoryCache.size > OPENCODE_HISTORY_CACHE_LIMIT) {
+      const oldestSessionId = this.sessionHistoryCache.keys().next().value as string | undefined;
+
+      if (!oldestSessionId) {
+        break;
+      }
+
+      this.sessionHistoryCache.delete(oldestSessionId);
+    }
+  }
+
+  private readSessionMessagesFromSqlite(
+    sessionId: string,
+    messageIds?: string[]
+  ): NormalizedMessage[] {
     this.assertSessionExistsOnSqlite(sessionId);
 
     const rows = this.withReadonlyDb((db) => {
+      const filter = messageIds && messageIds.length > 0
+        ? ` AND m.id IN (${messageIds.map(() => "?").join(", ")})`
+        : "";
       return db.prepare(
         `SELECT
            p.id AS part_id,
            p.message_id AS message_id,
            p.time_created AS part_time_created,
+           p.time_updated AS part_time_updated,
            p.data AS part_data,
            m.time_created AS message_time_created,
+           m.time_updated AS message_time_updated,
            m.data AS message_data
          FROM part p
          INNER JOIN message m
            ON m.id = p.message_id
          WHERE p.session_id = ?
+           ${filter}
          ORDER BY p.time_created ASC, p.rowid ASC`
-      ).all(sessionId) as PartHistoryRow[];
+      ).all(sessionId, ...(messageIds ?? [])) as PartHistoryRow[];
     });
 
     const envelopes = rows.reduce<Map<string, OpenCodeMessageEnvelope>>((map, row) => {
@@ -1886,7 +2001,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
           sessionID: sessionId,
           time: {
             ...(toJsonRecord(messagePayload.time) ?? {}),
-            created: firstValidNumber(row.message_time_created) ?? undefined
+            created: firstValidNumber(row.message_time_created) ?? undefined,
+            updated: firstValidNumber(row.message_time_updated) ?? undefined
           }
         },
         parts: []
@@ -1910,6 +2026,47 @@ export class OpenCodeAdapter implements ProviderAdapter {
       [...envelopes.values()]
     );
   }
+}
+
+function mergeOpenCodeSessionMessages(
+  cachedMessages: NormalizedMessage[],
+  changedMessageIds: string[],
+  changedMessages: NormalizedMessage[]
+): NormalizedMessage[] {
+  const changedRawMessageRefs = new Set(
+    changedMessageIds.map((messageId) =>
+      `/message/${encodeURIComponent(messageId)}/`
+    )
+  );
+  const changedByRawRef = new Map(
+    changedMessages.map((message) => [message.rawRef, message])
+  );
+  const replacedRawRefs = new Set<string>();
+  const retainedAndReplaced = cachedMessages.flatMap((message) => {
+    const belongsToChangedMessage = [...changedRawMessageRefs].some((marker) =>
+      message.rawRef.includes(marker)
+    );
+
+    if (!belongsToChangedMessage) {
+      return [message];
+    }
+
+    const replacement = changedByRawRef.get(message.rawRef);
+
+    if (!replacement) {
+      return [];
+    }
+
+    replacedRawRefs.add(message.rawRef);
+    return [replacement];
+  });
+  const appended = changedMessages.filter((message) => !replacedRawRefs.has(message.rawRef));
+  const merged = [...retainedAndReplaced, ...appended];
+
+  return merged.map((message, index) => ({
+    ...message,
+    sequence: index + 1
+  }));
 }
 
 function ensureNullableText(value: unknown): string | null {
