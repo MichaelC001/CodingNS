@@ -106,6 +106,8 @@ export interface DesktopShellBridge {
   syncWindowDescriptor(descriptor: WindowDescriptor): Promise<DesktopBridgeResult>;
   updateWindowBounds(windowId: string, bounds: WindowBounds): Promise<DesktopBridgeResult>;
   syncNativeSidebarLayout(layout: NativeSidebarLayout): Promise<DesktopBridgeResult>;
+  /** 主动结束应用，目前只有 Android 真正支持。 */
+  exitApp(): Promise<DesktopBridgeResult>;
 }
 
 export interface PlatformHapticsBridge {
@@ -498,6 +500,10 @@ class WebDesktopShellBridge implements DesktopShellBridge {
   syncNativeSidebarLayout(): Promise<DesktopBridgeResult> {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
+
+  exitApp(): Promise<DesktopBridgeResult> {
+    return Promise.resolve(unsupportedResult("当前不是移动端运行环境。"));
+  }
 }
 
 class WebHapticsBridge implements PlatformHapticsBridge {
@@ -686,6 +692,10 @@ class TauriDesktopShellBridge implements DesktopShellBridge {
   syncNativeSidebarLayout(layout: NativeSidebarLayout): Promise<DesktopBridgeResult> {
     return invokeDesktopCommand("sync_native_sidebar_layout", { layout });
   }
+
+  exitApp(): Promise<DesktopBridgeResult> {
+    return invokeDesktopCommand("exit_app");
+  }
 }
 
 class TauriMobileHapticsBridge implements PlatformHapticsBridge {
@@ -868,6 +878,10 @@ class TauriMobileShellBridge implements DesktopShellBridge {
 
   syncNativeSidebarLayout(): Promise<DesktopBridgeResult> {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  exitApp(): Promise<DesktopBridgeResult> {
+    return invokeTauriCommand("exit_app");
   }
 }
 

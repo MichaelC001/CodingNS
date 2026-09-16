@@ -151,6 +151,18 @@ fn cleanup_downloaded_apk(apk_path: &Path) {
   let _ = fs::remove_file(apk_path);
 }
 
+/// 结束当前 Activity，等价于用户主动退出应用。
+#[cfg(target_os = "android")]
+pub fn exit_app() -> Result<(), String> {
+  with_android_env(|env, activity| {
+    env
+      .call_method(activity, "finish", "()V", &[])
+      .map_err(|error| format!("退出 Android 应用失败: {error}"))?;
+
+    Ok(())
+  })
+}
+
 #[cfg(target_os = "android")]
 fn with_android_env<T, F>(handler: F) -> Result<T, String>
 where

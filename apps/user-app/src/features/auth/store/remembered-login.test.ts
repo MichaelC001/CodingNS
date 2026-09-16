@@ -56,7 +56,8 @@ function createPlatform(
       getWindowDescriptor: async () => ({ ok: false }),
       syncWindowDescriptor: async () => ({ ok: false }),
       updateWindowBounds: async () => ({ ok: false }),
-      syncNativeSidebarLayout: async () => ({ ok: false })
+      syncNativeSidebarLayout: async () => ({ ok: false }),
+      exitApp: async () => ({ ok: false })
     },
     windows: createWindowRegistryStore(),
     haptics: {

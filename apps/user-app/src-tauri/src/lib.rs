@@ -97,6 +97,28 @@ fn perform_haptic_feedback(app: AppHandle, kind: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn exit_app(app: AppHandle) -> Result<(), String> {
+  #[cfg(target_os = "android")]
+  {
+    let _ = &app;
+    return android_update::exit_app();
+  }
+
+  #[cfg(target_os = "ios")]
+  {
+    let _ = &app;
+    // iOS 不允许应用主动结束自己，系统会把主动退出当成崩溃处理。
+    return Err("当前平台不支持退出程序".to_string());
+  }
+
+  #[cfg(not(any(target_os = "android", target_os = "ios")))]
+  {
+    app.exit(0);
+    Ok(())
+  }
+}
+
+#[tauri::command]
 fn set_window_state(app: AppHandle, state: String) -> Result<(), String> {
   let window = app
     .get_webview_window("main")
@@ -402,6 +424,7 @@ pub fn run() {
           get_android_runtime_info,
           install_android_update,
           copy_text,
+          exit_app,
           set_window_state,
           perform_haptic_feedback
         ]
@@ -413,6 +436,7 @@ pub fn run() {
           write_desktop_config,
           get_runtime_info,
           copy_text,
+          exit_app,
           set_window_state,
           perform_haptic_feedback
         ]

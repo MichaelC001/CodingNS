@@ -303,7 +303,8 @@ function createPlatform(
       getWindowDescriptor: async () => ({ ok: false, errorCode: "x", detail: "x" }),
       syncWindowDescriptor: async () => ({ ok: true }),
       updateWindowBounds: async () => ({ ok: true }),
-      syncNativeSidebarLayout: async () => ({ ok: true })
+      syncNativeSidebarLayout: async () => ({ ok: true }),
+      exitApp: async () => ({ ok: true })
     },
     windows: {
       subscribe: () => () => undefined,
