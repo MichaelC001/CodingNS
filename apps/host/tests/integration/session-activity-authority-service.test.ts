@@ -129,6 +129,123 @@ describe("SessionActivityAuthorityService", () => {
     expect(resolution.terminalAt).toBe("2026-03-31T00:00:11.000Z");
   });
 
+  it("provider 报告会话仍在运行时，可以修正已经过期的 runtime 终态", () => {
+    const service = new SessionActivityAuthorityService();
+
+    service.observe({
+      sessionId: "session-1",
+      runId: "runtime:session-1:1",
+      runningState: "completed",
+      source: "authoritative_runtime",
+      confidence: "strong",
+      detail: "Harness 这一轮 turn 收尾",
+      errorCode: null,
+      observedAt: "2026-09-16T14:26:12.617Z"
+    });
+
+    const resolution = service.observe({
+      sessionId: "session-1",
+      runId: null,
+      runningState: "running",
+      source: "authoritative_provider_event",
+      confidence: "authoritative",
+      detail: "Harness 正在运行",
+      errorCode: null,
+      observedAt: "2026-09-16T14:26:12.654Z"
+    });
+
+    expect(resolution.runningState).toBe("running");
+    expect(resolution.activityResolutionSource).toBe("authoritative_provider_event");
+    expect(resolution.activityConfidence).toBe("authoritative");
+  });
+
+  it("provider 报告会话已停下时不会把 runtime 终态拖回运行中", () => {
+    const service = new SessionActivityAuthorityService();
+
+    service.observe({
+      sessionId: "session-1",
+      runId: "runtime:session-1:1",
+      runningState: "completed",
+      source: "authoritative_runtime",
+      confidence: "strong",
+      detail: "run completed",
+      errorCode: null,
+      observedAt: "2026-09-16T14:26:12.617Z"
+    });
+
+    const resolution = service.observe({
+      sessionId: "session-1",
+      runId: null,
+      runningState: "idle",
+      source: "authoritative_provider_event",
+      confidence: "authoritative",
+      detail: "会话已经停下",
+      errorCode: null,
+      observedAt: "2026-09-16T14:30:00.000Z"
+    });
+
+    expect(resolution.runningState).toBe("completed");
+    expect(resolution.activityResolutionSource).toBe("authoritative_runtime");
+  });
+
+  it("同一 run 内更晚到达的活动证据能把提前发出的终态带回 running", () => {
+    const service = new SessionActivityAuthorityService();
+
+    service.observe({
+      sessionId: "session-1",
+      runId: "runtime:session-1:1",
+      runningState: "completed",
+      source: "authoritative_runtime",
+      confidence: "strong",
+      detail: "CLI 提前发出的 result",
+      errorCode: null,
+      observedAt: "2026-09-16T14:00:00.000Z"
+    });
+
+    const resolution = service.observe({
+      sessionId: "session-1",
+      runId: "runtime:session-1:1",
+      runningState: "running",
+      source: "authoritative_runtime",
+      confidence: "authoritative",
+      detail: "仍在接收这一轮的实时事件",
+      errorCode: null,
+      observedAt: "2026-09-16T14:00:05.000Z"
+    });
+
+    expect(resolution.runningState).toBe("running");
+    expect(resolution.terminalAt).toBeNull();
+  });
+
+  it("同一 run 内更早到达的活动证据不会覆盖已经确定的终态", () => {
+    const service = new SessionActivityAuthorityService();
+
+    service.observe({
+      sessionId: "session-1",
+      runId: "runtime:session-1:1",
+      runningState: "completed",
+      source: "authoritative_runtime",
+      confidence: "strong",
+      detail: "run completed",
+      errorCode: null,
+      observedAt: "2026-09-16T14:00:10.000Z"
+    });
+
+    const resolution = service.observe({
+      sessionId: "session-1",
+      runId: "runtime:session-1:1",
+      runningState: "running",
+      source: "authoritative_runtime",
+      confidence: "authoritative",
+      detail: "迟到的旧事件",
+      errorCode: null,
+      observedAt: "2026-09-16T14:00:05.000Z"
+    });
+
+    expect(resolution.runningState).toBe("completed");
+    expect(resolution.terminalAt).toBe("2026-09-16T14:00:10.000Z");
+  });
+
   it("watchdog 会把长时间无事件的 authoritative runtime 先降级为 stale 再降级为 unknown", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-31T00:00:00.000Z"));

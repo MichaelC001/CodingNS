@@ -280,11 +280,19 @@ function mergeResolution(
   }
 
   if (current.runId && !next.runId && isHigherPriority(current, next)) {
+    if (shouldPreferProviderActivityOverRuntimeTerminal(current, next)) {
+      return next;
+    }
+
     return current;
   }
 
   if (sameRun(current.runId, next.runId)) {
     if (isTerminalResolvedState(current.runningState) && !isTerminalResolvedState(next.runningState)) {
+      if (isActivityObservationNewerThanTerminal(current, next)) {
+        return next;
+      }
+
       return current;
     }
 
@@ -469,6 +477,32 @@ function isNewerRun(currentRunId: string | null, nextRunId: string | null): bool
 
 function sameRun(left: string | null, right: string | null): boolean {
   return left === right;
+}
+
+/**
+ * Host 手里的 run 终态只说明它发起的那一轮跑完了。provider 现在明确报告会话仍在运行时，
+ * 说明 provider 侧还在接着干活（Harness 会在 turn/end 之后自动开下一轮 turn），
+ * 这条终态已经过期，应该让 provider 的活动证据生效。
+ */
+function shouldPreferProviderActivityOverRuntimeTerminal(
+  current: SessionActivityResolution,
+  next: SessionActivityResolution
+): boolean {
+  return current.activityResolutionSource === "authoritative_runtime"
+    && isTerminalResolvedState(current.runningState)
+    && next.activityResolutionSource === "authoritative_provider_event"
+    && (next.runningState === "starting" || next.runningState === "running");
+}
+
+/** 轮次内先收到终态、之后又收到更晚的活动证据时，说明这条终态发早了。 */
+function isActivityObservationNewerThanTerminal(
+  current: SessionActivityResolution,
+  next: SessionActivityResolution
+): boolean {
+  const terminalAt = current.terminalAt ?? current.lastObservedAt ?? current.updatedAt;
+  const observedAt = next.lastObservedAt ?? next.updatedAt;
+
+  return compareIsoTimestamps(observedAt, terminalAt) > 0;
 }
 
 function shouldAllowUnknownIdleToClearInferredActivity(
