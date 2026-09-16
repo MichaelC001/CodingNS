@@ -71,9 +71,11 @@ import {
 import { WorkbenchModal } from "./WorkbenchModal";
 import { SessionTaskProgressButton } from "./SessionTaskProgressButton";
 import { MacSelect, type MacSelectOption } from "./MacSelect";
+import { ModelReasoningSelect } from "./ModelReasoningSelect";
 import {
   createDeploymentPresetOptions,
   DeploymentMacSelect,
+  getCompactModelName,
   getModelProviderPrefix,
   GLOBAL_DEFAULT_PRESET_VALUE,
   isProviderDefaultModel,
@@ -1121,17 +1123,32 @@ export function ComposerPanel({
     () => shouldShowDeploymentPresetColumn(deploymentSnapshot),
     [deploymentSnapshot]
   );
-  const deploymentTriggerLabel = useMemo(() => {
-    const modelLabel = selectedModelOption
+  const deploymentModelLabel = useMemo(
+    () => (selectedModelOption
       ? getComposerModelLabel(selectedModelOption)
-      : t("conversation.modelUseCliDefault");
+      : t("conversation.modelUseCliDefault")),
+    [selectedModelOption]
+  );
+  const deploymentTriggerLabel = useMemo(() => {
     if (!showDeploymentPresetColumn) {
-      return modelLabel;
+      return deploymentModelLabel;
     }
     const presetLabel = selectedPresetOption?.label ?? t("conversation.deploymentDefaultPreset");
 
-    return `${presetLabel} · ${modelLabel}`;
-  }, [selectedModelOption, selectedPresetOption, showDeploymentPresetColumn]);
+    return `${presetLabel} · ${deploymentModelLabel}`;
+  }, [deploymentModelLabel, selectedPresetOption, showDeploymentPresetColumn]);
+  // 只有 cc-switch 场景才在按钮上带配置名前缀，其余 provider 直接显示模型名。
+  const composerTriggerLabel = modelSwitchApp ? deploymentTriggerLabel : deploymentModelLabel;
+  // 工具栏放不下完整标签时只保留模型名，配置名和模型自带的供应商前缀都可以先省掉。
+  const deploymentTriggerCompactLabel = useMemo(() => {
+    if (!selectedModelOption) {
+      return null;
+    }
+
+    return isProviderDefaultModel(selectedModelOption)
+      ? t("conversation.modelUseCliDefault")
+      : getCompactModelName(selectedModelOption.name);
+  }, [selectedModelOption]);
   const reasoningSelectOptions = useMemo<ComposerSelectOption[]>(
     () =>
       availableReasoningLevels.map((level) => ({
@@ -1140,6 +1157,14 @@ export function ComposerPanel({
       })),
     [availableReasoningLevels]
   );
+  // 合并后的模型按钮要在模型名后面带上当前强度，所以这里取出强度文案。
+  const selectedReasoningLabel = useMemo(() => {
+    if (!reasoningSelectorEnabled) {
+      return null;
+    }
+
+    return reasoningSelectOptions.find((option) => option.value === reasoningLevel)?.label ?? null;
+  }, [reasoningLevel, reasoningSelectOptions, reasoningSelectorEnabled]);
   const slashCommands = useMemo(
     () => [
       { command: "/plan", label: t("conversation.slashCommandPlan") },
@@ -2758,6 +2783,65 @@ export function ComposerPanel({
             </div>
           ) : null}
           <div className="composer-input-wrapper">
+            {attachmentDecision.allowed || showQuickPhraseButton ? (
+              <div className="composer-input-tools">
+                {showQuickPhraseButton ? (
+                  <button
+                    type="button"
+                    className="composer-quick-phrase-trigger"
+                    aria-label={t("conversation.quickPhraseTrigger")}
+                    title={t("conversation.quickPhraseTrigger")}
+                    onClick={() => {
+                      setQuickPhraseModalOpen(true);
+                      setShowSlashMenu(false);
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M7 8h10" />
+                      <path d="M7 12h8" />
+                      <path d="M7 16h5" />
+                      <path d="M5 5h14v14H9l-4 4V5z" />
+                    </svg>
+                  </button>
+                ) : null}
+                {attachmentDecision.allowed ? (
+                  platform.isNativeMobile ? (
+                    <button
+                      type="button"
+                      className="composer-attach-btn"
+                      aria-label={t("conversation.attachFiles")}
+                      title={t("conversation.attachFiles")}
+                      disabled={attachButtonDisabled}
+                      onClick={handleAttachmentButtonClick}
+                    >
+                      <AttachmentTriggerIcon />
+                    </button>
+                  ) : attachButtonDisabled ? (
+                    <button
+                      type="button"
+                      className="composer-attach-btn"
+                      aria-label={t("conversation.attachFiles")}
+                      title={t("conversation.attachFiles")}
+                      disabled
+                    >
+                      <AttachmentTriggerIcon />
+                    </button>
+                  ) : (
+                    <label
+                      htmlFor={libraryInputId}
+                      className="composer-attach-btn"
+                      aria-label={t("conversation.attachFiles")}
+                      title={t("conversation.attachFiles")}
+                      onClick={() => {
+                        setShowSlashMenu(false);
+                      }}
+                    >
+                      <AttachmentTriggerIcon />
+                    </label>
+                  )
+                ) : null}
+              </div>
+            ) : null}
             {mentionSelections.length > 0 ? (
               <div className="composer-selected-mentions" aria-label={t("conversation.mentionSelectedListLabel")}>
                 {mentionSelections.map((item) => (
@@ -2988,84 +3072,35 @@ export function ComposerPanel({
 
           <div className="composer-controls">
             <div className="composer-controls-left">
-              {attachmentDecision.allowed ? (
-                platform.isNativeMobile ? (
-                  <button
-                    type="button"
-                    className="composer-attach-btn"
-                    aria-label={t("conversation.attachFiles")}
-                    title={t("conversation.attachFiles")}
-                    disabled={attachButtonDisabled}
-                    onClick={handleAttachmentButtonClick}
-                  >
-                    <AttachmentTriggerIcon />
-                  </button>
-                ) : attachButtonDisabled ? (
-                  <button
-                    type="button"
-                    className="composer-attach-btn"
-                    aria-label={t("conversation.attachFiles")}
-                    title={t("conversation.attachFiles")}
-                    disabled
-                  >
-                    <AttachmentTriggerIcon />
-                  </button>
-                ) : (
-                  <label
-                    htmlFor={libraryInputId}
-                    className="composer-attach-btn"
-                    aria-label={t("conversation.attachFiles")}
-                    title={t("conversation.attachFiles")}
-                    onClick={() => {
-                      setShowSlashMenu(false);
-                    }}
-                  >
-                    <AttachmentTriggerIcon />
-                  </label>
-                )
-              ) : null}
-              {!hasForkDraft && modelSwitchApp ? (
-                <DeploymentMacSelect
+              {!hasForkDraft ? (
+                <ModelReasoningSelect
                   ariaLabel={t("conversation.modelSelectorLabel")}
-                  triggerLabel={deploymentTriggerLabel}
+                  triggerLabel={composerTriggerLabel}
+                  compactTriggerLabel={deploymentTriggerCompactLabel}
+                  reasoningLabel={selectedReasoningLabel}
                   presetOptions={deploymentPresetOptions}
                   selectedPresetValue={selectedPresetValue}
                   selectedPresetSummary={selectedPresetOption?.summary ?? null}
-                  onSelectPreset={handleDeploymentPresetChange}
+                  onSelectPreset={modelSwitchApp ? handleDeploymentPresetChange : undefined}
+                  showPresetColumn={Boolean(modelSwitchApp) && showDeploymentPresetColumn}
+                  loadingPresets={modelSwitchApp ? deploymentSnapshotLoading : false}
                   modelOptions={modelSelectOptions}
                   selectedModelValue={selectedModel}
                   onSelectModel={handleModelChange}
-                  loadingPresets={deploymentSnapshotLoading}
-                  loadingModels={deploymentCapabilitiesLoading}
+                  loadingModels={Boolean(modelSwitchApp) && deploymentCapabilitiesLoading}
                   modelColumnDisabled={
-                    selectedProviderConfigMode === "cc-switch-preset"
+                    Boolean(modelSwitchApp)
+                    && selectedProviderConfigMode === "cc-switch-preset"
                     && deploymentCapabilitiesLoading
                     && deploymentCapabilities === null
                   }
-                  showPresetColumn={showDeploymentPresetColumn}
                   modelEmptyText={t("conversation.deploymentModelEmpty")}
-                />
-              ) : null}
-
-              {!hasForkDraft && !modelSwitchApp ? (
-                <MacSelect
-                  ariaLabel={t("conversation.modelSelectorLabel")}
-                  value={selectedModel}
-                  options={modelSelectOptions}
-                  onChange={handleModelChange}
-                />
-              ) : null}
-
-              {!hasForkDraft
-                && reasoningSelectorEnabled
-                && combinedReasoningSelectOptions.length > 0 ? (
-                <MacSelect
-                  ariaLabel={t("conversation.reasoningSelectorLabel")}
-                  value={selectedReasoningMenuValue}
-                  options={combinedReasoningSelectOptions}
-                  selectedValues={selectedReasoningMenuValues}
-                  onChange={handleReasoningMenuChange}
-                  compact
+                  reasoningOptions={
+                    reasoningSelectorEnabled ? combinedReasoningSelectOptions : []
+                  }
+                  selectedReasoningValue={selectedReasoningMenuValue}
+                  selectedReasoningValues={selectedReasoningMenuValues}
+                  onSelectReasoning={handleReasoningMenuChange}
                 />
               ) : null}
 
@@ -3105,28 +3140,6 @@ export function ComposerPanel({
                 variant="composer"
               />
             </div>
-
-            {showQuickPhraseButton ? (
-              <div className="composer-quick-phrase-group">
-                <button
-                  type="button"
-                  className="composer-quick-phrase-trigger"
-                  aria-label={t("conversation.quickPhraseTrigger")}
-                  title={t("conversation.quickPhraseTrigger")}
-                  onClick={() => {
-                    setQuickPhraseModalOpen(true);
-                    setShowSlashMenu(false);
-                  }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M7 8h10" />
-                    <path d="M7 12h8" />
-                    <path d="M7 16h5" />
-                    <path d="M5 5h14v14H9l-4 4V5z" />
-                  </svg>
-                </button>
-              </div>
-            ) : null}
           </div>
         </div>
       </form>

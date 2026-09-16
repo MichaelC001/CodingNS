@@ -1,172 +1,58 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type CSSProperties
-} from "react";
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 
 import { t } from "../../../shared/i18n";
-import { useShrinkTriggerLabel } from "./MacSelect";
-import type { ModelManagementAppSnapshotDto, ModelSwitchAppId } from "../../settings/api/model-switch-api";
-import type { ProviderId, ProviderModelOptionDto, SessionProviderConfigMode } from "../api/conversation-api";
-
-export interface DeploymentSelectOption {
-  value: string;
-  label: string;
-}
-
-export interface DeploymentPresetOption {
-  value: string;
-  label: string;
-  summary: string | null;
-}
-
-export interface ProviderDeploymentSelection {
-  providerConfigMode: SessionProviderConfigMode;
-  providerPresetId: string | null;
-}
-
-export const PROVIDER_DEFAULT_MODEL_ID = "provider-default";
-export const GLOBAL_DEFAULT_PRESET_VALUE = "__global_default__";
+import { useShrinkTriggerLabel, type MacSelectOption } from "./MacSelect";
+import type { DeploymentPresetOption } from "./provider-deployment";
 
 /**
- * 返回模型所属供应商名称，兼容旧响应中的 ID 前缀。
- *
- * Pi 的模型目录天生跨供应商（同一个模型可能来自 anthropic、openrouter 等），
- * 不带前缀时下拉里会出现两条一模一样的模型名，用户没法区分。
+ * 把「模型」和「推理强度」合并成一个触发按钮：按钮上并排显示模型名和强度，
+ * 展开后左右分列，左列选模型、右列选强度（有 cc-switch 配置时额外插一列配置）。
  */
-export function getModelProviderPrefix(
-  model: Pick<ProviderModelOptionDto, "id" | "providerName">,
-  provider: ProviderId
-): string | null {
-  if (provider !== "deepseek-harness" && provider !== "pi") return null;
-  const providerName = model.providerName?.trim();
-  if (providerName) return providerName;
-  const separator = model.id.indexOf(":");
-  return separator > 0 ? model.id.slice(0, separator) : null;
-}
-
-/**
- * 模型名可能自带供应商前缀（qwen/qwen3.8-27b、anthropic`claude-sonnet-4 这类）。
- * 触发按钮挤不下完整文案时，只保留分隔符后面的模型名。
- */
-export function getCompactModelName(modelName: string): string {
-  const trimmed = modelName.trim();
-  const separatorIndex = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("`"));
-
-  if (separatorIndex <= 0 || separatorIndex === trimmed.length - 1) {
-    return trimmed;
-  }
-
-  return trimmed.slice(separatorIndex + 1).trim();
-}
-
-export function mapProviderToModelSwitchApp(provider: ProviderId | null): ModelSwitchAppId | null {
-  switch (provider) {
-    case "claude-code":
-    case "codex":
-    case "gemini":
-      return provider as ModelSwitchAppId;
-    default:
-      return null;
-  }
-}
-
-export function normalizeProviderSelection(
-  providerConfigMode?: SessionProviderConfigMode,
-  providerPresetId?: string | null
-): ProviderDeploymentSelection {
-  const normalizedPresetId = providerPresetId?.trim() || null;
-
-  if (providerConfigMode === "cc-switch-preset" && normalizedPresetId) {
-    return {
-      providerConfigMode: "cc-switch-preset",
-      providerPresetId: normalizedPresetId
-    };
-  }
-
-  return {
-    providerConfigMode: "global-default",
-    providerPresetId: null
-  };
-}
-
-export function createDeploymentPresetOptions(
-  snapshot: ModelManagementAppSnapshotDto | null | undefined
-): DeploymentPresetOption[] {
-  const defaultSummary = snapshot?.currentPresetName
-    ? snapshot.currentModel
-      ? `${snapshot.currentPresetName} · ${snapshot.currentModel}`
-      : snapshot.currentPresetName
-    : null;
-
-  return [
-    {
-      value: GLOBAL_DEFAULT_PRESET_VALUE,
-      label: t("conversation.deploymentDefaultPreset"),
-      summary: defaultSummary
-    },
-    ...(snapshot?.options ?? []).map((option) => ({
-      value: option.id,
-      label: option.name,
-      summary: option.model ?? option.summary ?? null
-    }))
-  ];
-}
-
-export function isProviderDefaultModel(model: Pick<{ id: string; usesProviderDefault?: boolean }, "id" | "usesProviderDefault">): boolean {
-  return model.usesProviderDefault === true || model.id === PROVIDER_DEFAULT_MODEL_ID;
-}
-
-export function shouldShowDeploymentPresetColumn(
-  snapshot: ModelManagementAppSnapshotDto | null | undefined
-): boolean {
-  if (!snapshot) {
-    return true;
-  }
-
-  return snapshot.cliAvailable === true
-    && snapshot.status !== "unavailable"
-    && snapshot.options.length > 1;
-}
-
-export function DeploymentMacSelect({
+export function ModelReasoningSelect({
   triggerId,
   ariaLabel,
   triggerLabel,
   compactTriggerLabel = null,
-  presetOptions,
-  selectedPresetValue,
-  selectedPresetSummary,
+  reasoningLabel = null,
+  presetOptions = [],
+  selectedPresetValue = null,
+  selectedPresetSummary = null,
   onSelectPreset,
+  showPresetColumn = false,
+  loadingPresets = false,
   modelOptions,
   selectedModelValue,
   onSelectModel,
-  loadingPresets = false,
   loadingModels = false,
   modelColumnDisabled = false,
-  showPresetColumn = true,
-  modelEmptyText
+  modelEmptyText,
+  reasoningOptions = [],
+  selectedReasoningValue = null,
+  selectedReasoningValues,
+  onSelectReasoning
 }: {
   triggerId?: string;
   ariaLabel: string;
   triggerLabel: string;
   compactTriggerLabel?: string | null;
-  presetOptions: DeploymentPresetOption[];
-  selectedPresetValue: string;
-  selectedPresetSummary: string | null;
-  onSelectPreset: (value: string) => void;
-  modelOptions: DeploymentSelectOption[];
+  reasoningLabel?: string | null;
+  presetOptions?: DeploymentPresetOption[];
+  selectedPresetValue?: string | null;
+  selectedPresetSummary?: string | null;
+  onSelectPreset?: (value: string) => void;
+  showPresetColumn?: boolean;
+  loadingPresets?: boolean;
+  modelOptions: MacSelectOption[];
   selectedModelValue: string;
   onSelectModel: (value: string) => void;
-  loadingPresets?: boolean;
   loadingModels?: boolean;
   modelColumnDisabled?: boolean;
-  showPresetColumn?: boolean;
   modelEmptyText: string;
+  reasoningOptions?: MacSelectOption[];
+  selectedReasoningValue?: string | null;
+  selectedReasoningValues?: string[];
+  onSelectReasoning?: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -175,12 +61,26 @@ export function DeploymentMacSelect({
   const popoverRef = useRef<HTMLDivElement>(null);
   const [popoverStyle, setPopoverStyle] = useState<CSSProperties | null>(null);
   const listboxId = useId();
+
+  const hasPresetColumn = showPresetColumn && presetOptions.length > 0;
+  const hasReasoningColumn = reasoningOptions.length > 0;
+  const columnCount = (hasPresetColumn ? 1 : 0) + 1 + (hasReasoningColumn ? 1 : 0);
+  const reasoningLabelText = reasoningLabel?.trim() || null;
+  const fullLabelText = reasoningLabelText
+    ? `${triggerLabel} ${reasoningLabelText}`
+    : triggerLabel;
+  const compactLabelText = compactTriggerLabel
+    ? reasoningLabelText
+      ? `${compactTriggerLabel} ${reasoningLabelText}`
+      : compactTriggerLabel
+    : null;
+
   const shrinkTriggerLabel = useShrinkTriggerLabel({
     wrapperRef,
     triggerRef,
     labelRef,
-    fullLabel: triggerLabel,
-    compactLabel: compactTriggerLabel
+    fullLabel: fullLabelText,
+    compactLabel: compactLabelText
   });
 
   const updatePopoverStyle = useCallback(() => {
@@ -199,9 +99,9 @@ export function DeploymentMacSelect({
     const gap = 8;
     const preferredPopoverHeight = 320;
     const maxWidth = Math.min(560, Math.max(320, viewportWidth - edgePadding * 2));
-    const preferredWidth = Math.min(maxWidth, 420);
+    const preferredWidth = columnCount >= 3 ? 520 : 400;
     const width = Math.max(
-      Math.min(maxWidth, Math.max(preferredWidth, Math.round(rect.width * 1.9))),
+      Math.min(maxWidth, Math.max(preferredWidth, Math.round(rect.width * 1.6))),
       Math.min(320, maxWidth)
     );
     const left = Math.min(
@@ -227,7 +127,7 @@ export function DeploymentMacSelect({
       top: shouldPlaceAbove ? undefined : rect.bottom + gap,
       bottom: shouldPlaceAbove ? viewportHeight - rect.top + gap : undefined
     });
-  }, []);
+  }, [columnCount]);
 
   useEffect(() => {
     if (!open) {
@@ -265,7 +165,7 @@ export function DeploymentMacSelect({
   return (
     <div
       ref={wrapperRef}
-      className="composer-mac-select composer-deployment-select"
+      className="composer-mac-select composer-deployment-select composer-model-reasoning-select"
       data-open={open ? "true" : "false"}
     >
       <button
@@ -283,7 +183,12 @@ export function DeploymentMacSelect({
           ref={labelRef}
           className="composer-mac-select-label composer-deployment-select-label"
         >
-          {shrinkTriggerLabel && compactTriggerLabel ? compactTriggerLabel : triggerLabel}
+          <span className="composer-model-reasoning-select-model">
+            {shrinkTriggerLabel && compactTriggerLabel ? compactTriggerLabel : triggerLabel}
+          </span>
+          {reasoningLabelText ? (
+            <span className="composer-model-reasoning-select-reasoning">{reasoningLabelText}</span>
+          ) : null}
         </span>
         <svg
           className="composer-mac-select-chevron"
@@ -308,16 +213,21 @@ export function DeploymentMacSelect({
             >
               <div
                 id={listboxId}
-                className={`composer-deployment-select-panel${showPresetColumn ? "" : " is-model-only"}`}
+                className="composer-deployment-select-panel"
+                data-columns={columnCount}
                 role="dialog"
-                aria-label={ariaLabel}
+                aria-label={t("conversation.modelReasoningPanelLabel")}
               >
-                {showPresetColumn ? (
+                {hasPresetColumn ? (
                   <div className="composer-deployment-select-column">
                     <div className="composer-deployment-select-column-header">
                       {t("conversation.deploymentConfigColumn")}
                     </div>
-                    <div className="composer-deployment-select-list" role="listbox" aria-label={t("conversation.deploymentConfigColumn")}>
+                    <div
+                      className="composer-deployment-select-list"
+                      role="listbox"
+                      aria-label={t("conversation.deploymentConfigColumn")}
+                    >
                       {presetOptions.map((option) => {
                         const selected = option.value === selectedPresetValue;
 
@@ -328,7 +238,7 @@ export function DeploymentMacSelect({
                             role="option"
                             aria-selected={selected}
                             className={`composer-deployment-select-option ${selected ? "is-selected" : ""}`}
-                            onClick={() => onSelectPreset(option.value)}
+                            onClick={() => onSelectPreset?.(option.value)}
                           >
                             <span className="composer-deployment-select-option-check" aria-hidden="true">
                               {selected ? "✓" : ""}
@@ -343,11 +253,14 @@ export function DeploymentMacSelect({
                         );
                       })}
                       {loadingPresets ? (
-                        <div className="composer-deployment-select-state">{t("conversation.deploymentLoading")}</div>
+                        <div className="composer-deployment-select-state">
+                          {t("conversation.deploymentLoading")}
+                        </div>
                       ) : null}
                     </div>
                   </div>
                 ) : null}
+
                 <div
                   className="composer-deployment-select-column"
                   data-disabled={modelColumnDisabled ? "true" : "false"}
@@ -355,12 +268,18 @@ export function DeploymentMacSelect({
                   <div className="composer-deployment-select-column-header">
                     {t("conversation.deploymentModelColumn")}
                   </div>
-                  {showPresetColumn && selectedPresetSummary ? (
+                  {hasPresetColumn && selectedPresetSummary ? (
                     <div className="composer-deployment-select-column-hint">{selectedPresetSummary}</div>
                   ) : null}
-                  <div className="composer-deployment-select-list" role="listbox" aria-label={t("conversation.deploymentModelColumn")}>
+                  <div
+                    className="composer-deployment-select-list"
+                    role="listbox"
+                    aria-label={t("conversation.deploymentModelColumn")}
+                  >
                     {loadingModels && modelColumnDisabled ? (
-                      <div className="composer-deployment-select-state">{t("conversation.deploymentModelLoading")}</div>
+                      <div className="composer-deployment-select-state">
+                        {t("conversation.deploymentModelLoading")}
+                      </div>
                     ) : modelOptions.length > 0 ? (
                       modelOptions.map((option) => {
                         const selected = option.value === selectedModelValue;
@@ -392,6 +311,56 @@ export function DeploymentMacSelect({
                     )}
                   </div>
                 </div>
+
+                {hasReasoningColumn ? (
+                  <div className="composer-deployment-select-column">
+                    <div className="composer-deployment-select-column-header">
+                      {t("conversation.reasoningColumnLabel")}
+                    </div>
+                    <div
+                      className="composer-deployment-select-list"
+                      role="listbox"
+                      aria-label={t("conversation.reasoningColumnLabel")}
+                    >
+                      {reasoningOptions.map((option, index) => {
+                        const selected = selectedReasoningValues?.includes(option.value)
+                          ?? option.value === selectedReasoningValue;
+                        const previousOption = reasoningOptions[index - 1];
+                        const showGroupLabel = Boolean(
+                          option.groupLabel && option.groupLabel !== previousOption?.groupLabel
+                        );
+
+                        return (
+                          <div key={option.value} role="presentation">
+                            {showGroupLabel ? (
+                              <div className="composer-mac-select-group-label" role="presentation">
+                                {option.groupLabel}
+                              </div>
+                            ) : null}
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={selected}
+                              disabled={option.disabled}
+                              className={`composer-deployment-select-option ${selected ? "is-selected" : ""}`}
+                              onClick={() => {
+                                onSelectReasoning?.(option.value);
+                                setOpen(false);
+                              }}
+                            >
+                              <span className="composer-deployment-select-option-check" aria-hidden="true">
+                                {selected ? "✓" : ""}
+                              </span>
+                              <span className="composer-deployment-select-option-copy">
+                                <span className="composer-deployment-select-option-label">{option.label}</span>
+                              </span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>,
             document.body

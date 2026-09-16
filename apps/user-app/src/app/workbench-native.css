@@ -2117,14 +2117,6 @@ html[data-workbench-window-resizing] .workbench-shell[data-runtime-platform="des
   width: 44px;
 }
 
-.composer-quick-phrase-group {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-}
-
 .composer-slash-btn,
 .composer-attach-btn,
 .composer-select-wrapper {

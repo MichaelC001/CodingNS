@@ -7692,14 +7692,6 @@ textarea:focus-visible {
   cursor: not-allowed;
 }
 
-.composer-quick-phrase-group {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-}
-
 /* Provider Logo */
 /* macOS Select */
 .composer-mac-select {
@@ -8045,12 +8037,42 @@ textarea:focus-visible {
   color: var(--text-secondary);
 }
 
+/* 模型 + 推理强度合并按钮：模型名在前，强度跟在后面。 */
+.composer-model-reasoning-select .composer-deployment-select-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.composer-model-reasoning-select-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-model-reasoning-select-reasoning {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.composer-deployment-select-panel[data-columns="2"] {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+}
+
+.composer-deployment-select-panel[data-columns="3"] {
+  grid-template-columns: minmax(120px, 132px) minmax(0, 1.1fr) minmax(0, 1fr);
+}
+
 @media (max-width: 720px) {
   .composer-deployment-select {
     max-width: min(280px, 48vw);
   }
 
-  .composer-deployment-select-panel {
+  .composer-deployment-select-panel,
+  .composer-deployment-select-panel[data-columns="2"],
+  .composer-deployment-select-panel[data-columns="3"] {
     grid-template-columns: 1fr;
   }
 }
@@ -16964,6 +16986,46 @@ textarea:focus-visible {
 .composer-attach-btn {
   width: 30px;
   padding: 0;
+}
+
+/* 输入框左侧工具组：快捷短语在上、附加在下，整组与右侧发送按钮中线对齐。
+   两个按钮合计高度压在输入框单行高度以内，避免把输入框顶高。 */
+.composer-input-wrapper .composer-input-tools {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  align-self: center;
+  gap: 4px;
+}
+
+.composer-input-wrapper .composer-input-tools .composer-quick-phrase-trigger,
+.composer-input-wrapper .composer-input-tools .composer-attach-btn {
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-secondary);
+}
+
+.composer-input-wrapper .composer-input-tools .composer-quick-phrase-trigger:hover,
+.composer-input-wrapper .composer-input-tools .composer-attach-btn:hover {
+  border-color: transparent;
+  background: var(--bg-hover);
+  box-shadow: none;
+  color: var(--text-primary);
+}
+
+.composer-input-wrapper .composer-input-tools svg {
+  width: 16px;
+  height: 16px;
+}
+
+.composer-input-wrapper .composer-input-actions {
+  align-self: center;
 }
 
 .composer-send {
@@ -31909,14 +31971,6 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .ios-workbench-shell[data-mobile-presentation="conversation-focus"] .composer-input-wrapper,
 .android-workbench-shell[data-mobile-presentation="conversation-focus"] .composer-input-wrapper {
   padding: 12px;
-}
-
-.mobile-workbench-shell[data-mobile-presentation="conversation-focus"] .composer-quick-phrase-trigger,
-.ios-workbench-shell[data-mobile-presentation="conversation-focus"] .composer-quick-phrase-trigger,
-.android-workbench-shell[data-mobile-presentation="conversation-focus"] .composer-quick-phrase-trigger {
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
 }
 
 .mobile-workbench-shell[data-mobile-presentation="conversation-focus"] .composer-controls,

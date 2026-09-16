@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getModelProviderPrefix } from "./provider-deployment";
+import { getCompactModelName, getModelProviderPrefix } from "./provider-deployment";
 
 describe("getModelProviderPrefix", () => {
   it("Pi 模型带上供应商前缀，跨供应商同名模型能分清", () => {
@@ -28,5 +28,24 @@ describe("getModelProviderPrefix", () => {
     expect(
       getModelProviderPrefix({ id: "claude-sonnet-4-5", providerName: "anthropic" }, "claude-code")
     ).toBe(null);
+  });
+});
+
+describe("getCompactModelName", () => {
+  it("去掉模型自带的供应商前缀，只留下模型名", () => {
+    expect(getCompactModelName("qwen/qwen3.8-27b")).toBe("qwen3.8-27b");
+    expect(getCompactModelName("openrouter/anthropic/claude-sonnet-4-5")).toBe("claude-sonnet-4-5");
+    expect(getCompactModelName("anthropic`claude-sonnet-4")).toBe("claude-sonnet-4");
+  });
+
+  it("没有前缀时保持原样", () => {
+    expect(getCompactModelName("gpt-5.4")).toBe("gpt-5.4");
+    expect(getCompactModelName("  claude-sonnet-4-5  ")).toBe("claude-sonnet-4-5");
+  });
+
+  it("分隔符在开头或结尾时不误删模型名", () => {
+    expect(getCompactModelName("/qwen3.8-27b")).toBe("/qwen3.8-27b");
+    expect(getCompactModelName("qwen/")).toBe("qwen/");
+    expect(getCompactModelName("")).toBe("");
   });
 });

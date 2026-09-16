@@ -3226,7 +3226,7 @@ describe("ComposerPanel", () => {
     expect(screen.queryByLabelText(t("conversation.quickPhraseTrigger"))).not.toBeInTheDocument();
   });
 
-  it("默认把发送按钮放在输入框右侧，把快捷短语单独放到底部右侧", () => {
+  it("默认把发送按钮和快捷短语都放进输入框", () => {
     const { container } = render(
       <ComposerPanel
         capabilities={createCapabilities()}
@@ -3239,13 +3239,148 @@ describe("ComposerPanel", () => {
     const quickPhraseButton = screen.getByLabelText(t("conversation.quickPhraseTrigger"));
     const inputWrapper = container.querySelector(".composer-input-wrapper");
     const controls = container.querySelector(".composer-controls");
-    const controlsLeft = container.querySelector(".composer-controls-left");
 
     expect(inputWrapper?.contains(sendButton)).toBe(true);
-    expect(inputWrapper?.contains(quickPhraseButton)).toBe(false);
-    expect(controls?.contains(quickPhraseButton)).toBe(true);
-    expect(controlsLeft?.contains(quickPhraseButton)).toBe(false);
+    expect(inputWrapper?.contains(quickPhraseButton)).toBe(true);
+    expect(controls?.contains(quickPhraseButton)).toBe(false);
     expect(sendButton).toBeDisabled();
+  });
+
+  it("输入框左侧工具组按快捷短语在上、附加在下排列", () => {
+    const { container } = render(
+      <ComposerPanel
+        capabilities={createCapabilities({ supportsAttachments: true })}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    const tools = container.querySelector(".composer-input-tools");
+    const quickPhraseButton = screen.getByLabelText(t("conversation.quickPhraseTrigger"));
+    const attachTrigger = screen.getByLabelText(t("conversation.attachFiles"));
+
+    expect(container.querySelector(".composer-input-wrapper")?.contains(tools)).toBe(true);
+    expect(Array.from(tools?.children ?? [])).toEqual([quickPhraseButton, attachTrigger]);
+    expect(container.querySelector(".composer-controls-left")?.contains(attachTrigger)).toBe(false);
+  });
+
+  it("工具栏换行时模型选择器只显示模型名，去掉供应商前缀", () => {
+    const rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect");
+    const clientWidthDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientWidth"
+    );
+    const createRect = (overrides: Record<string, number>): DOMRect =>
+      ({
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        toJSON: () => ({}),
+        ...overrides
+      }) as DOMRect;
+
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList?.contains("composer-controls-left") ? 600 : 0;
+      }
+    });
+    rectSpy.mockImplementation(function (this: Element) {
+      const classList = (this as HTMLElement).classList;
+
+      if (classList?.contains("composer-controls-left")) {
+        return createRect({ width: 600, height: 64, bottom: 64 });
+      }
+
+      // 统计控件被挤到第二行，说明工具栏其实已经放不下完整文案。
+      if (classList?.contains("composer-session-stats-control")) {
+        return createRect({ width: 240, height: 28, top: 36, bottom: 64 });
+      }
+
+      if (classList?.contains("composer-mac-select")) {
+        return classList.contains("is-compact")
+          ? createRect({ width: 90, height: 32, bottom: 32 })
+          : createRect({ width: 160, height: 32, bottom: 32 });
+      }
+
+      return createRect({});
+    });
+
+    try {
+      const { container } = render(
+        <ComposerPanel
+          capabilities={createCapabilities({
+            provider: "opencode",
+            modelOptions: [{ id: "qwen/qwen3.8-27b", name: "qwen/qwen3.8-27b" }]
+          })}
+          isSubmitting={false}
+          onSend={vi.fn().mockResolvedValue(undefined)}
+        />
+      );
+
+      const modelSelect = container.querySelector(".composer-mac-select");
+
+      expect(modelSelect?.textContent).toContain("qwen3.8-27b");
+      expect(modelSelect?.textContent).not.toContain("qwen/");
+    } finally {
+      rectSpy.mockRestore();
+
+      if (clientWidthDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidthDescriptor);
+      }
+    }
+  });
+
+  it("Codex 多配置文件模式下，合并面板给到配置文件、模型、推理强度三列", async () => {
+    mockFetchModelManagementSnapshot.mockResolvedValue({
+      scannedAt: "2026-06-11T00:00:00.000Z",
+      items: [
+        {
+          app: "codex",
+          displayName: "Codex",
+          cliAvailable: true,
+          status: "ready",
+          statusText: null,
+          currentPresetId: "default",
+          currentPresetName: "默认",
+          currentModel: "gpt-5.4",
+          options: [
+            { id: "default", name: "默认", model: "gpt-5.4", summary: null },
+            { id: "proxy", name: "公司代理", model: "gpt-5.4-mini", summary: null }
+          ]
+        }
+      ]
+    });
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities({
+          provider: "codex",
+          modelOptions: [
+            { id: "gpt-5.4", name: "gpt-5.4", supportedReasoningEfforts: ["low", "high"] }
+          ]
+        })}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    // 等到配置文件快照应用，按钮上会出现 “配置 · 模型”。
+    await waitFor(() => {
+      expect(screen.getByLabelText(t("conversation.modelSelectorLabel"))).toHaveTextContent("默认");
+    });
+
+    fireEvent.click(screen.getByLabelText(t("conversation.modelSelectorLabel")));
+
+    expect(screen.getByText(t("conversation.deploymentConfigColumn"))).toBeInTheDocument();
+    expect(screen.getByText(t("conversation.deploymentModelColumn"))).toBeInTheDocument();
+    expect(screen.getByText(t("conversation.reasoningColumnLabel"))).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /公司代理/ })).toBeInTheDocument();
   });
 
   it("快捷短语支持新增、调整顺序和删除", async () => {
@@ -3457,10 +3592,18 @@ describe("ComposerPanel", () => {
 
     await waitFor(() => {
       expect(screen.getByLabelText(t("conversation.modelSelectorLabel"))).toBeInTheDocument();
-      expect(screen.getByLabelText(t("conversation.reasoningSelectorLabel"))).toBeInTheDocument();
     });
-    chooseOption(t("conversation.modelSelectorLabel"), "DeepSeek · DeepSeek-V4-Pro");
-    chooseOption(t("conversation.reasoningSelectorLabel"), t("conversation.reasoningOff"));
+
+    // 模型和思考强度合并在同一个面板里，分成左右两列。
+    fireEvent.click(screen.getByLabelText(t("conversation.modelSelectorLabel")));
+    expect(
+      screen.getByRole("dialog", { name: t("conversation.modelReasoningPanelLabel") })
+    ).toBeInTheDocument();
+    expect(screen.getByText(t("conversation.deploymentModelColumn"))).toBeInTheDocument();
+    expect(screen.getByText(t("conversation.reasoningColumnLabel"))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "DeepSeek · DeepSeek-V4-Pro" }));
+
+    chooseOption(t("conversation.modelSelectorLabel"), t("conversation.reasoningOff"));
 
     expect(preferenceStoreMock.updatePreferences).toHaveBeenCalledWith({
       providers: {
@@ -3546,8 +3689,8 @@ describe("ComposerPanel", () => {
       />
     );
 
-    const reasoningSelect = await screen.findByLabelText(t("conversation.reasoningSelectorLabel"));
-    fireEvent.click(reasoningSelect);
+    const modelSelect = await screen.findByLabelText(t("conversation.modelSelectorLabel"));
+    fireEvent.click(modelSelect);
     expect(screen.getByText(t("conversation.reasoningGroupMode"))).toBeInTheDocument();
     expect(screen.getByText(t("conversation.reasoningGroupStrength"))).toBeInTheDocument();
     fireEvent.click(screen.getByRole("option", { name: "PTC 模式" }));

@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type RefObject
+} from "react";
 import { createPortal } from "react-dom";
 
 export interface MacSelectOption {
@@ -37,6 +47,131 @@ function measureMacSelectTextWidth(referenceElement: HTMLElement, text: string):
   return context.measureText(text).width;
 }
 
+/**
+ * 从短标签换回完整标签时，除了补回短标签省下的宽度还要多留一点余量，
+ * 否则刚换回去就会再次换行，标签会来回跳。
+ */
+const SHRINK_LABEL_RESTORE_MARGIN = 40;
+
+/** 同一行里不同控件的顶边会有几像素差，超过这个值才算换到了下一行。 */
+const SHRINK_LABEL_ROW_TOLERANCE = 12;
+
+/**
+ * 判断触发按钮是否该改用短文案。
+ *
+ * 工具栏是会自动换行的 flex 容器，空间不够时元素会被挤到下一行，按钮自己几乎不会被压缩，
+ * 所以判断依据是「工具栏已经换行 / 标签被省略号截断 / 剩余宽度放不下完整文案」三者之一。
+ */
+export function useShrinkTriggerLabel({
+  wrapperRef,
+  triggerRef,
+  labelRef,
+  fullLabel,
+  compactLabel = null
+}: {
+  wrapperRef: RefObject<HTMLDivElement | null>;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+  labelRef: RefObject<HTMLSpanElement | null>;
+  fullLabel: string;
+  compactLabel?: string | null;
+}): boolean {
+  const [shrinkLabel, setShrinkLabel] = useState(false);
+  const shrinkLabelRef = useRef(false);
+  const restoreWidthRef = useRef(0);
+  const compactText = compactLabel?.trim() ?? "";
+
+  useLayoutEffect(() => {
+    const wrapper = wrapperRef.current;
+    const host = wrapper?.parentElement ?? null;
+
+    if (compactText.length === 0 || compactText === fullLabel || !wrapper || !host) {
+      shrinkLabelRef.current = false;
+      setShrinkLabel(false);
+      return;
+    }
+
+    const evaluate = () => {
+      const labelElement = labelRef.current;
+      const trigger = triggerRef.current;
+      const selectElement = wrapperRef.current;
+
+      // clientWidth 为 0 说明还没有真实布局（例如测试环境），这时不做判断。
+      if (!labelElement || !trigger || !selectElement || host.clientWidth <= 0) {
+        return;
+      }
+
+      const visibleChildren = Array.from(host.children).filter((child) => {
+        return child.getBoundingClientRect().width > 0;
+      });
+      const siblings = visibleChildren.filter((child) => child !== selectElement);
+      const siblingsWidth = siblings.reduce(
+        (total, child) => total + child.getBoundingClientRect().width,
+        0
+      );
+      const hostGap = Number.parseFloat(getComputedStyle(host).columnGap) || 0;
+      const triggerStyle = getComputedStyle(trigger);
+      const chevronWidth = trigger.querySelector("svg")?.getBoundingClientRect().width ?? 0;
+      const triggerChromeWidth =
+        (Number.parseFloat(triggerStyle.paddingLeft) || 0)
+        + (Number.parseFloat(triggerStyle.paddingRight) || 0)
+        + (Number.parseFloat(triggerStyle.columnGap) || 0)
+        + chevronWidth;
+      const fullLabelWidth = measureMacSelectTextWidth(labelElement, fullLabel) + triggerChromeWidth;
+      const compactLabelWidth =
+        measureMacSelectTextWidth(labelElement, compactText) + triggerChromeWidth;
+      const availableWidth = host.clientWidth - siblingsWidth - hostGap * siblings.length;
+
+      const rowTops: number[] = [];
+      visibleChildren.forEach((child) => {
+        const top = child.getBoundingClientRect().top;
+        if (!rowTops.some((existing) => Math.abs(existing - top) < SHRINK_LABEL_ROW_TOLERANCE)) {
+          rowTops.push(top);
+        }
+      });
+      const wrapped = rowTops.length > 1;
+      const truncated =
+        !shrinkLabelRef.current && labelElement.scrollWidth > labelElement.clientWidth + 1;
+      const needsShrink = wrapped || truncated || availableWidth < fullLabelWidth;
+
+      if (shrinkLabelRef.current) {
+        // 已经是短标签，只有工具栏明显变宽才换回完整文案。
+        if (host.clientWidth < restoreWidthRef.current) {
+          return;
+        }
+
+        shrinkLabelRef.current = false;
+        setShrinkLabel(false);
+        return;
+      }
+
+      if (!needsShrink) {
+        return;
+      }
+
+      shrinkLabelRef.current = true;
+      restoreWidthRef.current =
+        host.clientWidth
+        + Math.max(fullLabelWidth - compactLabelWidth, 0)
+        + SHRINK_LABEL_RESTORE_MARGIN;
+      setShrinkLabel(true);
+    };
+
+    evaluate();
+
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(evaluate);
+    observer.observe(host);
+    observer.observe(wrapper);
+
+    return () => observer.disconnect();
+  }, [compactText, fullLabel, labelRef, triggerRef, wrapperRef]);
+
+  return shrinkLabel;
+}
+
 export function resolveMacSelectPopoverWidth({
   labels,
   triggerWidth,
@@ -69,6 +204,7 @@ export function MacSelect({
   onChange,
   disabled = false,
   compact = false,
+  compactTriggerLabel = null,
   className
 }: {
   triggerId?: string;
@@ -79,16 +215,26 @@ export function MacSelect({
   onChange: (value: string) => void;
   disabled?: boolean;
   compact?: boolean;
+  /** 工具栏放不下完整文案时改用的短文案；不传就始终显示完整文案。 */
+  compactTriggerLabel?: string | null;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const labelRef = useRef<HTMLSpanElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [popoverStyle, setPopoverStyle] = useState<CSSProperties | null>(null);
   const listboxId = useId();
   const selectedOption = options.find((option) => option.value === value) ?? options[0] ?? null;
   const optionLabels = useMemo(() => options.map((option) => option.label), [options]);
+  const shrinkTriggerLabel = useShrinkTriggerLabel({
+    wrapperRef,
+    triggerRef,
+    labelRef,
+    fullLabel: selectedOption?.label ?? "",
+    compactLabel: selectedOption ? compactTriggerLabel : null
+  });
 
   const updatePopoverStyle = useCallback(() => {
     const trigger = triggerRef.current;
@@ -188,7 +334,9 @@ export function MacSelect({
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
-        <span className="composer-mac-select-label">{selectedOption.label}</span>
+        <span ref={labelRef} className="composer-mac-select-label">
+          {shrinkTriggerLabel && compactTriggerLabel ? compactTriggerLabel : selectedOption.label}
+        </span>
         <svg
           className="composer-mac-select-chevron"
           width="14"
