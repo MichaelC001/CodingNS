@@ -48,7 +48,6 @@ interface MobileWorkspaceSwitcherHeaderProps {
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
   readonly showTriggerChevron?: boolean;
-  readonly showWorkspaceMenuButton?: boolean;
   readonly showWorkspaceSubtitle?: boolean;
   readonly onTriggerClick?: () => void;
   readonly trailing?: ReactNode;
@@ -75,7 +74,6 @@ export function MobileWorkspaceSwitcherHeader({
   triggerAriaLabel,
   triggerClassName,
   showTriggerChevron = true,
-  showWorkspaceMenuButton = false,
   showWorkspaceSubtitle = true,
   onTriggerClick,
   trailing,
@@ -141,7 +139,9 @@ export function MobileWorkspaceSwitcherHeader({
     };
   }, [runtimeConfig.activeHostId, runtimeConfig.hosts, scopedWorkspaces, switcherOpen]);
 
-  if (!headerTitle) {
+  const triggerTitle = triggerLabel ?? headerTitle ?? heading ?? null;
+
+  if (!triggerTitle) {
     return null;
   }
 
@@ -215,21 +215,9 @@ export function MobileWorkspaceSwitcherHeader({
                 openWorkspaceSwitcher();
               }}
             >
-              <span className="mobile-workspace-home-switcher-label">{triggerLabel ?? headerTitle}</span>
+              <span className="mobile-workspace-home-switcher-label">{triggerTitle}</span>
               {showTriggerChevron ? <ChevronDownIcon /> : null}
             </button>
-
-            {showWorkspaceMenuButton ? (
-              <button
-                type="button"
-                className="mobile-conversation-workspace-menu-trigger"
-                aria-label={t("shell.workspaceHomeSwitcherLabel")}
-                title={headerTitle}
-                onClick={openWorkspaceSwitcher}
-              >
-                <ChevronDownIcon />
-              </button>
-            ) : null}
 
             <div className="mobile-workspace-home-toolbar-actions">
               {trailing}
@@ -241,7 +229,7 @@ export function MobileWorkspaceSwitcherHeader({
         </section>
       </MobileTopHeaderFrame>
 
-      {switcherOpen && (!onTriggerClick || showWorkspaceMenuButton)
+      {switcherOpen && !onTriggerClick
         ? (
             <WorkspaceSwitcherSheet
               open={switcherOpen}

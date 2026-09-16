@@ -1410,22 +1410,6 @@ describe("ConversationPage", () => {
     expect(view.container.querySelector(".mobile-conversation-preview-rail")).toBeInTheDocument();
   });
 
-  it("移动端聊天顶部的会话列表按钮可以打开侧滑会话列表", async () => {
-    window.localStorage.setItem("mobile.conversation.preview.mode", "immersive");
-    const view = renderDraftConversationPage();
-
-    expect(view.container.querySelector(".mobile-conversation-preview-rail")).toBeNull();
-
-    fireEvent.click(
-      await screen.findByRole("button", {
-        name: t("shell.mobileConversationSessionListAction")
-      })
-    );
-
-    expect(await screen.findByText("父会话")).toBeInTheDocument();
-    expect(view.container.querySelector(".mobile-conversation-preview-rail")).toBeInTheDocument();
-  });
-
   it("移动端会话列表会显示收藏会话和归档入口，没有收藏时会自动隐藏收藏分组", async () => {
     mockUseWorkbenchShell.mockReturnValue(
       createMobileWorkbenchShellValue({
@@ -1884,14 +1868,15 @@ describe("ConversationPage", () => {
     });
   });
 
-  it("移动端消息页不显示工作区切换器，只保留会话列表入口", async () => {
+  it("移动端消息页顶部显示工作区切换器", async () => {
     const view = renderDraftConversationPage();
 
+    const switcher = view.container.querySelector(".mobile-workspace-home-switcher");
+
+    expect(switcher).not.toBeNull();
+    expect(switcher).toHaveTextContent("工作区一");
     expect(
-      view.container.querySelector(".mobile-workspace-home-switcher:not(.mobile-conversation-session-list-trigger)")
-    ).toBeNull();
-    expect(
-      screen.getByRole("button", { name: t("shell.mobileConversationSessionListAction") })
+      screen.getByRole("button", { name: t("shell.workspaceHomeSwitcherLabel") })
     ).toBeInTheDocument();
   });
 

@@ -49,7 +49,6 @@ import { FileContextPanel } from "../components/FileContextPanel";
 import { GitSidebar } from "../components/GitSidebar";
 import { MessageTimeline, type TemporarySessionAnchor } from "../components/MessageTimeline";
 import { MobileConversationSessionActions } from "../components/MobileConversationSessionActions";
-import { ConversationListActionIcon } from "../components/ConversationActionIcons";
 import {
   MOBILE_PREVIEW_MENU_ESTIMATED_HEIGHT_PX,
   useMobileConversationComposerHeightVar,
@@ -984,12 +983,6 @@ function LiveConversationPage({
             workspaces={mobileWorkspaces}
             workspaceOptions={mobileWorkspaceOptions}
             onSelectWorkspace={handleMobileWorkspaceSwitch}
-            triggerLabel={<ConversationListActionIcon />}
-            triggerAriaLabel={t("shell.mobileConversationSessionListAction")}
-            triggerClassName="mobile-conversation-session-list-trigger"
-            showTriggerChevron={false}
-            showWorkspaceSubtitle={false}
-            onTriggerClick={mobilePreview.togglePreview}
             heading={mobileSessionTitlePresentation.fullTitle}
             trailing={
               <div className="mobile-conversation-toolbar-main">
@@ -1702,12 +1695,6 @@ function DraftConversationPage({
           workspaces={mobileWorkspaces}
           workspaceOptions={mobileWorkspaceOptions}
           onSelectWorkspace={handleMobileWorkspaceSwitch}
-          triggerLabel={<ConversationListActionIcon />}
-          triggerAriaLabel={t("shell.mobileConversationSessionListAction")}
-          triggerClassName="mobile-conversation-session-list-trigger"
-          showTriggerChevron={false}
-          showWorkspaceSubtitle={false}
-          onTriggerClick={mobilePreview.togglePreview}
           heading={mobileSessionTitlePresentation.fullTitle}
            trailing={
                <div className="mobile-conversation-toolbar-main">
