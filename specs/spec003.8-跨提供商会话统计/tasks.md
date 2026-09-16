@@ -274,3 +274,32 @@
   - 主要修改：`provider-price-book-service.ts`、`provider-controller.ts`、`providers.ts`、`create-server.ts`、`conversation-api.ts`、`ComposerPanel.tsx`、中英文 i18n、价格表样式和定向测试。
   - 明确不做什么：不让前端直连 models.dev，不在 `readSessionStats()` 联网，不改变会话绑定版本和现有费用计算，不把完整 models.dev 目录放进 runtime。
   - 最小验证：models.dev 六类目录回放、Host 价格表路由、价格快照服务、ComposerPanel、user-app/Host 类型检查、`pnpm check:sqlite-runtime` 和 `git diff --check` 通过。
+
+## 阶段 15：修正 Command Code 缓存口径
+
+- [x] 15.1 按“缓存读取是总输入子集”读取 Command Code usage
+  - 状态：COMPLETED
+  - 这一步做什么：Command Code transcript 里的 `usage.inputTokens` 是整个 prompt，`cacheReadTokens`、`cacheWriteTokens` 是它的子集——CLI 自己算未缓存输入用的就是 `inputTokens - cacheReadTokens - cacheWriteTokens`。adapter 之前把三个桶当成互不重叠的输入，把缓存读取又加了一次，导致命中率、未缓存输入、总计和上下文占用全部偏大。
+  - 做完以后能看到什么：一场实际命中 95.9% 的会话不再显示 49.0%；“未缓存输入”不再和“输入”同值；“总计”只算输入加输出；上下文占用不再因为重复计数被顶到 100%。
+  - 依赖什么：无。
+  - 主要修改：`packages/session-sync-core/src/providers/command-code.ts` 的 `readSessionStats` 和 `readContextUsage`、`packages/session-sync-core/tests/command-code-provider.test.mjs`。
+  - 明确不做什么：不改 Command Code 原始 transcript，不调整其它 Provider 的分母口径，不在前端重算缓存率。
+  - 最小验证：`pnpm --dir packages/session-sync-core build` 通过；`node --test packages/session-sync-core/tests/command-code-provider.test.mjs` 8/8、`command-code-runtime.test.mjs` 6/6、`session-pricing.test.mjs` 与 `session-provider-cost.test.mjs` 22/22 通过；用真实 transcript 复核命中率 95.0%、未缓存输入 145.7 万、总计 2942.6 万。
+
+- [x] 15.2 上下文窗口只按会话实际模型解析
+  - 状态：COMPLETED
+  - 这一步做什么：`command-code status --json` 报的 `context_window` 是 CLI 当前配置模型的窗口，而应用是按会话把模型传给 CLI 的。之前无论会话跑什么模型都拿它当上限，等于用 Qwen 的 26.2 万刻度去量 deepseek 的 100 万窗口。现在改成只认会话记录里的模型：会话模型与 CLI 默认模型一致才采用运行时值，否则查 CLI 随包发布的模型目录，两边都查不到就不显示上下文占用。
+  - 做完以后能看到什么：那场 23.9 万 token 的 deepseek 会话显示约 24%，而不是 95%（某些轮次还会被顶到 100%）；目录里没有的模型不再硬凑一个比例。
+  - 依赖什么：无，和 15.1 共用同一次上下文读取。
+  - 主要修改：`packages/session-sync-core/src/providers/command-code.ts`（新增 `COMMAND_CODE_MODEL_CONTEXT_WINDOWS` 与 `resolveCommandCodeContextWindow`）、`packages/session-sync-core/tests/command-code-provider.test.mjs`。
+  - 明确不做什么：不在上下文读取里联网，不从 token 数反推窗口，不给未知模型套默认窗口。
+  - 最小验证：core 构建通过；`command-code-provider.test.mjs` 11/11、`command-code-runtime.test.mjs` 6/6 通过；真实会话复核 `deepseek/deepseek-v4.1-flash` 窗口取 1,000,000、当前会话占用 17.0%。
+
+- [x] 15.3 拆开用户轮次与模型请求步骤
+  - 状态：COMPLETED
+  - 这一步做什么：Command Code 的 transcript 没有原生轮次字段，之前把“写有 usage 的模型请求数”直接当成 `turns`，一次用户提问跑了 88 次模型请求就显示成“88 轮”。现在 `turns` 只数真实用户消息（role 为 user 且不含 tool_result 的消息），`steps` 数模型请求次数，两个指标各归各位。
+  - 做完以后能看到什么：这场对话显示 4 轮、102 步，而不是 88 轮；5 轮对话被跑出 247 次请求的会话也不会再显示成 247 轮。
+  - 依赖什么：无。
+  - 主要修改：`packages/session-sync-core/src/providers/command-code.ts`（新增 `countCommandCodeTurns`，并把工具结果类型判断抽成 `isToolResultPartType` 复用）、`packages/session-sync-core/tests/command-code-provider.test.mjs`。
+  - 明确不做什么：不改 Command Code 原始 transcript，不为其它 Provider 补轮次，不在前端把 steps 折算成 turns。
+  - 最小验证：core 构建通过；`command-code-provider.test.mjs` 12/12 通过；真实会话复核 4/102、5/247、3/15 三组轮次与步骤。

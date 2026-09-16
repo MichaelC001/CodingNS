@@ -53,7 +53,7 @@
 4. Claude Code 与 Legna SHALL 以稳定消息标识折叠 progress 和最终 assistant usage。
 5. Gemini SHALL 以消息标识 last-wins 折叠被重写的 token 记录。
 6. Kimi SHALL 返回 `null`。
-7. Harness、OpenCode、Claude Code 和 Legna SHALL 将未缓存输入、缓存读取和缓存写入作为互不重叠的输入桶；Codex 和 Gemini SHALL 将缓存读取视为总输入的子集。Codex 出现未定义关系的正缓存写入时 SHALL 省略缓存命中率。
+7. Harness、OpenCode、Claude Code 和 Legna SHALL 将未缓存输入、缓存读取和缓存写入作为互不重叠的输入桶；Codex、Gemini 和 Command Code SHALL 将 `inputTokens` 视为整个 prompt，缓存读取是它的子集，不得再把缓存桶加进分母、未缓存输入或总计。Codex 出现未定义关系的正缓存写入时 SHALL 省略缓存命中率。
 8. Harness SHALL 在 history 尾页同时存在 `contextPressure.projectedTokens` 与正数 `contextPressure.contextWindow` 时返回上下文占用；比例 SHALL 使用 `projectedTokens / contextWindow`，并标记为估算值。
 9. Harness 未提供当前请求的未缓存或缓存输入桶时 SHALL 省略这些字段；页面不得为了显示上下文占用而伪造 `0`。
 10. Claude Code 与 Legna SHALL 从同一条最终 assistant usage 记录读取模型和 token；模型、usage 或收费策略任一缺失时 SHALL 省略该调用费用。
@@ -62,6 +62,8 @@
 13. OpenCode SHALL 保留 session 表中的原生成本，不得重新按目录价格相加；其逐调用模型和 token 仅用于审计和覆盖校验。
 14. Gemini SHALL 在同一条消息 ID 的 last-wins 折叠中同时保留最终 model 与 tokens；最终记录未同时提供两者时 SHALL 省略该调用费用。
 15. Kimi SHALL 继续返回 `null`，直至有稳定的实际模型和 usage 持久化协议。
+16. Command Code SHALL 只用会话实际使用的模型解析上下文窗口：usage 记录自带窗口时优先采用；`command-code status --json` 的 `context_window` 只在该模型与会话模型一致时采用，其余情况查 CLI 随包发布的模型目录；两边都查不到时 SHALL 省略上下文占用，不得沿用 CLI 默认模型的窗口。
+17. Command Code SHALL 把用户轮次与模型请求步骤分开：`turns` 只数真实用户消息，工具结果消息不计入；`steps` 数写有 usage 的模型请求。没有原生轮次字段时，不得用请求次数充当轮次。
 
 ### 4.3 页面显示
 
