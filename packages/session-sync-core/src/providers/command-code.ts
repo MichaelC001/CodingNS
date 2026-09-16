@@ -413,12 +413,14 @@ export class CommandCodeAdapter implements ProviderAdapter {
       readStatusValue(status, "context_window", "contextWindow")
     );
     if (!contextWindow || contextWindow <= 0) return null;
-    const promptTokens = snapshot.inputTokens + snapshot.cacheReadTokens + snapshot.cacheWriteTokens;
+    // Command Code 的 usage.inputTokens 是整个 prompt，缓存读取与缓存写入是它的子集。
+    const cachedInputTokens = snapshot.cacheReadTokens + snapshot.cacheWriteTokens;
+    const promptTokens = snapshot.inputTokens;
     return {
       provider: this.providerId,
       promptTokens,
-      uncachedInputTokens: snapshot.inputTokens,
-      cachedInputTokens: snapshot.cacheReadTokens + snapshot.cacheWriteTokens,
+      uncachedInputTokens: Math.max(0, promptTokens - cachedInputTokens),
+      cachedInputTokens,
       contextWindow,
       usageRatio: Math.min(Math.max(promptTokens / contextWindow, 0), 1),
       source: "provider-log",
@@ -440,15 +442,21 @@ export class CommandCodeAdapter implements ProviderAdapter {
     if (snapshots.length === 0) return null;
     const capturedAt = nextTimestamp();
     const watermark = { kind: "source-timestamp" as const, value: snapshots.at(-1)?.timestamp || capturedAt };
+    const inputTokens = snapshots.reduce((sum, item) => sum + item.inputTokens, 0);
+    const outputTokens = snapshots.reduce((sum, item) => sum + item.outputTokens, 0);
+    const cacheReadTokens = snapshots.reduce((sum, item) => sum + item.cacheReadTokens, 0);
+    const cacheWriteTokens = snapshots.reduce((sum, item) => sum + item.cacheWriteTokens, 0);
+    const cachedInputTokens = cacheReadTokens + cacheWriteTokens;
     const metrics: ProviderSessionStats["metrics"] = {};
-    addCommandCodeMetric(metrics, "inputTokens", snapshots.reduce((sum, item) => sum + item.inputTokens, 0), watermark);
-    addCommandCodeMetric(metrics, "uncachedInputTokens", snapshots.reduce((sum, item) => sum + item.inputTokens, 0), watermark);
-    addCommandCodeMetric(metrics, "outputTokens", snapshots.reduce((sum, item) => sum + item.outputTokens, 0), watermark);
-    addCommandCodeMetric(metrics, "cacheReadTokens", snapshots.reduce((sum, item) => sum + item.cacheReadTokens, 0), watermark);
-    addCommandCodeMetric(metrics, "cacheWriteTokens", snapshots.reduce((sum, item) => sum + item.cacheWriteTokens, 0), watermark);
-    addCommandCodeMetric(metrics, "totalTokens", snapshots.reduce((sum, item) => sum + item.inputTokens + item.outputTokens + item.cacheReadTokens + item.cacheWriteTokens, 0), watermark);
+    addCommandCodeMetric(metrics, "inputTokens", inputTokens, watermark);
+    addCommandCodeMetric(metrics, "uncachedInputTokens", Math.max(0, inputTokens - cachedInputTokens), watermark);
+    addCommandCodeMetric(metrics, "outputTokens", outputTokens, watermark);
+    addCommandCodeMetric(metrics, "cacheReadTokens", cacheReadTokens, watermark);
+    addCommandCodeMetric(metrics, "cacheWriteTokens", cacheWriteTokens, watermark);
+    addCommandCodeMetric(metrics, "totalTokens", inputTokens + outputTokens, watermark);
     addCommandCodeMetric(metrics, "turns", snapshots.length, watermark);
-    addDerivedCacheHitRate(metrics, { denominator: ["inputTokens", "cacheReadTokens", "cacheWriteTokens"] });
+    // inputTokens 已包含缓存读取与缓存写入，重复计入分母会把命中率算低一半。
+    addDerivedCacheHitRate(metrics, { denominator: ["inputTokens"] });
     const nativeCost = snapshots.reduce((sum, item) => sum + (item.costUsd ?? 0), 0);
     const hasNativeCost = snapshots.some((item) => item.costUsd !== null);
     if (hasNativeCost) addProviderNativeCostMetric(metrics, nativeCost, watermark);
@@ -460,6 +468,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
       outputTokens: item.outputTokens,
       cacheReadTokens: item.cacheReadTokens,
       cacheWriteTokens: item.cacheWriteTokens,
+      inputIncludesCacheRead: true,
       completed: true,
       timestamp: item.timestamp || capturedAt
     }));

@@ -235,11 +235,20 @@ test("CommandCodeAdapter 读取 transcript usage、上下文占用和费用", as
   try {
     const adapter = new CommandCodeAdapter({ homeDir });
     const context = await adapter.readContextUsage(fixture.sessionId, fixture.filePath);
-    assert.equal(context.promptTokens, 145);
+    // inputTokens 是整个 prompt，缓存读取和缓存写入已包含在内，不能再次相加。
+    assert.equal(context.promptTokens, 100);
+    assert.equal(context.uncachedInputTokens, 55);
+    assert.equal(context.cachedInputTokens, 45);
+    assert.equal(context.usageRatio, 0.1);
     assert.equal(context.contextWindow, 1000);
     const stats = await adapter.readSessionStats(fixture.sessionId, fixture.filePath);
     assert.equal(stats.metrics.inputTokens.value, 100);
+    assert.equal(stats.metrics.uncachedInputTokens.value, 55);
     assert.equal(stats.metrics.outputTokens.value, 20);
+    assert.equal(stats.metrics.cacheReadTokens.value, 40);
+    assert.equal(stats.metrics.cacheWriteTokens.value, 5);
+    assert.equal(stats.metrics.totalTokens.value, 120);
+    assert.equal(stats.metrics.cacheHitRate.value, 40);
     assert.equal(stats.metrics.costUsd.value, 0.12);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
