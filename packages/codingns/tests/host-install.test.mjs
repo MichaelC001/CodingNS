@@ -27,6 +27,7 @@ import {
   runAutostart,
   runCli,
   runInstall,
+  runNpmCommand,
   runRestart,
   runStop,
   runUninstall,
@@ -791,4 +792,53 @@ test("Windows 启用自启会创建登录计划任务", async () => {
   assert.match(calls[0], /^schtasks \/Create \/TN CodingNS Host /);
   assert.match(calls[0], /\/SC ONLOGON/);
   assert.match(calls[0], /wscript\.exe ".*codingns-host-launcher\.vbs"/);
+});
+
+test("npm 的输出会一边跑一边转成日志事件", async () => {
+  const dataDir = createTempDataDir();
+  const scriptPath = path.join(dataDir, "fake-npm.mjs");
+
+  fs.writeFileSync(
+    scriptPath,
+    [
+      'process.stdout.write("added 42 packages in 3s\\n");',
+      'process.stderr.write("npm warn deprecated left-pad@1.0.0\\n");',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+
+  // 用当前 node 跑一个假 npm，走的是和真实 npm 完全一样的输出管线。
+  const { value: result, events } = await captureOutput(() =>
+    runNpmCommand(process.execPath, [scriptPath], createLoggerStub())
+  );
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /added 42 packages/);
+  assert.match(result.stderr, /npm warn deprecated left-pad/);
+
+  const logged = events
+    .filter((event) => event.type === "log")
+    .map((event) => event.message);
+
+  assert.ok(logged.includes("added 42 packages in 3s"), "npm 的 stdout 应该被转发给界面");
+  assert.ok(logged.includes("npm warn deprecated left-pad@1.0.0"), "npm 的 stderr 也应该被转发");
+});
+
+test("npm 退出码非零时原样带回状态码", async () => {
+  const dataDir = createTempDataDir();
+  const scriptPath = path.join(dataDir, "failing-npm.mjs");
+
+  fs.writeFileSync(
+    scriptPath,
+    ['process.stderr.write("ERR! network timeout\\n");', "process.exit(7);", ""].join("\n"),
+    "utf8"
+  );
+
+  const { value: result } = await captureOutput(() =>
+    runNpmCommand(process.execPath, [scriptPath], createLoggerStub())
+  );
+
+  assert.equal(result.status, 7);
+  assert.match(result.stderr, /network timeout/);
 });

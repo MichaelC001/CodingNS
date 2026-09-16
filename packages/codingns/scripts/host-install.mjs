@@ -26,6 +26,9 @@ const DEFAULT_PACKAGE_NAME = "@jingyi0605/codingns";
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 const MIRROR_REGISTRY = "https://registry.npmmirror.com";
 const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+/** npm 输出往界面转发多少行、每行最多多长，避免刷屏。 */
+const NPM_LOG_FORWARD_LIMIT = 120;
+const NPM_LOG_LINE_MAX_CHARS = 240;
 const MINIMUM_NODE_MAJOR = 22;
 
 const KNOWN_ACTIONS = [
@@ -489,7 +492,8 @@ export function spawnDetachedHost(context, logger) {
   const child = spawn(normalizeNodePath(context.nodeBinary), [normalizeNodePath(context.cliEntryPath), ...args], {
     cwd: context.packageRoot,
     detached: true,
-    stdio: "ignore"
+    stdio: "ignore",
+    windowsHide: true
   });
 
   // 子进程起不来时不能把安装器一起带崩，交给后面的健康检查报错。
@@ -680,7 +684,7 @@ export function buildAutostartFileContent(platform, context) {
 function runShellCommand(file, args, logger) {
   logger.log("执行自启命令", [file, ...args].join(" "));
 
-  return spawnSync(file, args, { encoding: "utf8" });
+  return spawnSync(file, args, { encoding: "utf8", windowsHide: true });
 }
 
 export function prepareAutostart(platform, context, logger, options = {}) {
@@ -1032,7 +1036,7 @@ export function resolveNpmBinary() {
       continue;
     }
 
-    const probe = spawnSync(candidate, ["--version"], { encoding: "utf8" });
+    const probe = spawnSync(candidate, ["--version"], { encoding: "utf8", windowsHide: true });
 
     if (probe.status === 0) {
       return candidate;
@@ -1184,16 +1188,95 @@ export function resolveNpmInvocation(npmPath, args, options = {}) {
   };
 }
 
-function runNpmCommand(npmPath, args, logger) {
+/** 把子进程输出按行拆开；npm 的进度条用 \r，这里一并当成换行处理。 */
+function attachLineReader(stream, onLine) {
+  if (!stream) {
+    return;
+  }
+
+  let buffer = "";
+
+  stream.setEncoding("utf8");
+  stream.on("data", (chunk) => {
+    buffer += chunk;
+
+    const parts = buffer.split(/\r\n|\r|\n/);
+    buffer = parts.pop() ?? "";
+
+    for (const part of parts) {
+      if (part.trim()) {
+        onLine(part.trim());
+      }
+    }
+  });
+  stream.on("end", () => {
+    const rest = buffer.trim();
+
+    if (rest) {
+      onLine(rest);
+    }
+  });
+}
+
+/**
+ * 跑 npm，并把它的输出实时转成 log 事件推给调用方。
+ * 用异步方式而不是 spawnSync，是为了让向导里能边装边看到进度，而不是装完才一次性拿到结果。
+ */
+export function runNpmCommand(npmPath, args, logger) {
   const invocation = resolveNpmInvocation(npmPath, args);
 
   logger.log("执行 npm 命令", [invocation.file, ...invocation.args].join(" "));
 
-  return spawnSync(invocation.file, invocation.args, {
-    encoding: "utf8",
-    timeout: NPM_INSTALL_TIMEOUT_MS,
-    env: { ...process.env },
-    windowsVerbatimArguments: invocation.windowsVerbatimArguments === true
+  return new Promise((resolve) => {
+    const child = spawn(invocation.file, invocation.args, {
+      env: { ...process.env },
+      windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments === true
+    });
+    const stdoutLines = [];
+    const stderrLines = [];
+    let forwarded = 0;
+
+    const forward = (line) => {
+      if (forwarded >= NPM_LOG_FORWARD_LIMIT) {
+        return;
+      }
+
+      forwarded += 1;
+      emitLog(
+        line.length > NPM_LOG_LINE_MAX_CHARS ? `${line.slice(0, NPM_LOG_LINE_MAX_CHARS)}…` : line
+      );
+    };
+
+    attachLineReader(child.stdout, (line) => {
+      stdoutLines.push(line);
+      forward(line);
+    });
+    attachLineReader(child.stderr, (line) => {
+      stderrLines.push(line);
+      forward(line);
+    });
+
+    const timer = setTimeout(() => {
+      logger.log("npm 执行超时，结束进程");
+      forward("npm 执行超时，已经结束安装进程。");
+      child.kill();
+    }, NPM_INSTALL_TIMEOUT_MS);
+
+    const settle = (status) => {
+      clearTimeout(timer);
+      resolve({
+        status,
+        stdout: stdoutLines.join("\n"),
+        stderr: stderrLines.join("\n")
+      });
+    };
+
+    child.on("close", (code) => settle(code === null ? EXIT_FAILURE : code));
+    child.on("error", (error) => {
+      stderrLines.push(error instanceof Error ? error.message : String(error));
+      settle(EXIT_FAILURE);
+    });
   });
 }
 
@@ -1262,7 +1345,7 @@ export async function runInstall(options, logger, deps = {}) {
 
     for (let index = 0; index < registryCandidates.length; index += 1) {
       const registry = registryCandidates[index];
-      const result = runNpm(
+      const result = await runNpm(
         npmPath,
         [
           "install",
