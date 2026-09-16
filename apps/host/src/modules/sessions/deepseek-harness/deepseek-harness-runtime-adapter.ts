@@ -14,6 +14,14 @@ import type { TaskManager } from "../../tasks/task-manager.js";
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
+/**
+ * turn/end 之后留给 Harness 接着开下一轮 turn 的静默窗口。
+ * 一个会话里 turn/end 只代表这一轮 turn 收尾，inbox 里还有消息时 Harness 会立刻开下一轮。
+ */
+const HARNESS_TERMINAL_QUIET_WINDOW_MS = 2_000;
+
+type DeepSeekHarnessTerminalEvent = Extract<DeepSeekHarnessBridgeEvent, { type: "terminal" }>;
+
 export interface DeepSeekHarnessRuntimeAdapterOptions {
   /** Host 持久化用户附件的目录；这些文件不要求位于工作区内。 */
   attachmentRootDir?: string;
@@ -119,6 +127,9 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
     let settled = false;
     let resolveCompleted!: () => void;
     const completed = new Promise<void>((resolve) => { resolveCompleted = resolve; });
+    // turn/end 先暂存：会话可能紧接着开下一轮 turn，确认静默之后才当成这一轮的终态。
+    let pendingTerminal: DeepSeekHarnessTerminalEvent | null = null;
+    let pendingTerminalTimer: ReturnType<typeof setTimeout> | null = null;
     // 事件桥的监听器本身是同步回调；这里串行化 sink，避免终止事件抢在工具结果落库之前完成。
     let pendingSinkEvents: Promise<void> = Promise.resolve();
     const enqueueSinkEvent = (event: Parameters<ProviderRuntimeEventSink["emit"]>[0]): Promise<void> => {
@@ -126,44 +137,84 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
       pendingSinkEvents = next.catch(() => undefined);
       return next;
     };
+    const clearPendingTerminal = (): void => {
+      if (pendingTerminalTimer) {
+        clearTimeout(pendingTerminalTimer);
+        pendingTerminalTimer = null;
+      }
+
+      pendingTerminal = null;
+    };
     const settle = () => {
       if (settled) return;
       settled = true;
+      clearPendingTerminal();
       closed?.close();
       resolveCompleted();
+    };
+    const emitTerminalEvent = (terminal: DeepSeekHarnessTerminalEvent): void => {
+      const terminalEvent = terminal.runningState === "completed"
+        ? { type: "complete" as const, status: "completed" as const, detail: terminal.detail }
+        : terminal.runningState === "interrupted"
+          ? {
+              type: "interrupted" as const,
+              status: "interrupted" as const,
+              detail: terminal.detail,
+              interruptSource: "runtime" as const
+            }
+          : {
+              type: "error" as const,
+              status: "failed" as const,
+              detail: terminal.detail ?? "Harness turn failed",
+              errorCode: terminal.errorCode ?? "HARNESS_TURN_FAILED"
+            };
+      void enqueueSinkEvent({ ...terminalEvent, providerSessionId, rawStoreRef })
+        .catch(() => undefined)
+        .finally(() => {
+          if (promptStarted) settle();
+        });
+    };
+    const flushPendingTerminal = (): void => {
+      if (pendingTerminalTimer) {
+        clearTimeout(pendingTerminalTimer);
+        pendingTerminalTimer = null;
+      }
+
+      const terminal = pendingTerminal;
+      pendingTerminal = null;
+
+      if (terminal) emitTerminalEvent(terminal);
     };
 
     const onEvent = (event: DeepSeekHarnessBridgeEvent) => {
       if (event.type === "message" && event.message) {
+        // 还在产出内容说明这一轮没结束，之前收到的 turn/end 不能当成整轮终态。
+        clearPendingTerminal();
         void enqueueSinkEvent({ type: "message", message: event.message, providerSessionId, rawStoreRef, rawEventRef: event.message.rawRef });
       } else if (event.type === "status") {
         if (event.running) {
+          clearPendingTerminal();
           void enqueueSinkEvent({ type: "status", status: "running", providerSessionId, rawStoreRef, detail: "Harness 正在运行" });
+        } else if (pendingTerminal) {
+          // Harness 明确说会话停了，暂存的 turn/end 可以立刻收尾，不用再等静默窗口。
+          flushPendingTerminal();
         }
       } else if (event.type === "terminal") {
-        const terminalEvent = event.runningState === "completed"
-          ? { type: "complete" as const, status: "completed" as const, detail: event.detail }
-          : event.runningState === "interrupted"
-            ? {
-                type: "interrupted" as const,
-                status: "interrupted" as const,
-                detail: event.detail,
-                interruptSource: "runtime" as const
-              }
-            : {
-                type: "error" as const,
-                status: "failed" as const,
-                detail: event.detail ?? "Harness turn failed",
-                errorCode: event.errorCode ?? "HARNESS_TURN_FAILED"
-              };
-        void enqueueSinkEvent({ ...terminalEvent, providerSessionId, rawStoreRef })
-          .catch(() => undefined)
-          .finally(() => {
-            if (promptStarted) settle();
-          });
+        pendingTerminal = event;
+
+        if (pendingTerminalTimer) {
+          clearTimeout(pendingTerminalTimer);
+        }
+
+        pendingTerminalTimer = setTimeout(flushPendingTerminal, HARNESS_TERMINAL_QUIET_WINDOW_MS);
       } else if (event.type === "error") {
         void enqueueSinkEvent({ type: "error", status: "failed", errorCode: "HARNESS_RUNTIME_ERROR", detail: event.detail, providerSessionId, rawStoreRef })
           .finally(settle);
+      } else if (event.type === "raw") {
+        // turn/start 说明 Harness 已经开了新的一轮，之前暂存的 turn/end 不能收尾。
+        if (isHarnessTurnStartEntry(event.event)) {
+          clearPendingTerminal();
+        }
       } else if ((event.type === "approval" || event.type === "question") && this.permissionRequestHandler) {
         void this.forwardPermissionRequest({
           sessionId: request.sessionId,
@@ -220,6 +271,9 @@ export class DeepSeekHarnessRuntimeAdapter implements ProviderRuntimeAdapter {
         if (settled) {
           throw new Error("SESSION_NOT_RUNNING");
         }
+
+        // 运行中提交说明会话还在继续，暂存的 turn/end 不能收尾这一轮。
+        clearPendingTerminal();
 
         const selection = await resolveImageModelSelection(client, providerSessionId!, options);
         if (selection) {
@@ -384,6 +438,18 @@ async function selectModelWithReasoningFallback(
 function isUnsupportedReasoningEffortError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /does not support reasoning effort\s+"[^"]+"/i.test(message);
+}
+
+/** mux 和 history 都会把 turn 事件包一层 `event`，这里两种形状都认。 */
+function isHarnessTurnStartEntry(input: unknown): boolean {
+  if (!input || typeof input !== "object") return false;
+
+  const record = input as Record<string, unknown>;
+  const entry = record.event && typeof record.event === "object"
+    ? record.event as Record<string, unknown>
+    : record;
+
+  return entry.type === "turn/start";
 }
 
 async function buildPromptContent(

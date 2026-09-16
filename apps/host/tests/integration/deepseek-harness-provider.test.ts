@@ -1007,6 +1007,65 @@ describe("DeepSeek Harness Web API", () => {
     expect(events.indexOf("text")).toBeLessThan(events.indexOf("complete"));
   });
 
+  it("turn/end 之后 Harness 接着开下一轮时不会提前结束这一轮 run", async () => {
+    fake = await createDeepSeekHarnessFakeServer();
+    const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
+    const adapter = new DeepSeekHarnessRuntimeAdapter(async () => client, createTaskManager());
+    const events: Array<Parameters<ProviderRuntimeEventSink["emit"]>[0]> = [];
+    const sink: ProviderRuntimeEventSink = {
+      emit: async (event) => { events.push(event); },
+      updateSessionBinding: vi.fn()
+    };
+    const request: ProviderRuntimeRunRequest = {
+      sessionId: "codingns-continue-turn",
+      workspaceId: "workspace-1",
+      workspacePath: "C:\\workspace",
+      provider: "deepseek-harness",
+      providerSessionId: null,
+      rawStoreRef: null,
+      options: {
+        content: "继续处理",
+        clientRequestId: null,
+        model: null,
+        reasoningLevel: null,
+        permissionMode: "ask",
+        providerPrompt: null,
+        attachments: []
+      }
+    };
+    let providerSessionId = "";
+    fake.setPromptHandler((sessionId) => {
+      providerSessionId = sessionId;
+      // 第 10 轮收尾后 Harness 紧接着开第 11 轮，之后长时间没有新输出。
+      fake?.emitMux({
+        type: "session/event",
+        sessionId,
+        event: { type: "turn/end", seq: 1, data: { turn: 10, reason: { kind: "completed" } } }
+      });
+      fake?.emitMux({
+        type: "session/event",
+        sessionId,
+        event: { type: "turn/start", seq: 2, data: { turn: 11 } }
+      });
+    });
+
+    const launch = await adapter.startSession(request, sink);
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+
+    // 第 11 轮还在跑，第 10 轮的 turn/end 不能把这一轮 run 结算掉。
+    expect(events.filter((event) => event.type === "complete")).toHaveLength(0);
+
+    fake.emitMux({
+      type: "session/event",
+      sessionId: providerSessionId,
+      event: { type: "turn/end", seq: 3, data: { turn: 11, reason: { kind: "completed" } } }
+    });
+    fake.emitHost({ type: "host/session-status", sessionId: providerSessionId, running: false });
+
+    await expect(launch.completed).resolves.toBeUndefined();
+    expect(events.filter((event) => event.type === "complete")).toHaveLength(1);
+  });
+
   it("上一轮已结束时不会沿用旧句柄提交下一轮，避免漏建下行订阅", async () => {
     fake = await createDeepSeekHarnessFakeServer();
     const client = new DeepSeekHarnessApiClient({ baseUrl: fake.baseUrl });
