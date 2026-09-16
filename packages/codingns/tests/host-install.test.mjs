@@ -22,6 +22,7 @@ import {
   resolveLogDirPath,
   resolveNpmInvocation,
   resolvePackageRootPath,
+  resolveHostWorkingDirectory,
   resolveRegistryCandidates,
   resolveStateFilePath,
   runAutostart,
@@ -103,6 +104,11 @@ function createInstallDeps(options = {}) {
       spawnDetachedHost: () => 4242,
       httpProbe: async () => options.healthy !== false,
       runShellCommand: () => ({ status: 0, stdout: "", stderr: "" }),
+      // 不探测真机上的进程：既慢，也可能误杀开发机正在跑的服务。
+      detectRunningHost: options.detectRunningHost ?? (() => null),
+      isProcessAlive: options.isProcessAlive ?? (() => false),
+      killProcess: options.killProcess ?? (() => {}),
+      waitForProcessExit: options.waitForProcessExit ?? (() => true),
       runNpmCommand: (file, args) => {
         const registryIndex = args.indexOf("--registry");
         const registry = registryIndex >= 0 ? args[registryIndex + 1] : "";
@@ -841,4 +847,140 @@ test("npm 退出码非零时原样带回状态码", async () => {
 
   assert.equal(result.status, 7);
   assert.match(result.stderr, /network timeout/);
+});
+
+test("服务进程的工作目录是数据目录，不是安装包目录", () => {
+  const dataDir = createTempDataDir();
+
+  assert.equal(resolveHostWorkingDirectory({ dataDir }), dataDir);
+  assert.notEqual(
+    resolveHostWorkingDirectory({ dataDir }),
+    path.join(dataDir, "runtime", "npm", "lib", "node_modules", "@jingyi0605", "codingns")
+  );
+
+  // 数据目录还没建出来时不给 cwd，避免 spawn 直接报 ENOENT。
+  assert.equal(resolveHostWorkingDirectory({ dataDir: path.join(dataDir, "missing") }), undefined);
+});
+
+test("装包之前先停掉正在运行的服务", async () => {
+  const dataDir = createTempDataDir();
+  const order = [];
+  const killed = [];
+  let alive = true;
+  const { deps } = createInstallDeps({
+    dataDir,
+    detectRunningHost: () => {
+      order.push("detect");
+      return { pid: 4321, commandLine: "node codingns.mjs start --data-dir ..." };
+    },
+    isProcessAlive: () => alive,
+    killProcess: (pid, signal) => {
+      killed.push([pid, signal]);
+      alive = false;
+    }
+  });
+  const baseRunNpm = deps.runNpmCommand;
+
+  const { value: exitCode, events } = await captureOutput(() =>
+    runInstall({ dataDir, port: "3002" }, createLoggerStub(), {
+      ...deps,
+      runNpmCommand: (file, args, logger) => {
+        order.push("npm");
+        return baseRunNpm(file, args, logger);
+      }
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+  assert.deepEqual(killed, [[4321, "SIGTERM"]], "旧服务应该被停掉");
+  assert.equal(order[0], "detect");
+  assert.ok(
+    order.indexOf("detect") < order.indexOf("npm"),
+    "必须在装包之前停服务，否则 npm 换不动被占用的目录"
+  );
+
+  const logs = events.filter((event) => event.type === "log").map((event) => event.message);
+  assert.ok(logs.some((line) => line.includes("先停掉了正在运行的服务")));
+});
+
+test("npm 报 EBUSY 时停掉占用者、用同一个源重试，而不是换镜像源", async () => {
+  const dataDir = createTempDataDir();
+  const registries = [];
+  let alive = false;
+  let attempts = 0;
+  const { deps } = createInstallDeps({
+    dataDir,
+    // 装之前没有服务在跑；第一次装包被占用挡住时占用者才出现（比如自启把它又拉起来了）。
+    detectRunningHost: () => (attempts === 0 ? null : { pid: 8888, commandLine: "node codingns.mjs start" }),
+    isProcessAlive: () => alive,
+    killProcess: () => {
+      alive = false;
+    }
+  });
+
+  const { value: exitCode, events } = await captureOutput(() =>
+    runInstall({ dataDir, port: "3002" }, createLoggerStub(), {
+      ...deps,
+      runNpmCommand: (file, args) => {
+        attempts += 1;
+        registries.push(args[args.indexOf("--registry") + 1]);
+
+        // 第一次被占用挡住，停掉占用者之后第二次装成功。
+        if (attempts === 1) {
+          alive = true;
+
+          return {
+            status: 1,
+            stdout: "",
+            stderr:
+              "npm error code EBUSY\nnpm error syscall rename\nnpm error EBUSY: resource busy or locked, rename '...\\@jingyi0605\\codingns' -> '...\\.codingns-CIU3aYFP'"
+          };
+        }
+
+        writeFakeInstalledPackage(path.join(dataDir, "runtime", "npm"), "2.1.0");
+
+        return { status: 0, stdout: "", stderr: "" };
+      }
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+  assert.equal(attempts, 2, "应该重试一次");
+  assert.deepEqual(registries, ["https://registry.npmjs.org", "https://registry.npmjs.org"]);
+
+  const logs = events.filter((event) => event.type === "log").map((event) => event.message);
+  assert.ok(logs.some((line) => line.includes("安装目录被别的进程占着")));
+  assert.ok(logs.some((line) => line.includes("已停掉占用安装目录的服务（pid 8888）")));
+  assert.ok(
+    !logs.some((line) => line.includes("换镜像源再试一次")),
+    "目录被占用换源没用，不该提示换源"
+  );
+});
+
+test("EBUSY 重试仍然失败时给出占用提示，而不是让用户去查网络", async () => {
+  const dataDir = createTempDataDir();
+  const { deps } = createInstallDeps({
+    dataDir,
+    detectRunningHost: () => null
+  });
+
+  const { value: exitCode, events } = await captureOutput(() =>
+    runInstall({ dataDir, port: "3002" }, createLoggerStub(), {
+      ...deps,
+      runNpmCommand: () => ({
+        status: 1,
+        stdout: "",
+        stderr: "npm error code EBUSY\nnpm error EBUSY: resource busy or locked, rename 'x' -> 'y'"
+      })
+    })
+  );
+
+  assert.equal(exitCode, EXIT_FAILURE);
+
+  const logs = events.filter((event) => event.type === "log").map((event) => event.message);
+  assert.ok(logs.some((line) => line.includes("安装目录一直被占用")));
+
+  const error = events.find((event) => event.type === "error");
+  assert.equal(error.code, "NPM_INSTALL_FAILED");
+  assert.match(error.detail, /EBUSY/);
 });

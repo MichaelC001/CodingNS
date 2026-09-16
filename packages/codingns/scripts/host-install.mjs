@@ -26,6 +26,8 @@ const DEFAULT_PACKAGE_NAME = "@jingyi0605/codingns";
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 const MIRROR_REGISTRY = "https://registry.npmmirror.com";
 const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+/** 被占用导致的安装失败，停掉占用者后等一会儿再试；Windows 释放文件句柄需要一点时间。 */
+const DIRECTORY_LOCK_RETRY_DELAY_MS = 2_000;
 /** npm 输出往界面转发多少行、每行最多多长，避免刷屏。 */
 const NPM_LOG_FORWARD_LIMIT = 120;
 const NPM_LOG_LINE_MAX_CHARS = 240;
@@ -487,10 +489,18 @@ export function isPrivateNodeBinary(dataDir, nodeBinary) {
   return path.resolve(nodeBinary).startsWith(`${path.resolve(privateNodeDir)}${path.sep}`);
 }
 
+/**
+ * 服务进程的工作目录。
+ * 不能用安装包本身：Windows 上子进程的 cwd 会把那个目录锁住，下次升级 npm 换包时报 EBUSY。
+ */
+export function resolveHostWorkingDirectory(context) {
+  return fs.existsSync(context.dataDir) ? context.dataDir : undefined;
+}
+
 export function spawnDetachedHost(context, logger) {
   const args = ["start", "--data-dir", normalizeNodePath(context.dataDir), "--port", String(context.port), "--host", context.listenHost];
   const child = spawn(normalizeNodePath(context.nodeBinary), [normalizeNodePath(context.cliEntryPath), ...args], {
-    cwd: context.packageRoot,
+    cwd: resolveHostWorkingDirectory(context),
     detached: true,
     stdio: "ignore",
     windowsHide: true
@@ -892,6 +902,54 @@ function stopRunningHost(context, options, logger, deps = {}) {
   logger.log("已停止服务进程", { pid: running.pid });
 
   return { stopped: true, pid: running.pid };
+}
+
+/**
+ * npm 报 EBUSY / "resource busy or locked" 说明安装目录被别的进程占着，
+ * 这是本地占用问题，换镜像源解决不了。
+ */
+function isDirectoryLockedError(text) {
+  return /EBUSY|resource busy or locked|errno -4082/i.test(String(text ?? ""));
+}
+
+/**
+ * 装之前先停掉上一份服务。
+ * 两个原因：Windows 上运行中的服务会锁住安装目录（npm 换包报 EBUSY）；
+ * 服务不停，新进程抢不到端口，健康检查会连到旧进程上，等于升级没生效。
+ */
+function stopPreviousHost(context, options, logger, deps = {}) {
+  const stop = deps.stopRunningHost ?? stopRunningHost;
+
+  try {
+    const result = stop(context, options, logger, deps);
+
+    if (result?.stopped) {
+      logger.log("安装前已停止旧服务", { pid: result.pid });
+    }
+
+    return result ?? { stopped: false, pid: null };
+  } catch (error) {
+    // 停不掉不该让安装直接中断，后面 npm 或健康检查会给出更具体的错。
+    logger.log("安装前停止旧服务失败", error instanceof Error ? error.message : String(error));
+
+    return { stopped: false, pid: null };
+  }
+}
+
+function buildNpmInstallArgs(prefix, packageSpec, registry) {
+  return [
+    "install",
+    "--global",
+    "--prefix",
+    prefix,
+    packageSpec,
+    "--registry",
+    registry,
+    "--no-audit",
+    "--no-fund",
+    "--loglevel",
+    "error"
+  ];
 }
 
 export async function runStart(options, logger, deps = {}) {
@@ -1336,39 +1394,47 @@ export async function runInstall(options, logger, deps = {}) {
   const attempts = [];
   const reuseExisting = options.reuseExisting === true;
   let installed = reuseExisting;
+  const stopContext = resolveAutostartContext({ ...options, dataDir, port });
 
   if (reuseExisting) {
     // install.sh 这类调用方已经自己把包装好了，这里只做校验和收尾。
     emitStep("install-package", "skipped", "复用已经装好的服务包");
   } else {
+    const previous = stopPreviousHost(stopContext, options, logger, deps);
+
+    if (previous.stopped) {
+      emitLog(`先停掉了正在运行的服务（pid ${previous.pid}），避免它占着安装目录。`);
+    }
+
     emitStep("install-package", "running", "安装服务包");
 
     for (let index = 0; index < registryCandidates.length; index += 1) {
       const registry = registryCandidates[index];
-      const result = await runNpm(
-        npmPath,
-        [
-          "install",
-          "--global",
-          "--prefix",
-          prefix,
-          packageSpec,
-          "--registry",
-          registry,
-          "--no-audit",
-          "--no-fund",
-          "--loglevel",
-          "error"
-        ],
-        logger
-      );
+      let result = await runNpm(npmPath, buildNpmInstallArgs(prefix, packageSpec, registry), logger);
+      let detail = result.status === 0 ? null : truncateText(result.stderr || result.stdout);
+
+      if (result.status !== 0 && isDirectoryLockedError(detail)) {
+        // 目录被占用不是网络问题，换源没用：先停掉占用者，再用同一个源试一次。
+        emitLog("安装目录被别的进程占着（EBUSY），先停掉服务再试一次。");
+
+        const blocker = stopPreviousHost(stopContext, options, logger, deps);
+
+        if (blocker.stopped) {
+          emitLog(`已停掉占用安装目录的服务（pid ${blocker.pid}）。`);
+        }
+
+        await delay(DIRECTORY_LOCK_RETRY_DELAY_MS);
+        result = await runNpm(npmPath, buildNpmInstallArgs(prefix, packageSpec, registry), logger);
+        detail = result.status === 0 ? null : truncateText(result.stderr || result.stdout);
+      }
+
       const succeeded = result.status === 0;
 
       attempts.push({
         registry,
         ok: succeeded,
         status: result.status,
-        detail: succeeded ? null : truncateText(result.stderr || result.stdout)
+        detail: succeeded ? null : detail
       });
 
       if (succeeded) {
@@ -1376,12 +1442,18 @@ export async function runInstall(options, logger, deps = {}) {
         break;
       }
 
+      const locked = isDirectoryLockedError(detail);
       const hasNextRegistry = index < registryCandidates.length - 1;
-      emitLog(
-        hasNextRegistry
-          ? `用 ${registry} 安装失败，换镜像源再试一次。`
-          : `用 ${registry} 安装失败。`
-      );
+
+      if (locked) {
+        emitLog("安装目录一直被占用，换镜像源没用；先确认没有别的 CodingNS 服务在跑，再重试。");
+      } else {
+        emitLog(
+          hasNextRegistry
+            ? `用 ${registry} 安装失败，换镜像源再试一次。`
+            : `用 ${registry} 安装失败。`
+        );
+      }
     }
 
     logger.log("npm 安装结束", attempts);
