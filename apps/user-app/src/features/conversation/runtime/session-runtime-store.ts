@@ -99,6 +99,10 @@ const SESSION_RUNTIME_MESSAGE_FLUSH_DELAY_MS = 16;
 const SESSION_RUNTIME_SNAPSHOT_PERSIST_DELAY_MS = 1_000;
 const TIMELINE_CODEX_EQUIVALENT_AUTHORITATIVE_WINDOW_MS = 2 * 60 * 1000;
 const TIMELINE_CODEX_EQUIVALENT_AUTHORITATIVE_SEQUENCE_WINDOW = 8;
+// 用户消息会同时从运行时事件和权威历史回流，两边的 rawRef 命名空间不同
+// （例如运行时 `.../message/<id>/part/<part>?part=1`、历史侧不带查询参数）。
+// 这里按内容和时间窗兜底，避免同一条用户消息在时间线上出现两次。
+const TIMELINE_EQUIVALENT_USER_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
 const TIMELINE_INTERNAL_ATTACHMENT_DEBUG_BLOCK_PATTERN =
   /\[\[CODINGNS_IMAGE_ATTACHMENTS\]\][\s\S]*?\[\[\/CODINGNS_IMAGE_ATTACHMENTS\]\]/g;
 const TIMELINE_INTERNAL_ATTACHMENT_DEBUG_TAIL_PATTERN =
@@ -3784,12 +3788,92 @@ function deriveTimelineMessages(
     merged = insertPendingMessage(merged, pending);
   }
 
-  return pinActiveRuntimeLiveMessagesToTail(
-    merged,
-    timeline.authoritativeMessages,
-    timeline.runtimeOverlayMessages,
-    timeline.activeRuntimeOverlayKeys
+  return collapseDuplicateTimelineUserMessages(
+    pinActiveRuntimeLiveMessagesToTail(
+      merged,
+      timeline.authoritativeMessages,
+      timeline.runtimeOverlayMessages,
+      timeline.activeRuntimeOverlayKeys
+    )
   );
+}
+
+/**
+ * 同一条用户消息可能同时以 pending、runtime 回放、权威历史三种身份进入时间线，
+ * 各 provider 的 rawRef 命名空间又不一样，逐层比对总会漏。
+ * 这里在渲染前做最后一次兜底：相邻且文案一致的重复用户消息只显示一条。
+ */
+function collapseDuplicateTimelineUserMessages(
+  messages: SessionMessageViewModel[]
+): SessionMessageViewModel[] {
+  if (messages.length < 2) {
+    return messages;
+  }
+
+  const collapsed: SessionMessageViewModel[] = [];
+
+  for (const message of messages) {
+    const previous = collapsed.at(-1);
+
+    if (previous && isDuplicateTimelineUserMessagePair(previous, message)) {
+      collapsed[collapsed.length - 1] = pickPreferredTimelineUserMessage(previous, message);
+      continue;
+    }
+
+    collapsed.push(message);
+  }
+
+  return collapsed.length === messages.length ? messages : collapsed;
+}
+
+function isDuplicateTimelineUserMessagePair(
+  previous: SessionMessageViewModel,
+  incoming: SessionMessageViewModel
+): boolean {
+  if (!isTimelineUserTextMessage(previous) || !isTimelineUserTextMessage(incoming)) {
+    return false;
+  }
+
+  // 发送失败的重试要保留两份，方便用户看到哪条没发出去。
+  if (previous.deliveryState === "failed" || incoming.deliveryState === "failed") {
+    return false;
+  }
+
+  // 两条本地待发消息是用户真的连发了两次，不是同一条的副本。
+  if (
+    previous.rawRef.startsWith("pending://")
+    && incoming.rawRef.startsWith("pending://")
+    && previous.clientRequestId !== incoming.clientRequestId
+  ) {
+    return false;
+  }
+
+  const previousContent = normalizeTimelineComparableUserMergeText(previous.content);
+
+  if (!previousContent || previousContent !== normalizeTimelineComparableUserMergeText(incoming.content)) {
+    return false;
+  }
+
+  const timestampDistance = Math.abs(
+    toTimelineBridgeTimestampMs(previous.timestamp) - toTimelineBridgeTimestampMs(incoming.timestamp)
+  );
+
+  return timestampDistance <= TIMELINE_EQUIVALENT_USER_MESSAGE_WINDOW_MS;
+}
+
+function pickPreferredTimelineUserMessage(
+  previous: SessionMessageViewModel,
+  incoming: SessionMessageViewModel
+): SessionMessageViewModel {
+  const previousIsPending = isTimelinePendingUserMessage(previous);
+  const incomingIsPending = isTimelinePendingUserMessage(incoming);
+
+  // 保留权威版本，pending/synthetic 只是本地占位，后续还会被替换。
+  if (previousIsPending !== incomingIsPending) {
+    return previousIsPending ? incoming : previous;
+  }
+
+  return previous;
 }
 
 function isTimelineLayersStateShallowEqual(
@@ -4427,12 +4511,18 @@ function findPreferredTimelineEquivalentMessageId(
     messagesById,
     incoming
   );
+  const equivalentUserMessageId = findMatchingTimelineEquivalentUserMessageId(
+    messagesById,
+    candidateMessageIds,
+    incoming
+  );
   const preferredEquivalentMessageId =
     equivalentPiMessageId
     ??
     equivalentRuntimeCodexMessageId
     ?? equivalentCodexMessageId
-    ?? equivalentOpenCodeMessageId;
+    ?? equivalentOpenCodeMessageId
+    ?? equivalentUserMessageId;
 
   if (!preferredEquivalentMessageId) {
     return null;
@@ -4453,6 +4543,86 @@ function findPreferredTimelineEquivalentMessageId(
   }
 
   return preferredEquivalentMessageId;
+}
+
+function findMatchingTimelineEquivalentUserMessageId(
+  messagesById: Map<string, SessionMessageViewModel>,
+  candidateMessageIds: Set<string>,
+  incoming: SessionMessageViewModel
+): string | null {
+  if (!isTimelineAuthoritativeUserTextMessage(incoming)) {
+    return null;
+  }
+
+  const incomingContent = normalizeTimelineComparableCodexText(incoming.content);
+  const relaxedIncomingContent = normalizeTimelineComparableUserMergeText(incoming.content);
+
+  if (!incomingContent && !relaxedIncomingContent) {
+    return null;
+  }
+
+  const incomingTimestampMs = toTimelineBridgeTimestampMs(incoming.timestamp);
+  const incomingAttachmentSignature = buildTimelineComparableMessageAttachmentSignature(incoming);
+  let matchedId: string | null = null;
+  let matchedScore = Number.POSITIVE_INFINITY;
+
+  for (const [messageId, current] of messagesById.entries()) {
+    if (
+      messageId === incoming.id
+      || !candidateMessageIds.has(messageId)
+      || !isTimelineAuthoritativeUserTextMessage(current)
+    ) {
+      continue;
+    }
+
+    const strictTextMatches =
+      normalizeTimelineComparableCodexText(current.content) === incomingContent;
+    const relaxedTextMatches =
+      normalizeTimelineComparableUserMergeText(current.content) === relaxedIncomingContent;
+
+    if (!strictTextMatches && !relaxedTextMatches) {
+      continue;
+    }
+
+    const timestampDistance = Math.abs(
+      toTimelineBridgeTimestampMs(current.timestamp) - incomingTimestampMs
+    );
+
+    if (timestampDistance > TIMELINE_EQUIVALENT_USER_MESSAGE_WINDOW_MS) {
+      continue;
+    }
+
+    const attachmentCompatibility = resolveTimelineAttachmentCompatibility(
+      buildTimelineComparableMessageAttachmentSignature(current),
+      incomingAttachmentSignature
+    );
+
+    if (attachmentCompatibility === "conflict") {
+      continue;
+    }
+
+    const score =
+      timestampDistance
+      + Math.abs(current.sequence - incoming.sequence) * 15_000
+      + (strictTextMatches ? 0 : 500)
+      + resolveTimelineAttachmentPenalty(attachmentCompatibility);
+
+    if (score < matchedScore) {
+      matchedId = messageId;
+      matchedScore = score;
+    }
+  }
+
+  if (matchedId) {
+    const matched = messagesById.get(matchedId) ?? null;
+
+    logSessionMessageDedupDebug("session.messages.user_equivalent_match", {
+      previous: matched ? summarizeTimelineBridgeMessageForDebug(matched) : null,
+      incoming: summarizeTimelineBridgeMessageForDebug(incoming)
+    });
+  }
+
+  return matchedId;
 }
 
 function findMatchingRuntimeOverlayEquivalentCodexMessageId(

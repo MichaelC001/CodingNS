@@ -147,7 +147,7 @@ function createTimelineLayersState(): TimelineLayersState {
 
 function createHistoryMessage(overrides: {
   messageId: string;
-  provider: "codex" | "claude-code" | "opencode" | "pi";
+  provider: "codex" | "claude-code" | "opencode" | "pi" | "command-code" | "deepseek-harness";
   providerSessionId: string;
   role: "user" | "assistant" | "tool" | "system";
   content: string;
@@ -566,6 +566,258 @@ describe("SessionRuntimeStore", () => {
     ]);
     expect(runtime.messages.at(-1)?.role).toBe("tool");
     expect(runtime.messages.at(-1)?.kind).toBe("tool_call");
+  });
+
+  // runtime 会把用户自己的 prompt 当事件回放，历史里还有一条权威副本。
+  // 两边的 rawRef 命名空间不同，这里要求按内容折叠，不能只认 provider 专属的 ref 规则。
+  const runtimeReplayUserMessageCases: Array<{
+    label: string;
+    provider: "opencode" | "command-code" | "deepseek-harness" | "pi";
+    runtimeRawRef: string;
+    historyRawRef: string;
+  }> = [
+    {
+      label: "opencode",
+      provider: "opencode",
+      runtimeRawRef: "opencode://session/ses-1/message/msg-user-1/part/prt-user-1?part=2001",
+      historyRawRef: "opencode://session/ses-1/message/msg-user-1/part/prt-user-1"
+    },
+    {
+      label: "command-code",
+      provider: "command-code",
+      runtimeRawRef: "command-code://stream/session-1#evt=12&kind=text",
+      historyRawRef: "command-code:///Users/jackson/.commandcode/projects/demo/abc.jsonl#line=3&part=0"
+    },
+    {
+      label: "deepseek-harness",
+      provider: "deepseek-harness",
+      runtimeRawRef: "harness://sid-1/stream#seq=2",
+      historyRawRef: "harness://sid-1#seq=2"
+    },
+    {
+      label: "pi",
+      provider: "pi",
+      runtimeRawRef: "pi:///Users/jackson/.pi/agent/sessions/demo/abc.jsonl#pi-event=7",
+      historyRawRef: "pi:///Users/jackson/.pi/agent/sessions/demo/abc.jsonl#index=5&block=0"
+    }
+  ];
+
+  for (const testCase of runtimeReplayUserMessageCases) {
+    it(`runtime 回放的用户消息会和权威历史里的同一条合并（${testCase.label}）`, () => {
+      const replayed = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+        type: "runtime.message",
+        source: "session.runtime_message",
+        message: {
+          id: `${testCase.label}-runtime-user`,
+          sessionId: "session-1",
+          role: "user",
+          kind: "text",
+          content: "列出当前目录文件",
+          toolCall: null,
+          attachments: [],
+          attachmentPayloads: null,
+          origin: null,
+          originRef: null,
+          timestamp: "2026-09-16T02:33:54.000Z",
+          sequence: 2,
+          rawRef: testCase.runtimeRawRef,
+          deliveryState: "sent",
+          clientRequestId: null
+        }
+      });
+
+      expect(replayed.messages).toHaveLength(1);
+
+      const merged = applyTimelineEventToLayers(replayed.timeline, "session-1", {
+        type: "history.merge",
+        source: "realtime_backfill",
+        replaceSnapshotSeed: false,
+        messages: [
+          createHistoryMessage({
+            messageId: `${testCase.label}-history-user`,
+            provider: testCase.provider,
+            providerSessionId: "raw-1",
+            role: "user",
+            content: "列出当前目录文件",
+            timestamp: "2026-09-16T02:33:54.314Z",
+            sequence: 1,
+            rawRef: testCase.historyRawRef
+          })
+        ]
+      });
+
+      expect(merged.validationIssues).toEqual([]);
+      expect(merged.timeline.runtimeOverlayMessages).toEqual([]);
+      expect(merged.messages.map((item) => item.id)).toEqual([`${testCase.label}-history-user`]);
+    });
+  }
+
+  it("同一句用户消息被 runtime 回放两次时只渲染一条", () => {
+    const first = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "dsh-runtime-user-1",
+        sessionId: "session-1",
+        role: "user",
+        kind: "text",
+        content: "写一篇200字的笑话",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:04:00.000Z",
+        sequence: 2,
+        rawRef: "harness://sid-1/stream#seq=2",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    const second = applyTimelineEventToLayers(first.timeline, "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "dsh-runtime-user-2",
+        sessionId: "session-1",
+        role: "user",
+        kind: "text",
+        content: "写一篇200字的笑话",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:04:01.400Z",
+        sequence: 3,
+        rawRef: "harness://sid-1/stream#seq=3",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    expect(second.messages.map((item) => item.id)).toEqual(["dsh-runtime-user-1"]);
+  });
+
+  it("用户连发两条相同文案的本地待发消息时不会被合并", () => {
+    const first = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "pending.insert",
+      source: "probe",
+      pending: {
+        ...createPendingMessage("session-1", "继续", "client-1"),
+        timestamp: "2026-09-16T03:04:00.000Z",
+        sequence: 1
+      }
+    });
+
+    const second = applyTimelineEventToLayers(first.timeline, "session-1", {
+      type: "pending.insert",
+      source: "probe",
+      pending: {
+        ...createPendingMessage("session-1", "继续", "client-2"),
+        timestamp: "2026-09-16T03:04:01.000Z",
+        sequence: 2
+      }
+    });
+
+    expect(second.messages.map((item) => item.id)).toEqual([
+      "pending-client-1",
+      "pending-client-2"
+    ]);
+  });
+
+  it("两次相同文案的用户消息之间隔着 assistant 正文时不会被合并", () => {
+    const result = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "history.merge",
+      source: "realtime_backfill",
+      replaceSnapshotSeed: false,
+      messages: [
+        createHistoryMessage({
+          messageId: "dsh-user-1",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "user",
+          content: "继续",
+          timestamp: "2026-09-16T03:04:00.000Z",
+          sequence: 1,
+          rawRef: "harness://sid-1#seq=1"
+        }),
+        createHistoryMessage({
+          messageId: "dsh-assistant-1",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "assistant",
+          content: "已经写完了",
+          timestamp: "2026-09-16T03:04:01.000Z",
+          sequence: 2,
+          rawRef: "harness://sid-1#seq=2"
+        }),
+        createHistoryMessage({
+          messageId: "dsh-user-2",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "user",
+          content: "继续",
+          timestamp: "2026-09-16T03:04:02.000Z",
+          sequence: 3,
+          rawRef: "harness://sid-1#seq=3"
+        })
+      ]
+    });
+
+    expect(result.messages.map((item) => item.id)).toEqual([
+      "dsh-user-1",
+      "dsh-assistant-1",
+      "dsh-user-2"
+    ]);
+  });
+
+  it("文案相同但没有时间关联的 runtime 用户消息不会被误合并", () => {
+    const seeded = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "history.merge",
+      source: "realtime_backfill",
+      replaceSnapshotSeed: false,
+      messages: [
+        createHistoryMessage({
+          messageId: "command-code-history-user-1",
+          provider: "command-code",
+          providerSessionId: "raw-1",
+          role: "user",
+          content: "列出当前目录文件",
+          timestamp: "2026-09-16T02:00:00.000Z",
+          sequence: 1,
+          rawRef: "command-code:///Users/jackson/.commandcode/projects/demo/abc.jsonl#line=3&part=0"
+        })
+      ]
+    });
+
+    const replayed = applyTimelineEventToLayers(seeded.timeline, "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "command-code-runtime-user-2",
+        sessionId: "session-1",
+        role: "user",
+        kind: "text",
+        content: "列出当前目录文件",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T02:33:54.000Z",
+        sequence: 2,
+        rawRef: "command-code://stream/session-1#evt=40&kind=text",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    expect(replayed.messages.map((item) => item.id)).toEqual([
+      "command-code-history-user-1",
+      "command-code-runtime-user-2"
+    ]);
   });
 
   it("权威历史追上后会清掉已吸收的 runtime assistant overlay，避免旧流式消息继续参与排序", () => {
