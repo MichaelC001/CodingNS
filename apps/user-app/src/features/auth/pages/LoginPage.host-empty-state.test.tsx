@@ -285,6 +285,19 @@ describe("LoginPage 连不上服务时的首屏引导", () => {
     });
   });
 
+  it("探测还没返回时首屏就已经渲染，不被探活阻塞", async () => {
+    useDesktopRuntime();
+    global.fetch = vi.fn(
+      () => new Promise<Response>(() => undefined)
+    ) as typeof fetch;
+
+    renderLoginPage();
+
+    expect(await screen.findByLabelText(t("auth.password"))).toBeInTheDocument();
+    expect(screen.getByText("CodingNS")).toBeInTheDocument();
+    expect(screen.queryByText(t("auth.hostConnectionEmptyTitle"))).not.toBeInTheDocument();
+  });
+
   it("重新检测会再探一次当前地址，恢复后回到登录表单", async () => {
     useDesktopRuntime();
 

@@ -390,6 +390,7 @@ export function SettingsPage() {
 }
 
 function DesktopSettingsPage({ model, appVersion }: { model: SettingsPageModel; appVersion: string }) {
+  const navigate = useNavigate();
   const [showParallelTaskDebug, setShowParallelTaskDebug] = useState(false);
   const [remoteAccessModalOpen, setRemoteAccessModalOpen] = useState(false);
   const [pluginManagementModalOpen, setPluginManagementModalOpen] = useState(false);
@@ -568,6 +569,26 @@ function DesktopSettingsPage({ model, appVersion }: { model: SettingsPageModel; 
                   />
                 </div>
               </div>
+
+              {platform.platform === "desktop" ? (
+                <div className="settings-row">
+                  <div className="settings-row-label">
+                    <span className="settings-row-title">{t("settings.localHostInstall")}</span>
+                    <span className="settings-row-description">
+                      {t("settings.localHostInstallDescription")}
+                    </span>
+                  </div>
+                  <div className="settings-row-control">
+                    <button
+                      className="settings-button"
+                      type="button"
+                      onClick={() => navigate("/setup?role=server")}
+                    >
+                      {t("settings.localHostInstallAction")}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </section>
         ) : null}

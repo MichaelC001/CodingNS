@@ -2,6 +2,7 @@ export type RuntimePlatform = "desktop" | "web" | "ios" | "android";
 export type ReleaseChannel = "stable" | "beta";
 export type AppLanguage = "zh-CN" | "en-US";
 export type ClientPermissionMode = "default" | "acceptEdits" | "bypassPermissions";
+export type OnboardingRole = "client" | "server";
 export type HostProfileKind = "local" | "lan" | "remote" | "custom";
 export type HostCandidateEndpointKind = "relay" | "lan" | "loopback" | "tailscale" | "custom";
 export type LocalHostDiscoveryStatus =
@@ -95,6 +96,8 @@ export interface ClientRuntimeConfig {
   autoDownloadUpdate: boolean;
   language: AppLanguage;
   defaultPermissionMode: ClientPermissionMode;
+  onboardingCompletedAt: string | null;
+  onboardingRole: OnboardingRole | null;
 }
 
 export interface ClientRuntimeConfigPatch extends Partial<ClientRuntimeConfig> {}
@@ -116,6 +119,79 @@ export interface DesktopBridgeResult<T = void> {
   value?: T;
   errorCode?: string;
   detail?: string;
+}
+
+export type HostEndpointProbeKind = "codingns" | "other" | "unreachable";
+
+export interface HostEndpointProbeResult {
+  reachable: boolean;
+  kind: HostEndpointProbeKind;
+  version: string | null;
+  detail: string | null;
+}
+
+export interface HostEndpointProbeInput {
+  baseUrl: string;
+  timeoutMs?: number;
+}
+
+export type HostSetupNodeStatus = "system" | "private" | "missing" | "probing";
+
+export interface HostSetupPortCheck {
+  port: number;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface HostSetupExistingInstall {
+  packageVersion: string | null;
+  packageRoot: string | null;
+  installPrefix: string | null;
+  port: number | null;
+  dataDir: string | null;
+  autostartEnabled: boolean;
+  autostartKind: string | null;
+  autostartPath: string | null;
+  running: boolean;
+}
+
+export interface HostSetupEnvironmentSnapshot {
+  platform: string;
+  arch: string;
+  nodeStatus: HostSetupNodeStatus;
+  nodeVersion: string | null;
+  nodePath: string | null;
+  nodeUsable: boolean;
+  plannedNodeVersion: string;
+  downloadSizeBytes: number | null;
+  existingInstall: HostSetupExistingInstall | null;
+  portCheck: HostSetupPortCheck;
+  dataDir: string;
+  dataDirExists: boolean;
+}
+
+export interface HostSetupEnvironmentInput {
+  port?: number;
+  dataDir?: string;
+}
+
+export interface HostInstallerOptions {
+  port?: number;
+  dataDir?: string;
+  listenHost?: string;
+  autostart?: boolean;
+  reuseExisting?: boolean;
+  registry?: string;
+  package?: string;
+  version?: string;
+}
+
+export interface HostInstallerRunResult {
+  taskId: string;
+}
+
+export interface HostInstallerCancelResult {
+  cancelled: boolean;
 }
 
 export interface DesktopPlatformInfo {

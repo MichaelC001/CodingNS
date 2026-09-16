@@ -14,6 +14,7 @@ import { LoginPage } from "../features/auth/pages/LoginPage";
 import { TrustedEntryLandingPage } from "../features/auth/pages/TrustedEntryLandingPage";
 import { useAuthSelector } from "../features/auth/store/auth-store";
 import { BUTLER_FEATURE_ENABLED } from "../features/butler/butler-feature-status";
+import { OnboardingEntryGuard } from "../features/setup/components/OnboardingEntryGuard";
 import { resolveWorkbenchShellMode } from "../features/workbench/components/workbench-shell-mode";
 import { usePlatform } from "../platform/platform-provider";
 import { shouldShowTrustedEntryLanding } from "../config/trusted-entry-mode";
@@ -121,7 +122,8 @@ function lazyRouteComponent<T extends Record<string, unknown>, K extends keyof T
   };
 }
 
-const appRoutes = [
+// 会受首次运行向导入口判定影响的路由：判定没走完之前，这些页面都可能被换成向导。
+const onboardingGuardedRoutes = [
   {
     path: "/bootstrap",
     lazy: lazyRouteComponent(
@@ -132,20 +134,6 @@ const appRoutes = [
   {
     path: "/login",
     element: <TrustedEntryAwareLoginPage />
-  },
-  {
-    path: "/connect/:tunnelDomain",
-    lazy: lazyRouteComponent(
-      () => import("../features/auth/pages/RelayConnectEntryPage"),
-      "RelayConnectEntryPage"
-    )
-  },
-  {
-    path: "/desktop-window-preview",
-    lazy: lazyRouteComponent(
-      () => import("../features/desktop-window/DesktopDetachPreviewPage"),
-      "DesktopDetachPreviewPage"
-    )
   },
   {
     path: "/",
@@ -328,6 +316,35 @@ const appRoutes = [
         ]
       }
     ]
+  }
+];
+
+// 向导入口本身、中继连接页和桌面窗口预览不走守卫，避免打断这些独立流程。
+const appRoutes = [
+  {
+    path: "/setup",
+    lazy: lazyRouteComponent(
+      () => import("../features/setup/pages/SetupWizardPage"),
+      "SetupWizardPage"
+    )
+  },
+  {
+    path: "/connect/:tunnelDomain",
+    lazy: lazyRouteComponent(
+      () => import("../features/auth/pages/RelayConnectEntryPage"),
+      "RelayConnectEntryPage"
+    )
+  },
+  {
+    path: "/desktop-window-preview",
+    lazy: lazyRouteComponent(
+      () => import("../features/desktop-window/DesktopDetachPreviewPage"),
+      "DesktopDetachPreviewPage"
+    )
+  },
+  {
+    element: <OnboardingEntryGuard />,
+    children: onboardingGuardedRoutes
   }
 ];
 

@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_HOST_PROFILE_ID } from "./client-config-types";
-import { loadClientRuntimeConfig } from "./client-config-service";
+import {
+  buildLocalHostProfile,
+  LOCAL_HOST_PROFILE_ID,
+  loadClientRuntimeConfig,
+  normalizeClientRuntimeConfigSnapshot,
+  persistClientRuntimeConfig
+} from "./client-config-service";
 import { createPlatformAdapter } from "../platform/platform-adapter";
 
 vi.mock("../platform/platform-adapter", () => ({
@@ -256,6 +262,75 @@ describe("client-config-service", () => {
     expect(config.hosts[0].updatedAt).toBe("2026-06-13T09:00:00.000Z");
   });
 
+  it("向导完成标记会写进桌面配置，并能从桌面配置读回来", async () => {
+    const adapter = createMockAdapter({ platform: "desktop", isDesktop: true });
+    vi.mocked(createPlatformAdapter).mockReturnValue(adapter);
+
+    const config = await loadClientRuntimeConfig();
+    const nextConfig = await persistClientRuntimeConfig(config, {
+      onboardingCompletedAt: "2026-09-16T01:00:00.000Z",
+      onboardingRole: "server"
+    });
+
+    expect(nextConfig.onboardingCompletedAt).toBe("2026-09-16T01:00:00.000Z");
+    expect(nextConfig.onboardingRole).toBe("server");
+
+    const writeDesktopConfig = (
+      adapter as unknown as { bridge: { writeDesktopConfig: ReturnType<typeof vi.fn> } }
+    ).bridge.writeDesktopConfig;
+
+    expect(writeDesktopConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onboardingCompletedAt: "2026-09-16T01:00:00.000Z",
+        onboardingRole: "server"
+      })
+    );
+
+    window.localStorage.clear();
+    vi.mocked(createPlatformAdapter).mockReturnValue(
+      createMockAdapter({
+        platform: "desktop",
+        isDesktop: true,
+        desktopConfig: {
+          onboardingCompletedAt: "2026-09-16T01:00:00.000Z",
+          onboardingRole: "server"
+        }
+      })
+    );
+
+    const reloaded = await loadClientRuntimeConfig();
+
+    expect(reloaded.onboardingCompletedAt).toBe("2026-09-16T01:00:00.000Z");
+    expect(reloaded.onboardingRole).toBe("server");
+  });
+
+  it("桌面配置里的向导角色取值非法时按未设置处理", async () => {
+    vi.mocked(createPlatformAdapter).mockReturnValue(
+      createMockAdapter({
+        platform: "desktop",
+        isDesktop: true,
+        desktopConfig: {
+          onboardingCompletedAt: "2026-09-16T01:00:00.000Z",
+          onboardingRole: "root"
+        }
+      })
+    );
+
+    const config = await loadClientRuntimeConfig();
+
+    expect(config.onboardingCompletedAt).toBe("2026-09-16T01:00:00.000Z");
+    expect(config.onboardingRole).toBeNull();
+  });
+
+  it("没有配置过向导时，启动配置里的完成标记为空", async () => {
+    vi.mocked(createPlatformAdapter).mockReturnValue(createMockAdapter({ platform: "desktop" }));
+
+    const config = await loadClientRuntimeConfig();
+
+    expect(config.onboardingCompletedAt).toBeNull();
+    expect(config.onboardingRole).toBeNull();
+  });
+
   it("会按归一化后的 URL 去重 relay 候选入口", async () => {
     window.localStorage.setItem(
       "codingns.client.runtime-config",
@@ -347,5 +422,32 @@ describe("client-config-service", () => {
         source: "host_reported"
       }
     ]);
+  });
+});
+
+describe("本机服务 host profile", () => {
+  it("第一次写会新增 local-host，重复写只更新同一个", () => {
+    const config = normalizeClientRuntimeConfigSnapshot(
+      { platform: "desktop", hostBaseUrl: "http://127.0.0.1:3002" },
+      "desktop"
+    );
+
+    const firstPatch = buildLocalHostProfile(config, { baseUrl: "http://127.0.0.1:4199" });
+
+    expect(firstPatch.activeHostId).toBe(LOCAL_HOST_PROFILE_ID);
+    expect(firstPatch.hosts).toHaveLength(config.hosts.length + 1);
+
+    const installed = firstPatch.hosts?.find((host) => host.id === LOCAL_HOST_PROFILE_ID);
+    expect(installed?.baseUrl).toBe("http://127.0.0.1:4199");
+    expect(installed?.kind).toBe("local");
+    expect(installed?.lastConnectedAt).toBeTruthy();
+
+    const mergedConfig = { ...config, ...firstPatch } as typeof config;
+    const secondPatch = buildLocalHostProfile(mergedConfig, { baseUrl: "http://127.0.0.1:4300" });
+
+    expect(secondPatch.hosts).toHaveLength(mergedConfig.hosts.length);
+    expect(secondPatch.hosts?.find((host) => host.id === LOCAL_HOST_PROFILE_ID)?.baseUrl).toBe(
+      "http://127.0.0.1:4300"
+    );
   });
 });

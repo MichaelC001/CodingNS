@@ -11,6 +11,7 @@ import {
   type HostProfileKind,
   type LegacyClientRuntimeConfigSnapshot,
   type LocalHostDiscoveryState,
+  type OnboardingRole,
   type RuntimePlatform
 } from "./client-config-types";
 import { syncRememberedLoginServerBaseUrl } from "../features/auth/store/remembered-login";
@@ -52,6 +53,14 @@ function normalizePermissionMode(value?: string | null): ClientPermissionMode {
   }
 
   return "default";
+}
+
+function normalizeOnboardingRole(value?: string | null): OnboardingRole | null {
+  if (value === "client" || value === "server") {
+    return value;
+  }
+
+  return null;
 }
 
 function canUseLocalStorage(): boolean {
@@ -548,7 +557,9 @@ function createDefaultConfig(platform: RuntimePlatform): ClientRuntimeConfig {
     autoCheckUpdate: platform === "desktop",
     autoDownloadUpdate: false,
     language: detectBrowserLanguage(),
-    defaultPermissionMode: "default"
+    defaultPermissionMode: "default",
+    onboardingCompletedAt: null,
+    onboardingRole: null
   };
 }
 
@@ -602,7 +613,10 @@ function mergeConfig(
       language: normalizeLanguage(patch.language ?? baseConfig.language),
       defaultPermissionMode: normalizePermissionMode(
         patch.defaultPermissionMode ?? baseConfig.defaultPermissionMode
-      )
+      ),
+      onboardingCompletedAt:
+        normalizeString(patch.onboardingCompletedAt) ?? baseConfig.onboardingCompletedAt,
+      onboardingRole: normalizeOnboardingRole(patch.onboardingRole) ?? baseConfig.onboardingRole
     };
   }
 
@@ -643,7 +657,10 @@ function mergeConfig(
     language: normalizeLanguage(patch.language ?? baseConfig.language),
     defaultPermissionMode: normalizePermissionMode(
       patch.defaultPermissionMode ?? baseConfig.defaultPermissionMode
-    )
+    ),
+    onboardingCompletedAt:
+      normalizeString(patch.onboardingCompletedAt) ?? baseConfig.onboardingCompletedAt,
+    onboardingRole: normalizeOnboardingRole(patch.onboardingRole) ?? baseConfig.onboardingRole
   };
 }
 
@@ -661,7 +678,9 @@ function stripRuntimeConfigForPersistence(config: ClientRuntimeConfig): Omit<
     autoCheckUpdate: config.autoCheckUpdate,
     autoDownloadUpdate: config.autoDownloadUpdate,
     language: config.language,
-    defaultPermissionMode: config.defaultPermissionMode
+    defaultPermissionMode: config.defaultPermissionMode,
+    onboardingCompletedAt: config.onboardingCompletedAt,
+    onboardingRole: config.onboardingRole
   };
 }
 
@@ -670,6 +689,36 @@ export function normalizeClientRuntimeConfigSnapshot(
   platform: RuntimePlatform
 ): ClientRuntimeConfig {
   return mergeConfig(createDefaultConfig(platform), snapshot as RuntimeConfigPatchInput);
+}
+
+/** 本机服务的固定 HOST id：装完服务后写这个，重复安装只更新不新增。 */
+export const LOCAL_HOST_PROFILE_ID = "local-host";
+
+export function buildLocalHostProfile(
+  config: ClientRuntimeConfig,
+  input: { baseUrl: string; name?: string }
+): ClientRuntimeConfigPatch {
+  const normalizedBaseUrl = normalizeServerBaseUrl(input.baseUrl);
+  const now = nowIsoString();
+  const existingHost = config.hosts.find((host) => host.id === LOCAL_HOST_PROFILE_ID) ?? null;
+  const profile = createHostProfile(normalizedBaseUrl, now, {
+    ...(existingHost ?? {}),
+    id: LOCAL_HOST_PROFILE_ID,
+    name: input.name ?? existingHost?.name ?? buildDefaultHostName(normalizedBaseUrl),
+    kind: "local",
+    createdAt: existingHost?.createdAt ?? now,
+    updatedAt: now,
+    lastConnectedAt: now
+  });
+  const hosts = existingHost
+    ? config.hosts.map((host) => (host.id === LOCAL_HOST_PROFILE_ID ? profile : host))
+    : [...config.hosts, profile];
+
+  return {
+    hosts,
+    activeHostId: LOCAL_HOST_PROFILE_ID,
+    activeDiscoveredHostId: null
+  };
 }
 
 export async function loadClientRuntimeConfig(): Promise<ClientRuntimeConfig> {

@@ -37687,3 +37687,432 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
   color: var(--text-secondary);
 }
+
+/* ========================================
+   First-run Setup Wizard
+   ======================================== */
+
+.setup-wizard-page {
+  display: flex;
+  min-height: 100vh;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 24px;
+  background: var(--bg-primary);
+}
+
+.setup-wizard-shell {
+  width: min(680px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.setup-wizard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.setup-wizard-heading h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.setup-wizard-heading p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-skip {
+  flex-shrink: 0;
+}
+
+.setup-wizard-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-wizard-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-step[data-state="current"] {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.setup-wizard-step[data-state="pending"] {
+  opacity: 0.6;
+}
+
+.setup-wizard-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border-primary);
+  font-size: 12px;
+}
+
+.setup-wizard-step[data-state="current"] .setup-wizard-step-index {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.setup-wizard-content {
+  padding: 24px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+
+.setup-wizard-section-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.setup-wizard-section-description {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-local-host {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.setup-wizard-local-host-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.setup-wizard-local-host-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.setup-wizard-local-host-description {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-local-host-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--error, var(--text-secondary));
+}
+
+.setup-wizard-role-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.setup-wizard-role-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 16px;
+  text-align: left;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.setup-wizard-role-option:hover {
+  border-color: var(--app-button-border-hover);
+  background: var(--app-button-bg-hover);
+}
+
+.setup-wizard-role-option[data-selected="true"] {
+  border-color: var(--accent);
+}
+
+.setup-wizard-role-option-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.setup-wizard-role-option-description {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-mode-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.setup-wizard-field {
+  margin-bottom: 16px;
+}
+
+.setup-wizard-test-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.setup-wizard-test-result {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-test-result[data-tone="success"] {
+  color: var(--success, var(--text-primary));
+}
+
+.setup-wizard-test-result[data-tone="error"] {
+  color: var(--error, var(--text-secondary));
+}
+
+.setup-wizard-status {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-status[data-tone="muted"] {
+  color: var(--text-secondary);
+}
+
+.setup-wizard-status[data-tone="success"] {
+  color: var(--success, var(--text-primary));
+}
+
+.setup-wizard-status[data-tone="error"] {
+  color: var(--error, var(--text-secondary));
+}
+
+.setup-wizard-facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 18px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.setup-wizard-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.setup-wizard-fact dt {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-fact dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.setup-wizard-fact dd[data-tone="success"] {
+  color: var(--success, var(--text-primary));
+}
+
+.setup-wizard-fact dd[data-tone="error"] {
+  color: var(--error, var(--text-secondary));
+}
+
+.setup-wizard-field-row {
+  display: flex;
+  gap: 8px;
+}
+
+.setup-wizard-field-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.setup-wizard-field-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-field-error {
+  font-size: 12px;
+  color: var(--error, var(--text-secondary));
+}
+
+.setup-wizard-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-primary);
+  cursor: pointer;
+}
+
+.setup-wizard-switch-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setup-wizard-switch-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.setup-wizard-switch-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-install-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-wizard-install-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-install-step[data-status="running"] {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.setup-wizard-install-step[data-status="done"] {
+  color: var(--text-secondary);
+}
+
+.setup-wizard-install-step[data-status="failed"] {
+  color: var(--error, var(--text-secondary));
+}
+
+.setup-wizard-install-step-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-download {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-install-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.setup-wizard-install-detail {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.setup-wizard-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.setup-wizard-logs-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.setup-wizard-logs-body {
+  max-height: 200px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  overflow-y: auto;
+}
+
+.setup-wizard-log-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.setup-wizard-placeholder p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.setup-wizard-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}

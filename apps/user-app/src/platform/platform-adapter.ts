@@ -11,6 +11,14 @@ import type {
   DesktopRuntimeInfo,
   DesktopUpdateDownloadResult,
   DesktopUpdateInstallResult,
+  HostEndpointProbeInput,
+  HostEndpointProbeResult,
+  HostInstallerCancelResult,
+  HostInstallerOptions,
+  HostInstallerRunResult,
+  HostSetupEnvironmentInput,
+  HostSetupEnvironmentSnapshot,
+  HostSetupExistingInstall,
   ReleaseChannel,
   RuntimePlatform
 } from "../config/client-config-types";
@@ -68,6 +76,19 @@ export interface DesktopShellBridge {
   readDesktopConfig(): Promise<DesktopBridgeResult<Partial<ClientRuntimeConfig>>>;
   writeDesktopConfig(config: ClientRuntimeConfigPatch): Promise<DesktopBridgeResult>;
   scanLocalHosts(): Promise<DesktopBridgeResult<DesktopLocalHostProcessHit[]>>;
+  probeHostEndpoint(
+    input: HostEndpointProbeInput
+  ): Promise<DesktopBridgeResult<HostEndpointProbeResult>>;
+  probeHostSetupEnvironment(
+    input: HostSetupEnvironmentInput
+  ): Promise<DesktopBridgeResult<HostSetupEnvironmentSnapshot>>;
+  runHostInstaller(
+    options: HostInstallerOptions
+  ): Promise<DesktopBridgeResult<HostInstallerRunResult>>;
+  cancelHostInstaller(taskId: string): Promise<DesktopBridgeResult<HostInstallerCancelResult>>;
+  getHostInstallState(
+    dataDir?: string
+  ): Promise<DesktopBridgeResult<HostSetupExistingInstall | null>>;
   getRuntimeInfo(): Promise<DesktopBridgeResult<DesktopRuntimeInfo>>;
   checkForUpdate(channel: ReleaseChannel): Promise<DesktopBridgeResult<DesktopReleaseState>>;
   downloadUpdate(channel: ReleaseChannel): Promise<DesktopUpdateDownloadResult>;
@@ -378,6 +399,26 @@ class WebDesktopShellBridge implements DesktopShellBridge {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
 
+  probeHostEndpoint(): Promise<DesktopBridgeResult<HostEndpointProbeResult>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  probeHostSetupEnvironment(): Promise<DesktopBridgeResult<HostSetupEnvironmentSnapshot>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  runHostInstaller(): Promise<DesktopBridgeResult<HostInstallerRunResult>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  cancelHostInstaller(): Promise<DesktopBridgeResult<HostInstallerCancelResult>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  getHostInstallState(): Promise<DesktopBridgeResult<HostSetupExistingInstall | null>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
   getRuntimeInfo(): Promise<DesktopBridgeResult<DesktopRuntimeInfo>> {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
@@ -516,6 +557,40 @@ class TauriDesktopShellBridge implements DesktopShellBridge {
 
   scanLocalHosts(): Promise<DesktopBridgeResult<DesktopLocalHostProcessHit[]>> {
     return invokeDesktopCommand("scan_local_hosts");
+  }
+
+  probeHostEndpoint(
+    input: HostEndpointProbeInput
+  ): Promise<DesktopBridgeResult<HostEndpointProbeResult>> {
+    return invokeDesktopCommand("probe_host_endpoint", {
+      baseUrl: input.baseUrl,
+      timeoutMs: input.timeoutMs
+    });
+  }
+
+  probeHostSetupEnvironment(
+    input: HostSetupEnvironmentInput
+  ): Promise<DesktopBridgeResult<HostSetupEnvironmentSnapshot>> {
+    return invokeDesktopCommand("probe_host_setup_environment", {
+      port: input.port,
+      dataDir: input.dataDir
+    });
+  }
+
+  runHostInstaller(
+    options: HostInstallerOptions
+  ): Promise<DesktopBridgeResult<HostInstallerRunResult>> {
+    return invokeDesktopCommand("run_host_installer", { options });
+  }
+
+  cancelHostInstaller(taskId: string): Promise<DesktopBridgeResult<HostInstallerCancelResult>> {
+    return invokeDesktopCommand("cancel_host_installer", { taskId });
+  }
+
+  getHostInstallState(
+    dataDir?: string
+  ): Promise<DesktopBridgeResult<HostSetupExistingInstall | null>> {
+    return invokeDesktopCommand("get_host_install_state", { dataDir });
   }
 
   getRuntimeInfo(): Promise<DesktopBridgeResult<DesktopRuntimeInfo>> {
@@ -674,6 +749,26 @@ class TauriMobileShellBridge implements DesktopShellBridge {
   }
 
   scanLocalHosts(): Promise<DesktopBridgeResult<DesktopLocalHostProcessHit[]>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  probeHostEndpoint(): Promise<DesktopBridgeResult<HostEndpointProbeResult>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  probeHostSetupEnvironment(): Promise<DesktopBridgeResult<HostSetupEnvironmentSnapshot>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  runHostInstaller(): Promise<DesktopBridgeResult<HostInstallerRunResult>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  cancelHostInstaller(): Promise<DesktopBridgeResult<HostInstallerCancelResult>> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  getHostInstallState(): Promise<DesktopBridgeResult<HostSetupExistingInstall | null>> {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
 
