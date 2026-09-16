@@ -504,15 +504,21 @@ async function main() {
     `回显 ${echoed.length} 字符，一致=${echoed === wsPayload}`
   );
 
-  // 4) W2.3：真实连接上链路类型应判为直连（两端都在本机，候选不含 relay）
+  // 4) W2.3：真实连接上必须报出链路类型
+  //
+  // 不要写死成 p2p：同一个脚本既要在本机直连（候选是 host，报 p2p）下跑，
+  // 也要在控制面开了 CODINGNS_PROXY_FORCE_TURN_BY_DEFAULT 的强制 relay 下跑（报 relay）。
+  // 写死 p2p 会让「中继链路上到底认不认得出经中继」这个真正要验的点永远测不到。
   const { webrtcLinkStore } = await import(
     "../src/network/webrtc/webrtc-link-store.ts"
   );
   const linkState = webrtcLinkStore.getState();
+  const reportedKind = linkState.transportKind;
   record(
     "W2.3 真实连接上报链路类型",
-    linkState.phase === "connected" && linkState.transportKind === "p2p",
-    `phase=${linkState.phase} transportKind=${linkState.transportKind}`
+    linkState.phase === "connected" && (reportedKind === "p2p" || reportedKind === "relay"),
+    `phase=${linkState.phase} transportKind=${reportedKind}`
+      + `（${reportedKind === "relay" ? "经中继，说明强制 relay 生效" : "直连"}）`
   );
 
   // 5) W2.2：把控制面下发的指纹改成错的，客户端必须拒绝连这台真实 Host
