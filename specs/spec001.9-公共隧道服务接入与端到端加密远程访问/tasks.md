@@ -543,12 +543,36 @@
       旁证：coturn 日志里能看到本次运行的账号（`acct_c26005b942e4`）在对应时刻
       `allocation new`，说明中继确实被用上了，不是「其实走了直连」。
       复跑命令：`CONTROL_BASE_URL=<带 TURN 的控制面> ADMIN_EMAIL=… ADMIN_PASSWORD=… pnpm exec tsx scripts/relay-tunnel-webrtc-client-e2e.mts`
-  - 待完成（需要在目标机器上执行）：
-    - 在正式服务器上装 coturn、替换模板占位符、放行 3478/udp+tcp 与 49152-65535/udp
-    - 部署后先跑 `pnpm verify:turn`
-    - **跨网（不是本机回环）强制 relay 实测一次**：本机已经证明「强制 relay 这条链路本身是通的」，
-      但跨 NAT、真实公网 IP、`external-ip` 这些只有到真实网络才验得到
-    - 抓包确认 TURN 上只有 DTLS 密文
+  - **正式服务器部署记录（2026-09-16，服务器 100.64.0.3 / 公网 42.193.118.236，Ubuntu 22.04）**：
+    - 服务器原状：跑的是 4 月的旧代码（`830e4b1`），只有 console-web / control-api / relay-edge；
+      且**生产控制面自 4 月起就没起来过**（下面两条根因）
+    - **根因一：数据库凭据是错的**。控制面连 `codingns_proxy_control` 用的是 `postgres` 超级用户，
+      密码认证失败；而且 4 月 21 日第一次部署时就是同一个错。该库属主其实是专用角色 `codingns_proxy`，
+      已把 `.env` 改为用该角色（并给角色设了强密码），直连测试通过。旧 `.env` 备份为 `.env.bak-*`
+    - **根因二：没有任何进程守护**。没有 pm2 配置、没有 systemd 单元、没有 crontab，
+      服务是手工起的，一死就没人拉。已用仓库的 pm2 模板渲染出 `deploy/ecosystem.config.cjs`，
+      接入 control-api / relay-edge / relay-signaling 三个应用，并 `pm2 save` + `pm2 startup`（`pm2-root` enabled）
+    - 部署步骤：服务器拉代码 → `pnpm install` → 构建（只建 shared-contracts / relay-signaling /
+      control-api / relay-edge，**没动 console-web**）→ `apt-get install coturn` → 渲染 coturn 配置 →
+      补 `.env` 的 TURN/STUN/信令共 9 个键 → pm2 起服务 → nginx 加 `/signaling/*` 路由
+    - **coturn 配置要点**（这台机器在腾讯云 NAT 后面，这几点配错就会「平时能连、跨网连不上」）：
+      `external-ip=42.193.118.236/10.2.24.2`、`relay-ip=10.2.24.2`、
+      中继端口段**收窄成 49152-49200**（默认的 49152-65535 有一万多个端口，
+      让云安全组只开一小段就够）、`realm=channel.codingns.com`、`use-auth-secret`；
+      并按仓库模板去掉已废弃的 `no-cli`
+    - **已在服务器上验证通过**：coturn `active`；`node scripts/verify-turn.mjs` 对着 `127.0.0.1:3478`
+      → `exit 0`，成功分配到中继地址（realm 正确）
+    - **已从外网验证通过**：`https://channel.codingns.com:1443/api/public/meta` 从 502 恢复为 **200**；
+      `/signaling/healthz` **200**；`/signaling/api/public/meta` 返回
+      `transport: webrtc-datachannel` / `websocketPath: /signal`，与客户端实现一致
+    - 回滚手段：代码回滚点 `3488bac`；`.env` 与 nginx 配置都有带时间戳的备份；
+      nginx 备份放在 `/root/nginx-backups/`（**不能放在 `sites-enabled/` 里**，
+      那个目录被 `include` 通配，放进去会导致「重复的 default server」而重载失败）
+  - 待完成：
+    - **在腾讯云安全组放行后从外网实测**：`3478/udp`、`3478/tcp`、`49152-49200/udp`。
+      目前从外网测 `turn:42.193.118.236:3478` 是**不可达**的（控制面与信令都通，说明是这几个新端口没开）；
+      从服务器自身走公网 IP 的 hairpin 也不通
+    - 放行后跑跨网强制 relay 实测 + 抓包确认 TURN 上只有 DTLS 密文
   - 备注：按账号粒度的 TURN 开关还没做，目前只有全局开关，等 W5 订阅模型落地后一起补。
 
 - [x] W3.3 ICE 配置下发
