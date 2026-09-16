@@ -319,7 +319,7 @@ function listWindowsHostProcesses() {
   const result = spawnSync(
     "powershell",
     ["-NoProfile", "-NonInteractive", "-Command", script],
-    { encoding: "utf8" }
+    { encoding: "utf8", windowsHide: true }
   );
 
   if (result.status !== 0 || !result.stdout) {
@@ -377,6 +377,8 @@ export function detectRunningHost(dataDir, installState) {
 
 export const AUTOSTART_LABEL = "com.codingns.host";
 export const AUTOSTART_WINDOWS_TASK_NAME = "CodingNS Host";
+/** Windows 计划任务建不起来时的兜底位置：开始菜单「启动」文件夹里的同一个启动脚本。 */
+export const AUTOSTART_WINDOWS_STARTUP_FILE_NAME = "CodingNS Host.vbs";
 
 export const DEFAULT_HEALTH_CHECK_TIMEOUT_MS = 60_000;
 export const DEFAULT_STOP_TIMEOUT_MS = 10_000;
@@ -490,6 +492,15 @@ export function isPrivateNodeBinary(dataDir, nodeBinary) {
 }
 
 /**
+ * 服务进程要不要 detached。
+ * Windows 上不能：detached 让服务进程完全没有控制台，它再拉起控制台子进程时，
+ * 系统会给每个子进程单独开一个黑窗口。其它平台要 detached 才能脱离父进程组活下去。
+ */
+export function shouldDetachHost(platform = process.platform) {
+  return platform !== "win32";
+}
+
+/**
  * 服务进程的工作目录。
  * 不能用安装包本身：Windows 上子进程的 cwd 会把那个目录锁住，下次升级 npm 换包时报 EBUSY。
  */
@@ -501,7 +512,9 @@ export function spawnDetachedHost(context, logger) {
   const args = ["start", "--data-dir", normalizeNodePath(context.dataDir), "--port", String(context.port), "--host", context.listenHost];
   const child = spawn(normalizeNodePath(context.nodeBinary), [normalizeNodePath(context.cliEntryPath), ...args], {
     cwd: resolveHostWorkingDirectory(context),
-    detached: true,
+    // Windows 上不 detached：windowsHide 给的是一个「存在但看不见」的控制台，
+    // 子进程会继承它，全程没有窗口；detached 会让服务进程没有控制台，子进程反而各自弹窗。
+    detached: shouldDetachHost(),
     stdio: "ignore",
     windowsHide: true
   });
@@ -679,6 +692,24 @@ export function resolveAutostartPaths(platform, context, options = {}) {
   };
 }
 
+/** Windows 上兜底自启用的启动文件夹路径（`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`）。 */
+export function resolveWindowsStartupFilePath(homeDir = os.homedir()) {
+  const appData =
+    typeof process.env.APPDATA === "string" && path.isAbsolute(process.env.APPDATA)
+      ? process.env.APPDATA
+      : path.join(homeDir, "AppData", "Roaming");
+
+  return path.join(
+    appData,
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "Startup",
+    AUTOSTART_WINDOWS_STARTUP_FILE_NAME
+  );
+}
+
 export function buildAutostartFileContent(platform, context) {
   if (platform === "darwin") {
     return buildLaunchAgentPlist(context);
@@ -689,6 +720,30 @@ export function buildAutostartFileContent(platform, context) {
   }
 
   return buildSystemdUnit(context);
+}
+
+/**
+ * 把同一个启动脚本放进「启动」文件夹。
+ * 不需要管理员权限，也不依赖任务计划服务，效果一样：登录后静默把服务拉起来。
+ */
+function activateStartupFolderAutostart(context, logger, options = {}) {
+  const homeDir = options.homeDir ?? os.homedir();
+  const filePath = resolveWindowsStartupFilePath(homeDir);
+
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, buildWindowsLauncherVbs(context), "utf8");
+  } catch (error) {
+    return {
+      ok: false,
+      path: filePath,
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+
+  logger.log("已写入启动文件夹自启", { filePath });
+
+  return { ok: true, path: filePath, detail: null };
 }
 
 function runShellCommand(file, args, logger) {
@@ -720,11 +775,13 @@ function activateAutostart(platform, context, logger, options = {}) {
     if (result.status !== 0) {
       return {
         ok: false,
+        kind: null,
+        path: null,
         detail: truncateText(result.stderr || result.stdout || `launchctl 退出码 ${result.status}`)
       };
     }
 
-    return { ok: true, detail: null };
+    return { ok: true, kind: "launchd", path: filePath, detail: null };
   }
 
   if (kind === "schtasks") {
@@ -745,14 +802,30 @@ function activateAutostart(platform, context, logger, options = {}) {
       logger
     );
 
-    if (result.status !== 0) {
-      return {
-        ok: false,
-        detail: truncateText(result.stderr || result.stdout || `schtasks 退出码 ${result.status}`)
-      };
+    if (result.status === 0) {
+      return { ok: true, kind: "schtasks", path: filePath, detail: null };
     }
 
-    return { ok: true, detail: null };
+    const taskDetail = truncateText(
+      result.stderr || result.stdout || `schtasks 退出码 ${result.status}`
+    );
+
+    // 计划任务建不起来（没有管理员权限、被组策略拦、任务计划服务被禁用等）时退到启动文件夹。
+    // 两条路都是用户级、都是登录后静默拉起，区别只是不经过任务计划程序。
+    logger.log("计划任务建不起来，改用启动文件夹", taskDetail);
+
+    const fallback = activateStartupFolderAutostart(context, logger, options);
+
+    if (fallback.ok) {
+      return { ok: true, kind: "startup-folder", path: fallback.path, detail: null };
+    }
+
+    return {
+      ok: false,
+      kind: null,
+      path: null,
+      detail: `${taskDetail}；启动文件夹方案也没成：${fallback.detail}`
+    };
   }
 
   runShell("systemctl", ["--user", "daemon-reload"], logger);
@@ -765,11 +838,13 @@ function activateAutostart(platform, context, logger, options = {}) {
   if (result.status !== 0) {
     return {
       ok: false,
+      kind: null,
+      path: null,
       detail: truncateText(result.stderr || result.stdout || `systemctl 退出码 ${result.status}`)
     };
   }
 
-  return { ok: true, detail: null };
+  return { ok: true, kind: "systemd", path: filePath, detail: null };
 }
 
 function deactivateAutostart(platform, context, logger, options = {}) {
@@ -787,6 +862,8 @@ function deactivateAutostart(platform, context, logger, options = {}) {
   if (kind === "schtasks") {
     runShell("schtasks", ["/Delete", "/TN", AUTOSTART_WINDOWS_TASK_NAME, "/F"], logger);
     fs.rmSync(filePath, { force: true });
+    // 计划任务和启动文件夹都可能存在，两边都清，避免关掉自启后还残留一个入口。
+    fs.rmSync(resolveWindowsStartupFilePath(options.homeDir ?? os.homedir()), { force: true });
 
     return { ok: true, detail: null };
   }
@@ -851,8 +928,9 @@ export function runAutostart(options, logger, deps = {}) {
   emitStep("activate-autostart", "done");
   emitResult({
     autostartEnabled: true,
-    autostartKind: prepared.kind,
-    autostartPath: prepared.filePath
+    // 实际生效的方式可能和准备时不同（Windows 上计划任务失败会退到启动文件夹）。
+    autostartKind: activation.kind ?? prepared.kind,
+    autostartPath: activation.path ?? prepared.filePath
   });
 
   return EXIT_OK;
@@ -1538,11 +1616,20 @@ export async function runInstall(options, logger, deps = {}) {
 
     if (!activation.ok) {
       emitStep("activate-autostart", "failed");
-      emitError("AUTOSTART_FAILED", "开机自启启用失败", activation.detail, logger.logPath);
+      emitError(
+        "AUTOSTART_FAILED",
+        "开机自启没启用成功（服务本身已经装好并且在运行）",
+        activation.detail,
+        logger.logPath
+      );
       return EXIT_FAILURE;
     }
 
-    autostart = { enabled: true, kind: autostart.kind, path: autostart.path };
+    autostart = {
+      enabled: true,
+      kind: activation.kind ?? autostart.kind,
+      path: activation.path ?? autostart.path
+    };
     emitStep("activate-autostart", "done");
   }
 

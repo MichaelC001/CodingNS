@@ -23,6 +23,7 @@ import {
   resolveNpmInvocation,
   resolvePackageRootPath,
   resolveHostWorkingDirectory,
+  shouldDetachHost,
   resolveRegistryCandidates,
   resolveStateFilePath,
   runAutostart,
@@ -983,4 +984,147 @@ test("EBUSY 重试仍然失败时给出占用提示，而不是让用户去查�
   const error = events.find((event) => event.type === "error");
   assert.equal(error.code, "NPM_INSTALL_FAILED");
   assert.match(error.detail, /EBUSY/);
+});
+
+test("服务进程的启动方式：工作目录是数据目录，Windows 上不 detached", () => {
+  const dataDir = createTempDataDir();
+
+  assert.equal(resolveHostWorkingDirectory({ dataDir }), dataDir);
+  assert.notEqual(
+    resolveHostWorkingDirectory({ dataDir }),
+    path.join(dataDir, "runtime", "npm", "lib", "node_modules", "@jingyi0605", "codingns")
+  );
+
+  // 数据目录还没建出来时不给 cwd，避免 spawn 直接报 ENOENT。
+  assert.equal(resolveHostWorkingDirectory({ dataDir: path.join(dataDir, "missing") }), undefined);
+
+  // Windows 上 detached 会让服务进程没有控制台，它的子进程就会一个个弹出黑窗口。
+  assert.equal(shouldDetachHost("win32"), false);
+  assert.equal(shouldDetachHost("darwin"), true);
+  assert.equal(shouldDetachHost("linux"), true);
+});
+
+test("Windows 上计划任务建不起来时退到启动文件夹，自启仍然算成功", async () => {
+  const dataDir = createTempDataDir();
+  const homeDir = createTempDataDir();
+  const appData = path.join(homeDir, "AppData", "Roaming");
+  const previousAppData = process.env.APPDATA;
+  const calls = [];
+
+  process.env.APPDATA = appData;
+
+  try {
+    const { value: exitCode, events } = await captureOutput(() =>
+      runAutostart({ dataDir, enable: true, port: "3002" }, createLoggerStub(), {
+        platform: "win32",
+        homeDir,
+        runShellCommand: (file, args) => {
+          calls.push([file, ...args].join(" "));
+
+          return { status: 1, stdout: "", stderr: "错误: 拒绝访问。" };
+        }
+      })
+    );
+
+    assert.equal(exitCode, EXIT_OK);
+    assert.match(calls[0], /^schtasks \/Create /);
+
+    const startupFile = path.join(
+      appData,
+      "Microsoft",
+      "Windows",
+      "Start Menu",
+      "Programs",
+      "Startup",
+      "CodingNS Host.vbs"
+    );
+
+    assert.ok(fs.existsSync(startupFile), "应该把启动脚本写进启动文件夹");
+    assert.match(fs.readFileSync(startupFile, "utf8"), /shell\.Run/);
+
+    const result = readResultEvent(events).data;
+    assert.equal(result.autostartEnabled, true);
+    assert.equal(result.autostartKind, "startup-folder");
+    assert.equal(result.autostartPath, startupFile);
+  } finally {
+    if (previousAppData === undefined) {
+      delete process.env.APPDATA;
+    } else {
+      process.env.APPDATA = previousAppData;
+    }
+  }
+});
+
+test("计划任务和启动文件夹都失败时报 AUTOSTART_FAILED", async () => {
+  const dataDir = createTempDataDir();
+  const homeDir = createTempDataDir();
+  const appData = path.join(homeDir, "AppData", "Roaming");
+  const previousAppData = process.env.APPDATA;
+
+  // 在 AppData 该是目录的位置放一个文件，写启动文件夹就会失败。
+  fs.mkdirSync(path.join(homeDir, "AppData"), { recursive: true });
+  fs.writeFileSync(appData, "", "utf8");
+  process.env.APPDATA = appData;
+
+  try {
+    const { value: exitCode, events } = await captureOutput(() =>
+      runAutostart({ dataDir, enable: true, port: "3002" }, createLoggerStub(), {
+        platform: "win32",
+        homeDir,
+        runShellCommand: () => ({ status: 1, stdout: "", stderr: "错误: 拒绝访问。" })
+      })
+    );
+
+    assert.equal(exitCode, EXIT_FAILURE);
+
+    const error = events.find((event) => event.type === "error");
+    assert.equal(error.code, "AUTOSTART_FAILED");
+    assert.match(error.detail, /拒绝访问/);
+    assert.match(error.detail, /启动文件夹方案也没成/);
+  } finally {
+    if (previousAppData === undefined) {
+      delete process.env.APPDATA;
+    } else {
+      process.env.APPDATA = previousAppData;
+    }
+  }
+});
+
+test("关闭自启时把计划任务和启动文件夹里的脚本一起清掉", async () => {
+  const dataDir = createTempDataDir();
+  const homeDir = createTempDataDir();
+  const appData = path.join(homeDir, "AppData", "Roaming");
+  const previousAppData = process.env.APPDATA;
+  const startupDir = path.join(
+    appData,
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "Startup"
+  );
+  const startupFile = path.join(startupDir, "CodingNS Host.vbs");
+
+  fs.mkdirSync(startupDir, { recursive: true });
+  fs.writeFileSync(startupFile, "' 残留的启动脚本", "utf8");
+  process.env.APPDATA = appData;
+
+  try {
+    const { value: exitCode } = await captureOutput(() =>
+      runAutostart({ dataDir, disable: true, port: "3002" }, createLoggerStub(), {
+        platform: "win32",
+        homeDir,
+        runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+      })
+    );
+
+    assert.equal(exitCode, EXIT_OK);
+    assert.ok(!fs.existsSync(startupFile), "启动文件夹里的脚本应该被清掉");
+  } finally {
+    if (previousAppData === undefined) {
+      delete process.env.APPDATA;
+    } else {
+      process.env.APPDATA = previousAppData;
+    }
+  }
 });
