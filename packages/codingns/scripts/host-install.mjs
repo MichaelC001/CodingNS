@@ -485,6 +485,36 @@ export function waitForProcessExit(pid, timeoutMs = DEFAULT_STOP_TIMEOUT_MS) {
   return !isProcessAlive(pid);
 }
 
+/**
+ * 起服务并等它可用。
+ *
+ * Windows 上先用 VBS 包装启动（隐藏控制台，服务拉子进程不会弹黑窗）。
+ * 包装万一在这台机器上不灵，就退回直接拉 node：窗口难看总好过服务起不来。
+ */
+async function startHostAndWaitHealthy(context, options, logger, deps = {}, platform = process.platform) {
+  const spawnHost = deps.spawnDetachedHost ?? spawnDetachedHost;
+
+  emitStep("start-service", "running", "启动服务");
+  spawnHost(context, logger);
+  emitStep("start-service", "done");
+
+  let healthy = await waitForHostHealth(context, options, logger, deps);
+
+  if (healthy || platform !== "win32" || deps.spawnDetachedHost !== undefined) {
+    return healthy;
+  }
+
+  logger.log("启动包装没把服务拉起来，改用直接启动");
+  emitLog("服务没起来，换个方式再拉一次。");
+  emitStep("start-service", "running", "换一种方式启动服务");
+  spawnHostProcess(resolveDirectHostLaunchPlan(context), context, logger);
+  emitStep("start-service", "done");
+
+  healthy = await waitForHostHealth(context, options, logger, deps);
+
+  return healthy;
+}
+
 export function isPrivateNodeBinary(dataDir, nodeBinary) {
   const privateNodeDir = path.join(resolveRuntimeDir(dataDir), "node");
 
@@ -504,7 +534,8 @@ export function resolveHostWorkingDirectory(context) {
  * 之前是 stdio: "ignore"，服务启动阶段崩掉时一行线索都没有，只能看到健康检查超时。
  */
 export function resolveHostServiceLogPath(context) {
-  return path.join(context.dataDir, "runtime", "logs", "host-service.log");
+  // 会被写进 VBS 交给 cmd，必须先去掉 \\?\ 前缀，否则 cmd 解释不了。
+  return normalizeNodePath(path.join(context.dataDir, "runtime", "logs", "host-service.log"));
 }
 
 function openHostServiceLog(context, logger) {
@@ -524,20 +555,25 @@ function openHostServiceLog(context, logger) {
   }
 }
 
-export function spawnDetachedHost(context, logger) {
-  const args = ["start", "--data-dir", normalizeNodePath(context.dataDir), "--port", String(context.port), "--host", context.listenHost];
+/**
+ * 起服务进程。
+ *
+ * detached 在 Windows 上也要开：不开的话服务进程会跟着安装器一起退出——
+ * 装完那一下健康检查是通的，安装器一走服务就没了（真机复现过）。
+ * 控制台和黑窗口不归 detached 管，Windows 上靠 VBS 包装（见 buildWindowsLauncherVbs）。
+ */
+export function spawnHostProcess(plan, context, logger) {
   const serviceLog = openHostServiceLog(context, logger);
-  const child = spawn(normalizeNodePath(context.nodeBinary), [normalizeNodePath(context.cliEntryPath), ...args], {
+  const windowsLauncher = plan.kind === "launcher";
+  const child = spawn(plan.file, plan.args, {
     cwd: resolveHostWorkingDirectory(context),
-    // Windows 上也要 detached：不 detached 时服务进程会跟着安装器一起退出——
-    // 装完那一下健康检查是通的，安装器一走服务就没了（真机复现过）。
-    // 黑窗口不归这里管，由子进程侧自己加 windowsHide（apps/host 里的 helper）。
     detached: true,
-    stdio: serviceLog === null ? "ignore" : ["ignore", serviceLog.fd, serviceLog.fd],
+    // 包装自己会把服务输出重定向到日志，这里再接管 wscript 的输出没有意义。
+    stdio: windowsLauncher || serviceLog === null ? "ignore" : ["ignore", serviceLog.fd, serviceLog.fd],
     windowsHide: true
   });
 
-  if (serviceLog !== null) {
+  if (!windowsLauncher && serviceLog !== null) {
     // 句柄已经复制给子进程，父进程这份要立刻关掉，免得安装器自己占着日志文件。
     try {
       fs.closeSync(serviceLog.fd);
@@ -552,12 +588,31 @@ export function spawnDetachedHost(context, logger) {
   });
   child.unref();
   logger.log("已拉起服务进程", {
+    // 走包装时这个 pid 是 wscript 的，它拉起服务后自己就退了，服务进程的真实 pid 由后面的进程扫描认。
     pid: child.pid,
+    launcher: windowsLauncher ? plan.args[0] : null,
     cliEntryPath: context.cliEntryPath,
-    serviceLogPath: serviceLog?.filePath ?? null
+    serviceLogPath: resolveHostServiceLogPath(context)
   });
 
   return child.pid ?? null;
+}
+
+/** Windows 上优先走包装；包装写不出来就直接拉 node。 */
+export function spawnDetachedHost(context, logger, platform = process.platform) {
+  if (platform !== "win32") {
+    return spawnHostProcess(resolveDirectHostLaunchPlan(context), context, logger);
+  }
+
+  try {
+    ensureWindowsHostLauncher(context, logger);
+  } catch (error) {
+    logger.log("写启动包装失败，改为直接启动服务", error instanceof Error ? error.message : String(error));
+
+    return spawnHostProcess(resolveDirectHostLaunchPlan(context), context, logger);
+  }
+
+  return spawnHostProcess(resolveHostLaunchPlan(platform, context), context, logger);
 }
 
 function assertSafeToRemove(targetPath) {
@@ -591,6 +646,11 @@ function buildAutostartArguments(context) {
     "--host",
     context.listenHost
   ];
+}
+
+/** `codingns start` 的参数，不含 node 和脚本路径本身。 */
+function buildHostStartArguments(context) {
+  return buildAutostartArguments(context).slice(1);
 }
 
 export function buildLaunchAgentPlist(context) {
@@ -649,19 +709,87 @@ export function buildSystemdUnit(context) {
   ].join("\n");
 }
 
+function vbsLiteral(text) {
+  return `"${String(text).replace(/"/g, '""')}"`;
+}
+
+/** VBS 里拼一个带引号的参数：q 就是 Chr(34)。 */
+function vbsQuotedArgument(text) {
+  return `q & ${vbsLiteral(text)} & q`;
+}
+
+function vbsCommandExpression(values) {
+  return values.join(` & " " & `);
+}
+
+/**
+ * Windows 启动包装：用 0 号窗口模式跑服务。
+ *
+ * 为什么非要包一层：服务进程是从一个没有控制台的父进程里起来的，Windows 会让它一路都没有控制台。
+ * 服务自己没控制台，它再拉起 helper、git、终端这些控制台子进程时，系统会为每个子进程单独开一个新控制台——
+ * 也就是用户看到的一叠黑窗。0 号窗口模式给的是「有控制台、窗口隐藏」：子进程继承它，不再各自开窗，
+ * 服务也不会因为控制台被关掉而跟着退出。
+ *
+ * 输出用 cmd 重定向落到服务日志，服务崩了才有现场可看。
+ * 引号一律用 Chr(34) 拼，不在 VBS 里写双写引号——引号错一层，服务就直接起不来。
+ */
 export function buildWindowsLauncherVbs(context) {
-  const commandLine = [normalizeNodePath(context.nodeBinary), ...buildAutostartArguments(context)]
-    .map((value) => `"${String(value)}"`)
-    .join(" ");
-  // VBS 里双写引号才是字面引号，外层再包一层才是合法的命令字符串。
-  const escapedCommandLine = commandLine.replace(/"/g, '""');
+  const nodeCommand = vbsCommandExpression([
+    vbsQuotedArgument(normalizeNodePath(context.nodeBinary)),
+    ...buildAutostartArguments(context).map((value) => vbsQuotedArgument(value))
+  ]);
 
   return [
-    "' CodingNS Host 启动包装：用 0 号窗口模式跑，避免登录时闪出黑窗。",
+    "' CodingNS Host 启动包装：0 号窗口模式 = 服务进程有一个存在但看不见的控制台，",
+    "' 它拉起的子进程不会各自弹黑窗；输出重定向到服务日志。",
     'Set shell = CreateObject("WScript.Shell")',
-    `shell.Run "${escapedCommandLine}", 0, False`,
+    "q = Chr(34)",
+    `nodeCommand = ${nodeCommand}`,
+    `commandLine = "cmd /d /s /c " & q & q & nodeCommand & " >> " & q & ${vbsLiteral(
+      resolveHostServiceLogPath(context)
+    )} & q & " 2>&1" & q`,
+    "shell.Run commandLine, 0, False",
     ""
   ].join("\r\n");
+}
+
+/** 启动包装文件的位置。和自启用的是同一份脚本，避免两处写法漂移。 */
+export function resolveWindowsLauncherPath(context) {
+  return resolveAutostartPaths("win32", context).filePath;
+}
+
+export function ensureWindowsHostLauncher(context, logger) {
+  const filePath = resolveWindowsLauncherPath(context);
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, buildWindowsLauncherVbs(context), "utf8");
+  logger.log("已写入启动包装", { filePath });
+
+  return filePath;
+}
+
+/** 直接拉 node：其它平台的正常路径，也是 Windows 上包装起不来时的兜底。 */
+export function resolveDirectHostLaunchPlan(context) {
+  return {
+    kind: "direct",
+    file: normalizeNodePath(context.nodeBinary),
+    args: [normalizeNodePath(context.cliEntryPath), ...buildHostStartArguments(context)]
+  };
+}
+
+/**
+ * 服务进程怎么起。Windows 走 VBS 包装（隐藏控制台，子进程不弹窗），其它平台直连 node。
+ */
+export function resolveHostLaunchPlan(platform, context) {
+  if (platform === "win32") {
+    return {
+      kind: "launcher",
+      file: "wscript.exe",
+      args: [resolveWindowsLauncherPath(context)]
+    };
+  }
+
+  return resolveDirectHostLaunchPlan(context);
 }
 
 function escapeXml(value) {
@@ -1082,7 +1210,7 @@ export async function runStart(options, logger, deps = {}) {
       shell("systemctl", ["--user", "start", "codingns-host.service"], logger);
     } else {
       const spawnHost = deps.spawnDetachedHost ?? spawnDetachedHost;
-      spawnHost(context, logger);
+      spawnHost(context, logger, platform);
     }
 
     emitStep("start-service", "done");
@@ -1623,12 +1751,7 @@ export async function runInstall(options, logger, deps = {}) {
     emitStep("configure-autostart", "done");
   }
 
-  emitStep("start-service", "running", "启动服务");
-  const spawnHost = deps.spawnDetachedHost ?? spawnDetachedHost;
-  spawnHost(installContext, logger);
-  emitStep("start-service", "done");
-
-  const healthy = await waitForHostHealth(installContext, options, logger, deps);
+  const healthy = await startHostAndWaitHealthy(installContext, options, logger, deps, platform);
 
   if (!healthy) {
     emitError(

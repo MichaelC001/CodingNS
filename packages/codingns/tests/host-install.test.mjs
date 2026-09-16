@@ -11,6 +11,7 @@ import {
   buildLaunchAgentPlist,
   buildSystemdUnit,
   buildWindowsLauncherVbs,
+  resolveHostLaunchPlan,
   detectLegacyPm2,
   expandHome,
   normalizeNodePath,
@@ -459,16 +460,46 @@ test("Linux 自启文件是 systemd user unit，带 restart 和 default.target",
   assert.match(unit, /WantedBy=default\.target/);
 });
 
-test("Windows 自启用 VBS 包装，按隐藏窗口方式启动", async () => {
-  const vbs = buildWindowsLauncherVbs(createAutostartContext());
+test("Windows 启动包装用 0 号窗口模式，并把输出重定向到服务日志", async () => {
+  const context = createAutostartContext();
+  const vbs = buildWindowsLauncherVbs(context);
 
   assert.match(vbs, /CreateObject\("WScript\.Shell"\)/);
+  assert.match(vbs, /q = Chr\(34\)/, "引号要用 Chr(34) 拼，别在 VBS 里写双写引号");
+  assert.match(vbs, /, 0, False/, "0 号窗口模式：服务有隐藏控制台，子进程才不会各自弹黑窗");
+  assert.match(vbs, /cmd \/d \/s \/c /, "输出重定向要走 cmd");
+  assert.match(vbs, /2>&1/, "stderr 也要进日志");
   assert.match(
     vbs,
-    /shell\.Run """\/usr\/local\/bin\/node"" ""[^"]*codingns\.mjs"" ""start""/,
-    "命令要用字面引号包住 node 和 CLI 入口"
+    new RegExp(`>> " & q & ".*host-service\\.log" & q & " 2>&1`),
+    "重定向目标应该是服务日志"
   );
-  assert.match(vbs, /", 0, False/, "0 号窗口模式才能不闪黑窗");
+  assert.match(vbs, /q & "\/usr\/local\/bin\/node" & q/, "node 路径要带引号");
+  assert.match(vbs, /q & "[^"]*codingns\.mjs" & q/, "CLI 入口要带引号");
+});
+
+test("Windows 上服务走 wscript 包装启动，其它平台直接拉 node", async () => {
+  const context = createAutostartContext({ dataDir: "/tmp/codingns-data" });
+  const windowsPlan = resolveHostLaunchPlan("win32", context);
+  const darwinPlan = resolveHostLaunchPlan("darwin", context);
+
+  assert.equal(windowsPlan.kind, "launcher");
+  assert.equal(windowsPlan.file, "wscript.exe");
+  assert.equal(windowsPlan.args.length, 1);
+  assert.match(windowsPlan.args[0], /codingns-host-launcher\.vbs$/);
+
+  assert.equal(darwinPlan.kind, "direct");
+  assert.equal(darwinPlan.file, "/usr/local/bin/node");
+  assert.equal(darwinPlan.args[0], context.cliEntryPath);
+  assert.equal(darwinPlan.args[1], "start");
+  assert.deepEqual(darwinPlan.args.slice(2), [
+    "--data-dir",
+    context.dataDir,
+    "--port",
+    String(context.port),
+    "--host",
+    context.listenHost
+  ]);
 });
 
 test("交给 node 的路径会去掉 Windows 的 \\\\?\\ 前缀", async () => {
@@ -492,7 +523,7 @@ test("自启文件里的 node 入口不会带 \\\\?\\ 前缀", async () => {
 
   assert.ok(!vbs.includes("\\\\?\\"), `VBS 里不该出现 \\\\?\\ 前缀：${vbs}`);
   assert.ok(!plist.includes("\\\\?\\"), `plist 里不该出现 \\\\?\\ 前缀：${plist}`);
-  assert.match(vbs, /shell\.Run """C:\\Program Files\\nodejs\\node\.exe""/);
+  assert.match(vbs, /q & "C:\\Program Files\\nodejs\\node\.exe" & q/);
 });
 
 test("三平台自启路径落在用户目录里", async () => {
