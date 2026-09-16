@@ -127,3 +127,4 @@ apps/codingns-site/
 
 # 本地 Teable 凭据密钥
 apps/host/teable-credential-key
+.commandcode/taste/taste.md
