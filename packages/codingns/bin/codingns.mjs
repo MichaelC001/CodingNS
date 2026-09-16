@@ -97,21 +97,65 @@ async function runStartCommand(argv) {
   );
   const demoMode = options.flags.demo || process.env.DEMO_MODE === "true";
 
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.mkdirSync(path.join(dataDir, "releases"), { recursive: true });
-
   const { startHost } = await import("../dist/server/server/start-host.js");
+  const { assertDataDirWritable } = await import(
+    "../dist/server/storage/sqlite/database-access-error.js"
+  );
 
-  await startHost({
-    host,
-    port,
-    webUiDir: path.join(distRoot, "public"),
-    webUiPort: port,
-    databasePath: path.join(dataDir, "host.sqlite"),
-    releaseManifestRoot: path.join(dataDir, "releases"),
-    serverUpdatePackageName: "@jingyi0605/codingns",
-    demoMode
-  });
+  try {
+    assertDataDirWritable(dataDir);
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.mkdirSync(path.join(dataDir, "releases"), { recursive: true });
+  } catch (error) {
+    reportStartFailure(error);
+    return;
+  }
+
+  try {
+    await startHost({
+      host,
+      port,
+      webUiDir: path.join(distRoot, "public"),
+      webUiPort: port,
+      databasePath: path.join(dataDir, "host.sqlite"),
+      releaseManifestRoot: path.join(dataDir, "releases"),
+      serverUpdatePackageName: "@jingyi0605/codingns",
+      demoMode
+    });
+  } catch (error) {
+    reportStartFailure(error);
+  }
+}
+
+/**
+ * 启动期的已知错误（例如数据库不可写）只给结论和修复步骤；
+ * 其余错误保留堆栈，避免真 bug 变成一句无法排查的提示。
+ */
+function reportStartFailure(error) {
+  if (error && typeof error === "object" && error.code === "DATABASE_NOT_WRITABLE") {
+    console.error(`[codingns] 启动失败：${error.message}`);
+
+    for (const line of Array.isArray(error.hintLines) ? error.hintLines : []) {
+      console.error(`  ${line}`);
+    }
+
+    exitAfterFailure();
+    return;
+  }
+
+  console.error(`[codingns] 启动失败：${error instanceof Error ? error.message : String(error)}`);
+
+  if (error instanceof Error && error.stack) {
+    console.error(error.stack);
+  }
+
+  exitAfterFailure();
+}
+
+/** 启动失败时进程里可能还留着监视定时器，这里主动退出，同时留出一个 tick 让 stderr 落盘。 */
+function exitAfterFailure() {
+  process.exitCode = 1;
+  setTimeout(() => process.exit(1), 0).unref();
 }
 
 function installCliFatalProbe(command, argv) {
