@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 
 import type {
   ContextUsageSnapshot,
+  ContextUsageSource,
   DetectSessionsOptions,
   ForkSessionOptions,
   ForkSessionResult,
@@ -155,6 +156,88 @@ const COMMAND_CODE_MODEL_REASONING_EFFORTS: ReadonlyMap<string, readonly string[
   ["minimax/minimax-m3-free", ["low", "medium", "high"]],
   ["minimax/minimax-m2.7-free", []]
 ]);
+
+/**
+ * Command Code 内置目录中的模型上下文窗口。
+ *
+ * `command-code status --json` 只报当前配置模型的窗口，会话换成别的模型后这把尺子
+ * 就不再适用，因此这里同样按 CLI 随包发布的目录保存已知模型。表里查不到的模型
+ * 不猜窗口，也不显示上下文占用。
+ */
+const COMMAND_CODE_MODEL_CONTEXT_WINDOWS: ReadonlyMap<string, number> = new Map([
+  ["claude-fable-5", 1_000_000],
+  ["claude-fable-5-1", 1_000_000],
+  ["claude-haiku-4-5-20251001", 200_000],
+  ["claude-opus-4-7", 1_000_000],
+  ["claude-opus-4-8", 1_000_000],
+  ["claude-opus-5", 1_000_000],
+  ["claude-sonnet-4-6", 1_000_000],
+  ["claude-sonnet-5", 1_000_000],
+  ["deepseek/deepseek-v4-flash", 1_000_000],
+  ["deepseek/deepseek-v4-flash-fast", 1_000_000],
+  ["deepseek/deepseek-v4-flash-vision-exp", 1_000_000],
+  ["deepseek/deepseek-v4-pro", 1_000_000],
+  ["deepseek/deepseek-v4.1-flash", 1_000_000],
+  ["google/gemini-3.1-flash-lite", 1_000_000],
+  ["google/gemini-3.5-flash", 1_000_000],
+  ["google/gemini-3.5-flash-lite", 1_000_000],
+  ["google/gemini-3.6-flash", 1_000_000],
+  ["google/gemini-3.7-flash", 1_048_576],
+  ["google/gemini-3.8-flash", 1_000_000],
+  ["gpt-5.3-codex", 400_000],
+  ["gpt-5.4", 400_000],
+  ["gpt-5.4-mini", 400_000],
+  ["gpt-5.5", 400_000],
+  ["gpt-5.6-luna", 1_050_000],
+  ["gpt-5.6-sol", 1_050_000],
+  ["gpt-5.6-terra", 1_050_000],
+  ["gpt-6-astra", 1_050_000],
+  ["inclusionai/ling-3.0-flash-free", 256_000],
+  ["inclusionai/ling-3.0-flash-sante:free", 262_144],
+  ["meituan/longcat-2.0:free", 1_048_576],
+  ["meta/muse-spark-1.1", 1_048_576],
+  ["meta/muse-spark-1.2", 1_048_576],
+  ["meta/muse-spark-1.2-contributor", 1_048_576],
+  ["meta/muse-spark-1.3", 1_048_576],
+  ["meta/muse-spark-1.3-contributor", 1_048_576],
+  ["minimax/minimax-m2.7-free", 197_000],
+  ["minimax/minimax-m3-free", 1_000_000],
+  ["minimaxai/minimax-m2.5", 200_000],
+  ["minimaxai/minimax-m3", 1_000_000],
+  ["minimaxai/minimax-m3-free", 1_000_000],
+  ["moonshotai/kimi-k2.5", 256_000],
+  ["moonshotai/kimi-k2.6", 256_000],
+  ["moonshotai/kimi-k2.7-code", 256_000],
+  ["moonshotai/kimi-k2.7-code-highspeed", 262_000],
+  ["moonshotai/kimi-k3", 1_000_000],
+  ["nvidia/nemotron-3-ultra-550b-a55b", 1_000_000],
+  ["poolside/laguna-s-2.1-free", 256_000],
+  ["qwen/qwen3.7-flash", 1_000_000],
+  ["qwen/qwen3.7-max", 1_000_000],
+  ["qwen/qwen3.7-plus", 1_000_000],
+  ["qwen/qwen3.8-27b", 262_144],
+  ["qwen/qwen3.8-flash", 1_000_000],
+  ["qwen/qwen3.8-max", 1_000_000],
+  ["qwen/qwen3.8-max-0902", 1_000_000],
+  ["sakana/fugu-ultra", 1_000_000],
+  ["stepfun/step-3.5-flash", 1_000_000],
+  ["stepfun/step-3.7-flash", 256_000],
+  ["tencent/hy3", 262_144],
+  ["tencent/hy3-paid", 262_144],
+  ["tencent/hy4-preview", 1_048_576],
+  ["thinkingmachines/inkling", 256_000],
+  ["thinkingmachines/inkling-small", 1_000_000],
+  ["xai/grok-4.5", 500_000],
+  ["xai/grok-4.6", 500_000],
+  ["xiaomi/mimo-v2.5", 1_000_000],
+  ["xiaomi/mimo-v2.5-pro", 1_000_000],
+  ["z-ai/glm-5.3-flash", 1_048_576],
+  ["zai-org/glm-5", 200_000],
+  ["zai-org/glm-5.2", 1_000_000],
+  ["zai-org/glm-5.2-fast", 1_000_000],
+  ["zai-org/glm-5.3", 1_000_000]
+]);
+
 const execFile = promisify(nodeExecFile);
 
 export interface CommandCodeAdapterOptions {
@@ -409,10 +492,8 @@ export class CommandCodeAdapter implements ProviderAdapter {
     const sessionCwd = ensureText(records.find((record) => record.data.type === "session")?.data.cwd).trim();
     const status = await this.readCliStatus(sessionCwd || dirname(filePath));
     const modelId = snapshot.model || readStatusText(status, "model");
-    const contextWindow = snapshot.contextWindow ?? readNonNegativeInteger(
-      readStatusValue(status, "context_window", "contextWindow")
-    );
-    if (!contextWindow || contextWindow <= 0) return null;
+    const resolvedWindow = resolveCommandCodeContextWindow(snapshot.contextWindow, snapshot.model, status);
+    if (!resolvedWindow) return null;
     // Command Code 的 usage.inputTokens 是整个 prompt，缓存读取与缓存写入是它的子集。
     const cachedInputTokens = snapshot.cacheReadTokens + snapshot.cacheWriteTokens;
     const promptTokens = snapshot.inputTokens;
@@ -421,10 +502,10 @@ export class CommandCodeAdapter implements ProviderAdapter {
       promptTokens,
       uncachedInputTokens: Math.max(0, promptTokens - cachedInputTokens),
       cachedInputTokens,
-      contextWindow,
-      usageRatio: Math.min(Math.max(promptTokens / contextWindow, 0), 1),
+      contextWindow: resolvedWindow.value,
+      usageRatio: Math.min(Math.max(promptTokens / resolvedWindow.value, 0), 1),
       source: "provider-log",
-      contextWindowSource: "provider-runtime",
+      contextWindowSource: resolvedWindow.source,
       modelId: modelId || null,
       capturedAt: snapshot.timestamp || null,
       isEstimated: false
@@ -1091,6 +1172,43 @@ function buildCommandCodeModelOptions(
 function getCommandCodeModelReasoningEfforts(modelId: string | null | undefined): readonly string[] | undefined {
   const normalized = modelId?.trim().toLowerCase();
   return normalized ? COMMAND_CODE_MODEL_REASONING_EFFORTS.get(normalized) : undefined;
+}
+
+/**
+ * 只按会话实际使用的模型解析上下文窗口。
+ *
+ * `command-code status --json` 报的是 CLI 当前配置模型的窗口；会话用 `--model` 换成
+ * 别的模型后，拿它当尺子会把 100 万窗口的会话按 26 万刻度显示成 95% 甚至 100%。
+ * 因此只在两边模型一致时采用运行时值，其余情况查 CLI 目录，查不到就不显示占用。
+ */
+function resolveCommandCodeContextWindow(
+  transcriptWindow: number | null,
+  transcriptModel: string,
+  status: Record<string, unknown> | null
+): { value: number; source: ContextUsageSource } | null {
+  if (transcriptWindow && transcriptWindow > 0) {
+    return { value: transcriptWindow, source: "provider-log" };
+  }
+
+  const statusModel = readStatusText(status, "model");
+  const statusWindow = readNonNegativeInteger(readStatusValue(status, "context_window", "contextWindow"));
+
+  if (
+    statusWindow
+    && statusWindow > 0
+    && transcriptModel
+    && statusModel.toLowerCase() === transcriptModel.trim().toLowerCase()
+  ) {
+    return { value: statusWindow, source: "provider-runtime" };
+  }
+
+  const knownWindow = getCommandCodeModelContextWindow(transcriptModel);
+  return knownWindow ? { value: knownWindow, source: "model-map" } : null;
+}
+
+function getCommandCodeModelContextWindow(modelId: string): number | undefined {
+  const normalized = modelId.trim().toLowerCase();
+  return normalized ? COMMAND_CODE_MODEL_CONTEXT_WINDOWS.get(normalized) : undefined;
 }
 
 function readArchivedFlag(filePath: string): boolean {

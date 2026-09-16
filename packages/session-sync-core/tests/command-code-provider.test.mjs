@@ -42,6 +42,18 @@ function createTranscript(homeDir, workspacePath) {
   return { filePath, sessionId, projectDir };
 }
 
+function appendUsageRecord(filePath, sessionId, model, usage) {
+  appendFileSync(filePath, `${JSON.stringify({
+    type: "message",
+    id: `assistant-usage-${usage.inputTokens}`,
+    sessionId,
+    timestamp: "2026-09-14T10:00:04.000Z",
+    model,
+    usage,
+    message: { role: "assistant", content: [{ type: "text", text: "完成" }] }
+  })}\n`, "utf8");
+}
+
 test("CommandCodeAdapter 按 Command Code 目录规则发现并解析 transcript", async () => {
   const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-provider-"));
   const workspacePath = "/Users/jackson/Code/CodingNS";
@@ -241,6 +253,7 @@ test("CommandCodeAdapter 读取 transcript usage、上下文占用和费用", as
     assert.equal(context.cachedInputTokens, 45);
     assert.equal(context.usageRatio, 0.1);
     assert.equal(context.contextWindow, 1000);
+    assert.equal(context.contextWindowSource, "provider-log");
     const stats = await adapter.readSessionStats(fixture.sessionId, fixture.filePath);
     assert.equal(stats.metrics.inputTokens.value, 100);
     assert.equal(stats.metrics.uncachedInputTokens.value, 55);
@@ -250,6 +263,78 @@ test("CommandCodeAdapter 读取 transcript usage、上下文占用和费用", as
     assert.equal(stats.metrics.totalTokens.value, 120);
     assert.equal(stats.metrics.cacheHitRate.value, 40);
     assert.equal(stats.metrics.costUsd.value, 0.12);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeAdapter 按会话模型解析上下文窗口，不沿用 CLI 默认模型的窗口", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-window-model-map-"));
+  const fixture = createTranscript(homeDir, "/Users/jackson/Code/CodingNS");
+  appendUsageRecord(fixture.filePath, fixture.sessionId, "deepseek/deepseek-v4.1-flash", {
+    inputTokens: 279843,
+    outputTokens: 100,
+    cacheReadTokens: 279552,
+    cacheWriteTokens: 0
+  });
+
+  try {
+    const adapter = new CommandCodeAdapter({
+      homeDir,
+      readStatus: async () => ({ model: "Qwen/Qwen3.8-27B", context_window: 262144 })
+    });
+    const context = await adapter.readContextUsage(fixture.sessionId, fixture.filePath);
+
+    assert.equal(context.contextWindow, 1_000_000);
+    assert.equal(context.contextWindowSource, "model-map");
+    assert.equal(context.usageRatio, 279843 / 1_000_000);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeAdapter 在会话模型与 CLI 默认模型一致时采用运行时窗口", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-window-runtime-"));
+  const fixture = createTranscript(homeDir, "/Users/jackson/Code/CodingNS");
+  appendUsageRecord(fixture.filePath, fixture.sessionId, "Qwen/Qwen3.8-27B", {
+    inputTokens: 131072,
+    outputTokens: 60,
+    cacheReadTokens: 130000,
+    cacheWriteTokens: 0
+  });
+
+  try {
+    const adapter = new CommandCodeAdapter({
+      homeDir,
+      readStatus: async () => ({ model: "qwen/qwen3.8-27b", context_window: 262144 })
+    });
+    const context = await adapter.readContextUsage(fixture.sessionId, fixture.filePath);
+
+    assert.equal(context.contextWindow, 262144);
+    assert.equal(context.contextWindowSource, "provider-runtime");
+    assert.equal(context.usageRatio, 0.5);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeAdapter 对目录外的会话模型不伪造上下文窗口", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-window-unknown-"));
+  const fixture = createTranscript(homeDir, "/Users/jackson/Code/CodingNS");
+  appendUsageRecord(fixture.filePath, fixture.sessionId, "vendor/unknown-model", {
+    inputTokens: 4096,
+    outputTokens: 10,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0
+  });
+
+  try {
+    const adapter = new CommandCodeAdapter({
+      homeDir,
+      readStatus: async () => ({ model: "Qwen/Qwen3.8-27B", context_window: 262144 })
+    });
+
+    assert.equal(await adapter.readContextUsage(fixture.sessionId, fixture.filePath), null);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
