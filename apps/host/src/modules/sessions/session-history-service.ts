@@ -1904,6 +1904,11 @@ export class SessionHistoryService {
       );
 
       if (baseCapabilities.provider === "deepseek-harness") {
+        // dsh 不存在时能力已经降级过，此时再问 sidecar 只会白等一次 spawn 失败。
+        if (!this.providerRuntimeStateService.isProviderCliAvailable(baseCapabilities.provider)) {
+          return this.applyProviderEnabledState(baseCapabilities);
+        }
+
         const discoveredCapabilities = await this.capabilityService.getSessionCapabilities(
           baseCapabilities.provider,
           ""
@@ -7567,14 +7572,15 @@ function filterProjectedIsolatedWorkspaceSessionTree(
 
 function isProviderCliBacked(
   provider: string
-): provider is "claude-code" | "legna-code" | "codex" | "gemini" | "kimi" | "grok" | "command-code" {
+): provider is "claude-code" | "legna-code" | "codex" | "gemini" | "kimi" | "grok" | "command-code" | "deepseek-harness" {
   return provider === "claude-code"
     || provider === "legna-code"
     || provider === "codex"
     || provider === "gemini"
     || provider === "kimi"
     || provider === "grok"
-    || provider === "command-code";
+    || provider === "command-code"
+    || provider === "deepseek-harness";
 }
 
 function normalizeProviderSessionDeleteProvider(provider: string): string {
@@ -7597,6 +7603,8 @@ function buildProviderCliUnavailableMessage(provider: string): string {
       return "未检测到 Grok CLI";
     case "command-code":
       return "未检测到 Command Code CLI";
+    case "deepseek-harness":
+      return "未检测到 DeepSeek Harness sidecar";
     default:
       return "未检测到对应 CLI";
   }

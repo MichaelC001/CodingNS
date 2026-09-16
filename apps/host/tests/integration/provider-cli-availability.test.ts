@@ -4,6 +4,12 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import {
+  DeepSeekHarnessAdapter,
+  resolveDeepSeekHarnessCompatibility,
+  type ProviderAdapter
+} from "@codingns/session-sync-core";
+
 import { resolveHostConfig } from "../../src/config/env.js";
 import { SessionChangedFileService } from "../../src/modules/sessions/session-changed-file-service.js";
 import { SessionHistoryService } from "../../src/modules/sessions/session-history-service.js";
@@ -43,6 +49,26 @@ describe("provider cli availability", () => {
     expect(capabilities.canResumeSession).toBe(false);
     expect(capabilities.canSendMessage).toBe(false);
     expect(capabilities.limitations[0]).toContain("Codex CLI");
+
+    service.dispose();
+  });
+
+  it("dsh 不存在时会把 DeepSeek Harness 能力降级为不可启动，且不去拉起 sidecar", async () => {
+    const harnessCalls: string[] = [];
+    const service = createSessionHistoryService(
+      {
+        deepseekHarnessCliPath: join(createTempRoot(), "missing-dsh"),
+        deepseekHarnessHomeDir: join(createTempRoot(), "dsh-home")
+      },
+      { additionalAdapters: [createDeepSeekHarnessAdapter(harnessCalls)] }
+    );
+    const capabilities = await service.instance.getProviderCapabilities("deepseek-harness");
+
+    expect(capabilities.canStartSession).toBe(false);
+    expect(capabilities.canResumeSession).toBe(false);
+    expect(capabilities.canSendMessage).toBe(false);
+    expect(capabilities.limitations[0]).toContain("DeepSeek Harness");
+    expect(harnessCalls).toEqual([]);
 
     service.dispose();
   });
@@ -91,7 +117,24 @@ describe("provider cli availability", () => {
     service.dispose();
   });
 
-  function createSessionHistoryService(overrides: Partial<ReturnType<typeof resolveHostConfig>> = {}) {
+  function createDeepSeekHarnessAdapter(calls: string[]): ProviderAdapter {
+    return new DeepSeekHarnessAdapter({
+      transport: {
+        // 握手正常时静态能力本身是可用的，能否启动只由 Host 的 CLI 可用性决定。
+        getCompatibility: () => resolveDeepSeekHarnessCompatibility({ protocolVersion: "remote-v1" }),
+        call: async <T>(method: string): Promise<T> => {
+          calls.push(method);
+          throw new Error("HARNESS_SIDECAR_UNAVAILABLE");
+        },
+        subscribe: () => ({ close: () => undefined })
+      }
+    });
+  }
+
+  function createSessionHistoryService(
+    overrides: Partial<ReturnType<typeof resolveHostConfig>> = {},
+    adapterOverrides: { additionalAdapters?: ProviderAdapter[] } = {}
+  ) {
     const rootDir = createTempRoot();
     const claudeCodeHomeDir = join(rootDir, "claude-home");
     const codexHomeDir = join(rootDir, "codex-home");
@@ -126,7 +169,11 @@ describe("provider cli availability", () => {
       ),
       new SessionStateRepository(database.db),
       new SessionStatusSnapshotRepository(database.db),
-      config
+      config,
+      undefined,
+      null,
+      null,
+      adapterOverrides
     );
 
     return {
