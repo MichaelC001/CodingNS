@@ -474,5 +474,12 @@
     - 本轮“复制会话互动范围 + 去内层滚动 + 按钮移入分组标题行”之后，已跑 `pnpm --dir apps/user-app test -- --run src/settings/ProviderManagementPanel.test.tsx src/features/settings/pages/SettingsPage.test.tsx`（39 项通过）、`pnpm --dir apps/host test -- --run tests/integration/provider-catalog-routes.test.ts`（4 项通过）和 `pnpm --dir apps/user-app build`
     - 横向滚动这轮不靠肉眼判断：用 Edge headless 加载构建产物 CSS + 复刻模态框 DOM，实测视口 1432 / 1192 / 1016 / 889 / 812 下 `body.scrollWidth === body.clientWidth`，均无横向滚动条；旧规则在 889 / 812 下实测溢出（`scrollWidth 833 > clientWidth 767`）
     - 真实界面手工验收还没做；按项目规则，本轮没有主动启动前后端服务，所以这一步暂时停在 `IN_REVIEW`
+    - 新建会话弹窗补了「管理启用的 Agent」快捷入口：点开后每个 CLI 卡片右上角出现启用/禁用按钮，禁用后落到弹窗底部的「已禁用」折叠分组；默认视图仍然只看已启用的 CLI
+    - 这个入口没有另建一套启用控制，仍然调用设置页同一套 `setProviderCatalogEntryEnabled`（`PUT /api/providers/catalog/:provider`）；差异只在于切换后只失效对应 CLI 的能力缓存，避免其余卡片一起闪回“检查中”
+    - 本轮最小验证：`pnpm --dir apps/user-app test -- --run src/features/conversation/components/SessionProviderPicker.test.tsx src/features/mobile-sessions/components/MobileCreateSessionSheet.test.tsx src/settings/ProviderManagementPanel.test.tsx src/settings/ModelManagementPanel.test.tsx`（25 项通过）和 `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`（无报错）
+    - 新建会话弹窗、事务新建会话弹窗、移动端新建会话 sheet 三个入口都开了这个能力；Fork、管家跟进、Git 解释提交这类只为“选一个 CLI”的入口保持原样，不出现管理按钮
+    - 「管理启用的 Agent」按钮不再单独占一行，挪到「选择供应商」标题行右侧；标题行改由 picker 自己渲染，三个入口不再各写一份表头，加载中也不会出现“标题先闪一下”
+    - 新建会话弹窗标题下面常驻一条引导提示，说明点这个按钮可以把不用的 CLI 收起来；默认一直显示，只有用户点掉提示右侧的 X 才不再出现（`codingns.provider-picker.manage-hint-dismissed`），进管理模式时先让位
+    - 本轮最小验证：`pnpm --dir apps/user-app test -- --run src/features/conversation/components/SessionProviderPicker.test.tsx src/features/mobile-sessions/components/MobileCreateSessionSheet.test.tsx src/settings/ProviderManagementPanel.test.tsx src/settings/ModelManagementPanel.test.tsx`（26 项通过，含「没点 X 前关掉再打开仍有提示 / 点掉 X 后写 localStorage 且不再出现」）、`pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`（无报错）；`WorkbenchLayout.test.tsx` 与改动前基线对比为 36 失败 / 58 通过 → 35 失败 / 59 通过，失败项均为存量问题
   - 对应需求：`requirements.md` 全部需求
   - 对应设计：`design.md` 全文
