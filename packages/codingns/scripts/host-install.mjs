@@ -508,23 +508,62 @@ export function resolveHostWorkingDirectory(context) {
   return fs.existsSync(context.dataDir) ? context.dataDir : undefined;
 }
 
+/**
+ * 服务进程的 stdout/stderr 落到这里。
+ * 之前是 stdio: "ignore"，服务启动阶段崩掉时一行线索都没有，只能看到健康检查超时。
+ */
+export function resolveHostServiceLogPath(context) {
+  return path.join(context.dataDir, "runtime", "logs", "host-service.log");
+}
+
+function openHostServiceLog(context, logger) {
+  const filePath = resolveHostServiceLogPath(context);
+
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+    return { fd: fs.openSync(filePath, "a"), filePath };
+  } catch (error) {
+    logger.log("服务日志打不开，服务输出只能丢弃", {
+      filePath,
+      detail: error instanceof Error ? error.message : String(error)
+    });
+
+    return null;
+  }
+}
+
 export function spawnDetachedHost(context, logger) {
   const args = ["start", "--data-dir", normalizeNodePath(context.dataDir), "--port", String(context.port), "--host", context.listenHost];
+  const serviceLog = openHostServiceLog(context, logger);
   const child = spawn(normalizeNodePath(context.nodeBinary), [normalizeNodePath(context.cliEntryPath), ...args], {
     cwd: resolveHostWorkingDirectory(context),
     // Windows 上不 detached：windowsHide 给的是一个「存在但看不见」的控制台，
     // 子进程会继承它，全程没有窗口；detached 会让服务进程没有控制台，子进程反而各自弹窗。
     detached: shouldDetachHost(),
-    stdio: "ignore",
+    stdio: serviceLog === null ? "ignore" : ["ignore", serviceLog.fd, serviceLog.fd],
     windowsHide: true
   });
+
+  if (serviceLog !== null) {
+    // 句柄已经复制给子进程，父进程这份要立刻关掉，免得安装器自己占着日志文件。
+    try {
+      fs.closeSync(serviceLog.fd);
+    } catch {
+      // 关不掉不影响服务运行
+    }
+  }
 
   // 子进程起不来时不能把安装器一起带崩，交给后面的健康检查报错。
   child.on("error", (error) => {
     logger.log("拉起服务进程失败", error instanceof Error ? error.message : String(error));
   });
   child.unref();
-  logger.log("已拉起服务进程", { pid: child.pid, cliEntryPath: context.cliEntryPath });
+  logger.log("已拉起服务进程", {
+    pid: child.pid,
+    cliEntryPath: context.cliEntryPath,
+    serviceLogPath: serviceLog?.filePath ?? null
+  });
 
   return child.pid ?? null;
 }

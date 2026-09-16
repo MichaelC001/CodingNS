@@ -22,6 +22,7 @@ import {
   resolveLogDirPath,
   resolveNpmInvocation,
   resolvePackageRootPath,
+  resolveHostServiceLogPath,
   resolveHostWorkingDirectory,
   shouldDetachHost,
   resolveRegistryCandidates,
@@ -1002,6 +1003,12 @@ test("服务进程的启动方式：工作目录是数据目录，Windows 上不
   assert.equal(shouldDetachHost("win32"), false);
   assert.equal(shouldDetachHost("darwin"), true);
   assert.equal(shouldDetachHost("linux"), true);
+
+  // 服务进程的输出要落到文件：之前是 stdio ignore，服务在启动阶段崩掉时没有任何线索。
+  assert.equal(
+    resolveHostServiceLogPath({ dataDir }),
+    path.join(dataDir, "runtime", "logs", "host-service.log")
+  );
 });
 
 test("Windows 上计划任务建不起来时退到启动文件夹，自启仍然算成功", async () => {
