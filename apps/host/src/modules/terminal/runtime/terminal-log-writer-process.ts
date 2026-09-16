@@ -69,6 +69,8 @@ const db = new Database(databasePath);
 
 // writer 子进程自己负责短超时和显式重试，避免 SQLite 在单次写入里闷等 5 秒。
 db.pragma("journal_mode = WAL");
+// 与 Host 主库保持一致：提交不逐次 fsync WAL，只在 checkpoint 时落盘。
+db.pragma("synchronous = NORMAL");
 db.pragma("foreign_keys = ON");
 db.pragma(`busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 

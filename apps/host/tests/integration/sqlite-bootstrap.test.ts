@@ -22,6 +22,27 @@ afterEach(() => {
 });
 
 describe("sqlite 启动引导", () => {
+  it("打开数据库时把同步级别降到 NORMAL 并放大页缓存", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-sqlite-pragma-bootstrap-"));
+    tempDirs.push(tempDir);
+    const databasePath = path.join(tempDir, "host.sqlite");
+    const client = createDatabaseClient(databasePath);
+
+    const journalMode = client.db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    const synchronous = client.db.prepare("PRAGMA synchronous").get() as { synchronous: number };
+    const cacheSize = client.db.prepare("PRAGMA cache_size").get() as { cache_size: number };
+    const journalSizeLimit = client.db
+      .prepare("PRAGMA journal_size_limit")
+      .get() as { journal_size_limit: number };
+
+    client.close();
+
+    expect(journalMode.journal_mode).toBe("wal");
+    expect(synchronous.synchronous).toBe(1);
+    expect(cacheSize.cache_size).toBe(-65536);
+    expect(journalSizeLimit.journal_size_limit).toBe(67108864);
+  });
+
   it("可以把缺少 runtime 列的旧 terminal_instances 平滑升级到新结构", async () => {
     if (Number(process.versions.node.split(".")[0] ?? "0") < 22) {
       return;

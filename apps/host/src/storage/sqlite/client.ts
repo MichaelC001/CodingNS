@@ -20,8 +20,13 @@ export function createDatabaseClient(databasePath: string): DatabaseClient {
 
   const db = new Database(databasePath);
   db.pragma("journal_mode = WAL");
+  // libsql 在 WAL 下的 synchronous 默认落在 FULL，会让每次提交都 fsync WAL；
+  // 慢盘上 I/O 争用时这个尾延迟能到百毫秒级，且直接阻塞主线程，这里显式降到 NORMAL。
+  db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
+  db.pragma("cache_size = -65536");
+  db.pragma("journal_size_limit = 67108864");
   const schemaPath = new URL("./schema.sql", import.meta.url);
   const schema = fs.readFileSync(schemaPath, "utf8");
 
