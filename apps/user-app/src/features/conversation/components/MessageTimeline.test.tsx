@@ -2618,8 +2618,7 @@ DSH 不应折叠这条 Codex 形态规则
     );
 
     expect(screen.getByText(t("conversation.thinkingLabel"))).toBeInTheDocument();
-    expect(screen.getByText("先分析用户的请求。")).toHaveClass("thinking-message-preview");
-    expect(screen.queryByText("第二行继续展开细节。")).not.toBeInTheDocument();
+    expect(screen.getByText("先分析用户的请求。 第二行继续展开细节。")).toHaveClass("thinking-message-preview");
     expect(screen.getByText("这是正式回复。").closest(".thinking-message-text")).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: t("conversation.thinkingExpandAction") }));
@@ -2676,7 +2675,8 @@ DSH 不应折叠这条 Codex 形态规则
     expect(toggle).toHaveClass("thinking-message-toggle-active");
     expect(document.querySelector(".thinking-message-row-active")).not.toBeNull();
     expect(document.querySelector(".thinking-message-progress-dots")).not.toBeNull();
-    expect(screen.getByText("正在梳理当前会话的上下文。")).toHaveClass("thinking-message-preview-active");
+    expect(screen.getByText("正在梳理当前会话的上下文。 后续内容仍在生成。"))
+      .toHaveClass("thinking-message-preview-active");
 
     rerender(
       <MessageTimeline
@@ -2695,17 +2695,18 @@ DSH 不应折叠这条 Codex 形态规则
     expect(toggle).not.toHaveClass("thinking-message-toggle-active");
     expect(document.querySelector(".thinking-message-progress-dots")).toBeNull();
     expect(document.querySelector(".thinking-message-row-active")).toBeNull();
-    expect(screen.getByText("正在梳理当前会话的上下文。")).not.toHaveClass("thinking-message-preview-active");
+    expect(screen.getByText("正在梳理当前会话的上下文。 后续内容仍在生成。"))
+      .not.toHaveClass("thinking-message-preview-active");
   });
 
   it.each(["opencode", "command-code", "pi"] as const)(
-    "%s 的思考默认折叠为单行预览并能展开",
+    "%s 的思考默认折叠为两行预览并能展开",
     async (provider) => {
       render(
         <MessageTimeline
           messages={[
             createAssistantThinkingMessage(
-              "先确认当前的消息渲染路径。\n第二行细节在折叠态不应该出现。",
+              "先确认当前的消息渲染路径。\n第二行细节在折叠态也应该出现。\n第三行细节在折叠态不应该出现。",
               `${provider}-thinking-1`
             )
           ]}
@@ -2716,13 +2717,14 @@ DSH 不应折叠这条 Codex 形态规则
       );
 
       expect(screen.getByText(t("conversation.thinkingLabel"))).toBeInTheDocument();
-      expect(screen.getByText("先确认当前的消息渲染路径。")).toHaveClass("thinking-message-preview");
-      expect(screen.queryByText("第二行细节在折叠态不应该出现。")).not.toBeInTheDocument();
+      expect(screen.getByText("先确认当前的消息渲染路径。 第二行细节在折叠态也应该出现。"))
+        .toHaveClass("thinking-message-preview");
+      expect(screen.queryByText(/第三行细节在折叠态不应该出现。/)).not.toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("button", { name: t("conversation.thinkingExpandAction") }));
 
       expect(document.querySelector(".thinking-message-text"))
-        .toHaveTextContent("第二行细节在折叠态不应该出现。");
+        .toHaveTextContent("第三行细节在折叠态不应该出现。");
     }
   );
 

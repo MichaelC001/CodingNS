@@ -134,6 +134,7 @@ const EMPTY_PARSED_MESSAGE_RICH_CONTENT: ParsedMessageRichContent = {
   structuredQuestions: null
 };
 const MAX_THINKING_PREVIEW_LENGTH = 280;
+const THINKING_PREVIEW_LINE_LIMIT = 2;
 const COLLAPSIBLE_THINKING_PROVIDER_IDS = new Set<string>([
   "deepseek-harness",
   "opencode",
@@ -149,31 +150,30 @@ function stripThinkingTrailingDots(value: string): string {
   return value.replace(/(\.{3,}|…+)$/, "").trimEnd();
 }
 
-function getThinkingFirstLine(value: string): string {
-  let lineStart = 0;
-  let firstLine = "";
+function getThinkingPreview(value: string): string {
+  const previewLines: string[] = [];
 
-  while (lineStart <= value.length) {
-    const lineEnd = value.indexOf("\n", lineStart);
-    const line = value.slice(lineStart, lineEnd === -1 ? value.length : lineEnd).trim();
+  for (const rawLine of value.split("\n")) {
+    const line = rawLine.trim();
 
-    if (line) {
-      firstLine = line;
-      break;
+    if (!line) {
+      continue;
     }
 
-    if (lineEnd === -1) {
+    previewLines.push(line);
+
+    if (previewLines.length >= THINKING_PREVIEW_LINE_LIMIT) {
       break;
     }
-
-    lineStart = lineEnd + 1;
   }
 
-  if (firstLine.length <= MAX_THINKING_PREVIEW_LENGTH) {
-    return firstLine;
+  const preview = previewLines.join(" ");
+
+  if (preview.length <= MAX_THINKING_PREVIEW_LENGTH) {
+    return preview;
   }
 
-  return `${firstLine.slice(0, MAX_THINKING_PREVIEW_LENGTH - 1)}…`;
+  return `${preview.slice(0, MAX_THINKING_PREVIEW_LENGTH - 1)}…`;
 }
 
 type SessionErrorSummarySegment =
@@ -5681,7 +5681,7 @@ function MessageItem({
   const collapsedThinkingInProgress = canCollapseThinking && thinkingInProgress && !thinkingExpanded;
   const shouldRenderThinkingContent = !canCollapseThinking || thinkingExpanded || exportMode;
   const thinkingPreview = canCollapseThinking && !thinkingExpanded
-    ? getThinkingFirstLine(message.content)
+    ? getThinkingPreview(message.content)
     : "";
   const richContent = useMemo(
     () => (
