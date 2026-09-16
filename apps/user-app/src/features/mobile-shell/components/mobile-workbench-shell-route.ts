@@ -149,6 +149,22 @@ export function resolvePreferredToolsHomeHref(pathname: string, search: string):
   return null;
 }
 
+/**
+ * 工具相关页面按返回时该去哪。
+ *
+ * 工具首页本身就是一级页面，返回应该交给工作区首页处理，所以这里返回 null；
+ * 只有文件和 Git 这类工具详情页才回工具首页。
+ */
+export function resolveMobileToolBackHref(pathname: string, search: string): string | null {
+  const routeMatch = resolveToolRouteMatch(pathname);
+
+  if (!routeMatch || routeMatch.routeKind === "home") {
+    return null;
+  }
+
+  return resolvePreferredToolsHomeHref(pathname, search);
+}
+
 export function resolveMobileToolHeaderState({
   activeEntry,
   presentation,

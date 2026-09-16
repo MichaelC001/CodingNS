@@ -20,6 +20,7 @@ import {
   resolveAdaptiveMobilePaneLayout,
   shouldPreferCompactNativeMobileLayout
 } from "../layouts/AdaptiveMobilePaneLayout";
+import { useMobileBackController } from "../navigation/useMobileBackController";
 
 interface IosTabItem {
   readonly key: MobileWorkbenchEntry;
@@ -45,6 +46,8 @@ export function IosWorkbenchShell({
   const haptics = useHaptics();
   const location = useLocation();
   const navigate = useNavigate();
+  // iOS 没有系统返回键，这里接管左边缘滑动，走同一套返回层级。
+  useMobileBackController();
   const shellRef = useRef<HTMLDivElement | null>(null);
   const tabbarRef = useRef<HTMLElement | null>(null);
   const [composerPortalTarget, setComposerPortalTarget] = useState<HTMLElement | null>(null);

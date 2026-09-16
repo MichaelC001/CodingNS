@@ -20,6 +20,7 @@ import {
   resolveAdaptiveMobilePaneLayout,
   shouldPreferCompactNativeMobileLayout
 } from "../layouts/AdaptiveMobilePaneLayout";
+import { useMobileBackController } from "../navigation/useMobileBackController";
 
 interface AndroidNavItem {
   readonly key: MobileWorkbenchEntry;
@@ -45,6 +46,8 @@ export function AndroidWorkbenchShell({
   const haptics = useHaptics();
   const location = useLocation();
   const navigate = useNavigate();
+  // 接管 Android 系统返回键，走应用自己的返回层级，不回退 WebView 历史。
+  useMobileBackController();
   const shellRef = useRef<HTMLDivElement | null>(null);
   const tabbarRef = useRef<HTMLElement | null>(null);
   const [composerPortalTarget, setComposerPortalTarget] = useState<HTMLElement | null>(null);
