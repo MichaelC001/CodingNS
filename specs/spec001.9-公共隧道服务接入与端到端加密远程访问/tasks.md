@@ -1,31 +1,49 @@
 # 任务清单 - spec001.9 公共隧道服务接入与端到端加密远程访问（人话版）
 
-状态：IN_PROGRESS
+状态：IN_PROGRESS（2026-09-16 按 WebRTC 承载层改版）
 
-## 2026-04-19 进展补记
+## 2026-09-16 改版说明
 
-- 已启动 `spec001.9`
-- 已明确这次做的是“公共隧道服务接入 + 端到端加密远程访问”，不是普通反向代理
-- 已明确本仓库只实现 Spec、Host 侧隧道客户端、客户端 / H5 接入层和加密协议
-- 已明确公共隧道站点、支付、流量账本和数据面转发节点必须放到独立子仓库
-- 已明确“用户三级域名直接托管完整业务 H5 页面”和“中继看不到内容”不能同时成立
-- 已在 `apps/codingns-proxy` 落下第一批可运行骨架：`shared-contracts`、`control-api`、`relay-edge`
-- `control-api` 已补最小邮箱注册闭环，支持申请邮箱验证码和携带验证码注册
-- `control-api` 已补文件持久化、邮箱密码登录和 Bearer 会话查询
-- `control-api` 已补邮箱验证码频控，默认支持冷却时间和窗口次数限制，并可跨重启保留限制状态
-- `control-api` 已补账号归属的 Host 绑定、流量钱包，以及 relay 内部授权与字节记账接口
-- `relay-edge` 已补最小 WebSocket 盲中继骨架，支持预留会话后由 `upstream` / `downstream` 双端接入并原样转发帧
-- `relay-edge` 已接控制面内部授权与配额校验，支持按字节扣量并在额度耗尽后拒绝新会话
-- 主仓库已补 `instance_relay_tunnel_config/status` 的正式落库和仓储，公共隧道不再依赖零散页面状态
-- 主仓库已补 `relay-tunnel` Host 控制面骨架，支持 `status/config/bind/unbind/enable/disable` 系统接口和基础状态流转
-- `user-app` 已把公共隧道 profile 真正挂到 `HostTransport` 解析链路，当前 Host 可以按配置自动切直连或公共隧道
-- `user-app` 设置页已补公共隧道 profile、Host 管理面板、流量钱包、套餐与订单展示，并补了信任边界提示
-- `control-api` 已把支付骨架切到 Paddle，支持流量套餐、订单、Paddle Checkout 会话创建、Paddle webhook 处理和流量到账发放
-- `apps/codingns-proxy` 子仓库已完成当前阶段 `pnpm build` 与 `pnpm test`
+**这一版把承载层从「WSS 盲中继 + 自研端到端加密」换成「WebRTC DataChannel」。**
+
+为什么换，看 `docs/20260916-WebRTC承载层验证结论.md`。一句话：
+
+- 自研加密那套（x25519 + HKDF + AES-GCM + 握手 proof + 加密帧）太重，
+  658 行代码在 `apps/host`、`apps/user-app`、`relay-edge` 三处各存一份，其中一份已是死代码
+- WebRTC 的 DTLS 本身就是端到端加密，信令服务器和 TURN 都拿不到密钥
+- P2P 直连能省掉中继带宽成本
+
+### 换完以后作废的工作
+
+| 原方向的工作 | 处置 | 原因 |
+| --- | --- | --- |
+| 自研端到端加密协议（握手、密钥派生、加密帧） | **作废并删除** | DTLS 原生提供 |
+| Host 挑战应答与公钥指纹登记 | **作废并删除** | 改用 SDP 里的 DTLS 指纹 |
+| base64 + JSON 信封 | **作废并删除** | DataChannel 直接收发二进制 |
+| 会话实例亲和与共享状态粘性 | **作废** | P2P 连接不需要会话粘在某个中继实例上 |
+| relay-edge 密文帧中继 | **替换** | 由信令服务器 + coturn 接替 |
+| 按流量计费与超额断流 | **替换** | P2P 打通后网络层无法计量，改固定订阅 |
+
+### 继续有效的工作（控制面这套不用重做）
+
+上一版已经落地、并且这一版继续沿用的能力：
+
+| 能力 | 现状 |
+| --- | --- |
+| 独立子仓库分仓与主仓库忽略策略 | 已落地，`apps/codingns-proxy/` |
+| 账号体系（注册、登录、验证码、管理员通路） | 已落地，完全保留 |
+| Host 绑定与解绑 | 已落地，保留但去掉三级域名强绑定 |
+| 实例级配置与状态存储、状态机、未初始化阻断 | 已落地，保留（状态枚举要调整） |
+| 后台任务接入统一 `TaskManager` | 已落地，保留，新增信令连接任务 |
+| 设置页「远程访问」provider 化 | 已落地，保留，新增链路类型展示 |
+| 订单 / Paddle 支付骨架 | 已落地，语义从「流量包」改「周期订阅」 |
+| 数据库迁移体系、部署脚本、控制台站点 | 已落地，保留 |
+
+原 WSS 方案的逐条任务记录见 git 历史，这里不再整体保留，避免误导后来的人。
 
 ## 这份文档是干什么的
 
-这份任务清单只负责把 “公共隧道服务接入与端到端加密远程访问” 拆成能执行、能验收、不会越做越歪的步骤。
+这份任务清单只负责把「公共隧道承载层切换到 WebRTC」拆成能执行、能验收的步骤。
 
 要求还是那六个老问题：
 
@@ -53,518 +71,348 @@
 
 ---
 
-## 阶段 0：先把边界钉死，别一开始就写歪
+## 阶段 W0：先把选型和边界确认掉
 
-- [x] 0.1 启动 spec001.9 并完成主文档初始化
+- [x] W0.1 固化 WebRTC 承载层验证结论
   - 状态：DONE
-  - 这一步到底做什么：建立 `spec001.9` 目录和 `README.md`、`requirements.md`、`design.md`、`tasks.md`、`docs/README.md`
-  - 做完以后能看到什么结果：仓库里出现完整的 `spec001.9` 文档骨架，任何人都知道这次解决的是公共隧道 + 端到端加密，不是云端站点混进主仓库
-  - 依赖什么：`spec001`
+  - 这一步到底做什么：把 demo 里的实测数据（可靠性、吞吐、踩过的坑）写成正式结论文档，作为改版的依据
+  - 做完以后能看到什么结果：后续讨论不用再回到聊天记录里找数字
+  - 依赖什么：无
   - 主要改哪些文件：
-    - `specs/spec001.9-公共隧道服务接入与端到端加密远程访问/*`
-  - 这一步明确不做什么：不写业务代码，不创建云端站点代码目录
+    - `specs/spec001.9-公共隧道服务接入与端到端加密远程访问/docs/20260916-WebRTC承载层验证结论.md`
+  - 这一步明确不做什么：不改任何产品代码
   - 怎么验证：
     - 文档走查
   - 验证结果：
-    - 已完成 `spec001.9` 主文档初始化，并写清主仓库职责、独立子仓库职责、E2EE 信任边界、三级域名入口边界、流量和支付边界
+    - 已落库。包含：node-datachannel 接收侧不可靠（3/16）出局、werift 可用（11/11）、
+      werift 上行 3–6 MB/s 下行 21–31 MB/s、分片与水位调优无效、多 DataChannel 无效、
+      STUN 必需、PeerConnection 必须进程隔离
 
-- [x] 0.2 回写总览和父规格，挂上 spec001.9
-  - 状态：DONE
-  - 这一步到底做什么：把 `spec001.9` 挂到 `specs/README.md` 和 `spec001` 父规格，避免后续继续把公共隧道需求塞回父规格正文里混做
-  - 做完以后能看到什么结果：总览和父规格都能看出 `spec001.9` 是独立子问题
-  - 依赖什么：0.1
+- [ ] W0.2 确认 Host 侧接入进程的形态
+  - 状态：TODO
+  - 这一步到底做什么：定清楚 WebRTC 接入进程怎么跑、和主进程怎么通信、崩了怎么拉起
+  - 做完以后能看到什么结果：有一份明确的进程模型说明，后面写代码不用现拍
+  - 依赖什么：W0.1
   - 主要改哪些文件：
-    - `specs/README.md`
-    - `specs/spec001-平台底座与工作区基础/README.md`
-    - `specs/spec001-平台底座与工作区基础/tasks.md`
-  - 这一步明确不做什么：不改业务代码
+    - `specs/spec001.9-公共隧道服务接入与端到端加密远程访问/design.md`
+    - 可能新增 `docs/20260916-Host接入进程模型.md`
+  - 这一步明确不做什么：不写代码
   - 怎么验证：
-    - 文档走查
-  - 验证结果：
-    - 已在总览和 `spec001` 父规格中补上 `spec001.9` 的职责说明和目录挂接
+    - 方案评审，重点确认「PeerConnection 必须隔离」这条怎么落实
+
+- [ ] W0.3 确认计费模型切换范围
+  - 状态：TODO
+  - 这一步到底做什么：把「按流量」改成「固定订阅」涉及的控制面改动列清楚，尤其是存量订单、套餐、流量账本怎么办
+  - 做完以后能看到什么结果：知道要改哪些表、哪些接口、哪些页面，存量数据怎么迁移
+  - 依赖什么：无
+  - 主要改哪些文件：
+    - `specs/spec001.9.1-公共隧道服务二阶段收口与生产化验收/*`
+  - 这一步明确不做什么：不在这一步写迁移脚本
+  - 怎么验证：
+    - 文档走查 + 与现有控制面代码对照
 
 ---
 
-## 阶段 1：先把本仓库和云端仓库切开
+## 阶段 W1：Host 侧 WebRTC 接入层
 
-- [x] 1.1 固定独立子仓库路径和主仓库忽略策略
-  - 状态：DONE
-  - 这一步到底做什么：约定公共隧道云端代码的独立子仓库路径，并让主仓库忽略该目录
-  - 做完以后能看到什么结果：公共云端代码未来能在当前工作目录下开发，但不会被主仓库误跟踪
-  - 依赖什么：0.2
+- [ ] W1.1 搭起 Host 侧 WebRTC 接入进程骨架
+  - 状态：TODO
+  - 这一步到底做什么：新建独立进程，用 werift 建立 PeerConnection，接受客户端 DataChannel
+  - 做完以后能看到什么结果：浏览器能通过 DataChannel 连上这个进程
+  - 依赖什么：W0.2
   - 主要改哪些文件：
-    - 根目录 `.gitignore`
-    - `spec001.9` 相关开发说明文档
+    - `apps/host/src/modules/relay-tunnel/webrtc/*`（新增）
+    - 进程启动入口与 IPC 接入点
+  - 这一步明确不做什么：不做业务转发，不做信令鉴权
+  - 怎么验证：
+    - 本地用 demo 页面对接，确认能建立 DataChannel
+    - `pnpm --dir apps/host test -- <新增测试文件>`
+
+- [ ] W1.2 打通 DataChannel 到本地业务接口的转发
+  - 状态：TODO
+  - 这一步到底做什么：把 DataChannel 收到的业务消息转成对本地 `127.0.0.1:<port>` 的 HTTP / WS 请求，响应再回传
+  - 做完以后能看到什么结果：客户端能通过 WebRTC 通道正常使用 Host 业务接口
+  - 依赖什么：W1.1
+  - 主要改哪些文件：
+    - `apps/host/src/modules/relay-tunnel/webrtc/*`
+  - 这一步明确不做什么：不改现有业务 API 语义
+  - 怎么验证：
+    - 端到端联调：浏览器里跑通一个真实业务接口调用
+    - 现有业务接口回归不受影响
+
+- [ ] W1.3 把信令连接接入 TaskManager
+  - 状态：TODO
+  - 这一步到底做什么：信令连接、状态刷新、用量上报都走 `TaskManager`，不自己长私有 timer
+  - 做完以后能看到什么结果：网络抖动后能自动恢复，设置页能看到当前阶段
+  - 依赖什么：W1.1
+  - 主要改哪些文件：
+    - `apps/host/src/modules/relay-tunnel/*`
+  - 这一步明确不做什么：不重写 TaskManager 本身
+  - 怎么验证：
+    - 按 `spec001.2` 后台任务规范自查
+    - 断网 / 恢复测试
+
+- [ ] W1.4 接入进程崩溃自动拉起
+  - 状态：TODO
+  - 这一步到底做什么：主进程监控 WebRTC 接入进程，崩了自动重启，并把原因记进状态
+  - 做完以后能看到什么结果：接入进程挂掉不影响 Host 其他功能，且能自动恢复
+  - 依赖什么：W1.1
+  - 主要改哪些文件：
+    - `apps/host/src/modules/relay-tunnel/*`
+  - 这一步明确不做什么：不做多进程池
+  - 怎么验证：
+    - 手动 kill 接入进程，确认主进程存活并自动拉起
+
+---
+
+## 阶段 W2：客户端接入层
+
+- [ ] W2.1 新增客户端 WebRTC transport
+  - 状态：TODO
+  - 这一步到底做什么：在 user-app 里实现基于 DataChannel 的传输实现，替代现有 relay-tunnel transport
+  - 做完以后能看到什么结果：客户端能通过 WebRTC 通道访问远程 Host
+  - 依赖什么：W1.2
+  - 主要改哪些文件：
+    - `apps/user-app/src/network/webrtc/*`（新增）
+    - `apps/user-app/src/network/host-transport-registry.ts`
+  - 这一步明确不做什么：不重写业务层 API 调用方式
+  - 怎么验证：
+    - `pnpm --dir apps/user-app exec vitest run src/network/*.test.ts`
+    - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
+
+- [ ] W2.2 客户端 DTLS 指纹校验
+  - 状态：TODO
+  - 这一步到底做什么：建立连接时比对 SDP 里的 DTLS 指纹与控制面返回的指纹，不一致直接断开
+  - 做完以后能看到什么结果：中间人无法冒充 Host
+  - 依赖什么：W2.1
+  - 主要改哪些文件：
+    - `apps/user-app/src/network/webrtc/*`
+  - 这一步明确不做什么：不做「指纹不符但允许继续」的降级开关
+  - 怎么验证：
+    - 构造指纹不匹配场景，确认连接被拒绝
+    - 单元测试覆盖比对逻辑
+
+- [ ] W2.3 展示当前链路类型
+  - 状态：TODO
+  - 这一步到底做什么：识别当前是 P2P 直连还是 TURN 中继，并在设置页和连接状态处展示
+  - 做完以后能看到什么结果：用户知道自己现在走的是哪条路
+  - 依赖什么：W2.1
+  - 开始前必须先阅读：
+    - `docs/开发设计规范/20260419-前端页面与样式设计规范.md`
+  - 主要改哪些文件：
+    - `apps/user-app/src/settings/*`
+    - `apps/user-app/src/components/connection/*`
+    - i18n 字典与测试
+  - 这一步明确不做什么：不把 ICE 候选类型这种术语暴露给用户
+  - 怎么验证：
+    - 组件测试 + 手工联调
+
+---
+
+## 阶段 W3：信令与 TURN
+
+- [ ] W3.1 实现信令服务器
+  - 状态：TODO
+  - 这一步到底做什么：在子仓库实现信令服务，负责注册、房间、SDP / ICE 转发和凭据校验
+  - 做完以后能看到什么结果：Host 和客户端能通过它完成建连
+  - 依赖什么：W0.2
+  - 主要改哪些文件：
+    - `apps/codingns-proxy/apps/relay-signaling/*`（新增）
+    - `apps/codingns-proxy/packages/shared-contracts/*`
+  - 这一步明确不做什么：不转发业务数据，不碰业务消息
+  - 怎么验证：
+    - 信令层并发、重连、凭据过期测试
+    - 抓包确认信令只经手 SDP / ICE
+
+- [ ] W3.2 部署 coturn 并接入控制面
+  - 状态：TODO
+  - 这一步到底做什么：部署 TURN 服务，控制面负责下发 ICE 配置和临时凭据
+  - 做完以后能看到什么结果：NAT 打洞失败的用户能通过 TURN 连上
+  - 依赖什么：W3.1
+  - 主要改哪些文件：
+    - `apps/codingns-proxy/deploy/*`
+    - `apps/codingns-proxy/apps/control-api/*`
+  - 这一步明确不做什么：不自研 TURN
+  - 怎么验证：
+    - 强制 `iceTransportPolicy: "relay"` 跑通
+    - TURN 侧能看到用量数据
+
+- [ ] W3.3 ICE 配置下发
+  - 状态：TODO
+  - 这一步到底做什么：控制面按账号 / 订阅状态下发 STUN 与 TURN 地址，并支持关闭指定账号的 TURN
+  - 做完以后能看到什么结果：客户端拿到完整 ICE 配置，不用本地硬编码
+  - 依赖什么：W3.2
+  - 主要改哪些文件：
+    - `apps/codingns-proxy/apps/control-api/*`
+    - `apps/codingns-proxy/packages/shared-contracts/*`
+  - 这一步明确不做什么：不做按地域分片的 ICE 调度
+  - 怎么验证：
+    - 接口测试 + 客户端联调
+
+---
+
+## 阶段 W4：安全验收
+
+- [ ] W4.1 DTLS 指纹登记与下发
+  - 状态：TODO
+  - 这一步到底做什么：Host 首次启用时生成 DTLS 证书、把指纹注册到控制面，客户端连接前取回
+  - 做完以后能看到什么结果：指纹机制替代了原来的公钥指纹
+  - 依赖什么：W1.1、W2.1
+  - 主要改哪些文件：
+    - `apps/host/src/modules/relay-tunnel/*`
+    - `apps/codingns-proxy/apps/control-api/*`
+  - 这一步明确不做什么：不做证书轮换 UI（先记录，后续再单开）
+  - 怎么验证：
+    - 接口测试 + 端到端联调
+
+- [ ] W4.2 固定「中继不可见明文」的验收清单
+  - 状态：TODO
+  - 这一步到底做什么：写出并执行抓包、日志、数据库三层验收步骤，证明信令和 TURN 都拿不到明文
+  - 做完以后能看到什么结果：有一份可重复执行的验收记录
+  - 依赖什么：W3.2、W4.1
+  - 主要改哪些文件：
+    - `specs/spec001.9/docs/*`
+  - 这一步明确不做什么：不拿「看起来差不多」当验收
+  - 怎么验证：
+    - 抓包记录 + 测试命令固化
+
+---
+
+## 阶段 W5：计费模型切换
+
+- [ ] W5.1 控制面订阅模型
+  - 状态：TODO
+  - 这一步到底做什么：把「流量包 + 流量钱包」改成「周期订阅」，订单和支付流程跟着调整
+  - 做完以后能看到什么结果：用户能买订阅、能续费、能在控制台看到状态
+  - 依赖什么：W0.3
+  - 主要改哪些文件：
+    - `apps/codingns-proxy/apps/control-api/*`
+    - `apps/codingns-proxy/apps/console-web/*`
+  - 这一步明确不做什么：不做复杂套餐组合和团队共享
+  - 怎么验证：
+    - 订单与订阅状态一致性测试
+
+- [ ] W5.2 用量统计改成风控口径
+  - 状态：TODO
+  - 这一步到底做什么：保留用量记录但标注来源为客户端上报；TURN 用量以服务端实测为准
+  - 做完以后能看到什么结果：界面不再出现「剩余流量耗尽后断流」这类硬限额语义
+  - 依赖什么：W5.1
+  - 主要改哪些文件：
+    - `apps/codingns-proxy/apps/control-api/*`
+    - `apps/codingns-proxy/apps/console-web/*`
+  - 这一步明确不做什么：不删除历史用量数据
+  - 怎么验证：
+    - 接口测试 + 文案走查
+
+- [ ] W5.3 TURN 限速与告警
+  - 状态：TODO
+  - 这一步到底做什么：对走 TURN 的会话单独限速，并监控 TURN 用量异常
+  - 做完以后能看到什么结果：TURN 成本可控，异常增长能被发现
+  - 依赖什么：W3.2
+  - 主要改哪些文件：
     - `apps/codingns-proxy/*`
-  - 这一步明确不做什么：不实现公共云站点业务功能，不接支付链路
+  - 这一步明确不做什么：不做自动封禁
   - 怎么验证：
-    - `git status` 不显示子仓库内部代码
-    - 文档走查
-  - 验证结果：
-    - 已把独立子仓库路径定为 `apps/codingns-proxy/`
-    - 已在主仓库 `.gitignore` 中忽略 `apps/codingns-proxy/`
-    - 已创建独立子仓库骨架，并在 `apps/codingns-proxy/` 下执行 `git init -b main`
-    - 主仓库 `git status --short --ignored` 已显示 `apps/codingns-proxy/` 为忽略目录
-
-- [x] 1.2 固定控制面 / 数据面 / 本仓库职责边界
-  - 状态：DONE
-  - 这一步到底做什么：把账号、三级域名、支付、流量账本、盲中继、Host 客户端和客户端接入层的职责拆清楚
-  - 做完以后能看到什么结果：后续不会再把云端计费逻辑硬塞进 Host
-  - 依赖什么：1.1
-  - 主要改哪些文件：
-    - `spec001.9` 文档
-    - `spec001.9/docs/20260419-开发顺序与三端职责说明.md`
-    - `apps/codingns-proxy/README.md`
-    - `apps/codingns-proxy/apps/control-api/README.md`
-    - `apps/codingns-proxy/apps/relay-edge/README.md`
-  - 这一步明确不做什么：不把云端计费逻辑塞进 Host，不提前实现支付细节
-  - 怎么验证：
-    - 评审走查
-  - 验证结果：
-    - 已在 `spec001.9` 主文档和补充文档中写清主仓库、控制面、数据面的边界
-    - 已在 `apps/codingns-proxy/README.md` 中固化子仓库职责
-    - 已把 `control-api` 与 `relay-edge` 的目录职责和最小接口落到各自 README，后续不会再把控制面和数据面混成一个服务
+    - 限速生效验证 + 告警触发验证
 
 ---
 
-## 阶段 2：先把 Host 侧隧道客户端和状态真相立住
+## 阶段 W6：下线旧链路
 
-- [x] 2.1 建立实例级公共隧道配置和状态存储
-  - 状态：DONE
-  - 这一步到底做什么：新增实例级公共隧道配置表、状态表和仓储，保存启用状态、绑定信息、公钥、指纹、最近状态
-  - 做完以后能看到什么结果：公共隧道不再是零散页面状态，而是有正式落点
-  - 依赖什么：1.2
-  - 主要改哪些文件：
-    - `apps/host/src/storage/sqlite/schema.sql`
-    - `apps/host/src/storage/repositories/*`
-    - `apps/host/src/types/domain.ts`
-  - 这一步明确不做什么：不启动实际长连接
-  - 怎么验证：
-    - 仓储层测试
-    - schema 走查
-  - 验证结果：
-    - 已新增 `instance_relay_tunnel_config` 和 `instance_relay_tunnel_status` 表
-    - 已新增 `InstanceRelayTunnelRepository`，支持配置和状态快照的读写
-    - 已在 Host `domain` 中补齐公共隧道配置与状态类型，并把仓储注册进 `create-server`
-    - 已新增 `apps/host/tests/integration/relay-tunnel-storage.test.ts`
-    - 已通过定向测试：`pnpm --filter host test -- tailscale-storage-and-service relay-tunnel-storage sqlite-bootstrap`
-    - Host 全量 `build` 当前仍被现有无关类型错误阻断：`apps/host/src/modules/skills/skill-controller.ts:63`
-
-- [x] 2.2 建立 Host 隧道状态机和系统接口
-  - 状态：DONE
-  - 这一步到底做什么：新增 `status/bind/unbind/enable/disable` 等 Host API，并把状态统一成 `disabled/unbound/binding/connecting/running/quota_exhausted/error`
-  - 做完以后能看到什么结果：设置页终于有正式控制面接口可调
-  - 依赖什么：2.1
-  - 主要改哪些文件：
-    - `apps/host/src/modules/relay-tunnel/*`
-    - `apps/host/src/routes/system.ts`
-    - `apps/host/src/server/create-server.ts`
-  - 这一步明确不做什么：先不接真实云端
-  - 怎么验证：
-    - 接口测试
-    - 状态迁移测试
-  - 验证结果：
-    - 已新增 `RelayTunnelService` 和 `RelayTunnelController`
-    - 已新增系统接口：
-      - `GET /api/system/relay-tunnel/status`
-      - `PUT /api/system/relay-tunnel/config`
-      - `POST /api/system/relay-tunnel/bind`
-      - `POST /api/system/relay-tunnel/unbind`
-      - `POST /api/system/relay-tunnel/enable`
-      - `POST /api/system/relay-tunnel/disable`
-    - 已验证未授权拒绝、未绑定启用阻断、绑定后启用进入 `connecting`、停用回到 `disabled`、解绑清空绑定信息、重启后状态保留
-    - 已通过定向测试：
-      - `pnpm --filter host test -- relay-tunnel-storage relay-tunnel-system-routes`
-      - `pnpm --filter host test -- tailscale-system-routes tailscale-storage-and-service sqlite-bootstrap`
-    - Host 全量 `build` 当前仍被现有无关类型错误阻断：`apps/host/src/modules/skills/skill-controller.ts:63`
-
-- [x] 2.3 接入后台任务和长连接恢复
-  - 状态：DONE
-  - 这一步到底做什么：把隧道连接、自动重连、状态刷新接入 `TaskManager`
-  - 做完以后能看到什么结果：Host 重启或断线后能恢复，不靠散装定时器硬撑
-  - 依赖什么：2.2
-  - 主要改哪些文件：
-    - `apps/host/src/modules/tasks/*`
-    - `apps/host/src/modules/relay-tunnel/*`
-    - `apps/host/src/server/create-server.ts`
-    - `apps/host/tests/integration/relay-tunnel-background.test.ts`
-  - 这一步明确不做什么：不做支付逻辑
-  - 怎么验证：
-    - 重连测试
-    - 启动恢复测试
-  - 验证结果：
-    - 已把 `relay_tunnel.connect` 注册进统一 `TaskManager`，不再为公共隧道额外长出私有 `timer` / `inflight`
-    - `RelayTunnelService.restoreOnStartup()` 已改成仅入队后台恢复任务，不阻塞 Host `app.ready`
-    - `enable`、`bind`、`updateConfig` 会触发统一后台重连；`disable`、`unbind` 会取消已存在的连接任务
-    - 已补 `RelayTunnelRuntimeAdapter`，当前默认实现仍是骨架版 `Noop`，后续真实云端接入可继续替换，不影响当前状态机和恢复流程
-    - 已补 `apps/host/tests/integration/relay-tunnel-background.test.ts`，覆盖：
-      - 启动恢复只入队，不阻塞调用方
-      - 重复重连请求按固定 key 去重
-      - 后台连接成功写回 `running`
-      - 后台连接失败写回 `error` 和 `lastError`
-    - 已通过定向测试：
-      - `pnpm --filter host test -- relay-tunnel-storage relay-tunnel-system-routes relay-tunnel-background`
-      - `pnpm --filter host test -- tailscale-system-routes tailscale-storage-and-service sqlite-bootstrap`
-    - Host 全量 `build` 当前仍被现有无关类型错误阻断：`apps/host/src/modules/skills/skill-controller.ts:63`
-
-- [x] 2.4 实现未初始化实例阻断
-  - 状态：DONE
-  - 这一步到底做什么：在启用流程里检查 bootstrap 状态，未初始化时禁止通过公共隧道暴露
-  - 做完以后能看到什么结果：不会把首个管理员入口直接挂上公网
-  - 依赖什么：2.2
-  - 主要改哪些文件：
-    - `apps/host/src/modules/relay-tunnel/*`
-    - `apps/host/src/modules/bootstrap/*`
-  - 这一步明确不做什么：不改现有 bootstrap 协议
-  - 怎么验证：
-    - 未初始化阻断测试
-    - 初始化后再启用测试
-  - 验证结果：
-    - 已把 `BootstrapStateRepository` 注入 `RelayTunnelService`，公共隧道启用、绑定后自动重连、启动恢复都统一读取实例初始化状态
-    - 未初始化时，已绑定且启用的公共隧道会进入 `blocked_uninitialized`，不会入队后台连接，也不会偷偷恢复外网连接
-    - 初始化完成后再启用公共隧道，会正常进入 `connecting` 并触发后台连接任务
-    - 已补 `apps/host/tests/integration/relay-tunnel-background.test.ts`，覆盖：
-      - 未初始化实例启用时进入 `blocked_uninitialized`
-      - 初始化后启用会进入 `connecting` 并启动后台连接
-      - 未初始化实例启动恢复时不会出公网连接
-    - 已通过定向与相邻链路回归测试：
-      - `pnpm --filter host test -- relay-tunnel-storage relay-tunnel-system-routes relay-tunnel-background tailscale-system-routes tailscale-storage-and-service sqlite-bootstrap`
-    - Host 全量 `build` 当前仍被现有无关类型错误阻断：`apps/host/src/modules/skills/skill-controller.ts:63`
-
----
-
-## 阶段 3：把端到端加密传输层接进去
-
-- [x] 3.1 建立 Host 身份密钥、公钥登记和指纹展示
-  - 状态：DONE
-  - 这一步到底做什么：为 Host 生成长期身份密钥，并提供公钥和指纹管理
-  - 做完以后能看到什么结果：客户端能验证“连到的是哪个 Host”
-  - 依赖什么：2.1
+- [ ] W6.1 删除自研加密协议
+  - 状态：TODO
+  - 这一步到底做什么：把三份协议副本全部删掉，包括已经没用的死代码
+  - 做完以后能看到什么结果：仓库里再也搜不到自研握手和加密帧
+  - 依赖什么：W2.2、W4.1
   - 主要改哪些文件：
     - `apps/host/src/modules/relay-tunnel/crypto/*`
-    - `apps/host/src/storage/*`
-  - 这一步明确不做什么：不把业务 token 当密钥
+    - `apps/user-app/src/network/relay-tunnel-protocol.ts` 及相关文件
+    - `apps/codingns-proxy/apps/relay-edge/src/relay-tunnel-*.ts`
+  - 这一步明确不做什么：不保留「以防万一」的兼容开关
   - 怎么验证：
-    - 密钥读写测试
-    - 指纹一致性测试
-  - 验证结果：
-    - 已新增 `instance_relay_tunnel_identity` 实例级身份表，保存 Host 长期私钥、公钥、指纹和时间戳
-    - 已新增 `InstanceRelayTunnelIdentityRepository` 和 `RelayTunnelIdentityService`，当前采用 `x25519` 生成长期身份密钥
-    - 已把公钥指纹固定为公钥 `SPKI DER` 的 `SHA256`，避免因为 PEM 换行或格式差异造成指纹漂移
-    - 已新增 `POST /api/system/relay-tunnel/identity/ensure`，用于在设置页或绑定前确保本机已经有身份密钥，并直接返回当前状态中的公钥与指纹
-    - `RelayTunnelService` 已接入身份材料：
-      - `status` 会展示当前 Host 公钥和指纹
-      - `bind` 会优先使用本机长期身份公钥和指纹，不再把外部传入值当真相
-      - `enable`、启动恢复、后台 connect 会在缺失身份材料时自动补齐
-    - 已补测试：
-      - `apps/host/tests/integration/relay-tunnel-identity.test.ts`
-      - `apps/host/tests/integration/relay-tunnel-storage.test.ts`
-      - `apps/host/tests/integration/relay-tunnel-system-routes.test.ts`
-    - 已通过定向与相邻链路回归测试：
-      - `pnpm --filter host test -- relay-tunnel-identity relay-tunnel-storage relay-tunnel-system-routes relay-tunnel-background tailscale-system-routes tailscale-storage-and-service sqlite-bootstrap`
-    - Host 全量 `build` 当前仍被现有无关类型错误阻断：`apps/host/src/modules/skills/skill-controller.ts:63`
+    - 全仓搜索确认无残留引用
+    - 相关测试全部清理或改写
 
-- [x] 3.2 建立客户端 / Host 的加密握手与加密帧
-  - 状态：DONE
-  - 这一步到底做什么：实现端到端握手、会话密钥和加密帧封装
-  - 做完以后能看到什么结果：中继只能看到帧长度和连接元数据，看不到业务明文
-  - 依赖什么：3.1
-  - 主要改哪些文件：
-    - `apps/host/src/modules/relay-tunnel/*`
-    - `apps/user-app/src/network/*`
-    - 可能新增共享包
-  - 这一步明确不做什么：不改业务 `/api/*` 语义
-  - 怎么验证：
-    - 握手成功 / 失败测试
-    - 指纹不匹配测试
-    - 抓包验证中继不可见明文
-  - 验证结果：
-    - 已新增 `apps/host/src/modules/relay-tunnel/crypto/relay-tunnel-protocol.ts`，提供：
-      - 客户端 `clientHello`
-      - Host `serverHello`
-      - 基于 `x25519 + HKDF-SHA256 + AES-256-GCM` 的会话密钥推导
-      - 双向加密帧封装与解封
-      - 帧方向、会话标识、序号和完整性校验
-    - 客户端握手开始前会先校验“Host 公钥和指纹是否自洽”；Host 握手阶段会校验客户端请求的 Host 指纹；客户端完成握手时会再次校验 Host 公钥、指纹和握手证明
-    - 当前协议骨架先落在 Host 侧 `relay-tunnel/crypto` 模块，避免提前长出无意义共享包；后续 `3.3` 接真实传输链路时再把同一协议接到客户端 / H5
-    - 已补测试：
-      - `apps/host/tests/integration/relay-tunnel-protocol.test.ts`
-      - 覆盖握手成功、指纹不匹配、握手证明篡改、加密帧篡改、重复帧/乱序帧拒绝
-    - 已通过定向与相邻链路回归测试：
-      - `pnpm --filter host test -- relay-tunnel-protocol relay-tunnel-identity relay-tunnel-storage relay-tunnel-system-routes relay-tunnel-background tailscale-system-routes tailscale-storage-and-service sqlite-bootstrap`
-    - “抓包确认中继不可见明文” 需要等 `3.3` 把真实隧道传输链路接起来后再做联调验证
-    - Host 全量 `build` 当前仍被现有无关类型错误阻断：`apps/host/src/modules/skills/skill-controller.ts:63`
-
-- [x] 3.3 把现有 HTTP / WebSocket 访问改接到隧道传输层
-  - 状态：DONE
-  - 这一步到底做什么：让客户端访问 Host 时可以走公共隧道，不重写业务 API
-  - 做完以后能看到什么结果：用户通过公共隧道也能正常使用现有工作台和实时能力
-  - 依赖什么：3.2
-  - 主要改哪些文件：
-    - `apps/user-app/src/network/*`
-    - `apps/host/src/ws/*`
-    - `apps/host/src/server/*`
-  - 这一步明确不做什么：不删本地直连
-  - 怎么验证：
-    - HTTP 接口联调
-    - `/ws` 实时链路联调
-  - 当前进展：
-    - 已新增 `apps/host/src/modules/relay-tunnel/crypto/relay-tunnel-packets.ts`，把加密帧里的业务负载正式定义为 `http.request / http.response / ws.open / ws.opened / ws.message / ws.closed / error`
-    - 已新增 `apps/host/src/modules/relay-tunnel/relay-tunnel-gateway-service.ts`，Host 可以把隧道里的 HTTP 包转发到本地业务 Host，并把隧道里的 WebSocket 包转发到本地 `/ws` 类实时链路
-    - 已把 `apps/user-app/src/network/*` 改造成统一 `HostTransport` 接入：
-      - 新增 `host-transport.ts / direct-host-transport.ts / host-transport-registry.ts`
-      - `httpClient`、`RealtimeClient`、`WorkbenchRealtimeClient` 不再直接写死 `fetch / new WebSocket`，而是统一走 transport 解析
-      - 默认仍然使用直连 transport，所以现有本地 / 局域网 / 可信域名直连不受影响
-    - 已新增客户端侧隧道包 transport 骨架：
-      - `apps/user-app/src/network/relay-tunnel-packets.ts`
-      - `apps/user-app/src/network/relay-tunnel-client-transport.ts`
-      - 当前已经把 `http.request / http.response / ws.open / ws.opened / ws.message / ws.closed / error` 映射成前端可用的 `fetch / WebSocket` 语义
-      - 后续只需要给它补上“真实加密会话 + relay-edge 上下游连接”，不需要再重写 HTTP/WS 适配逻辑
-    - 已新增 `apps/user-app/src/network/relay-tunnel-protocol.ts`，在 `user-app` 侧补齐浏览器可用的加密协议：
-      - 使用 Web Crypto 对齐 Host 侧的 `x25519 + HKDF-SHA256 + AES-256-GCM`
-      - 支持 Host 公钥指纹计算、客户端握手、服务端握手校验、双向加密帧封装与解封
-      - 已新增 `apps/user-app/src/network/relay-tunnel-protocol.test.ts`，确认 `user-app` 协议实现可以和 Host 现有 `relay-tunnel-protocol.ts` 互通
-    - 已新增 `apps/user-app/src/network/relay-tunnel-client-session.ts`，把“原始隧道链路”正式组装成客户端加密会话：
-      - 当前会话层负责发出 `client_hello`、接收 `server_hello`、建立加密会话并把业务包编码成 `encrypted_frame`
-      - `RelayTunnelClientTransport` 现在可以直接挂到这个会话层上，不再只是依赖裸的 packet mock
-      - 已新增 `apps/user-app/src/network/relay-tunnel-client-session.test.ts`，覆盖：
-        - 原始链路上的握手与加密包收发
-        - `RelayTunnelClientTransport` 挂到真实客户端会话后的 HTTP / WebSocket 收发
-    - 已新增 `apps/user-app/src/network/relay-tunnel-edge-client.ts`，打通 `user-app -> control-api -> relay-edge` 的原始接入链路：
-      - 会先向 `control-api` 解析 `tunnelDomain`，拿到 `relayBaseUrl / controlBaseUrl / hostPublicKey / hostFingerprint`
-      - 会向 `relay-edge` 预留 `sessionId`
-      - 会以 `downstream` 角色连接 `relay-edge /ws`
-      - 已新增 `connectRelayTunnelClientSessionViaEdge()`，把“控制面解析 + 数据面接入 + 客户端加密会话建立”串成一条可复用入口
-    - 已新增 `apps/codingns-proxy/apps/relay-edge` 的 Host 身份挑战与待接会话领取链路：
-      - 新增 `POST /api/public/hosts/challenge`
-      - 新增 `POST /api/public/hosts/claim-next-session`
-      - Host 现在不是靠明文账号密码去领会话，而是基于长期 `x25519` 身份密钥完成 challenge-response 证明后再领取待接 `sessionId`
-      - `relay-edge` 会为每个待接会话维护最小 claim lease，避免多个 Host 或重复轮询把同一个待接会话抢乱
-    - 已同步修正子仓库控制面契约，当前 `control-api` 公开绑定信息已经包含 `hostPublicKey`：
-      - `apps/codingns-proxy/packages/shared-contracts/src/index.ts`
-      - `apps/codingns-proxy/apps/control-api/src/binding-store.ts`
-      - 否则客户端即使知道 `hostFingerprint` 也没法安全完成握手
-    - 已新增 `apps/host/src/modules/relay-tunnel/relay-tunnel-runtime-adapter.ts`，把 Host 真实接到 `relay-edge`：
-      - Host 会后台轮询领取待接会话，并以 `upstream` 角色接入 `relay-edge /ws`
-      - 收到 `client_hello` 后会用本机长期身份密钥返回 `server_hello`
-      - 随后的 `encrypted_frame` 会在 Host 端解密后交给 `RelayTunnelGatewayService`
-      - 本地业务响应和本地 WebSocket 消息会重新封装成加密帧回写给客户端
-      - `create-server.ts` 已改成注入真实 runtime adapter，不再一直停留在 `Noop` 骨架
-    - 已新增 `apps/host/tests/integration/relay-tunnel-gateway.test.ts`，覆盖：
-      - HTTP 包转发到本地业务 Host
-      - WebSocket 包转发到本地业务 `/ws`
-    - 已新增 `apps/host/tests/integration/relay-tunnel-runtime-adapter.test.ts`，覆盖：
-      - Host runtime adapter 通过 Host 身份挑战领取待接会话
-      - 客户端与 Host 完成真实端到端握手
-      - 加密后的 HTTP / WebSocket 业务包通过 `relay-edge` 盲中继转发到本地目标服务并返回结果
-    - 已新增前端定向测试，确认网络层现在支持“默认直连 + 可替换 transport”：
-      - `apps/user-app/src/network/http-client.test.ts`
-      - `apps/user-app/src/network/realtime-client.test.ts`
-      - `apps/user-app/src/network/workbench-realtime-client.test.ts`
-      - `apps/user-app/src/network/relay-tunnel-client-transport.test.ts`
-      - `apps/user-app/src/network/relay-tunnel-protocol.test.ts`
-      - `apps/user-app/src/network/relay-tunnel-client-session.test.ts`
-      - `apps/user-app/src/network/relay-tunnel-edge-client.test.ts`
-    - 已通过当前阶段回归测试：
-      - `pnpm --filter host test -- relay-tunnel-gateway relay-tunnel-protocol relay-tunnel-identity relay-tunnel-storage relay-tunnel-background relay-tunnel-system-routes tailscale-system-routes tailscale-storage-and-service sqlite-bootstrap`
-      - `pnpm --dir apps/user-app exec vitest run src/network/relay-tunnel-edge-client.test.ts src/network/relay-tunnel-client-session.test.ts src/network/relay-tunnel-protocol.test.ts src/network/relay-tunnel-client-transport.test.ts src/network/http-client.test.ts src/network/realtime-client.test.ts src/network/workbench-realtime-client.test.ts`
-      - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
-      - `pnpm --dir apps/codingns-proxy/packages/shared-contracts exec vitest run src/index.test.ts`
-      - `pnpm --dir apps/codingns-proxy/packages/shared-contracts exec tsc --noEmit -p tsconfig.json`
-      - `pnpm --dir apps/codingns-proxy/apps/control-api exec vitest run src/app.test.ts`
-      - `pnpm --dir apps/codingns-proxy/apps/control-api exec tsc --noEmit -p tsconfig.json`
-      - `pnpm --dir apps/codingns-proxy/apps/relay-edge exec vitest run src/app.test.ts`
-      - `pnpm --filter host test -- relay-tunnel-runtime-adapter relay-tunnel-background relay-tunnel-gateway relay-tunnel-protocol relay-tunnel-identity relay-tunnel-storage relay-tunnel-system-routes`
-      - `pnpm --filter host exec tsc --noEmit -p tsconfig.json`
-    - 已新增 `apps/user-app/src/network/relay-tunnel-managed-transport.ts`，会按需建立公共隧道会话，并把延迟建立的真实连接包装成前端可用的 `fetch / WebSocket`
-    - 已把 `apps/user-app/src/network/host-transport-registry.ts` 改成真正读取当前 Host profile：
-      - 当前 Host profile 启用 `relayTunnel` 时自动走公共隧道
-      - 未启用时仍走本地直连
-      - profile 变化时会回收旧 transport，避免旧连接泄漏
-    - 已把 `apps/user-app/src/config/host-runtime-store.ts` 改成同时感知 `baseUrl + relayTunnel` 连接签名，公共隧道 profile 变化时会刷新运行时边界
-    - 已补前端回归测试：
-      - `apps/user-app/src/config/host-runtime-store.test.tsx`
-      - `apps/user-app/src/network/relay-tunnel-managed-transport.test.ts`
-      - `apps/user-app/src/network/http-client.test.ts`
-      - `apps/user-app/src/network/realtime-client.test.ts`
-      - `apps/user-app/src/network/workbench-realtime-client.test.ts`
-    - 已通过当前阶段补充验证：
-      - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
-      - `pnpm --dir apps/user-app exec vitest run src/config/host-runtime-store.test.tsx src/network/relay-tunnel-managed-transport.test.ts src/network/http-client.test.ts src/network/realtime-client.test.ts src/network/workbench-realtime-client.test.ts`
-    - Host 全量 `build` 当前仍被现有无关类型错误阻断：`apps/host/src/modules/skills/skill-controller.ts:63`
-  - 验证结果：
-    - 现有 HTTP / WebSocket 主链路现在已经能按用户配置自动切到公共隧道 transport
-    - 直连链路回归测试已通过，未破坏现有本地 / 局域网访问
-    - 公共隧道延迟 WebSocket wrapper 已补事件转发和失败/提前关闭测试，避免运行时只在连接慢时才暴露问题
-
----
-
-## 阶段 4：把设置页入口和用户交互接上
-
-- [x] 4.1 让“远程访问”页支持公共隧道 provider
-  - 状态：DONE
-  - 这一步到底做什么：在设置页现有远程访问入口下新增公共隧道卡片或 provider 切换
-  - 做完以后能看到什么结果：管理员能直接看到绑定状态、三级域名、流量余量和最近错误
-  - 依赖什么：2.2
-  - 主要改哪些文件：
-    - `apps/user-app/src/features/settings/pages/SettingsPage.tsx`
-    - `apps/user-app/src/settings/*`
-    - i18n 字典
-  - 这一步明确不做什么：不发明新按钮体系，不脱离现有设置页样式基线
-  - 怎么验证：
-    - 组件测试
-    - 手动走查
-  - 验证结果：
-    - 已新增 `apps/user-app/src/settings/RelayTunnelPanel.tsx`
-    - 远程访问页现在会显示公共隧道状态、绑定域名、Host 指纹、流量余量、钱包、套餐与最近订单
-    - `SettingsPage` 桌面端与移动端都已接入公共隧道入口，不再只能显示 Tailscale
-    - 已补 i18n 文案：
-      - `apps/user-app/src/i18n/zh-CN.ts`
-      - `apps/user-app/src/i18n/en-US.ts`
-    - 已通过组件与相邻回归测试：
-      - `pnpm --dir apps/user-app exec vitest run src/features/settings/pages/SettingsPage.test.tsx`
-
-- [x] 4.2 接通绑定、启用、停用和解绑交互
-  - 状态：DONE
-  - 这一步到底做什么：把设置页与 Host API 接通，完成基础管理闭环
-  - 做完以后能看到什么结果：用户可以真正启用和管理公共隧道
-  - 依赖什么：4.1、2.3
-  - 主要改哪些文件：
-    - 设置页组件
-    - 前端 API 封装
-  - 这一步明确不做什么：不在本仓库里做支付
-  - 怎么验证：
-    - 前端集成测试
-    - 联调验证
-  - 验证结果：
-    - 已新增 `apps/user-app/src/platform/server/relay-tunnel-manager.ts`，统一封装：
-      - Host 本地 `status/config/bind/unbind/enable/disable/identity`
-      - 控制面 `login/hosts-bind/wallet/packages/orders/checkout-session`
-    - 设置页已经接通：
-      - 保存隧道配置
-      - 登录控制面账号
-      - 绑定当前 Host
-      - 启用 / 停用 / 解绑公共隧道
-      - 读取钱包、套餐、订单并发起支付页跳转
-    - 已补 `SettingsPage` 中“当前 Host 公共隧道 profile 保存”测试，确认配置会真正写回客户端运行时配置
-    - 已通过当前阶段验证：
-      - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
-      - `pnpm --dir apps/user-app exec vitest run src/features/settings/pages/SettingsPage.test.tsx`
-
-- [x] 4.3 明确官方 H5 入口和信任边界提示
-  - 状态：DONE
-  - 这一步到底做什么：在 UI 和文档里说明三级域名只是入口，真正 H5 由可信域名加载
-  - 做完以后能看到什么结果：用户不会误以为任意子域页面都天然等于端到端加密
-  - 依赖什么：4.1
-  - 主要改哪些文件：
-    - 设置页组件
-    - 补充说明文档
-  - 这一步明确不做什么：不把整套帮助中心写进设置页
-  - 怎么验证：
-    - 文案走查
-  - 验证结果：
-    - 已在公共隧道状态区补充明确提示：
-      - 三级域名只负责把客户端接到当前 Host 的端到端加密隧道
-      - 官方 H5 页面仍应从可信主域加载
-      - 中继站点无法读取隧道内明文
-    - 已在 Host profile 公共隧道说明中明确“客户端会通过隧道域名和控制站点建立端到端加密连接，而不是直接请求这个地址”
-
----
-
-## 阶段 5：云端子仓库联动能力
-
-- [x] 5.1 在独立子仓库实现控制面、数据面和流量账本
-  - 状态：DONE
-  - 这一步到底做什么：实现账号、三级域名、绑定、公网盲中继和流量计量
-  - 做完以后能看到什么结果：无公网地址 Host 可以通过官方入口被访问
-  - 依赖什么：阶段 1 到阶段 4
-  - 主要改哪些文件：
-    - `apps/codingns-proxy/*`
-  - 这一步明确不做什么：不回写到主仓库
-  - 怎么验证：
-    - 子仓库自己的测试和联调记录
-  - 当前进展：
-    - 已新增 `@codingns-proxy/shared-contracts`
-    - 已新增 `control-api` 最小 Fastify 服务，当前支持健康检查、公共元数据、邮箱验证码申请、邮箱验证码频控、邮箱注册、文件持久化、邮箱密码登录、Bearer `me` 查询、账号归属的 Host 绑定、流量钱包、relay 内部授权和按字节记账
-    - 已新增 `relay-edge` 最小 Fastify 服务，当前支持健康检查、公共元数据、向控制面申请会话授权、会话预留、会话列表、Host challenge-response 领取待接会话，以及预留会话后的最小 WebSocket 双端盲中继和按字节扣量
-    - 已完成子仓库 `pnpm build` 与 `pnpm test`
-
-- [ ] 5.2 在独立子仓库接成熟支付方式和流量包发放
-  - 状态：IN_PROGRESS
-  - 这一步到底做什么：实现订单、支付回调、流量钱包发放和异常对账
-  - 做完以后能看到什么结果：用户可以直接购买流量包
-  - 依赖什么：5.1
-  - 主要改哪些文件：
-    - `apps/codingns-proxy/*`
-  - 这一步明确不做什么：不把支付 SDK 带回主仓库
-  - 怎么验证：
-    - 沙箱支付验证
-    - 订单到账与流量到账一致性验证
-  - 当前进展：
-    - 已在 `apps/codingns-proxy/apps/control-api` 落下支付与到账骨架：
-      - 新增公共流量套餐列表接口 `GET /api/public/traffic-packages`
-      - 新增订单列表接口 `GET /api/v1/orders`
-      - 新增 Checkout 会话创建接口 `POST /api/v1/payments/checkout-sessions`
-      - 新增 Paddle webhook 接口 `POST /api/public/payments/paddle/webhook`
-    - 已新增持久化订单和支付事件存储：
-      - `apps/codingns-proxy/apps/control-api/src/traffic-order-store.ts`
-      - `apps/codingns-proxy/apps/control-api/src/state-store.ts`
-    - 已给流量钱包补 `grantBytes()`，支付到账后会直接把套餐流量发到账号钱包
-    - 已新增 Paddle 支付网关实现：
-      - `apps/codingns-proxy/apps/control-api/src/payment-gateway.ts`
-      - 当前采用 `Paddle transaction + checkout.url + webhook`，控制面只保存订单与流量发放状态，不接触用户的支付凭据
-      - 国内用户可以通过 Paddle 托管页上的 Alipay 完成付款，海外用户继续走 Paddle 默认支付方式
-    - 已补控制面测试，覆盖：
-      - 列出套餐
-      - 创建订单与 Checkout 会话
-      - webhook 到账后发放流量
-      - webhook 幂等，重复通知不会重复发放流量
-    - 已通过当前阶段验证：
-      - `pnpm --dir apps/codingns-proxy/apps/control-api exec vitest run src/app.test.ts`
-      - `pnpm --dir apps/codingns-proxy/apps/control-api exec tsc -p tsconfig.json --noEmit`
-      - `pnpm --dir apps/codingns-proxy build`
-      - `pnpm --dir apps/codingns-proxy test`
-  - 还没做完的部分：
-    - 还没有接真实 Paddle 沙箱密钥做端到端联调
-    - 还没有补订单异常对账和人工补发工具
-
----
-
-## 阶段 6：回归与验收
-
-- [ ] 6.1 验证本地直连、Tailscale、公共隧道并存
+- [ ] W6.2 relay-edge 数据面下线
   - 状态：TODO
-  - 这一步到底做什么：确认新增公共隧道后，不破坏已有访问方式
-  - 做完以后能看到什么结果：远程访问能力增加了，但旧用户不会被打断
-  - 依赖什么：阶段 2 到阶段 4
+  - 这一步到底做什么：停用密文帧中继职责，保留控制面内部接口但改语义
+  - 做完以后能看到什么结果：数据面只剩信令和 TURN
+  - 依赖什么：W3.1、W3.2
   - 主要改哪些文件：
-    - 测试代码
-    - 验收文档
-  - 这一步明确不做什么：不扩新范围
+    - `apps/codingns-proxy/apps/relay-edge/*`
+  - 这一步明确不做什么：不保留双轨长期运行
   - 怎么验证：
-    - 自动化回归
-    - 联调走查
+    - 部署验证 + 旧链路明确拒绝
 
-- [ ] 6.2 验证中继不可见业务明文
+- [ ] W6.3 存量绑定与订阅迁移
   - 状态：TODO
-  - 这一步到底做什么：通过抓包和日志确认中继只看到密文帧、连接元数据和字节数
-  - 做完以后能看到什么结果：端到端加密不是嘴上说说
-  - 依赖什么：3.2、5.1
+  - 这一步到底做什么：把已有绑定关系和流量钱包数据迁移到新模型
+  - 做完以后能看到什么结果：老用户不用重新绑定，已购流量有明确处置
+  - 依赖什么：W5.1
+  - 主要改哪些文件：
+    - `apps/codingns-proxy/apps/control-api/src/scripts/*`
+    - 数据库迁移
+  - 这一步明确不做什么：不做自动退款
+  - 怎么验证：
+    - 迁移脚本幂等性测试 + 迁移后读回验证
+
+---
+
+## 阶段 W7：回归与验收
+
+- [ ] W7.1 真实网络吞吐验收
+  - 状态：TODO
+  - 这一步到底做什么：在真实链路（跨地域、弱网、对称 NAT）跑吞吐和延迟，不能只测 loopback
+  - 做完以后能看到什么结果：知道真实可用性能，能判断上行 3–6 MB/s 够不够用
+  - 依赖什么：W1.2、W2.1
   - 主要改哪些文件：
     - 验收记录
-  - 这一步明确不做什么：不做形式主义安全报告
+  - 这一步明确不做什么：不做性能优化
   - 怎么验证：
-    - 抓包验证
-    - 日志核对
+    - 实测记录 + 与业务典型流量对照
 
-- [ ] 6.3 验证流量限额与支付到账链路
+- [ ] W7.2 移动端真机验收
   - 状态：TODO
-  - 这一步到底做什么：确认购买、到账、扣量、超额断流和恢复都能闭环
-  - 做完以后能看到什么结果：计费链路不是纸上设计
-  - 依赖什么：5.2
+  - 这一步到底做什么：在 iOS 和 Android 真机上验证 WebRTC 建连、指纹校验和传输
+  - 做完以后能看到什么结果：确认移动端可用
+  - 依赖什么：W2.1
   - 主要改哪些文件：
     - 验收记录
-  - 这一步明确不做什么：不加新支付渠道
+  - 这一步明确不做什么：不改移动端壳工程
   - 怎么验证：
-    - 沙箱支付联调
-    - 超额场景测试
+    - 真机联调记录
+
+- [ ] W7.3 长时间稳定性验收
+  - 状态：TODO
+  - 这一步到底做什么：连续跑几十分钟到几百 MB，观察内存、CPU 和性能衰减
+  - 做完以后能看到什么结果：确认纯 JS 实现能不能长期跑
+  - 依赖什么：W1.2
+  - 主要改哪些文件：
+    - 验收记录
+  - 这一步明确不做什么：不做压测平台
+  - 怎么验证：
+    - 长跑记录（内存曲线、吞吐变化）
+
+- [ ] W7.4 自动直连与回退回归
+  - 状态：TODO
+  - 这一步到底做什么：验证直连可用、直连断开能回落中继、旧客户端不受影响
+  - 做完以后能看到什么结果：链路切换不会把现有远程访问搞挂
+  - 依赖什么：W2.3、W3.2
+  - 主要改哪些文件：
+    - 集成测试
+    - 验收记录
+  - 这一步明确不做什么：不顺手扩需求
+  - 怎么验证：
+    - 集成测试 + 手工联调记录
+
+---
+
+## 附：改版对既有实现的具体影响
+
+上一版留下、这一版需要跟着调整的地方：
+
+- `InstanceRelayTunnelStatus` 的阶段枚举要按新链路调整：`running` 拆成 `running_p2p` / `running_relay`
+- 设置页面板要补「当前链路类型」展示（新增需求 11）
+- 指纹字段语义从「Host 公钥指纹」换成「DTLS 指纹」
+- 控制面「流量钱包 / 超额断流」相关语义按 `W5` 调整，界面上不再出现硬限额文案
+- `relay-edge` 的 Host challenge / claim-next-session 链路随数据面一起下线
