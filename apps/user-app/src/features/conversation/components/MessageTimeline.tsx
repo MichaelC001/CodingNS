@@ -134,6 +134,16 @@ const EMPTY_PARSED_MESSAGE_RICH_CONTENT: ParsedMessageRichContent = {
   structuredQuestions: null
 };
 const MAX_THINKING_PREVIEW_LENGTH = 280;
+const COLLAPSIBLE_THINKING_PROVIDER_IDS = new Set<string>([
+  "deepseek-harness",
+  "opencode",
+  "command-code",
+  "pi"
+]);
+
+function isThinkingCollapsibleProvider(provider: ProviderId | null): boolean {
+  return provider !== null && COLLAPSIBLE_THINKING_PROVIDER_IDS.has(provider);
+}
 
 function stripThinkingTrailingDots(value: string): string {
   return value.replace(/(\.{3,}|…+)$/, "").trimEnd();
@@ -5667,7 +5677,7 @@ function MessageItem({
       ? parseTurnAbortedMessage(message.content)
       : null;
   const promptKind = resolveFoldedPromptKind(provider, message, foldedPromptKind);
-  const canCollapseThinking = isThinking && provider === "deepseek-harness" && !exportMode;
+  const canCollapseThinking = isThinking && isThinkingCollapsibleProvider(provider) && !exportMode;
   const collapsedThinkingInProgress = canCollapseThinking && thinkingInProgress && !thinkingExpanded;
   const shouldRenderThinkingContent = !canCollapseThinking || thinkingExpanded || exportMode;
   const thinkingPreview = canCollapseThinking && !thinkingExpanded
@@ -6599,7 +6609,7 @@ export function MessageTimeline({
   const renderItems = timelineViewModel.renderItems;
   const leadingSystemPromptMessageIds = timelineViewModel.leadingSystemPromptMessageIds;
   const activeThinkingMessageId = useMemo(() => {
-    if (provider !== "deepseek-harness" || !isSessionRunning(sessionSummary)) {
+    if (!isThinkingCollapsibleProvider(provider) || !isSessionRunning(sessionSummary)) {
       return null;
     }
 

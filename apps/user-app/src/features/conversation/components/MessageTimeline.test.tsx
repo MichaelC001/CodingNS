@@ -2698,6 +2698,81 @@ DSH 不应折叠这条 Codex 形态规则
     expect(screen.getByText("正在梳理当前会话的上下文。")).not.toHaveClass("thinking-message-preview-active");
   });
 
+  it.each(["opencode", "command-code", "pi"] as const)(
+    "%s 的思考默认折叠为单行预览并能展开",
+    async (provider) => {
+      render(
+        <MessageTimeline
+          messages={[
+            createAssistantThinkingMessage(
+              "先确认当前的消息渲染路径。\n第二行细节在折叠态不应该出现。",
+              `${provider}-thinking-1`
+            )
+          ]}
+          historyState="ready"
+          provider={provider}
+          onRetryMessage={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText(t("conversation.thinkingLabel"))).toBeInTheDocument();
+      expect(screen.getByText("先确认当前的消息渲染路径。")).toHaveClass("thinking-message-preview");
+      expect(screen.queryByText("第二行细节在折叠态不应该出现。")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: t("conversation.thinkingExpandAction") }));
+
+      expect(document.querySelector(".thinking-message-text"))
+        .toHaveTextContent("第二行细节在折叠态不应该出现。");
+    }
+  );
+
+  it.each(["opencode", "command-code", "pi"] as const)(
+    "%s 运行中的折叠思考会显示动态进行状态",
+    (provider) => {
+      const thinking = createAssistantThinkingMessage("正在梳理当前会话的上下文。", `${provider}-active-thinking`);
+
+      render(
+        <MessageTimeline
+          messages={[thinking]}
+          historyState="ready"
+          provider={provider}
+          sessionSummary={{
+            sessionId: "session-1",
+            workspaceId: "workspace-1",
+            provider,
+            providerSessionId: "raw-1",
+            rawStoreRef: `${provider}://raw-1`,
+            title: "思考中",
+            messageCount: 1,
+            lastMessageAt: thinking.timestamp,
+            createdAt: thinking.timestamp,
+            updatedAt: thinking.timestamp,
+            syncStatus: "idle",
+            syncCursor: "cursor-1",
+            lastSyncAt: thinking.timestamp,
+            lastErrorCode: null,
+            lastErrorDetail: null,
+            resumedAt: null,
+            runningState: "running",
+            activitySource: "runtime",
+            activityResolutionSource: "authoritative_runtime",
+            lastEventAt: thinking.timestamp,
+            completedAt: null,
+            lastSeenAt: thinking.timestamp,
+            activityState: "running"
+          }}
+          onRetryMessage={vi.fn()}
+        />
+      );
+
+      expect(screen.getByRole("button", { name: t("conversation.thinkingExpandAction") }))
+        .toHaveClass("thinking-message-toggle-active");
+      expect(document.querySelector(".thinking-message-row-active")).not.toBeNull();
+      expect(document.querySelector(".thinking-message-progress-dots")).not.toBeNull();
+      expect(screen.getByText("正在梳理当前会话的上下文。")).toHaveClass("thinking-message-preview-active");
+    }
+  );
+
   it("运行中的 thinking 占位只保留动态文字类名", () => {
     render(
       <MessageTimeline
