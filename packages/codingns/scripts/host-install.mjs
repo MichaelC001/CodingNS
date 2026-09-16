@@ -1138,17 +1138,62 @@ function truncateText(value, maxLength = 400) {
   return `${text.slice(0, maxLength)}…`;
 }
 
+function quoteForCmd(value) {
+  const text = String(value);
+
+  return /[\s"&|<>^()]/.test(text) ? `"${text}"` : text;
+}
+
+/**
+ * 拼出 npm 的实际调用方式。
+ *
+ * Windows 上 npm 是 .cmd 脚本，本来必须由 cmd.exe 解释；但 cmd.exe 的 /s /c 会把带空格的
+ * 路径从空格处拆开：C:\Program Files\nodejs\npm.cmd 会被当成 "C:\Program"，
+ * 报 "'C:\Program' 不是内部或外部命令"。所以优先让当前 node 直接跑 npm 的 JS 入口，
+ * 既不经过 shell，也顺带让 npm 输出走 UTF-8（cmd.exe 在中文系统上吐 GBK）。
+ */
+export function resolveNpmInvocation(npmPath, args, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const pathImpl = platform === "win32" ? path.win32 : path;
+  const execPath = options.execPath ?? process.execPath;
+  const fileExists = options.fileExists ?? fs.existsSync;
+
+  if (platform !== "win32" || !/\.(cmd|bat)$/i.test(String(npmPath))) {
+    return { file: npmPath, args, windowsVerbatimArguments: false };
+  }
+
+  const npmCliPath = pathImpl.join(
+    pathImpl.dirname(String(npmPath)),
+    "node_modules",
+    "npm",
+    "bin",
+    "npm-cli.js"
+  );
+
+  if (fileExists(npmCliPath)) {
+    return { file: execPath, args: [npmCliPath, ...args], windowsVerbatimArguments: false };
+  }
+
+  // 退路：整条命令行再包一层引号，cmd /s /c 才会把带空格的路径当成一个整体。
+  const commandLine = [quoteForCmd(npmPath), ...args.map(quoteForCmd)].join(" ");
+
+  return {
+    file: process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/s", "/c", `"${commandLine}"`],
+    windowsVerbatimArguments: true
+  };
+}
+
 function runNpmCommand(npmPath, args, logger) {
-  const invocation = process.platform === "win32"
-    ? { file: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", npmPath, ...args] }
-    : { file: npmPath, args };
+  const invocation = resolveNpmInvocation(npmPath, args);
 
   logger.log("执行 npm 命令", [invocation.file, ...invocation.args].join(" "));
 
   return spawnSync(invocation.file, invocation.args, {
     encoding: "utf8",
     timeout: NPM_INSTALL_TIMEOUT_MS,
-    env: { ...process.env }
+    env: { ...process.env },
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments === true
   });
 }
 

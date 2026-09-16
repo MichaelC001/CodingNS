@@ -20,6 +20,7 @@ import {
   resolveAutostartPaths,
   resolveDataDir,
   resolveLogDirPath,
+  resolveNpmInvocation,
   resolvePackageRootPath,
   resolveRegistryCandidates,
   resolveStateFilePath,
@@ -122,6 +123,48 @@ function createInstallDeps(options = {}) {
 function readResultEvent(events) {
   return events.find((event) => event.type === "result") ?? null;
 }
+
+test("Windows 上优先用 node 直跑 npm 的 JS 入口，不经过 cmd.exe", () => {
+  const invocation = resolveNpmInvocation(
+    "C:\\Program Files\\nodejs\\npm.cmd",
+    ["install", "--global"],
+    {
+      platform: "win32",
+      execPath: "C:\\Program Files\\nodejs\\node.exe",
+      fileExists: () => true
+    }
+  );
+
+  assert.equal(invocation.file, "C:\\Program Files\\nodejs\\node.exe");
+  assert.equal(
+    invocation.args[0],
+    "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js"
+  );
+  assert.deepEqual(invocation.args.slice(1), ["install", "--global"]);
+  assert.equal(invocation.windowsVerbatimArguments, false);
+});
+
+test("找不到 npm-cli.js 时退回 cmd，并把带空格的路径整体包进引号", () => {
+  const invocation = resolveNpmInvocation(
+    "C:\\Program Files\\nodejs\\npm.cmd",
+    ["install", "--global"],
+    { platform: "win32", fileExists: () => false }
+  );
+
+  assert.equal(invocation.windowsVerbatimArguments, true);
+  assert.deepEqual(invocation.args.slice(0, 3), ["/d", "/s", "/c"]);
+  assert.equal(invocation.args[3], '"\"C:\\Program Files\\nodejs\\npm.cmd\" install --global"');
+});
+
+test("非 Windows 直接执行 npm，不做中转", () => {
+  const invocation = resolveNpmInvocation("/usr/local/bin/npm", ["install", "--global"], {
+    platform: "darwin"
+  });
+
+  assert.equal(invocation.file, "/usr/local/bin/npm");
+  assert.deepEqual(invocation.args, ["install", "--global"]);
+  assert.equal(invocation.windowsVerbatimArguments, false);
+});
 
 test("parseArgv 支持位置参数、等号取值、空格取值和开关", async () => {
   const parsed = parseArgv([
