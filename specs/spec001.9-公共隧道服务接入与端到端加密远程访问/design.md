@@ -258,6 +258,19 @@ export interface InstanceRelayTunnelStatus {
 - 原 `trafficRemainingBytes` / `quotaResetAt` 改成订阅语义，
   用量字段保留但只作展示和风控，不再有「用完就断」的硬限额（除非风控触发）
 
+**实现时对上面两条做了调整（2026-09-16，这里说清楚免得后人以为漏做了）**：
+
+链路类型的**展示落在客户端**，由客户端从自己这条 PeerConnection 选中的 ICE 候选对本地推导
+（`apps/user-app/src/network/webrtc/link-info.ts`），**不经过 Host 和控制面**。
+理由是它本来就是「我这台设备现在怎么连的」，客户端自己最清楚，绕一圈反而多一处可能不同步的状态。
+
+相应地，**Host 的 `InstanceRelayTunnelStatus` 里没有单独的 `transportKind` 字段**，
+`phase` 也只到 `running`，没有拆 `running_p2p` / `running_relay`。
+原因是一台 Host 会同时接多个客户端，它们可能一个直连、一个走中继——
+用一个字段表示「这台 Host 当前走什么」本身就不成立。Host 侧只上报
+「有几个客户端连着」和每个连接各自的链路类型（在 supervisor 快照里），
+设置页要展示的话按连接展开，不要收敛成单个值。
+
 ### 4.3 传输层协议
 
 **不再需要自定义帧结构。**
