@@ -5,10 +5,10 @@ import { hostRuntimeStore } from "../config/host-runtime-store";
 import { inferRelayAccessConfig } from "../config/relay-control-site-config";
 import { directHostTransport } from "./direct-host-transport";
 import type { HostTransport, HostTransportResolver } from "./host-transport";
-import { ManagedRelayTunnelHostTransport } from "./relay-tunnel-managed-transport";
+import { ManagedWebRtcTunnelHostTransport } from "./webrtc/tunnel-client";
 
-const relayTransportCache = new Map<string, { signature: string; transport: ManagedRelayTunnelHostTransport }>();
-const inferredRelayTransportCache = new Map<string, ManagedRelayTunnelHostTransport>();
+const relayTransportCache = new Map<string, { signature: string; transport: ManagedWebRtcTunnelHostTransport }>();
+const inferredRelayTransportCache = new Map<string, ManagedWebRtcTunnelHostTransport>();
 
 const defaultHostTransportResolver: HostTransportResolver = ({ baseUrl }) => {
   const host = getRuntimeHostByBaseUrl(clientConfigStore.getState(), baseUrl);
@@ -27,10 +27,11 @@ const defaultHostTransportResolver: HostTransportResolver = ({ baseUrl }) => {
 
     cached?.transport.close();
 
-    const transport = new ManagedRelayTunnelHostTransport({
+    const transport = new ManagedWebRtcTunnelHostTransport({
       hostId: host.id,
       controlBaseUrl: relayTunnel.controlBaseUrl,
-      tunnelDomain: relayTunnel.tunnelDomain
+      tunnelDomain: relayTunnel.tunnelDomain,
+      platform: clientConfigStore.getState().platform
     }, {
       fallbackTransport: resolveRelayDirectFallbackTransport(
         clientConfigStore.getState().platform,
@@ -72,10 +73,11 @@ const defaultHostTransportResolver: HostTransportResolver = ({ baseUrl }) => {
       return cachedTransport;
     }
 
-    const transport = new ManagedRelayTunnelHostTransport({
+    const transport = new ManagedWebRtcTunnelHostTransport({
       hostId: `inferred:${inferredRelay.tunnelDomain}`,
       controlBaseUrl: inferredRelay.controlBaseUrl,
-      tunnelDomain: inferredRelay.tunnelDomain
+      tunnelDomain: inferredRelay.tunnelDomain,
+      platform: clientConfigStore.getState().platform
     }, {
       // 手填四级域名时，native 客户端需要在 relay 建连失败后继续尝试同地址直连。
       fallbackTransport: resolveRelayDirectFallbackTransport(
@@ -117,6 +119,15 @@ export function setHostTransportResolverForTesting(
 ): void {
   closeCachedRelayTransports();
   hostTransportResolver = resolver ?? (() => directHostTransport);
+}
+
+/**
+ * 关闭所有已经建好的 WebRTC transport。
+ *
+ * 退出登录、切换账号、切换 Host 时都要调用：旧账号建好的隧道不能继续被新账号用。
+ */
+export function closeAllWebRtcTunnelTransports(): void {
+  closeCachedRelayTransports();
 }
 
 export function resetHostTransportRegistryForTesting(): void {

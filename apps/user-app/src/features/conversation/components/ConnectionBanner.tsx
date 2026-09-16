@@ -4,6 +4,10 @@ import {
   resolveActiveConnectionRouteLabelKey,
   useActiveConnectionRouteSummary
 } from "../../../config/active-connection-route";
+import {
+  resolveLinkTransportLabelKey,
+  useWebRtcLinkSelector
+} from "../../../network/webrtc/webrtc-link-store";
 import { t } from "../../../shared/i18n";
 import { useToast } from "../../../shared/toast";
 
@@ -20,6 +24,10 @@ export function ConnectionBanner({ connectionState, onReconnect }: ConnectionBan
   const activeConnectionRouteLabel = activeConnectionRoute
     ? t(resolveActiveConnectionRouteLabelKey(activeConnectionRoute.kind))
     : null;
+  const webRtcTransportKind = useWebRtcLinkSelector((state) => state.transportKind);
+  // 走 CodingNS Connect 时，用户更关心「直连还是经中继」，所以优先显示这一层说法。
+  const linkTypeLabelKey = resolveLinkTransportLabelKey(webRtcTransportKind);
+  const linkTypeLabel = linkTypeLabelKey ? t(linkTypeLabelKey) : null;
 
   useEffect(() => {
     if (connectionState === "connected" || connectionState === "closed") {
@@ -31,9 +39,11 @@ export function ConnectionBanner({ connectionState, onReconnect }: ConnectionBan
       showToast({
         id: "conversation-connection-state",
         title: t("conversation.connectionReconnectFailed"),
-        description: activeConnectionRouteLabel
-          ? t("conversation.reconnectFailedExplainWithRoute", { route: activeConnectionRouteLabel })
-          : t("conversation.reconnectFailedExplain"),
+        description: linkTypeLabel
+          ? t("conversation.reconnectFailedExplainWithLinkType", { linkType: linkTypeLabel })
+          : activeConnectionRouteLabel
+            ? t("conversation.reconnectFailedExplainWithRoute", { route: activeConnectionRouteLabel })
+            : t("conversation.reconnectFailedExplain"),
         tone: "warning",
         durationMs: null,
         action: {
@@ -47,13 +57,22 @@ export function ConnectionBanner({ connectionState, onReconnect }: ConnectionBan
     showToast({
       id: "conversation-connection-state",
       title: t("conversation.connectionReconnecting"),
-      description: activeConnectionRouteLabel
-        ? t("conversation.reconnectExplainWithRoute", { route: activeConnectionRouteLabel })
-        : t("conversation.reconnectExplain"),
+      description: linkTypeLabel
+        ? t("conversation.reconnectExplainWithLinkType", { linkType: linkTypeLabel })
+        : activeConnectionRouteLabel
+          ? t("conversation.reconnectExplainWithRoute", { route: activeConnectionRouteLabel })
+          : t("conversation.reconnectExplain"),
       tone: "info",
       durationMs: 3200
     });
-  }, [activeConnectionRouteLabel, connectionState, dismissToast, onReconnect, showToast]);
+  }, [
+    activeConnectionRouteLabel,
+    connectionState,
+    dismissToast,
+    linkTypeLabel,
+    onReconnect,
+    showToast
+  ]);
 
   return null;
 }

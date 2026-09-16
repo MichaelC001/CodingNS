@@ -553,6 +553,65 @@ export const enUS = {
     remoteAccessTunnelTab: "CodingNS Connect",
     remoteAccessTailscaleTab: "Tailscale Access",
     remoteAccessFeatureDisabledValue: "Off",
+    remoteAccessClientSectionTitle: "Connect to other computers from this device",
+    remoteAccessClientSectionDescription:
+      "Sign in with your CodingNS account to reach the computers on that account. Opening a link used to be enough; now you sign in first.",
+    remoteAccessClientLoginTitle: "Sign in to your CodingNS account",
+    remoteAccessClientLoginDescription: "You need to sign in before connecting to your computers.",
+    remoteAccessClientEmailLabel: "Account email",
+    remoteAccessClientEmailPlaceholder: "For example: you@example.com",
+    remoteAccessClientPasswordLabel: "Password",
+    remoteAccessClientPasswordPlaceholder: "Enter your password",
+    remoteAccessClientLoginAction: "Sign in",
+    remoteAccessClientLoggingIn: "Signing in...",
+    remoteAccessClientLoginRequired: "Sign in first to connect to your other computers.",
+    remoteAccessClientLoggedInAs: "Signed in as {email}",
+    remoteAccessClientLoggedInUnknownAccount: "Signed in",
+    remoteAccessClientLogoutAction: "Sign out",
+    remoteAccessClientLoggingOut: "Signing out...",
+    remoteAccessClientLogoutSuccess: "Signed out of your CodingNS account.",
+    remoteAccessClientDeviceListTitle: "My computers",
+    remoteAccessClientDeviceListDescription:
+      "Pick a computer to check whether the remote connection works.",
+    remoteAccessClientDeviceListLoading: "Loading your computers...",
+    remoteAccessClientDeviceListEmpty:
+      "No computers on this account yet. Sign in on a computer with the same account and turn on remote access there.",
+    remoteAccessClientDeviceOnline: "Online",
+    remoteAccessClientDeviceOffline: "Offline",
+    remoteAccessClientDeviceDisabled: "Disabled",
+    remoteAccessClientConnectAction: "Connect",
+    remoteAccessClientConnecting: "Connecting...",
+    remoteAccessClientConnectSuccess: "Connected to this computer.",
+    remoteAccessClientCleanupAction: "Disconnect all remote connections",
+    remoteAccessLinkTypeLabel: "Current route",
+    remoteAccessLinkTypeP2p: "Direct",
+    remoteAccessLinkTypeRelay: "Relayed",
+    remoteAccessLinkTypePending: "Negotiating",
+    remoteAccessLinkTypeDescription:
+      "Direct means data travels straight between the two devices; relayed means it makes one extra hop and may be a little slower.",
+    remoteAccessClientStateIdle: "Not connected",
+    remoteAccessClientStateConnecting: "Connecting...",
+    remoteAccessClientStateConnected: "Connected",
+    remoteAccessClientStateFailed: "Connection failed",
+    remoteAccessClientStateClosed: "Disconnected",
+    remoteAccessErrorLoginRequired: "Sign in with your CodingNS account before connecting to your computers.",
+    remoteAccessErrorLoginInvalid: "Wrong email or password. Please try again.",
+    remoteAccessErrorBindingForbidden:
+      "This remote access address belongs to a different account. Sign in with that account and try again.",
+    remoteAccessErrorTunnelNotFound:
+      "No remote access binding was found. Make sure the computer you want to reach has remote access turned on.",
+    remoteAccessErrorFingerprintMismatch:
+      "This computer's connection identity does not match the record on the server, so the connection was stopped. Turn remote access on again on that computer.",
+    remoteAccessErrorInsecureContext:
+      "Remote connections need an HTTPS address. Open the official HTTPS address instead, or use the desktop app.",
+    remoteAccessErrorWebrtcUnavailable:
+      "This browser cannot make a direct web connection. Update your browser or use the desktop app.",
+    remoteAccessErrorSignalingFailed:
+      "Could not connect to this computer. Make sure CodingNS is running there, then try again.",
+    remoteAccessErrorTunnelConfigMissing:
+      "This computer has not turned on remote access yet, so it cannot be reached.",
+    remoteAccessErrorTunnelClosed: "The remote connection was closed. Please try again.",
+    remoteAccessErrorUnknown: "That did not work. Please try again later.",
     abilityManagement: "Capability Management",
     abilityManagementSectionSummary:
       "Manage the document library, CLI provider availability, and model profile presets from one place.",
@@ -2258,6 +2317,10 @@ export const enUS = {
       "The realtime link is broken. The system is replaying missing messages. Current route: {route}.",
     reconnectFailedExplainWithRoute:
       "Automatic recovery failed. Retry manually, or reopen the session later. Current route: {route}.",
+    reconnectExplainWithLinkType:
+      "The realtime link is broken. The system is replaying missing messages. Current route: {linkType}.",
+    reconnectFailedExplainWithLinkType:
+      "Automatic recovery failed. Retry manually, or reopen the session later. Current route: {linkType}.",
     capabilityDenied: "This action is not supported in the current session.",
     capabilitySendDisabled: "The current provider does not support sending new messages.",
     capabilityAttachmentDisabled: "This session does not support attachment input yet.",

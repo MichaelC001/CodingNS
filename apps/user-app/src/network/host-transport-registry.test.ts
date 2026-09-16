@@ -9,7 +9,7 @@ import {
   resolveHostTransport,
   resolveHostTransportTarget
 } from "./host-transport-registry";
-import { ManagedRelayTunnelHostTransport } from "./relay-tunnel-managed-transport";
+import { ManagedWebRtcTunnelHostTransport } from "./webrtc/tunnel-client";
 
 describe("host-transport-registry", () => {
   beforeEach(() => {
@@ -42,7 +42,7 @@ describe("host-transport-registry", () => {
 
     expect(localTransport).toBe(directHostTransport);
     expect(tailscaleTransport).toBe(directHostTransport);
-    expect(relayTransport).toBeInstanceOf(ManagedRelayTunnelHostTransport);
+    expect(relayTransport).toBeInstanceOf(ManagedWebRtcTunnelHostTransport);
   });
 
   it("手填但尚未持久化 relay 配置的公网入口时，也会按地址推断出 relay transport", () => {
@@ -52,7 +52,7 @@ describe("host-transport-registry", () => {
 
     const transport = resolveHostTransport("https://test004.channel.jacksonz.cn:14443");
 
-    expect(transport).toBeInstanceOf(ManagedRelayTunnelHostTransport);
+    expect(transport).toBeInstanceOf(ManagedWebRtcTunnelHostTransport);
   });
 
   it("同一个 CodingNS Connect Host 重复解析时会复用同一个 transport", () => {
@@ -326,7 +326,7 @@ describe("host-transport-registry", () => {
     const target = resolveHostTransportTarget("https://demo.channel.codingns.com");
 
     expect(target.baseUrl).toBe("https://demo.channel.codingns.com");
-    expect(target.transport).toBeInstanceOf(ManagedRelayTunnelHostTransport);
+    expect(target.transport).toBeInstanceOf(ManagedWebRtcTunnelHostTransport);
   });
 
   it("Web 可信前端即使验身出可用 lan 地址，也仍然固定使用 relay", () => {
@@ -381,7 +381,7 @@ describe("host-transport-registry", () => {
     const target = resolveHostTransportTarget("https://demo.channel.codingns.com");
 
     expect(target.baseUrl).toBe("https://demo.channel.codingns.com");
-    expect(target.transport).toBeInstanceOf(ManagedRelayTunnelHostTransport);
+    expect(target.transport).toBeInstanceOf(ManagedWebRtcTunnelHostTransport);
   });
 
   it("Web 可信前端里的 relay 主入口不允许再回退成直连 transport", async () => {
