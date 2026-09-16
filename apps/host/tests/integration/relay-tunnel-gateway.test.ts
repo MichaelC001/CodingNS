@@ -52,9 +52,21 @@ describe("RelayTunnelGatewayService", () => {
       body: new Uint8Array(Buffer.from(JSON.stringify({ hello: "world" }), "utf8"))
     });
 
-    expect(packets).toHaveLength(1);
-    expect(packets[0]).toEqual({
-      type: "http.response",
+    // 网关走的是 start / chunk / end 三段式（不是一条合并的 http.response）。
+    // 这条用例以前还停留在老的单包形状，所以一直是红的——而网关现在正是
+    // WebRTC 链路在用的组件，留着红灯会把真实回归盖掉。
+    expect(packets.map((packet) => packet.type)).toEqual([
+      "http.response.start",
+      "http.response.chunk",
+      "http.response.end"
+    ]);
+
+    const startPacket = packets[0] as Extract<
+      RelayTunnelGatewayPacket,
+      { type: "http.response.start" }
+    >;
+    expect(startPacket).toMatchObject({
+      type: "http.response.start",
       streamId: "stream-http-1",
       status: 200,
       headers: expect.objectContaining({
@@ -65,22 +77,36 @@ describe("RelayTunnelGatewayService", () => {
         "x-echo-relay-runtime": "web",
         "x-relay-feedback": "host-ok",
         "x-codingns-relay-session-id": "relay-session-1"
-      }),
-      body: expect.any(Uint8Array)
+      })
     });
-    expect(
-      JSON.parse(
-        Buffer.from(
-          (packets[0] as Extract<RelayTunnelGatewayPacket, { type: "http.response" }>).body!
-        ).toString("utf8")
-      )
-    ).toEqual({
+
+    // 响应体可能被拆成多个分片，这里按分片拼接后再比内容，
+    // 不要假设「一定只有一个 chunk」。
+    const responseBody = Buffer.concat(
+      packets
+        .filter(
+          (packet): packet is Extract<RelayTunnelGatewayPacket, { type: "http.response.chunk" }> =>
+            packet.type === "http.response.chunk"
+        )
+        .map((packet) => Buffer.from(packet.bodyChunk))
+    );
+
+    expect(JSON.parse(responseBody.toString("utf8"))).toEqual({
       method: "POST",
       path: "/echo?mode=tunnel",
       authorization: "Bearer relay-demo",
       relayClientIp: "198.51.100.10",
       relayRuntime: "web",
       bodyText: JSON.stringify({ hello: "world" })
+    });
+
+    const endPacket = packets[2] as Extract<
+      RelayTunnelGatewayPacket,
+      { type: "http.response.end" }
+    >;
+    expect(endPacket).toMatchObject({
+      type: "http.response.end",
+      streamId: "stream-http-1"
     });
 
     gateway.close();
