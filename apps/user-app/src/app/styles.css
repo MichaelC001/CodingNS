@@ -29954,7 +29954,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 }
 
 .mobile-create-session-sheet .mobile-sheet-header {
-  padding: 0.3rem 1rem 0.5rem;
+  padding: 0.3rem 1rem 0.35rem;
 }
 
 .mobile-create-session-sheet .mobile-sheet-title-wrap {
@@ -29977,8 +29977,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 }
 
 .mobile-create-session-form > .modal-section:first-child {
-  padding-top: 0;
-  border-top: 0;
+  padding-top: 0.35rem;
 }
 
 .mobile-create-session-description {
