@@ -104,7 +104,7 @@ try {
   console.error(`包装内容：\n${launcherContent}`);
   console.error(`日志：${describePath(logPath)}`);
   console.error(`pid 文件：${describePath(pidPath)}`);
-  console.error(`拿同一条命令直接问 cmd（这样能看到 cmd 自己的报错）：\n${runInnerCommandForDiagnostics()}`);
+  console.error(`用 Exec 跑同一条命令，看 cmd 自己的退出码和报错：\n${runExecDiagnostics(launcherContent)}`);
   cleanup(servicePid);
   process.exit(1);
 }
@@ -135,19 +135,31 @@ function describePath(filePath) {
   return fs.existsSync(filePath) ? `已生成\n${readIfExists(filePath)}` : "没生成";
 }
 
-/** 失败时的现场：把包装里那条命令拆出来交给 cmd 跑，拿它的报错原文。 */
-function runInnerCommandForDiagnostics() {
-  const quote = (value) => `"${value}"`;
-  const nodeCommand = [process.execPath, fakeServicePath, "start", "--data-dir", dataDir, "--port", "3999", "--host", "127.0.0.1"]
-    .map(quote)
-    .join(" ");
-  const result = spawnSync(
-    "cmd.exe",
-    ["/d", "/s", "/c", `${quote(quote("") + nodeCommand + " >> " + quote(logPath) + " 2>&1")}`],
-    { encoding: "utf8", windowsHide: true, timeout: 15_000 }
+/**
+ * 失败时的现场：把包装里那句 shell.Run 换成 Exec，用管道把 cmd 的退出码和 stderr 抓回来。
+ * Run 是异步的、输出进隐藏控制台，失败时什么都看不到。
+ */
+function runExecDiagnostics(content) {
+  const diagnosticPath = path.join(workRoot, "diagnose.vbs");
+  const diagnostic = content.replace(
+    "shell.Run commandLine, 0, False",
+    [
+      "Set exec = shell.Exec(commandLine)",
+      'WScript.Echo "退出码：" & exec.ExitCode',
+      'WScript.Echo "stdout：" & exec.StdOut.ReadAll()',
+      'WScript.Echo "stderr：" & exec.StdErr.ReadAll()'
+    ].join("\r\n")
   );
 
-  return `退出码 ${result.status}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`;
+  fs.writeFileSync(diagnosticPath, diagnostic, "utf8");
+
+  const result = spawnSync("cscript.exe", ["//nologo", diagnosticPath], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 20_000
+  });
+
+  return `cscript 退出码 ${result.status}\n${result.stdout}\n${result.stderr}`;
 }
 
 function sleepSync(milliseconds) {
