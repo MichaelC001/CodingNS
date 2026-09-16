@@ -1962,9 +1962,31 @@ install_opencode_if_requested() {
   say_warn warn_opencode_install_failed
 }
 
+# 重新安装时，正在运行的服务会锁住旧的安装目录（Windows 上 npm 直接报 EBUSY），先停掉再装。
+# 停不掉也不拦着安装：后面 npm 或健康检查会给出更具体的错。
+stop_running_host_before_install() {
+  local installer_script=""
+  installer_script="$(resolve_host_installer_script || true)"
+  [[ -n "$installer_script" && -n "$NODE_BIN" ]] || return 0
+
+  local -a args=("stop")
+
+  if [[ -n "$SELECTED_DATA_DIR" ]]; then
+    args+=("--data-dir" "$SELECTED_DATA_DIR")
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say_info_custom "node $installer_script ${args[*]}"
+    return 0
+  fi
+
+  "$NODE_BIN" "$installer_script" "${args[@]}" >/dev/null 2>&1 || true
+}
+
 install_or_resolve_codingns() {
   if [[ "$INSTALL_CODINGNS" == "1" ]]; then
     say_info info_installing_codingns
+    stop_running_host_before_install
     install_global_package "$PACKAGE_SPEC" "CodingNS"
     CODINGNS_BIN="$(resolve_installed_binary "codingns")"
     [[ -n "$CODINGNS_BIN" ]] || die error_no_codingns_after_install
