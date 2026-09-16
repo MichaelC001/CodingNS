@@ -125,68 +125,138 @@
     - 结论：**Host 侧固定 werift，node-datachannel 不进生产依赖**
     - 原始数据：`apps/codingns-proxy/local/webrtc-datachannel-demo/ab-bench-result.json`
 
-- [ ] W0.3 确认计费模型切换范围
-  - 状态：TODO
+- [x] W0.3 确认计费模型切换范围
+  - 状态：DONE
   - 这一步到底做什么：把「按流量」改成「固定订阅」涉及的控制面改动列清楚，尤其是存量订单、套餐、流量账本怎么办
   - 做完以后能看到什么结果：知道要改哪些表、哪些接口、哪些页面，存量数据怎么迁移
   - 依赖什么：无
   - 主要改哪些文件：
-    - `specs/spec001.9.1-公共隧道服务二阶段收口与生产化验收/*`
+    - `specs/spec001.9-公共隧道服务接入与端到端加密远程访问/docs/20260916-计费模型切换范围.md`（新增）
   - 这一步明确不做什么：不在这一步写迁移脚本
   - 怎么验证：
     - 文档走查 + 与现有控制面代码对照
+  - 验证结果：
+    - 已落库 `docs/20260916-计费模型切换范围.md`
+    - 核对了控制面真实代码后逐条列出：10 张要动的表（含 `traffic_wallets`、`traffic_orders`、
+      `traffic_grants`、`activation_codes`、`relay_usage_events` 等）、11 个要动的接口、
+      7 个要动的控制台页面、3 项配置
+    - 点明了必须删掉的断流执行点：`/api/internal/relay/sessions/authorize` 里的
+      `QUOTA_EXHAUSTED` 拒绝（`app.ts` 第 1983 行附近）
+    - 存量数据处理逐条定了口径：剩余流量折算订阅周期、激活码改兑换订阅时长、
+      历史订单与用量原样保留只做展示；迁移脚本要求幂等且可重复执行
+    - 明确不做的范围：团队套餐、阶梯价、自动续费扣款重试、重写 Paddle 接入
 
 ---
 
 ## 阶段 W1：Host 侧 WebRTC 接入层
 
-- [ ] W1.1 搭起 Host 侧 WebRTC 接入进程骨架
-  - 状态：TODO
+- [x] W1.1 搭起 Host 侧 WebRTC 接入进程骨架
+  - 状态：DONE
   - 这一步到底做什么：新建独立进程，用 werift 建立 PeerConnection，接受客户端 DataChannel
   - 做完以后能看到什么结果：浏览器能通过 DataChannel 连上这个进程
   - 依赖什么：W0.2
   - 主要改哪些文件：
-    - `apps/host/src/modules/relay-tunnel/webrtc/*`（新增）
-    - 进程启动入口与 IPC 接入点
-  - 这一步明确不做什么：不做业务转发，不做信令鉴权
+    - `packages/relay-tunnel-wire/*`（新增：DataChannel 帧格式，Host 与客户端共用一份）
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-peer-ipc.ts`（新增：IPC 协议 + 上报合并限频）
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-peer-process.ts`（新增：接入进程，werift + 信令 + 网关）
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-peer-supervisor.ts`（新增：主进程侧监管者）
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-frame-bridge.ts`（新增：帧 ↔ 网关包）
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-dtls-certificate.ts`（新增：DTLS 证书，W4.1 前半）
+    - `apps/host/src/modules/relay-tunnel/webrtc/relay-tunnel-webrtc-runtime-adapter.ts`（新增）
+    - `apps/host/src/server/create-server.ts`（把运行时适配器换成 WebRTC 实现）
+    - `apps/host/src/storage/sqlite/schema.sql` + `host-migrations.ts` + `instance-relay-tunnel-identity-repository.ts`（DTLS 材料落库）
+  - 这一步明确不做什么：不做业务转发（那是 W1.2），不做信令鉴权（信令票据由控制面签，这里只带票）
   - 怎么验证：
-    - 本地用 demo 页面对接，确认能建立 DataChannel
-    - `pnpm --dir apps/host test -- <新增测试文件>`
+    - `pnpm --dir packages/relay-tunnel-wire test`
+    - `pnpm --dir apps/host test -- tests/integration/webrtc-peer-ipc.test.ts tests/integration/webrtc-frame-bridge.test.ts`
+    - `cd apps/host && pnpm exec tsx scripts/relay-tunnel-webrtc-e2e.mjs`（真链路）
+  - 验证结果：
+    - 帧编解码单测 27 个全绿（含半帧 / 粘帧 / 超大 meta / 未知类型拒绝）
+    - 真链路联调 9/9 通过：接入子进程 → 真信令服务（经 nginx `/signaling/signal`）→ 客户端 offer →
+      子进程回 answer → DataChannel 打开。链路判定 `p2p`（本机 host 候选直连）
+    - 子进程日志：`peer.connection_state connected` → `peer.transport_kind {"kind":"p2p"}` → `data_channel.open`
+    - 同一条 PeerConnection 上只用一条 DataChannel：收到第二条会在子进程里直接关掉并留日志
+    - 生产产物也验过：`node .build/src/modules/relay-tunnel/webrtc/webrtc-peer-process.js` 能在纯 node 下启动并上报 `ready`；
+      `pnpm --dir apps/host build` 通过（生产构建会把新文件一起 emit）
+    - 顺带更新了 `relay-tunnel-system-routes.test.ts`：Host 指纹的期望值从 x25519 的 `SHA256:` 前缀改成
+      DTLS 的 `sha-256 XX:XX:...`；「本地 bind 但没登录控制站」那条用例现在如实报 `error`
+      （拿不到信令票据），不再像老 WSS 实现那样一直挂在 `connecting`
+    - 相关测试一起跑：9 个文件 106 个用例全绿
 
-- [ ] W1.2 打通 DataChannel 到本地业务接口的转发
-  - 状态：TODO
+- [x] W1.2 打通 DataChannel 到本地业务接口的转发
+  - 状态：DONE
   - 这一步到底做什么：把 DataChannel 收到的业务消息转成对本地 `127.0.0.1:<port>` 的 HTTP / WS 请求，响应再回传
   - 做完以后能看到什么结果：客户端能通过 WebRTC 通道正常使用 Host 业务接口
   - 依赖什么：W1.1
   - 主要改哪些文件：
-    - `apps/host/src/modules/relay-tunnel/webrtc/*`
-  - 这一步明确不做什么：不改现有业务 API 语义
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-peer-process.ts`（每条连接一个 `RelayTunnelGatewayService`）
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-frame-bridge.ts`
+    - `apps/host/src/modules/relay-tunnel/relay-tunnel-gateway-service.ts`（三处 base64 解码改成直接用字节）
+    - `apps/host/src/modules/relay-tunnel/crypto/relay-tunnel-packets.ts`（包类型改成带 `Uint8Array`）
+  - 这一步明确不做什么：不改现有业务 API 语义；本地转发仍然直接复用 `RelayTunnelGatewayService`，没有重写
   - 怎么验证：
-    - 端到端联调：浏览器里跑通一个真实业务接口调用
-    - 现有业务接口回归不受影响
+    - `pnpm --dir apps/host test -- tests/integration/webrtc-frame-bridge.test.ts`
+    - `cd apps/host && pnpm exec tsx scripts/relay-tunnel-webrtc-e2e.mjs`
+  - 验证结果：
+    - 帧 ↔ 网关包双向转换单测 17 个全绿
+    - 端到端：`http.request` 经 DataChannel 到本地业务接口并回传 `http.response.start/chunk/end`
+      - `GET /ping?from=e2e` → `status=200 body={"ok":true,"path":"/ping?from=e2e"}`
+      - `POST /upload` × 137 条 → 137/137 全部收到响应
+      - `GET /download?mb=8` → 8.00 MB 完整回传，分片 24576 字节
+    - **上行吞吐只认 Host 侧实测**（本地业务服务「第一个请求体字节到达 → 最后一个请求体字节收完」）：
+      **8.03 MB / 779 ms / 10.30 MB/s**；客户端「写完全部帧」只用了 3 ms，这个数字明显不可信，所以只当参考
+    - 下行（客户端实测，口径不同已在报告里写明）：8.00 MB / 2288 ms / 3.50 MB/s
+    - 老 WSS 路径的两个测试本来就是失败的（HEAD 上就红），不是这次改动引起的，W6.2 会整体下线
 
-- [ ] W1.3 把信令连接接入 TaskManager
-  - 状态：TODO
+- [x] W1.3 把信令连接接入 TaskManager
+  - 状态：DONE
   - 这一步到底做什么：信令连接、状态刷新、用量上报都走 `TaskManager`，不自己长私有 timer
   - 做完以后能看到什么结果：网络抖动后能自动恢复，设置页能看到当前阶段
   - 依赖什么：W1.1
   - 主要改哪些文件：
-    - `apps/host/src/modules/relay-tunnel/*`
+    - `apps/host/src/modules/tasks/task-types.ts`（新增 `webrtc.peer_supervise` / `relay_tunnel.state_refresh` / `relay_tunnel.usage_report`）
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-peer-supervisor.ts`
+    - `apps/host/src/modules/relay-tunnel/webrtc/relay-tunnel-webrtc-runtime-adapter.ts`
   - 这一步明确不做什么：不重写 TaskManager 本身
   - 怎么验证：
-    - 按 `spec001.2` 后台任务规范自查
-    - 断网 / 恢复测试
+    - `pnpm --dir apps/host test -- tests/integration/webrtc-peer-supervisor.test.ts tests/integration/relay-tunnel-webrtc-runtime-adapter.test.ts`
+    - `cd apps/host && pnpm exec tsx scripts/relay-tunnel-webrtc-adapter-e2e.mjs`
+  - 验证结果：
+    - 三个 taskType 全部按要求命名，注册放在初始化路径里并用 `has()` 防重复注册
+    - 监管任务的退避等待发生在任务内部，没有私有 inflight 表 / 重试队列；
+      重复请求只记 `superviseAgain`，跑完再补一次（对应 `spec001.2` 3.13）
+    - 状态刷新走 `relay_tunnel.state_refresh` 落库，联调里 `enqueue=1` 并成功写入 DTLS 指纹
+    - 用量上报走 `relay_tunnel.usage_report`，按会话 key 去重；计费已改固定订阅，这里只做风控参考，没有任何「用完断流」
+    - 修掉一个真缺陷：原来的用量上报把「增量数组」交给限频合并器，窗口内被顶掉的增量会永久丢，
+      联调时 8 MB 上行只报出 203 字节；改成「递增序号做触发、发送时再从累计器取走全部增量」后，
+      联调实测 `upstreamBytes=8436486 ≥ 业务体 8417280`，并且有回归单测兜住
+    - 状态映射如实：`starting` / `signaling_connecting` / `waiting_for_peer` → `connecting`，
+      `running_p2p` / `running_relay` → `running`，`error` → `error`；
+      `connected` 只在真的有客户端 DataChannel 打通时为 true
+    - 断网 / 恢复：信令断线由子进程按 1s→30s 退避重连，重连时通过 `ticket.request` 找主进程换新票据
+      （票据只有 60 秒有效期，不能复用旧的）。这一条只做了代码路径 + 单测，没有做真实断网演练
 
-- [ ] W1.4 接入进程崩溃自动拉起
-  - 状态：TODO
+- [x] W1.4 接入进程崩溃自动拉起
+  - 状态：DONE
   - 这一步到底做什么：主进程监控 WebRTC 接入进程，崩了自动重启，并把原因记进状态
   - 做完以后能看到什么结果：接入进程挂掉不影响 Host 其他功能，且能自动恢复
   - 依赖什么：W1.1
   - 主要改哪些文件：
-    - `apps/host/src/modules/relay-tunnel/*`
+    - `apps/host/src/modules/relay-tunnel/webrtc/webrtc-peer-supervisor.ts`
   - 这一步明确不做什么：不做多进程池
   - 怎么验证：
-    - 手动 kill 接入进程，确认主进程存活并自动拉起
+    - `pnpm --dir apps/host test -- tests/integration/webrtc-peer-supervisor.test.ts`
+    - `cd apps/host && pnpm exec tsx scripts/relay-tunnel-webrtc-supervise-e2e.mjs`（真子进程 + 真 `kill -9`）
+  - 验证结果：
+    - 退避序列单测：`0 / 1s / 2s / 4s / 8s / 16s / 30s（封顶）/ 30s`，连续失败 5 次后停止自动拉起并置 `error`
+    - 真 `kill -9` 联调 12/12 通过：
+      - `kill -9 37660` → 主进程（pid 37635）存活
+      - 挂掉期间状态 `phase=error`，`lastError=接入进程意外退出（code=null，signal=SIGKILL）`，不是 `running_*`
+      - 1 秒后自动拉起新进程（pid 37662），**重新收到一次 configure**（configure 次数 1 → 2）
+      - 连续失败计数在成功拉起后清零
+      - 拉起动作确实记在 `webrtc.peer_supervise` 任务上（`enqueue=2`）
+    - 子进程被 `shutdown` 触发的退出不会触发自动拉起（单测覆盖）
+    - 没做的：进程模型文档第七节第 6 条「压一条连接打满带宽确认主进程事件循环没被拖慢」没有量化测（只做了结构隔离，没有实测 event loop 延迟）
 
 ---
 
@@ -194,13 +264,29 @@
 
 - [ ] W2.1 新增客户端 WebRTC transport
   - 状态：TODO
-  - 这一步到底做什么：在 user-app 里实现基于 DataChannel 的传输实现，替代现有 relay-tunnel transport
+  - 这一步到底做什么：在 user-app 里实现基于 DataChannel 的传输实现，替代现有 relay-tunnel transport；
+    同时补上「登录控制站账号 → 换信令票据」这一步（见下面「前置决定」）
   - 做完以后能看到什么结果：客户端能通过 WebRTC 通道访问远程 Host
   - 依赖什么：W1.2
+  - **前置决定（2026-09-16 已拍板，不要再改）**：
+    - 客户端**必须先登录控制站账号**才能换信令票据。控制站的
+      `POST /api/v1/relay/signaling/ticket` 要求账号 Bearer，原来的匿名 `connect-init`
+      那套信任级别不再沿用
+    - 允许连接的账号**必须就是绑定这台 Host 的账号**；控制面已有
+      `BINDING_FORBIDDEN` 校验，本轮**不做**账号之间的共享授权（无邀请、无成员列表、无撤销）
+    - **注册、登录、设备（绑定）分配一律复用现有 CodingNS Connect，不新建账号体系、不新增控制面接口**。
+      登录用现成的 `POST /api/public/auth/login`；账号名下的「设备」就是已有的绑定列表，
+      用现成的 `GET /api/v1/hosts`（带 Bearer），**不新造「设备」这个概念**。
+      客户端走「登录 → 拉绑定列表 → 选一台 → 换信令票据 → 建 WebRTC 连接」，
+      不让用户手输 tunnelDomain。本轮唯一新增的是传输层
+    - 后果要说清楚：H5 从「打开链接就能用」变成「先登录」。这是有意为之——
+      原来 tunnelDomain 事实上当口令用，泄漏一个链接等于把 Host 交出去
   - 主要改哪些文件：
     - `apps/user-app/src/network/webrtc/*`（新增）
     - `apps/user-app/src/network/host-transport-registry.ts`
-  - 这一步明确不做什么：不重写业务层 API 调用方式
+    - `apps/user-app/src/features/settings/*`（控制站账号登录入口与登录态存储）
+    - i18n 字典与测试
+  - 这一步明确不做什么：不重写业务层 API 调用方式；不做账号共享授权
   - 怎么验证：
     - `pnpm --dir apps/user-app exec vitest run src/network/*.test.ts`
     - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
@@ -278,9 +364,32 @@
       配额、日志与运行用户都已配好
     - 控制面侧凭据签发已完成（W3.3）：HMAC-SHA1 + 过期时间戳，不存长期密码
     - 部署与验证步骤已落库 `docs/20260916-TURN部署与接入说明.md`
+    - 新增 `scripts/verify-turn.mjs`（`pnpm verify:turn`）：部署后一条命令自检，
+      查凭据签发、STUN 可达性（含「服务端看到的是不是内网地址」这个 `external-ip` 判据）、
+      以及**自己发一次完整的 TURN Allocate** 精确验证凭据是否被接受
+    - 自检脚本已实测四条路径：正常通过 `exit 0`、未配 TURN / 未配密钥 `exit 1`、
+      地址格式错 `exit 1`、端口不可达 `exit 2`；STUN 探测对着 demo 的最小 STUN 服务真跑通过
+    - **本机装了真 coturn（4.18.0）做了端到端验证**：
+      - 用仓库模板生成配置起 coturn，`pnpm verify:turn` → `exit 0`，
+        第 3 步报「成功分配到中继地址（realm=local.test）」
+      - **反向验证**：把共享密钥换成错的，同一个脚本 → `exit 2` 且明确报
+        「凭据被拒：401」。证明这个检查真的能区分对错，不是走过场
+      - 过程中修掉了自检脚本自身的两个真 bug：`turnutils_uclient` 缺 `-y`/`-e` 参数被
+        误判成「密钥不一致」；两次请求用了不同 UDP 源端口导致 coturn 回 `438 Stale Nonce`
+        （nonce 绑五元组，必须复用同一条通道）
+      - 记了一个本地自测的坑：生产模板里的 `denied-peer-ip=127.0.0.0/8` 会让回环自测出现
+        `403 Forbidden IP`，但那是 peer 策略拒绝回环对端，**ALLOCATE 已成功、凭据没问题**
+    - **强制 relay 真实验收也做了**（新增 `local/webrtc-datachannel-demo/turn-relay-check.mjs`）：
+      - 建两个真 werift PeerConnection，两端都强制 `iceTransportPolicy: "relay"`，
+        且**只给 TURN 不给 STUN**——即使策略写错也没有直连候选，排除「其实走了直连却以为在测中继」
+      - 实测结果：两端候选都是 `relay`；选中的候选对是
+        `relay 127.0.0.1:53347 ↔ relay 127.0.0.1:62622`；一条特意造的内容原样穿过中继，`exit 0`
+      - 又踩到一个坑并写进文档：**coturn 默认拒绝回环对端**，这跟 `denied-peer-ip` 是两回事。
+        注掉 `denied-peer-ip=127.0.0.0/8` 之后 `CREATE_PERMISSION` / `CHANNEL_BIND` 照样回
+        `403 Forbidden IP`，本机回环自测必须额外加 `allow-loopback-peers`（**生产绝对不能开**）
   - 待完成（需要在目标机器上执行）：
     - 在正式服务器上装 coturn、替换模板占位符、放行 3478/udp+tcp 与 49152-65535/udp
-    - 用 `iceTransportPolicy: "relay"` 实测一次真实跨网连接
+    - 部署后先跑 `pnpm verify:turn`，再用 `iceTransportPolicy: "relay"` 实测一次真实跨网连接
     - 抓包确认 TURN 上只有 DTLS 密文
   - 备注：按账号粒度的 TURN 开关还没做，目前只有全局开关，等 W5 订阅模型落地后一起补。
 
@@ -311,7 +420,7 @@
 ## 阶段 W4：安全验收
 
 - [ ] W4.1 DTLS 指纹登记与下发
-  - 状态：TODO
+  - 状态：PARTIAL（控制面侧已完成，Host 侧随 W1.1 一起做）
   - 这一步到底做什么：Host 首次启用时生成 DTLS 证书、把指纹注册到控制面，客户端连接前取回
   - 做完以后能看到什么结果：指纹机制替代了原来的公钥指纹
   - 依赖什么：W1.1、W2.1
@@ -321,9 +430,58 @@
   - 这一步明确不做什么：不做证书轮换 UI（先记录，后续再单开）
   - 怎么验证：
     - 接口测试 + 端到端联调
+  - 已完成（控制面侧，2026-09-16）：
+    - 修掉一个会让 W2.2 指纹校验永远失败的缺陷：换票接口原来把请求体里自报的
+      `hostDtlsFingerprint` 直接下发，但**从不落库**。客户端只带 tunnelDomain 换票时，
+      拿到的仍是绑定记录里老的 x25519 指纹，跟 SDP 里的 DTLS 指纹永远对不上
+    - 现在的规则：换票接口**只下发绑定记录里持久化的指纹**；Host 自报的值只用于一致性校验，
+      不一致直接 `409 HOST_DTLS_FINGERPRINT_MISMATCH`，detail 里写清两边各是什么
+    - 新增 `POST /api/v1/hosts/:bindingId/dtls-fingerprint`：存量绑定把老指纹换成 DTLS 指纹的入口。
+      需要账号 Bearer；**先校验归属再写入**（顺序反了会变成猜到 bindingId 就能改别人的指纹）；
+      非归属账号与不存在统一返回 404，指纹被别的 Host 占用返回 409
+    - `binding-store.ts` 与本地栈用的 `persistence.ts` 两份实现都补了 `updateHostDtlsFingerprintById`，
+      语义保持一致（指纹全局唯一）
+    - 新增 `apps/control-api/src/dtls-fingerprint.ts`：指纹比较先归一化再比。
+      能认出标准 SHA-256 摘要（64 个十六进制字符）时只比摘要，忽略算法前缀、大小写和分隔符；
+      认不出来就退回整串大写比较，不做猜测性裁剪。**只处理写法差异，不降低强度**
+    - 测试：新增 4 条接口用例（自报指纹不一致被拒 / 同一指纹不同写法按一致处理 /
+      重新登记后客户端拿到新指纹 / 重新登记要求登录、归属正确、指纹非空）
+      + 4 条归一化单测
+    - `pnpm --filter @codingns-proxy/control-api test` → 72 通过，1 个既有失败与本轮无关
+      （同 W3.3 记录的那条）
+  - 待完成：
+    - 客户端比对 SDP 里的 `a=fingerprint` 与控制面返回的指纹（随 W2.2）
+    - 端到端联调：指纹不匹配时确认连接被拒
+  - 本次补上的 Host 侧（随 W1.1，2026-09-16）：
+    - Host 首次启用时用 werift 的 `RTCDtlsTransport.SetupCertificate()` 生成一张自签 ECDSA P-256 证书，
+      指纹按 `sha-256 XX:XX:...` 格式化；证书材料落进 `instance_relay_tunnel_identity` 同一行
+      （新增 6 个 `dtls_*` 列 + 一条 host migration，不新开表），所以**指纹跨重启稳定**
+    - 子进程用 `new RTCCertificate(privateKeyPem, certPem, signatureHash)` 并通过 `RTCPeerConnection`
+      的 `certificates` 选项传进去，保证握手用的就是登记的那张证书
+    - 换票时把 DTLS 指纹作为 `hostDtlsFingerprint` 上传做一致性校验
+    - 心跳 `POST /api/v1/hosts/:bindingId/heartbeat` 的 `hostFingerprint` 也改成 DTLS 指纹
+      （原来传的是 x25519 指纹，换承载层后会一直 409）
+    - `POST /api/v1/hosts/bind` 的 `hostFingerprint` 同样改成 DTLS 指纹，
+      这样新绑定一步到位，不需要事后补登记
+    - `config.hostKeyFingerprint` 在存在 DTLS 身份时收敛成 DTLS 指纹，
+      设置页「Host 指纹」显示的就是客户端要校验的那个值
+    - **存量绑定自动迁移**：换票或心跳收到 `409 HOST_DTLS_FINGERPRINT_MISMATCH` 时，
+      自动调 `POST /api/v1/hosts/:bindingId/dtls-fingerprint` 重新登记，然后**只重试一次**；
+      重新登记本身失败（401 / 404 / 409）才上报成需要用户处理的错误，并写清该怎么做。
+      老用户升级后不用重新绑定、不用换域名、没有新增界面步骤
+    - 验证：
+      - 单测：`tests/integration/relay-tunnel-webrtc-runtime-adapter.test.ts` 覆盖
+        「首次换票带指纹 / 409 后自动登记再重试 / 只重试一次 / 登记冲突与绑定丢失的提示文案 / 登录失效提示」
+      - 真链路：`scripts/relay-tunnel-webrtc-adapter-e2e.mjs` 12/12。其中
+        `adapter.dtls_fingerprint.registered` + `adapter.ticket.reregistered_fingerprint`
+        是**真的撞上了 409 并自动完成迁移**（两次运行之间换了证书），不是构造出来的
+      - 真链路：`scripts/relay-tunnel-webrtc-supervise-e2e.mjs` 里显式把绑定指纹置成旧值，
+        验证控制面返回 `409 HOST_DTLS_FINGERPRINT_MISMATCH`，重新登记后换票立即成功（201）
+      - 心跳口径：DTLS 指纹 → 204；老的 x25519 指纹 → 409 `HOST_BINDING_MISMATCH`
+    - 没做：证书轮换 UI（按任务要求不做）；客户端侧指纹比对（W2.2）
 
 - [ ] W4.2 固定「中继不可见明文」的验收清单
-  - 状态：TODO
+  - 状态：PARTIAL（清单与第一层自动化已落地，第二层待 TURN 部署后可执行）
   - 这一步到底做什么：写出并执行抓包、日志、数据库三层验收步骤，证明信令和 TURN 都拿不到明文
   - 做完以后能看到什么结果：有一份可重复执行的验收记录
   - 依赖什么：W3.2、W4.1
@@ -332,6 +490,36 @@
   - 这一步明确不做什么：不拿「看起来差不多」当验收
   - 怎么验证：
     - 抓包记录 + 测试命令固化
+  - 已完成：
+    - 清单已落库 `docs/20260916-中继不可见明文验收清单.md`，拆成三层，每层都写清
+      「怎么执行 / 通过判据 / 失败判据 / 要留什么证据」
+    - **第一层（信令层）已自动化**：新增用例
+      「信令链路不承载业务数据：业务形状的消息一律拒绝且不转发」——
+      客户端发一条 `type: "http.request"` 的业务形状消息，断言发送方收到 `MESSAGE_INVALID`
+      且 **Host 侧消息条数一条都没多**。`pnpm --filter @codingns-proxy/relay-signaling test`
+      → 25 通过
+    - 记了一条已知边界：SDP 是文本字段，理论上可以被塞额外字节让信令服务器搬运；
+      这不影响「中继不可见明文」（DTLS 密钥不在 SDP 里），但信令通道不该当数据通道用
+  - 待完成：
+    - **第二层（TURN 抓包）必须在 TURN 部署完成后真跑**：强制 `iceTransportPolicy: "relay"`，
+      先用 `apps/host/scripts/relay-tunnel-webrtc-e2e.mjs` 确认链路类型真的是 `relay`
+      （不是 `p2p`），再用一个自己造的、不可能碰巧出现的字符串做业务内容，
+      在 TURN 服务器上 `tcpdump -i any -n -s0 -A port 3478`，确认搜不到该字符串，
+      也搜不到 `GET `/`POST `/`/api/`
+    - **抓包需要 root，开发机上拿不到**（macOS 上 `lo0` 同样要权限）。
+      所以这一层要在目标服务器上做，不能在本地糊弄过去。
+      拿不到 root 时最多只能做到「链路类型是 relay」——**那只证明流量经过中继，
+      证明不了中继看不到内容，两者不能互相替代**，验收记录里必须写清楚实际做到哪一步
+    - 第三层里的控制面库检查已按真实 schema 写准（2026-09-16 核对 `database-migrations.ts`）：
+      思路从「搜关键词」改成**先确认表里根本没有能放内容的列**——
+      `relay_usage_events` 与 `relay_usage_daily_summaries` 的列只有标识、字节数、时间戳，
+      没有任何 text / json / blob 业务内容列；再列一遍全库的 text / json / bytea 列逐个确认。
+      **列结构能证明「这里压根没地方可以存」，比「这次没搜到」强得多**，
+      而且以后有人加了内容列这个检查会立刻失败。清单里附了两张表的完整列。
+      信令日志与 Host 侧已可从代码走查确认（Host 接入进程不写任何持久化）
+    - 按清单要求把三层的原始输出追加成一份验收记录
+  - 结论口径：**第二层没真跑完之前，W4.2 不算完成**。
+    第一层通过只说明「我们自己的服务没被当通道用」，说明不了「中继看不到明文」
 
 ---
 
@@ -377,18 +565,62 @@
 ## 阶段 W6：下线旧链路
 
 - [ ] W6.1 删除自研加密协议
-  - 状态：TODO
+  - 状态：IN_PROGRESS（已清掉 relay-edge 那一份的死代码 918 行；剩下两份要等 W1/W2 落地）
   - 这一步到底做什么：把三份协议副本全部删掉，包括已经没用的死代码
   - 做完以后能看到什么结果：仓库里再也搜不到自研握手和加密帧
-  - 依赖什么：W2.2、W4.1
+  - 依赖什么：W2.2、W4.1；**第三份副本（relay-edge）要等 W6.2 把 relay-edge 数据面停掉才能删**
+  - **已完成（2026-09-16）**：relay-edge 里那份是**封闭死代码簇**，4 个文件互相引用、外部零引用，
+    删除是纯清理、无行为变更，已直接删掉：
+    - `relay-tunnel-client-session.ts`（239 行）
+    - `relay-tunnel-protocol.ts`（567 行）
+    - `relay-tunnel-identity.ts`（37 行）
+    - `relay-tunnel-packets.ts`（75 行）
+    - 共 918 行。验证：`pnpm --filter @codingns-proxy/relay-edge exec tsc -p tsconfig.json --noEmit`
+      通过；`pnpm --filter @codingns-proxy/relay-edge test` → 34 通过
+    - `host-proof.ts`（172 行）**这次没删**：它还被 `relay-edge/src/app.ts` 用来做 Host 挑战应答，
+      属于 W6.2 停用 relay-edge 数据面时的范围
+  - **删除范围（2026-09-16 核准过的清单，别删多了）**：
+    - `apps/host/src/modules/relay-tunnel/crypto/relay-tunnel-protocol.ts`（584 行，握手 / HKDF / AES-GCM 加密帧）
+    - `apps/host/src/modules/relay-tunnel/relay-tunnel-edge-proof.ts`（52 行，Host 接入 claim proof）
+    - `apps/host/src/modules/relay-tunnel/relay-tunnel-runtime-adapter.ts`（老 WSS 适配器，随 W6.2 一起下线）
+    - `apps/codingns-proxy/apps/relay-edge/src/host-proof.ts`（172 行，随 W6.2）
+  - **user-app 侧的死簇（2026-09-16 已逐文件核实引用）**：
+    W1/W2 落地后，下面 6 个文件只被彼此和它们自己的测试引用，外部零引用，可以整簇删掉，共约 2446 行：
+    - `network/relay-tunnel-managed-transport.ts`（304 行）
+    - `network/relay-tunnel-client-transport.ts`（522 行）
+    - `network/relay-tunnel-edge-client.ts`（500 行）
+    - `network/relay-tunnel-client-session.ts`（373 行）
+    - `network/relay-tunnel-protocol.ts`（658 行，自研加密协议副本）
+    - `network/relay-tunnel-packets.ts`（89 行）
+    - 对应的 6 个 `*.test.ts` 一起清理
+  - **user-app 侧明确保留**：
+    - `network/relay-session-traffic-store.ts` **不能删**——`features/workbench/components/WorkbenchHostSwitcher.tsx`
+      还在用它展示会话用量。按 W0.3 的口径，用量数据降级为「展示 + 风控参考」，
+      这个 store 正好是展示那一半
+  - **明确不删（2026-09-16 更正）**：
+    - `apps/host/src/modules/relay-tunnel/crypto/relay-tunnel-identity-service.ts` **不能整文件删**。
+      W1.1 把 DTLS 证书材料作为**同一行的新列**存进了 `instance_relay_tunnel_identity`，
+      这个服务仍然负责那行记录的读写。W6.1 只清理 x25519 密钥材料的**使用**，
+      并决定那几列是保留还是走一次迁移删掉
+    - 三份 `relay-tunnel-packets.ts` 里的**网关包类型**。
+      它们是「一个连接上怎么复用多条 HTTP / WebSocket 流」的业务协议（streamId 多路复用），
+      不是加密套件——WebRTC 链路照样要用。WebRTC 只是换掉了它的**编码方式**
+      （从 base64 JSON 换成 `@codingns/relay-tunnel-wire` 的二进制帧）。
+      relay-edge 那份已随死代码清理删掉，主机侧那份留到 W6.2
+  - **明确不删**：三份 `relay-tunnel-packets.ts` 里的**网关包类型**。
+    它们是「一个连接上怎么复用多条 HTTP / WebSocket 流」的业务协议（streamId 多路复用），
+    不是加密套件——WebRTC 链路照样要用。WebRTC 只是换掉了它的**编码方式**
+    （从 base64 JSON 换成 `@codingns/relay-tunnel-wire` 的二进制帧）。
+    relay-edge 那份会随 W6.2 整体下线，属于 W6.2 的范围。
   - 主要改哪些文件：
-    - `apps/host/src/modules/relay-tunnel/crypto/*`
-    - `apps/user-app/src/network/relay-tunnel-protocol.ts` 及相关文件
-    - `apps/codingns-proxy/apps/relay-edge/src/relay-tunnel-*.ts`
+    - 上面清单里的 8 个文件，以及引用它们的所有调用点
   - 这一步明确不做什么：不保留「以防万一」的兼容开关
   - 怎么验证：
-    - 全仓搜索确认无残留引用
+    - 全仓搜索确认无残留引用（`x25519`、`hkdf`、`aes-256-gcm`、`createRelayTunnelHostClaimProof`、
+      `acceptRelayTunnelClientHandshake` 这些关键词应该一个都搜不到）
     - 相关测试全部清理或改写
+    - `pnpm --dir apps/host exec tsc --noEmit -p tsconfig.json` 与
+      `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json` 通过
 
 - [ ] W6.2 relay-edge 数据面下线
   - 状态：TODO
