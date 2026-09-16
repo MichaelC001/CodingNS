@@ -287,11 +287,19 @@ DataChannel 有硬性的大小限制。实测两个 werift peer 之间发单条�
 
 - HTTP 请求体：`http.request`（第一段）+ 若干 `http.request.chunk` + `http.request.end`
 - HTTP 响应体：`http.response.start` + 若干 `http.response.chunk` + `http.response.end`
+- WebSocket 大消息：**只发** `ws.message.chunk` × N + `ws.message.end`，**不发** `ws.message`
+- WebSocket 小消息：只发一条 `ws.message`（**不发 end**），接收方收到即投递
 - 单帧超过上限时在**编码阶段**就抛错并说明该走哪条分片路径，
   而不是等到 DataChannel `send()` 才炸出一句和业务无关的报错
 
-**已知缺口**：`ws.message` 目前仍是整条消息一帧，**超过 64 KB 的大 WebSocket 消息会失败**。
-本轮不处理，需要时按同样的三段式补 `ws.message.chunk` / `ws.message.end`。
+**WebSocket 这条为什么必须做**（2026-09-16 复核后定的）：
+`ws/workbench-ws-hub.ts` 的 `fileTree.snapshot` 没有任何截断，一个正常规模仓库的文件树
+JSON 轻松超过 64 KB，而 Host 的 WS 发送路径也没有大小防护。旧的 WSS 通道没有这个限制，
+所以不补就是**相对旧路径的功能性回退**——远程客户端打开工作台时文件树会直接加载不出来。
+
+**WS 的分片规则故意和 HTTP 不一样**：HTTP 是「先发头、再补分片、最后 end」；
+WS 是「小消息照旧一条发完，大消息只走 chunk + end」。
+这样 `ws.message` 永远等于「一条完整消息」，不会出现「先投递了第一段、后面又补上」这种半截投递。
 
 ## 5. 加密方案
 

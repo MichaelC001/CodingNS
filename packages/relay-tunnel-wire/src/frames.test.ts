@@ -15,7 +15,7 @@ import {
 
 const textEncoder = new TextEncoder();
 
-/** 一份覆盖全部 14 种帧类型的样本，往返测试用它。 */
+/** 一份覆盖全部 16 种帧类型的样本，往返测试用它。 */
 const SAMPLE_FRAMES: TunnelFrame[] = [
   {
     type: "http.request",
@@ -67,6 +67,17 @@ const SAMPLE_FRAMES: TunnelFrame[] = [
     streamId: "s-2",
     binary: true,
     body: new Uint8Array([9, 8, 7, 6])
+  },
+  {
+    // 大 WebSocket 消息（比如 fileTree.snapshot）走 chunk + end，不发 ws.message
+    type: "ws.message.chunk",
+    streamId: "s-2",
+    binary: false,
+    body: textEncoder.encode("{\"type\":\"fileTree.snapshot\",\"entries\":[")
+  },
+  {
+    type: "ws.message.end",
+    streamId: "s-2"
   },
   {
     type: "ws.closed",

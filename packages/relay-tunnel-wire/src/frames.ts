@@ -63,7 +63,9 @@ export const TUNNEL_FRAME_TYPE_CODES = {
   ping: 11,
   pong: 12,
   "http.request.chunk": 13,
-  "http.request.end": 14
+  "http.request.end": 14,
+  "ws.message.chunk": 15,
+  "ws.message.end": 16
 } as const;
 
 export type TunnelFrameType = keyof typeof TUNNEL_FRAME_TYPE_CODES;
@@ -153,8 +155,35 @@ export interface TunnelWsMessageFrame extends TunnelFrameBase {
   type: "ws.message";
   /** true 表示二进制消息，false 表示文本消息。 */
   binary: boolean;
-  /** 消息原始字节。 */
+  /** 消息原始字节。**必须是完整的一条消息**，超过单帧上限的走 chunk + end。 */
   body: Uint8Array;
+}
+
+/**
+ * 大 WebSocket 消息的分片。
+ *
+ * 为什么需要：`fileTree.snapshot` 这类快照没有任何截断，
+ * 一个正常规模仓库的文件树 JSON 轻松超过 64 KB，而 DataChannel 单条消息上限就是 64 KB。
+ * 旧 WSS 通道没有这个限制，所以不补的话就是相对旧路径的功能回退——
+ * 远程客户端打开工作台时文件树直接加载不出来。
+ *
+ * **规则（和 HTTP 路径不同，注意别搞混）**：
+ * - 小消息：只发一条 `ws.message`，**不发 end**。接收方收到即投递。
+ * - 大消息：**只发** `ws.message.chunk` × N + `ws.message.end`，
+ *   **不发** `ws.message`。接收方从第一个 chunk 开始累积，收到 end 才投递。
+ *
+ * 这样 `ws.message` 永远等于「一条完整消息」，小消息这条主路径零改动，
+ * 也不会出现「先投递了第一段、后面又补上」这种半截投递。
+ */
+export interface TunnelWsMessageChunkFrame extends TunnelFrameBase {
+  type: "ws.message.chunk";
+  binary: boolean;
+  body: Uint8Array;
+}
+
+/** 大 WebSocket 消息发完了。收到它才把累积内容作为一条完整消息投递。 */
+export interface TunnelWsMessageEndFrame extends TunnelFrameBase {
+  type: "ws.message.end";
 }
 
 export interface TunnelWsClosedFrame extends TunnelFrameBase {
@@ -198,6 +227,8 @@ export type TunnelFrame =
   | TunnelWsOpenFrame
   | TunnelWsOpenedFrame
   | TunnelWsMessageFrame
+  | TunnelWsMessageChunkFrame
+  | TunnelWsMessageEndFrame
   | TunnelWsClosedFrame
   | TunnelErrorFrame
   | TunnelHelloFrame
@@ -434,10 +465,13 @@ function buildMeta(frame: TunnelFrame): Record<string, unknown> {
         selectedProtocol: frame.selectedProtocol
       };
     case "ws.message":
+    case "ws.message.chunk":
       return {
         streamId: frame.streamId,
         binary: frame.binary
       };
+    case "ws.message.end":
+      return { streamId: frame.streamId };
     case "ws.closed":
       return {
         streamId: frame.streamId,
@@ -472,6 +506,7 @@ function buildBody(frame: TunnelFrame): Uint8Array {
     case "http.request.chunk":
     case "http.response.chunk":
     case "ws.message":
+    case "ws.message.chunk":
       return frame.body;
     default:
       return EMPTY_BYTES;
@@ -542,11 +577,17 @@ function buildFrameFromParts(
         selectedProtocol: optionalString(meta, "selectedProtocol")
       };
     case "ws.message":
+    case "ws.message.chunk":
       return {
         type,
         streamId: requireString(meta, "streamId", type),
         binary: requireBoolean(meta, "binary", type),
         body
+      };
+    case "ws.message.end":
+      return {
+        type,
+        streamId: requireString(meta, "streamId", type)
       };
     case "ws.closed":
       return {
