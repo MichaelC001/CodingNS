@@ -12,6 +12,7 @@ import {
   buildSystemdUnit,
   buildWindowsLaunchCommandContent,
   buildWindowsLauncherVbs,
+  prepareAutostart,
   resolveHostLaunchPlan,
   detectLegacyPm2,
   expandHome,
@@ -477,6 +478,29 @@ test("Windows 启动包装用 0 号窗口模式拉起批处理，命令和重定
     "批处理里要显式调用 node 跑 CLI"
   );
   assert.match(command, />> "[^"]*host-service\.log" 2>&1/, "stdout 和 stderr 都要进服务日志");
+});
+
+test("Windows 写自启文件时会把批处理和 VBS 一起写出来", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "codingns-autostart-"));
+  const context = createAutostartContext({
+    dataDir,
+    launcherDirectory: path.join(dataDir, "runtime", "autostart")
+  });
+  const logs = [];
+  const logger = { log: (message, detail) => logs.push([message, detail]) };
+
+  try {
+    const prepared = prepareAutostart("win32", context, logger);
+
+    assert.equal(prepared.kind, "schtasks");
+    assert.ok(fs.existsSync(prepared.filePath), "要写出 VBS 包装");
+    assert.ok(
+      fs.existsSync(path.join(context.launcherDirectory, "codingns-host-launcher.cmd")),
+      "批处理也要一起写出来，缺了它自启时服务起不来"
+    );
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 test("Windows 上服务走包装启动，其它平台直接拉 node", async () => {

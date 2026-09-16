@@ -15,6 +15,7 @@ const serviceRoot = path.join(runtimeRoot, "service");
 const logsRoot = path.join(runtimeRoot, "logs", "install");
 const installStatePath = path.join(serviceRoot, "install-state.json");
 const launchEnvPath = path.join(serviceRoot, "launch-env.json");
+const unifiedStatePath = path.join(runtimeRoot, "install-state.json");
 
 assertExists(installStatePath, "install-state.json");
 assertExists(launchEnvPath, "launch-env.json");
@@ -31,25 +32,100 @@ assertEqual(installState.ptyPackageVersion, "1.1.0", "PTY 包版本不对");
 assertEqual(installState.sqlitePackageName, "libsql", "SQLite 包名不对");
 assertEqual(installState.sqlitePackageVersion, "0.5.29", "SQLite 包版本不对");
 assertPathContains(installState.npmPrefix, `${path.sep}runtime${path.sep}npm-global`, "npmPrefix 没有落在私有前缀目录");
-assertPathContains(installState.pm2Home, `${path.sep}runtime${path.sep}pm2`, "pm2Home 没有落在私有目录");
-assertPathContains(installState.pm2Command, `${path.sep}runtime${path.sep}npm-global`, "pm2Command 没有落在私有 npm 前缀");
-
-const pm2Process = verifyPm2Process(installState.pm2Command, installState.pm2Home, installState.processName);
-verifyWindowsPm2LaunchMode(pm2Process, installState);
 
 assertTextContains(launchEnv.PATH, "runtime", "launch-env PATH 缺少私有运行时");
 assertTextContains(launchEnv.PATH, "npm-global", "launch-env PATH 缺少私有 npm 前缀");
 
 assertExecutableExists(installState.nodeExe, "node 可执行文件");
-assertExists(installState.codingnsCommand, "codingns 命令");
-assertExists(installState.pm2Command, "pm2 命令");
-
 verifyNodeExecutable(installState.nodeExe);
 verifyInstallLogs(logsRoot);
 verifyInstallOutput(installOutput);
+
+// 服务现在有两条托管链路：统一安装器（默认）和旧的 pm2 流程（回退）。
+// 两条都要能验：有 pm2Command 就是旧的，没有就是统一安装器接的。
+if (installState.pm2Command) {
+  verifyPm2ManagedInstall(installState);
+} else {
+  await verifyUnifiedInstallerInstall({ dataDir, installOutput, unifiedStatePath });
+}
+
 verifyHostAutostartLifecycle(dataDir, installState.nodeExe);
 
 console.log("[windows-replay] Windows 安装回放校验通过。");
+
+function verifyPm2ManagedInstall(installState) {
+  assertPathContains(installState.pm2Home, `${path.sep}runtime${path.sep}pm2`, "pm2Home 没有落在私有目录");
+  assertPathContains(installState.pm2Command, `${path.sep}runtime${path.sep}npm-global`, "pm2Command 没有落在私有 npm 前缀");
+  assertExists(installState.codingnsCommand, "codingns 命令");
+
+  const pm2Process = verifyPm2Process(installState.pm2Command, installState.pm2Home, installState.processName);
+  verifyWindowsPm2LaunchMode(pm2Process, installState);
+
+  console.log("[windows-replay] 本次回放走的是 pm2 托管链路。");
+}
+
+/**
+ * 统一安装器接管服务之后的校验。
+ * pm2 不再是服务管理者，改验安装器自己的状态、启动包装文件，以及服务真的能被访问。
+ */
+async function verifyUnifiedInstallerInstall({ dataDir, installOutput, unifiedStatePath }) {
+  assertTextContains(installOutput, "服务已经交给统一安装器管理", "安装输出没有说明服务已交给统一安装器");
+  assertExists(unifiedStatePath, "统一安装器的 install-state.json");
+
+  const unifiedState = JSON.parse(fs.readFileSync(unifiedStatePath, "utf8"));
+
+  assertEqual(unifiedState.packageName, "@jingyi0605/codingns", "统一安装器记录的包名不对");
+  assertExecutableExists(unifiedState.nodeBinary, "统一安装器记录的 node");
+  assertExists(path.join(unifiedState.packageRoot ?? "", "bin", "codingns.mjs"), "统一安装器记录的 CLI 入口");
+
+  if (!Number.isFinite(unifiedState.port) || unifiedState.port <= 0) {
+    throw new Error(`统一安装器记录的端口不对：${unifiedState.port ?? "unknown"}`);
+  }
+
+  if (unifiedState.autostartEnabled) {
+    assertExists(unifiedState.autostartPath, "开机自启文件");
+  }
+
+  const launcherDirectory = path.join(dataDir, "runtime", "autostart");
+
+  if (fs.existsSync(launcherDirectory)) {
+    assertExists(path.join(launcherDirectory, "codingns-host-launcher.vbs"), "启动包装 VBS");
+    assertExists(path.join(launcherDirectory, "codingns-host-launcher.cmd"), "启动包装批处理");
+  }
+
+  const serviceLogPath = path.join(dataDir, "runtime", "logs", "host-service.log");
+  console.log(`[windows-replay] 服务日志：${fs.existsSync(serviceLogPath) ? serviceLogPath : "本次没有走启动包装，日志文件未生成"}`);
+
+  await verifyHostHealth(unifiedState.port);
+
+  console.log(
+    `[windows-replay] 统一安装器接管服务：端口 ${unifiedState.port}，自启 ${unifiedState.autostartEnabled ? unifiedState.autostartKind || "已启用" : "未启用"}`
+  );
+}
+
+async function verifyHostHealth(port, timeoutMs = 30_000) {
+  const url = `http://127.0.0.1:${port}/api/public/bootstrap-status`;
+  const deadline = Date.now() + timeoutMs;
+  let lastFailure = "unknown";
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+
+      if (response.ok) {
+        return;
+      }
+
+      lastFailure = `HTTP ${response.status}`;
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.message : String(error);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw new Error(`统一安装器装完，但服务没有响应：${url}（${lastFailure}）`);
+}
 
 function verifyHostAutostartLifecycle(dataDir, nodeExe) {
   if (process.platform !== "win32") {
@@ -65,8 +141,8 @@ function verifyHostAutostartLifecycle(dataDir, nodeExe) {
   }
 
   if (!queryScheduledTask(taskName)) {
-    // 统一安装器没跑通时会回退到旧的 pm2 链路，那时不会有计划任务。
-    console.log("[windows-replay] 没有检测到 CodingNS Host 计划任务，本次回放走的是旧链路。");
+    // 装的时候没启用自启、或者自启退到了启动文件夹，这两种情况都不会有计划任务。
+    console.log("[windows-replay] 没有检测到 CodingNS Host 计划任务，跳过自启清理校验。");
     return;
   }
 

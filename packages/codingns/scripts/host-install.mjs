@@ -895,6 +895,8 @@ function activateStartupFolderAutostart(context, logger, options = {}) {
   const filePath = resolveWindowsStartupFilePath(homeDir);
 
   try {
+    // 启动文件夹里只是包装的副本，真正干活的批处理得先在数据目录里就位。
+    ensureWindowsHostLauncher(context, logger);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, buildWindowsLauncherVbs(context), "utf8");
   } catch (error) {
@@ -917,6 +919,14 @@ function runShellCommand(file, args, logger) {
 }
 
 export function prepareAutostart(platform, context, logger, options = {}) {
+  // Windows 的包装是「VBS + 批处理」一对，缺了批处理自启就起不来，统一走同一个写入函数。
+  if (platform === "win32") {
+    const filePath = ensureWindowsHostLauncher(context, logger);
+    const { kind } = resolveAutostartPaths(platform, context, options);
+
+    return { kind, filePath };
+  }
+
   const { kind, filePath } = resolveAutostartPaths(platform, context, options);
   const content = buildAutostartFileContent(platform, context);
 
