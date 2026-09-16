@@ -22232,6 +22232,40 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   gap: 8px;
 }
 
+/* 「管理启用的 Agent」是标题右侧的文字入口：跟标题同一档字号，默认透明，不占按钮高度。 */
+.mobile-sheet .session-provider-picker-title-row .session-provider-manage-trigger,
+.workbench-modal-layer .workbench-modal-card .session-provider-picker-title-row .session-provider-manage-trigger {
+  min-height: 0;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.mobile-sheet .session-provider-picker-title-row .session-provider-manage-trigger:hover:not(:disabled),
+.workbench-modal-layer .workbench-modal-card .session-provider-picker-title-row .session-provider-manage-trigger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.mobile-sheet .session-provider-picker-title-row .session-provider-manage-trigger:active:not(:disabled),
+.workbench-modal-layer .workbench-modal-card .session-provider-picker-title-row .session-provider-manage-trigger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+/* 管理模式开着的时候按钮要看得出来还按着，不能只靠 hover。 */
+.mobile-sheet .session-provider-picker-title-row .session-provider-manage-trigger[aria-pressed="true"],
+.workbench-modal-layer .workbench-modal-card .session-provider-picker-title-row .session-provider-manage-trigger[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
 /* 新建会话弹窗里的引导提示，默认一直显示，用户点掉 X 之后才不再出现。 */
 .session-provider-manage-hint {
   display: flex;
