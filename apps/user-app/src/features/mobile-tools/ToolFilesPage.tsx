@@ -31,11 +31,5 @@ export function ToolFilesPage() {
     ? buildWorkspaceSessionPath(currentWorkspaceId, currentSessionInWorkspace.sessionId)
     : buildWorkspaceSessionIndexPath(currentWorkspaceId);
 
-  return (
-    <Navigate
-      to={`${targetPath}?toolPanel=files`}
-      replace
-      state={{ mobileToolPanelRouteRedirect: true }}
-    />
-  );
+  return <Navigate to={`${targetPath}?toolPanel=files`} replace />;
 }

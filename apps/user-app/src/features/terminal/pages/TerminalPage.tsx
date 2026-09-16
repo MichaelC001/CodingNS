@@ -31,6 +31,7 @@ import {
 } from "../../../shared/cache/view-snapshot-cache";
 import { useHaptics } from "../../../shared/haptics";
 import { t } from "../../../shared/i18n";
+import { useMobileBackOverlay } from "../../../shared/mobile-back-overlay";
 import { useToast } from "../../../shared/toast";
 import {
   buildScopedSnapshotKey,
@@ -2925,6 +2926,8 @@ function MobileTerminalQuickDrawer({
 }) {
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const [actionTerminalId, setActionTerminalId] = useState<string | null>(null);
+  // 抽屉打开时先关抽屉，不让系统返回直接退页面。
+  useMobileBackOverlay(open, onClose);
   const pinnedTerminals = terminals.filter((terminal) => pinnedTerminalIds.has(terminal.id));
   const otherTerminals = terminals.filter((terminal) => !pinnedTerminalIds.has(terminal.id));
   const actionTerminal = terminals.find((terminal) => terminal.id === actionTerminalId) ?? null;

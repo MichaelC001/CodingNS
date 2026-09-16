@@ -85,6 +85,7 @@ import { readViewSnapshot, writeViewSnapshot } from "../../../shared/cache/view-
 import type { TerminalDto } from "../../terminal/api/terminal-api";
 import { logPerfDebug } from "../../../shared/debug/perf-debug";
 import { t } from "../../../shared/i18n";
+import { useMobileBackOverlay } from "../../../shared/mobile-back-overlay";
 import { useTheme } from "../../../shared/theme/theme";
 import { useToast } from "../../../shared/toast";
 import { authStore } from "../../auth/store/auth-store";
@@ -18549,6 +18550,9 @@ export function MobileNavDrawer({
   className?: string;
   overlayClassName?: string;
 }) {
+  // 抽屉打开时先关抽屉，不让系统返回直接退页面。
+  useMobileBackOverlay(isOpen, onClose);
+
   if (!isOpen) {
     return null;
   }

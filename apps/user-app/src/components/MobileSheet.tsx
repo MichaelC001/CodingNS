@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { useId, type ReactNode } from "react";
 
+import { useMobileBackOverlay } from "../shared/mobile-back-overlay";
 import { t } from "../shared/i18n";
 
 export type MobileSheetHeightPreset = "auto" | "half" | "three-quarter" | "full";
@@ -48,6 +49,9 @@ export function MobileSheet({
   const titleId = useId();
   const descriptionId = useId();
   const canCloseOnBackdrop = dismissible && closeOnBackdrop;
+
+  // 弹层打开时先关弹层，不让系统返回直接退页面。
+  useMobileBackOverlay(open && dismissible, onClose);
 
   if (!open || typeof document === "undefined") {
     return null;
