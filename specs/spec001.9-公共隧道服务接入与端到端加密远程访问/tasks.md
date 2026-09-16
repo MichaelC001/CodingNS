@@ -432,7 +432,7 @@
     - 没有提供任何绕过开关（代码里没有对应的配置项）
 
 - [x] W2.3 展示当前链路类型
-  - 状态：DONE（组件与文案层已验证；真实链路上是否会切到「经中继」还需要端到端补一次手工确认）
+  - 状态：DONE（组件与文案层已验证；真实中继链路上也确认过会切到「经中继」）
   - 这一步到底做什么：识别当前是 P2P 直连还是 TURN 中继，并在设置页和连接状态处展示
   - 做完以后能看到什么结果：用户知道自己现在走的是哪条路
   - 依赖什么：W2.1
@@ -456,7 +456,10 @@
     - i18n 中英文字典都补齐了本次新增键，并有测试逐键断言存在；
       用户看到的是「直连 / 经中继」（英文 Direct / Relayed），不是 ICE 术语
     - 面板只新增布局与分割线样式，按钮、输入框、文字色沿用设置页现有基线
-    - 待补：真实链路上手工确认一次「经中继」显示（需要可用的本地账号 + Host 侧接入进程）
+    - **真实中继链路上已确认（2026-09-16）**：在 `CODINGNS_PROXY_FORCE_TURN_BY_DEFAULT=true`
+      的隔离控制面 + 本机 coturn 下跑真实端到端，客户端上报 `transportKind=relay`，
+      界面显示「经中继」而不是「直连」。也就是说这条判定在本机直连与真实中继两种链路下都验过了，
+      不再只是组件测试里的构造场景
 
 ---
 
@@ -527,9 +530,24 @@
       - 又踩到一个坑并写进文档：**coturn 默认拒绝回环对端**，这跟 `denied-peer-ip` 是两回事。
         注掉 `denied-peer-ip=127.0.0.0/8` 之后 `CREATE_PERMISSION` / `CHANNEL_BIND` 照样回
         `403 Forbidden IP`，本机回环自测必须额外加 `allow-loopback-peers`（**生产绝对不能开**）
+    - **强制 relay 下的完整真实链路也已跑通（2026-09-16，本机 coturn）**：
+      起了一个 `CODINGNS_PROXY_FORCE_TURN_BY_DEFAULT=true` 的隔离控制面（18094）+ 本机 coturn，
+      跑 user-app 的真实端到端脚本（客户端用的是真实 `ManagedWebRtcTunnelHostTransport`，
+      对端是真实 Host 接入子进程）→ **9/9 全部通过**：
+      - 客户端通过 DataChannel 拿到真实业务响应
+      - **1 MB 请求体分片上传**，Host 侧收到 1048576 字节
+      - **120 KB WebSocket 大消息**往返一致
+      - **`transportKind=relay`**——客户端在真实中继链路上正确识别出「经中继」
+        （这条同时把 W2.3 那个「真实链路上会不会切到经中继」的悬空点补掉了）
+      - 指纹被改后拒绝连接、会话用量有上下行字节
+      旁证：coturn 日志里能看到本次运行的账号（`acct_c26005b942e4`）在对应时刻
+      `allocation new`，说明中继确实被用上了，不是「其实走了直连」。
+      复跑命令：`CONTROL_BASE_URL=<带 TURN 的控制面> ADMIN_EMAIL=… ADMIN_PASSWORD=… pnpm exec tsx scripts/relay-tunnel-webrtc-client-e2e.mts`
   - 待完成（需要在目标机器上执行）：
     - 在正式服务器上装 coturn、替换模板占位符、放行 3478/udp+tcp 与 49152-65535/udp
-    - 部署后先跑 `pnpm verify:turn`，再用 `iceTransportPolicy: "relay"` 实测一次真实跨网连接
+    - 部署后先跑 `pnpm verify:turn`
+    - **跨网（不是本机回环）强制 relay 实测一次**：本机已经证明「强制 relay 这条链路本身是通的」，
+      但跨 NAT、真实公网 IP、`external-ip` 这些只有到真实网络才验得到
     - 抓包确认 TURN 上只有 DTLS 密文
   - 备注：按账号粒度的 TURN 开关还没做，目前只有全局开关，等 W5 订阅模型落地后一起补。
 
