@@ -13,7 +13,8 @@
     "scripts/claude-hook-bridge.cjs",
     "scripts/codex-runtime-layout.mjs",
     "scripts/postinstall.mjs",
-    "node_modules/@codingns/session-sync-core"
+    "node_modules/@codingns/session-sync-core",
+    "node_modules/@codingns/relay-tunnel-wire"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -33,6 +34,7 @@
   },
   "dependencies": {
     "@codingns/session-sync-core": "workspace:*",
+    "@codingns/relay-tunnel-wire": "workspace:*",
     "@jackwener/opencli": "1.7.7",
     "@openai/codex": "0.147.0",
     "@openai/codex-sdk": "0.147.0",

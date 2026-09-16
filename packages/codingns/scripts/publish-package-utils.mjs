@@ -2,6 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const SESSION_SYNC_CORE_PACKAGE_NAME = "@codingns/session-sync-core";
+/**
+ * DataChannel 帧格式包（spec001.9 WebRTC 承载层）。
+ *
+ * 和 session-sync-core 一样是 private 的工作区包，**必须列进 bundleDependencies**：
+ * 否则 npm 打包会把它当普通依赖去 registry 找，而 registry 上根本没有这个包，
+ * 发出去的产物装完就是 ERR_MODULE_NOT_FOUND，Host 直接起不来。
+ */
+export const RELAY_TUNNEL_WIRE_PACKAGE_NAME = "@codingns/relay-tunnel-wire";
 export const NODE_PTY_PACKAGE_NAME = "@lydell/node-pty";
 export const SQLITE_PACKAGE_NAME = "libsql";
 
@@ -106,7 +114,8 @@ export function rewritePackageJsonForPublish(originalPackageJson, workspacePacka
 
   publishPackageJson.bundleDependencies = Array.from(new Set([
     ...(publishPackageJson.bundleDependencies ?? []),
-    SESSION_SYNC_CORE_PACKAGE_NAME
+    SESSION_SYNC_CORE_PACKAGE_NAME,
+    RELAY_TUNNEL_WIRE_PACKAGE_NAME
   ]));
 
   publishPackageJson.dependencies = {

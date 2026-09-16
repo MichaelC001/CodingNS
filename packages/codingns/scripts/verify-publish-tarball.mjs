@@ -20,8 +20,22 @@ const bundledSessionSyncPackageJson = tarEntries.has(bundledSessionSyncPath)
   ? readTarballJson(tarEntries, bundledSessionSyncPath)
   : null;
 
+// spec001.9：Host 启动时会静态 import 用到它的 WebRTC 适配器，
+// 这个包没打进去的话，装完 Host 直接 ERR_MODULE_NOT_FOUND 起不来。
+const bundledRelayTunnelWirePath = "package/node_modules/@codingns/relay-tunnel-wire/package.json";
+const bundledRelayTunnelWirePackageJson = tarEntries.has(bundledRelayTunnelWirePath)
+  ? readTarballJson(tarEntries, bundledRelayTunnelWirePath)
+  : null;
+
 if (!Array.isArray(packageJson.bundleDependencies) || !packageJson.bundleDependencies.includes("@codingns/session-sync-core")) {
   problems.push("发布包 package.json 缺少 bundleDependencies.@codingns/session-sync-core");
+}
+
+if (
+  !Array.isArray(packageJson.bundleDependencies)
+  || !packageJson.bundleDependencies.includes("@codingns/relay-tunnel-wire")
+) {
+  problems.push("发布包 package.json 缺少 bundleDependencies.@codingns/relay-tunnel-wire");
 }
 
 if (packageJson.optionalDependencies?.["@lydell/node-pty"] !== "^1.1.0") {
@@ -52,6 +66,21 @@ if (!tarEntries.has(bundledSessionSyncPath)) {
   packageJson.dependencies?.["@codingns/session-sync-core"] !== bundledSessionSyncPackageJson.version
 ) {
   problems.push("发布包 package.json 没把 @codingns/session-sync-core 改写成 bundled 实际版本号");
+}
+
+if (!tarEntries.has(bundledRelayTunnelWirePath)) {
+  problems.push("发布包缺少打进去的 @codingns/relay-tunnel-wire 实体目录");
+} else if (
+  typeof bundledRelayTunnelWirePackageJson?.version !== "string" ||
+  packageJson.dependencies?.["@codingns/relay-tunnel-wire"] !== bundledRelayTunnelWirePackageJson.version
+) {
+  problems.push("发布包 package.json 没把 @codingns/relay-tunnel-wire 改写成 bundled 实际版本号");
+}
+
+// 光有 package.json 不够：Host 运行时按 exports 的 import 条件解析到 dist/index.js，
+// dist 没打进去照样起不来。
+if (!tarEntries.has("package/node_modules/@codingns/relay-tunnel-wire/dist/index.js")) {
+  problems.push("发布包缺少 @codingns/relay-tunnel-wire/dist/index.js（Host 运行时真正加载的文件）");
 }
 
 for (const entry of tarEntries.keys()) {

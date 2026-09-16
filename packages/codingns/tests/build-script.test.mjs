@@ -62,7 +62,11 @@ test("rewritePackageJsonForPublish 会改写 workspace 依赖并补齐 bundle �
   );
 
   assert.equal(rewritten.dependencies["@codingns/session-sync-core"], "0.1.0");
-  assert.deepEqual(rewritten.bundleDependencies, ["@codingns/session-sync-core"]);
+  assert.equal(rewritten.dependencies["@codingns/relay-tunnel-wire"], "0.1.0");
+  assert.deepEqual(rewritten.bundleDependencies, [
+    "@codingns/session-sync-core",
+    "@codingns/relay-tunnel-wire"
+  ]);
   assert.deepEqual(rewritten.optionalDependencies, {
     "@lydell/node-pty": "^1.1.0",
     libsql: "^0.5.29"

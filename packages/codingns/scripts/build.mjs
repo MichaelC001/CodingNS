@@ -13,6 +13,18 @@ const bundledSessionSyncRoot = path.join(
   "@codingns",
   "session-sync-core"
 );
+/**
+ * DataChannel 帧格式包。
+ *
+ * Host 启动时会静态 import 用到它的 WebRTC 适配器，所以它必须跟包一起发出去，
+ * 否则装完启动就是 ERR_MODULE_NOT_FOUND，整个 Host 起不来。
+ */
+const bundledRelayTunnelWireRoot = path.join(
+  packageRoot,
+  "node_modules",
+  "@codingns",
+  "relay-tunnel-wire"
+);
 const bundledOpenAiRoot = path.join(packageRoot, "node_modules", "@openai");
 
 if (isExecutedAsScript()) {
@@ -23,6 +35,7 @@ function main() {
   buildWorkspaceTargets();
   prepareOutputDirectory();
   bundleSessionSyncCore();
+  bundleRelayTunnelWire();
   removeLegacyBundledOpenAiPackages();
 
   console.info("[codingns] 独立构建完成");
@@ -34,6 +47,15 @@ function buildWorkspaceTargets() {
     force: true
   });
   runPnpm(["--dir", path.join(workspaceRoot, "packages", "session-sync-core"), "build"]);
+
+  // 必须排在 host / user-app 前面：这两边都按 exports 里的 import 条件
+  // 解析到 dist/index.js，dist 不存在就会构建失败。
+  fs.rmSync(path.join(workspaceRoot, "packages", "relay-tunnel-wire", "dist"), {
+    recursive: true,
+    force: true
+  });
+  runPnpm(["--dir", path.join(workspaceRoot, "packages", "relay-tunnel-wire"), "build"]);
+
   runPnpm(["--dir", path.join(workspaceRoot, "apps", "user-app"), "build"]);
   runPnpm(["--dir", path.join(workspaceRoot, "apps", "host"), "build"]);
 }
@@ -75,6 +97,20 @@ function bundleSessionSyncCore() {
   fs.mkdirSync(bundledSessionSyncRoot, { recursive: true });
   fs.cpSync(distRoot, path.join(bundledSessionSyncRoot, "dist"), { recursive: true });
   fs.copyFileSync(packageJsonPath, path.join(bundledSessionSyncRoot, "package.json"));
+}
+
+/** 打包 DataChannel 帧格式包，做法和 session-sync-core 完全一致。 */
+function bundleRelayTunnelWire() {
+  const sourceRoot = path.join(workspaceRoot, "packages", "relay-tunnel-wire");
+  const distRoot = path.join(sourceRoot, "dist");
+  const packageJsonPath = path.join(sourceRoot, "package.json");
+
+  ensureDirectoryExists(distRoot, "relay-tunnel-wire 构建产物");
+
+  fs.rmSync(bundledRelayTunnelWireRoot, { recursive: true, force: true });
+  fs.mkdirSync(bundledRelayTunnelWireRoot, { recursive: true });
+  fs.cpSync(distRoot, path.join(bundledRelayTunnelWireRoot, "dist"), { recursive: true });
+  fs.copyFileSync(packageJsonPath, path.join(bundledRelayTunnelWireRoot, "package.json"));
 }
 
 function removeLegacyBundledOpenAiPackages() {

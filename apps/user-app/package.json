@@ -7,8 +7,11 @@
   },
   "scripts": {
     "dev": "vite",
+    "predev": "pnpm --dir ../../packages/relay-tunnel-wire build",
     "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build",
+    "prebuild": "pnpm --dir ../../packages/relay-tunnel-wire build",
     "test": "node scripts/run-vitest.mjs",
+    "pretest": "pnpm --dir ../../packages/relay-tunnel-wire build",
     "tauri:dev": "tauri dev",
     "tauri:build": "bash ../../scripts/build-user-app-macos.sh",
     "tauri:build:raw": "tauri build",
@@ -19,6 +22,7 @@
     "test:changed": "vitest --changed"
   },
   "dependencies": {
+    "@codingns/relay-tunnel-wire": "workspace:*",
     "@tanstack/react-virtual": "^3.14.9",
     "@tauri-apps/api": "^2.10.1",
     "@xterm/addon-fit": "^0.11.0",
