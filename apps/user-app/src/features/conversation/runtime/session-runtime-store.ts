@@ -99,10 +99,10 @@ const SESSION_RUNTIME_MESSAGE_FLUSH_DELAY_MS = 16;
 const SESSION_RUNTIME_SNAPSHOT_PERSIST_DELAY_MS = 1_000;
 const TIMELINE_CODEX_EQUIVALENT_AUTHORITATIVE_WINDOW_MS = 2 * 60 * 1000;
 const TIMELINE_CODEX_EQUIVALENT_AUTHORITATIVE_SEQUENCE_WINDOW = 8;
-// 用户消息会同时从运行时事件和权威历史回流，两边的 rawRef 命名空间不同
+// 同一条消息会同时从运行时事件和权威历史回流，两边的 rawRef 命名空间不同
 // （例如运行时 `.../message/<id>/part/<part>?part=1`、历史侧不带查询参数）。
-// 这里按内容和时间窗兜底，避免同一条用户消息在时间线上出现两次。
-const TIMELINE_EQUIVALENT_USER_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
+// 这里按内容和时间窗兜底，避免同一条消息在时间线上出现两次。
+const TIMELINE_DUPLICATE_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
 const TIMELINE_INTERNAL_ATTACHMENT_DEBUG_BLOCK_PATTERN =
   /\[\[CODINGNS_IMAGE_ATTACHMENTS\]\][\s\S]*?\[\[\/CODINGNS_IMAGE_ATTACHMENTS\]\]/g;
 const TIMELINE_INTERNAL_ATTACHMENT_DEBUG_TAIL_PATTERN =
@@ -3788,23 +3788,36 @@ function deriveTimelineMessages(
     merged = insertPendingMessage(merged, pending);
   }
 
-  return collapseDuplicateTimelineUserMessages(
+  return collapseDuplicateTimelineMessages(
     pinActiveRuntimeLiveMessagesToTail(
       merged,
       timeline.authoritativeMessages,
       timeline.runtimeOverlayMessages,
       timeline.activeRuntimeOverlayKeys
-    )
+    ),
+    collectActiveRuntimeOverlayMessageIds(timeline)
+  );
+}
+
+function collectActiveRuntimeOverlayMessageIds(timeline: TimelineLayersState): Set<string> {
+  const activeKeys = new Set(timeline.activeRuntimeOverlayKeys);
+
+  return new Set(
+    timeline.runtimeOverlayMessages
+      .filter((message) => activeKeys.has(buildRuntimeOverlayKey(message)))
+      .map((message) => message.id)
   );
 }
 
 /**
- * 同一条用户消息可能同时以 pending、runtime 回放、权威历史三种身份进入时间线，
+ * 同一条消息可能同时以 pending、runtime 回放、权威历史三种身份进入时间线，
  * 各 provider 的 rawRef 命名空间又不一样，逐层比对总会漏。
- * 这里在渲染前做最后一次兜底：相邻且文案一致的重复用户消息只显示一条。
+ * 这里在渲染前做最后一次兜底：相邻且文案一致的用户/助手消息只显示一条。
+ * 工具卡片不做这层合并，它们有自己的 rawRef 归并规则。
  */
-function collapseDuplicateTimelineUserMessages(
-  messages: SessionMessageViewModel[]
+function collapseDuplicateTimelineMessages(
+  messages: SessionMessageViewModel[],
+  activeOverlayMessageIds: Set<string>
 ): SessionMessageViewModel[] {
   if (messages.length < 2) {
     return messages;
@@ -3815,8 +3828,12 @@ function collapseDuplicateTimelineUserMessages(
   for (const message of messages) {
     const previous = collapsed.at(-1);
 
-    if (previous && isDuplicateTimelineUserMessagePair(previous, message)) {
-      collapsed[collapsed.length - 1] = pickPreferredTimelineUserMessage(previous, message);
+    if (previous && isDuplicateTimelineMessagePair(previous, message)) {
+      collapsed[collapsed.length - 1] = pickPreferredTimelineDuplicateMessage(
+        previous,
+        message,
+        activeOverlayMessageIds
+      );
       continue;
     }
 
@@ -3826,16 +3843,15 @@ function collapseDuplicateTimelineUserMessages(
   return collapsed.length === messages.length ? messages : collapsed;
 }
 
-function isDuplicateTimelineUserMessagePair(
+function isDuplicateTimelineMessagePair(
   previous: SessionMessageViewModel,
   incoming: SessionMessageViewModel
 ): boolean {
-  if (!isTimelineUserTextMessage(previous) || !isTimelineUserTextMessage(incoming)) {
+  if (!isCollapsibleTimelineDuplicateMessage(previous) || !isCollapsibleTimelineDuplicateMessage(incoming)) {
     return false;
   }
 
-  // 发送失败的重试要保留两份，方便用户看到哪条没发出去。
-  if (previous.deliveryState === "failed" || incoming.deliveryState === "failed") {
+  if (previous.role !== incoming.role || previous.kind !== incoming.kind) {
     return false;
   }
 
@@ -3845,6 +3861,12 @@ function isDuplicateTimelineUserMessagePair(
     && incoming.rawRef.startsWith("pending://")
     && previous.clientRequestId !== incoming.clientRequestId
   ) {
+    return false;
+  }
+
+  // Codex 的行号是稳定身份：同一个会话文件里行号不同就是模型真的输出了两条，
+  // 即使文案一样也不能折叠。
+  if (isDistinctCodexSourceRecordPair(previous, incoming)) {
     return false;
   }
 
@@ -3858,13 +3880,68 @@ function isDuplicateTimelineUserMessagePair(
     toTimelineBridgeTimestampMs(previous.timestamp) - toTimelineBridgeTimestampMs(incoming.timestamp)
   );
 
-  return timestampDistance <= TIMELINE_EQUIVALENT_USER_MESSAGE_WINDOW_MS;
+  return timestampDistance <= TIMELINE_DUPLICATE_MESSAGE_WINDOW_MS;
 }
 
-function pickPreferredTimelineUserMessage(
+/**
+ * 只有正文/思考这类纯文本消息参与兜底合并：工具卡片有自己的 rawRef 归并规则。
+ * 发送失败的消息也不合并，重试后要让用户看到哪条没发出去。
+ */
+function isCollapsibleTimelineDuplicateMessage(message: SessionMessageViewModel): boolean {
+  return (
+    message.toolCall === null
+    && message.deliveryState !== "failed"
+    && (message.role === "user" || message.role === "assistant")
+    && (message.kind === "text" || message.kind === "thinking")
+  );
+}
+
+function isDistinctCodexSourceRecordPair(
   previous: SessionMessageViewModel,
   incoming: SessionMessageViewModel
+): boolean {
+  if (!previous.rawRef.startsWith("codex://") || !incoming.rawRef.startsWith("codex://")) {
+    return false;
+  }
+
+  const previousStore = extractTimelineCodexRawRefStore(previous.rawRef);
+  const incomingStore = extractTimelineCodexRawRefStore(incoming.rawRef);
+
+  if (!previousStore || previousStore !== incomingStore) {
+    return false;
+  }
+
+  const previousLine = extractTimelineCodexRawRefLine(previous.rawRef);
+  const incomingLine = extractTimelineCodexRawRefLine(incoming.rawRef);
+
+  return previousLine !== null && incomingLine !== null && previousLine !== incomingLine;
+}
+
+function extractTimelineCodexRawRefLine(rawRef: string): number | null {
+  const match = rawRef.match(/#line=(\d+)/);
+
+  if (!match) {
+    return null;
+  }
+
+  const line = Number.parseInt(match[1], 10);
+
+  return Number.isFinite(line) ? line : null;
+}
+
+function pickPreferredTimelineDuplicateMessage(
+  previous: SessionMessageViewModel,
+  incoming: SessionMessageViewModel,
+  activeOverlayMessageIds: Set<string>
 ): SessionMessageViewModel {
+  const previousIsActiveOverlay = activeOverlayMessageIds.has(previous.id);
+  const incomingIsActiveOverlay = activeOverlayMessageIds.has(incoming.id);
+
+  // 正在流式更新的那条还会继续涨，留着它才不会再冒一个新气泡。
+  if (previousIsActiveOverlay !== incomingIsActiveOverlay) {
+    return previousIsActiveOverlay ? previous : incoming;
+  }
+
   const previousIsPending = isTimelinePendingUserMessage(previous);
   const incomingIsPending = isTimelinePendingUserMessage(incoming);
 
@@ -4588,7 +4665,7 @@ function findMatchingTimelineEquivalentUserMessageId(
       toTimelineBridgeTimestampMs(current.timestamp) - incomingTimestampMs
     );
 
-    if (timestampDistance > TIMELINE_EQUIVALENT_USER_MESSAGE_WINDOW_MS) {
+    if (timestampDistance > TIMELINE_DUPLICATE_MESSAGE_WINDOW_MS) {
       continue;
     }
 
