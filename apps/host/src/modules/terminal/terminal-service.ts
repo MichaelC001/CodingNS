@@ -22,6 +22,7 @@ import type { TerminalInstanceRepository } from "../../storage/repositories/term
 import type { TerminalLogFileRepository } from "../../storage/repositories/terminal-log-file-repository.js";
 import type { TerminalLogSegmentRepository } from "../../storage/repositories/terminal-log-segment-repository.js";
 import type { TerminalRuntimeSessionRepository } from "../../storage/repositories/terminal-runtime-session-repository.js";
+import type { SqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
 import type { WorkspaceService } from "../workspace/workspace-service.js";
 import { resolveWorkspaceCwd } from "./terminal-paths.js";
 import {
@@ -85,9 +86,11 @@ interface TerminalServiceOptions {
   terminalLogRootDir?: string;
   terminalLogFileRepository?: TerminalLogFileRepository;
   terminalLogSegmentRepository?: TerminalLogSegmentRepository;
+  sqliteWriteQueue?: SqliteWriteQueue | null;
 }
 
 const TERMINAL_ACTIVITY_FLUSH_INTERVAL_MS = 2_000;
+const TERMINAL_ACTIVITY_WRITE_SCOPE = "terminal.activity.touch_last_active_at";
 const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 8;
 const TERMINAL_DETACH_GRACE_PERIOD_MS = 10_000;
 
@@ -134,6 +137,7 @@ export class TerminalService extends EventEmitter {
   private readonly terminalLogFileRepository: TerminalLogFileRepository | null;
   private readonly terminalLogSegmentRepository: TerminalLogSegmentRepository | null;
   private readonly terminalLogFileStore: TerminalLogFileStore | null;
+  private readonly sqliteWriteQueue: SqliteWriteQueue | null;
   private activityFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private isDisposing = false;
 
@@ -149,6 +153,7 @@ export class TerminalService extends EventEmitter {
 
     this.terminalLogFileRepository = options.terminalLogFileRepository ?? null;
     this.terminalLogSegmentRepository = options.terminalLogSegmentRepository ?? null;
+    this.sqliteWriteQueue = options.sqliteWriteQueue ?? null;
     this.terminalLogFileStore = options.terminalLogRootDir
       ? new TerminalLogFileStore(options.terminalLogRootDir)
       : null;
@@ -556,7 +561,7 @@ export class TerminalService extends EventEmitter {
     this.isDisposing = true;
     this.clearPendingDetachTimers();
     this.flushPendingTerminalOutput();
-    this.flushPendingActivity();
+    this.flushPendingActivitySynchronously();
     await this.terminalLogSpooler?.dispose();
     this.runtimeManager.closeAllAttachments();
     await this.runtimeManager.waitForPendingClosures();
@@ -1244,7 +1249,13 @@ export class TerminalService extends EventEmitter {
 
     this.activityFlushTimer = setTimeout(() => {
       this.activityFlushTimer = null;
-      this.flushPendingActivity();
+
+      // 终端活动时间戳是展示用数据，任何写库失败都不允许从这里逃逸成 uncaughtException。
+      try {
+        this.flushPendingActivity();
+      } catch (error) {
+        this.reportActivityWriteFailure(error, null);
+      }
     }, TERMINAL_ACTIVITY_FLUSH_INTERVAL_MS);
     this.activityFlushTimer.unref?.();
   }
@@ -1258,7 +1269,7 @@ export class TerminalService extends EventEmitter {
       }
 
       this.pendingActivityByTerminalId.delete(terminalId);
-      this.terminalInstanceRepository.touchLastActiveAt(terminalId, lastActiveAt);
+      this.persistTerminalActivity(new Map([[terminalId, lastActiveAt]]));
       this.clearActivityFlushTimerIfIdle();
       return;
     }
@@ -1268,14 +1279,86 @@ export class TerminalService extends EventEmitter {
       return;
     }
 
-    const entries = [...this.pendingActivityByTerminalId.entries()];
+    const entries = new Map(this.pendingActivityByTerminalId);
     this.pendingActivityByTerminalId.clear();
+    this.persistTerminalActivity(entries);
+    this.clearActivityFlushTimerIfIdle();
+  }
 
-    for (const [nextTerminalId, lastActiveAt] of entries) {
-      this.terminalInstanceRepository.touchLastActiveAt(nextTerminalId, lastActiveAt);
+  /**
+   * 写入走统一写队列：队列会在 SQLITE_BUSY 一类瞬时错误上重开一次写入，
+   * 这正是 WAL 快照过期（SQLITE_BUSY_SNAPSHOT）需要的处理方式。
+   */
+  private persistTerminalActivity(entries: Map<string, string>): void {
+    if (entries.size === 0) {
+      return;
     }
 
-    this.clearActivityFlushTimerIfIdle();
+    const write = () => {
+      for (const [nextTerminalId, lastActiveAt] of entries) {
+        this.terminalInstanceRepository.touchLastActiveAt(nextTerminalId, lastActiveAt);
+      }
+    };
+
+    if (!this.sqliteWriteQueue) {
+      try {
+        write();
+      } catch (error) {
+        this.requeueTerminalActivity(entries);
+        this.reportActivityWriteFailure(error, entries);
+      }
+      return;
+    }
+
+    void this.sqliteWriteQueue.enqueue(TERMINAL_ACTIVITY_WRITE_SCOPE, write).catch((error) => {
+      this.requeueTerminalActivity(entries);
+      this.reportActivityWriteFailure(error, entries);
+    });
+  }
+
+  /** 写失败时把时间戳放回待写表，交给下一次 flush 重试，只保留更新过的值。 */
+  private requeueTerminalActivity(entries: Map<string, string>): void {
+    if (this.isDisposing) {
+      return;
+    }
+
+    for (const [nextTerminalId, lastActiveAt] of entries) {
+      const pending = this.pendingActivityByTerminalId.get(nextTerminalId);
+
+      if (pending === undefined || pending < lastActiveAt) {
+        this.pendingActivityByTerminalId.set(nextTerminalId, lastActiveAt);
+      }
+    }
+
+    if (this.pendingActivityByTerminalId.size > 0) {
+      this.scheduleActivityFlush();
+    }
+  }
+
+  private reportActivityWriteFailure(error: unknown, entries: Map<string, string> | null): void {
+    console.warn("[terminal.activity] 刷新终端活动时间失败", {
+      terminalCount: entries?.size ?? 0,
+      code: error && typeof error === "object" && "code" in error ? error.code : null,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+
+  /** 进程退出路径：队列里的异步重试已经来不及跑，这里同步尽力写一次。 */
+  private flushPendingActivitySynchronously(): void {
+    if (this.pendingActivityByTerminalId.size === 0) {
+      return;
+    }
+
+    const entries = new Map(this.pendingActivityByTerminalId);
+    this.pendingActivityByTerminalId.clear();
+
+    try {
+      for (const [nextTerminalId, lastActiveAt] of entries) {
+        this.terminalInstanceRepository.touchLastActiveAt(nextTerminalId, lastActiveAt);
+      }
+    } catch (error) {
+      this.reportActivityWriteFailure(error, entries);
+    }
   }
 
   private clearActivityFlushTimerIfIdle(): void {

@@ -1455,7 +1455,8 @@ export function createServer(config: HostConfig) {
       databasePath: config.databasePath,
       terminalLogRootDir: path.join(path.dirname(config.databasePath), "terminal-logs"),
       terminalLogFileRepository: repositories.terminalLogFileRepository,
-      terminalLogSegmentRepository: repositories.terminalLogSegmentRepository
+      terminalLogSegmentRepository: repositories.terminalLogSegmentRepository,
+      sqliteWriteQueue: database.writeQueue
     }
   );
   const commandTemplateService = new CommandTemplateService(
