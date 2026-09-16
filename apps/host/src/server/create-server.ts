@@ -735,7 +735,7 @@ export function createServer(config: HostConfig) {
     },
     taskManager,
     // WebRTC 承载层：主进程只做编排，werift PeerConnection 全部跑在独立接入进程里。
-    // 老的 WSS 盲中继实现 `RelayTunnelRuntimeEdgeAdapter` 先留着，等 W6.2 整体下线。
+    // 老的 WSS 盲中继适配器已随 W6.1 删除，承载层现在只有这一条路。
     new RelayTunnelWebrtcRuntimeAdapter(
       repositories.instanceRelayTunnelIdentityRepository,
       repositories.instanceRelayTunnelRepository,

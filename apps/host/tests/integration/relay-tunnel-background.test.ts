@@ -8,7 +8,7 @@ import {
   RelayTunnelService,
   type RelayTunnelRuntimeAdapter
 } from "../../src/modules/relay-tunnel/relay-tunnel-service.js";
-import { RelayTunnelRuntimeHttpError } from "../../src/modules/relay-tunnel/relay-tunnel-runtime-adapter.js";
+import { RelayTunnelRuntimeHttpError } from "../../src/modules/relay-tunnel/relay-tunnel-runtime-error.js";
 import { createTaskManager } from "../../src/modules/tasks/task-manager.js";
 import { HOST_TASK_TYPES } from "../../src/modules/tasks/task-types.js";
 import type {

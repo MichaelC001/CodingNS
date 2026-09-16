@@ -3,8 +3,8 @@
  *
  * 为什么单独一个文件：
  *
- * 这个类型原来住在老的 WSS 适配器 `relay-tunnel-runtime-adapter.ts` 里。
- * 但它是**运行时适配器和 `RelayTunnelService` 之间的契约**，不是老适配器的私货：
+ * 这个类型原来住在老的 WSS 适配器里（那个适配器已随 W6.1 删除）。
+ * 它其实是**运行时适配器和 `RelayTunnelService` 之间的契约**，不是老适配器的私货：
  * 服务靠 `instanceof RelayTunnelRuntimeHttpError` + `errorCode` 判断
  * 「这条绑定在控制站上已经不存在了」，进而把本地绑定状态清回 `unbound`，
  * 让用户能重新绑定。
