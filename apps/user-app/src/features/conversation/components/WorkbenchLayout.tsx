@@ -10794,10 +10794,9 @@ function SidebarContent({
         onClose={() => setCreateSessionWorkspaceId(null)}
       >
         <section className="create-session-modal-section">
-          <div className="create-session-modal-section-header">
-            <strong>{t("shell.createSessionProviderLabel")}</strong>
-          </div>
           <SessionProviderPicker
+            manageable
+            heading={t("shell.createSessionProviderLabel")}
             disabled={Boolean(actionWorkspaceId) || creatingWorktree}
             workspaceId={
               createSessionWorkspace

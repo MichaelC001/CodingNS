@@ -6765,11 +6765,10 @@ function AffairsConversationCreateProviderSection({
 
   return (
     <section className="create-session-modal-section affairs-conversation-create-modal-section">
-      <div className="create-session-modal-section-header">
-        <strong>{title}</strong>
-        <p>{description}</p>
-      </div>
       <SessionProviderPicker
+        manageable
+        heading={title}
+        description={description}
         workspaceId={kind === "agent" ? agentWorkspaceId : null}
         providers={providers}
         onSelect={(provider) => {

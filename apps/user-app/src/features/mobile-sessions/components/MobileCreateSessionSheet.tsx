@@ -296,11 +296,10 @@ export function MobileCreateSessionSheet({
         ) : null}
       </ModalSection>
 
-      <ModalSection
-        className="mobile-create-session-provider-block"
-        heading={t("shell.createSessionProviderLabel")}
-      >
+      <ModalSection className="mobile-create-session-provider-block">
         <SessionProviderPicker
+          manageable
+          heading={t("shell.createSessionProviderLabel")}
           disabled={!selectedWorkspaceId}
           workspaceId={selectedWorkspaceId || null}
           onSelect={(provider) => {
