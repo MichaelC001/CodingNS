@@ -1,3 +1,4 @@
+import { PassThrough } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import { AppError } from "../../shared/errors/app-error.js";
@@ -112,17 +113,18 @@ function requireTextOrAttachments(
 }
 
 /**
- * 流式响应必须直接操作 raw response，但不能用 writeHead 覆盖 Fastify
- * 请求钩子已经写入的响应头（尤其是跨域头）。先设置状态和业务头，再
- * flushHeaders，让浏览器尽早拿到一个完整、可读取的响应头。
+ * 用 Fastify 原生 Readable 响应承载 NDJSON，保留请求钩子和反向代理的
+ * 正常响应生命周期，避免直接 hijack raw socket 导致生产环境连接异常。
  */
-function beginNdjsonStream(reply: FastifyReply): void {
-  reply.hijack();
-  reply.raw.statusCode = 200;
-  reply.raw.setHeader("content-type", "application/x-ndjson; charset=utf-8");
-  reply.raw.setHeader("cache-control", "no-cache, no-transform");
-  reply.raw.setHeader("x-accel-buffering", "no");
-  reply.raw.flushHeaders();
+function beginNdjsonStream(reply: FastifyReply): PassThrough {
+  const stream = new PassThrough();
+  reply
+    .code(200)
+    .header("content-type", "application/x-ndjson; charset=utf-8")
+    .header("cache-control", "no-cache, no-transform")
+    .header("x-accel-buffering", "no")
+    .send(stream);
+  return stream;
 }
 
 
@@ -311,7 +313,7 @@ export class AffairsLightweightSessionController {
       "provider",
       "事务轻量会话必须提供 provider"
     );
-    beginNdjsonStream(reply);
+    const stream = beginNdjsonStream(reply);
     try {
       await this.affairsLightweightSessionService.startSessionStream({
         workspaceId: request.params.workspaceId,
@@ -328,17 +330,19 @@ export class AffairsLightweightSessionController {
         providerPresetId: request.body.providerPresetId?.trim() || null,
         attachments
       }, async (event) => {
-        reply.raw.write(`${JSON.stringify(event)}\n`);
+        if (!stream.destroyed) {
+          stream.write(`${JSON.stringify(event)}\n`);
+        }
       });
     } catch (error) {
-      if (!reply.raw.writableEnded) {
+      if (!stream.destroyed) {
         const detail = error instanceof AppError ? error.message : "轻量会话流式执行失败";
         const errorCode = error instanceof AppError ? error.errorCode : "LIGHTWEIGHT_RUNTIME_FAILED";
-        reply.raw.write(`${JSON.stringify({ type: "error", errorCode, detail })}\n`);
+        stream.write(`${JSON.stringify({ type: "error", errorCode, detail })}\n`);
       }
     } finally {
-      if (!reply.raw.writableEnded) {
-        reply.raw.end();
+      if (!stream.destroyed) {
+        stream.end();
       }
     }
   };
@@ -382,7 +386,7 @@ export class AffairsLightweightSessionController {
       "content",
       "事务轻量会话发送消息必须提供 content 或附件"
     );
-    beginNdjsonStream(reply);
+    const stream = beginNdjsonStream(reply);
     try {
       await this.affairsLightweightSessionService.sendMessageStream({
         workspaceId: request.params.workspaceId,
@@ -397,17 +401,19 @@ export class AffairsLightweightSessionController {
         providerPresetId: request.body.providerPresetId?.trim() || null,
         attachments
       }, async (event) => {
-        reply.raw.write(`${JSON.stringify(event)}\n`);
+        if (!stream.destroyed) {
+          stream.write(`${JSON.stringify(event)}\n`);
+        }
       });
     } catch (error) {
-      if (!reply.raw.writableEnded) {
+      if (!stream.destroyed) {
         const detail = error instanceof AppError ? error.message : "轻量会话流式执行失败";
         const errorCode = error instanceof AppError ? error.errorCode : "LIGHTWEIGHT_RUNTIME_FAILED";
-        reply.raw.write(`${JSON.stringify({ type: "error", errorCode, detail })}\n`);
+        stream.write(`${JSON.stringify({ type: "error", errorCode, detail })}\n`);
       }
     } finally {
-      if (!reply.raw.writableEnded) {
-        reply.raw.end();
+      if (!stream.destroyed) {
+        stream.end();
       }
     }
   };
