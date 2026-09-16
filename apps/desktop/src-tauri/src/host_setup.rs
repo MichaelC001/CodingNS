@@ -245,7 +245,8 @@ fn resolve_data_dir(raw: Option<&str>) -> Result<PathBuf, String> {
         return Err(INVALID_DATA_DIR_ERROR.to_string());
     }
 
-    Ok(path)
+    // 这个目录会一路传给安装器和 node，Windows 上先去掉 `\\?\` 前缀。
+    Ok(crate::node_runtime::to_node_path(&path))
 }
 
 fn resolve_port(raw: Option<u16>) -> Result<u16, String> {

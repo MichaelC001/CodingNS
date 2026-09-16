@@ -13,6 +13,7 @@ import {
   buildWindowsLauncherVbs,
   detectLegacyPm2,
   expandHome,
+  normalizeNodePath,
   parseArgv,
   parsePort,
   readInstallState,
@@ -417,6 +418,30 @@ test("Windows 自启用 VBS 包装，按隐藏窗口方式启动", async () => {
     "命令要用字面引号包住 node 和 CLI 入口"
   );
   assert.match(vbs, /", 0, False/, "0 号窗口模式才能不闪黑窗");
+});
+
+test("交给 node 的路径会去掉 Windows 的 \\\\?\\ 前缀", async () => {
+  assert.equal(
+    normalizeNodePath("\\\\?\\C:\\Users\\demo\\AppData\\Local\\CodingNS\\resources\\host-install.mjs"),
+    "C:\\Users\\demo\\AppData\\Local\\CodingNS\\resources\\host-install.mjs"
+  );
+  assert.equal(normalizeNodePath("\\\\?\\UNC\\server\\share\\host-install.mjs"), "\\\\server\\share\\host-install.mjs");
+  assert.equal(normalizeNodePath("/usr/local/bin/node"), "/usr/local/bin/node");
+});
+
+test("自启文件里的 node 入口不会带 \\\\?\\ 前缀", async () => {
+  const context = createAutostartContext({
+    dataDir: "\\\\?\\C:\\Users\\demo\\.codingns",
+    cliEntryPath: "\\\\?\\C:\\Users\\demo\\.codingns\\runtime\\npm\\node_modules\\@jingyi0605\\codingns\\bin\\codingns.mjs",
+    nodeBinary: "\\\\?\\C:\\Program Files\\nodejs\\node.exe"
+  });
+
+  const vbs = buildWindowsLauncherVbs(context);
+  const plist = buildLaunchAgentPlist(context);
+
+  assert.ok(!vbs.includes("\\\\?\\"), `VBS 里不该出现 \\\\?\\ 前缀：${vbs}`);
+  assert.ok(!plist.includes("\\\\?\\"), `plist 里不该出现 \\\\?\\ 前缀：${plist}`);
+  assert.match(vbs, /shell\.Run """C:\\Program Files\\nodejs\\node\.exe""/);
 });
 
 test("三平台自启路径落在用户目录里", async () => {

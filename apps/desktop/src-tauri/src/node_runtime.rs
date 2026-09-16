@@ -75,6 +75,24 @@ pub fn is_valid_node_version(version: &str) -> bool {
         && parts.next().is_none()
 }
 
+/// Windows 上 Rust 的 canonicalize 会给出 `\\?\` 长路径前缀，Tauri 的 resource_dir 走的正是这条路。
+/// Node 22.20 之后拿到带这个前缀的入口路径会在启动阶段直接崩（EISDIR: lstat 'C:'），
+/// 所以凡是交给 node 的路径，都先去掉前缀。
+pub fn to_node_path(path: &Path) -> PathBuf {
+    PathBuf::from(strip_verbatim_prefix(&path.to_string_lossy()))
+}
+
+fn strip_verbatim_prefix(text: &str) -> String {
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => rest.to_string(),
+        None => text.to_string(),
+    }
+}
+
 fn resolve_data_dir(data_dir: Option<String>) -> Result<PathBuf, String> {
     let raw = data_dir.unwrap_or_default();
     let trimmed = raw.trim();
@@ -87,7 +105,7 @@ fn resolve_data_dir(data_dir: Option<String>) -> Result<PathBuf, String> {
         }
         .ok_or_else(|| "无法确定用户目录".to_string())?;
 
-        return Ok(PathBuf::from(home).join(".codingns"));
+        return Ok(to_node_path(&PathBuf::from(home).join(".codingns")));
     }
 
     let expanded = if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
@@ -107,7 +125,7 @@ fn resolve_data_dir(data_dir: Option<String>) -> Result<PathBuf, String> {
         return Err("数据目录必须是绝对路径".to_string());
     }
 
-    Ok(expanded)
+    Ok(to_node_path(&expanded))
 }
 
 pub fn resolve_private_node_dir(data_dir: &Path) -> PathBuf {
@@ -561,6 +579,32 @@ pub async fn ensure_node_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_windows_verbatim_prefix_for_node() {
+        // Tauri 的 resource_dir 在 Windows 上给的是 `\\?\C:\...`，
+        // Node 22.20 之后会拿这种入口路径直接崩，所以必须去掉前缀。
+        assert_eq!(
+            to_node_path(Path::new(r"\\?\C:\Users\demo\AppData\Local\CodingNS\resources\host-install.mjs")),
+            PathBuf::from(r"C:\Users\demo\AppData\Local\CodingNS\resources\host-install.mjs")
+        );
+        assert_eq!(
+            to_node_path(Path::new(r"\\?\UNC\server\share\host-install.mjs")),
+            PathBuf::from(r"\\server\share\host-install.mjs")
+        );
+    }
+
+    #[test]
+    fn keeps_plain_paths_untouched() {
+        assert_eq!(
+            to_node_path(Path::new("/Users/demo/.codingns/runtime/node/bin/node")),
+            PathBuf::from("/Users/demo/.codingns/runtime/node/bin/node")
+        );
+        assert_eq!(
+            to_node_path(Path::new(r"C:\Users\demo\.codingns")),
+            PathBuf::from(r"C:\Users\demo\.codingns")
+        );
+    }
 
     #[test]
     fn builds_archive_names_per_platform() {

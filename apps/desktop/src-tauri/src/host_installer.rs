@@ -123,7 +123,11 @@ fn resolve_installer_script(app: &AppHandle) -> Option<PathBuf> {
             .join(INSTALLER_SCRIPT_NAME),
     );
 
-    candidates.into_iter().find(|path| path.is_file())
+    // Tauri 的 resource_dir 在 Windows 上会带 `\\?\` 前缀，交给 node 之前必须去掉。
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .map(|path| node_runtime::to_node_path(&path))
 }
 
 fn resolve_data_dir(raw: Option<&str>) -> Result<PathBuf, String> {
@@ -143,14 +147,14 @@ fn resolve_data_dir(raw: Option<&str>) -> Result<PathBuf, String> {
                 return Err("数据目录必须是绝对路径".to_string());
             }
 
-            Ok(expanded)
+            Ok(node_runtime::to_node_path(&expanded))
         }
         _ => {
             let home = std::env::var_os("HOME")
                 .or_else(|| std::env::var_os("USERPROFILE"))
                 .ok_or_else(|| "无法确定用户目录".to_string())?;
 
-            Ok(PathBuf::from(home).join(".codingns"))
+            Ok(node_runtime::to_node_path(&PathBuf::from(home).join(".codingns")))
         }
     }
 }

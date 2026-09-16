@@ -144,7 +144,23 @@ export function expandHome(inputPath) {
 }
 
 export function resolveDataDir(rawDataDir) {
-  return path.resolve(expandHome(rawDataDir ?? DEFAULT_DATA_DIR));
+  return normalizeNodePath(path.resolve(expandHome(rawDataDir ?? DEFAULT_DATA_DIR)));
+}
+
+/// Rust 侧（Tauri 的 resource_dir 走 canonicalize）在 Windows 上可能给出 `\\?\` 长路径前缀，
+/// Node 22.20 之后拿这种路径当入口会直接崩（EISDIR: lstat 'C:'），所以交给 node 之前统一去掉。
+export function normalizeNodePath(value) {
+  const text = String(value);
+
+  if (text.startsWith("\\\\?\\UNC\\")) {
+    return `\\\\${text.slice(8)}`;
+  }
+
+  if (text.startsWith("\\\\?\\")) {
+    return text.slice(4);
+  }
+
+  return text;
 }
 
 export function resolveRuntimeDir(dataDir) {
@@ -469,8 +485,8 @@ export function isPrivateNodeBinary(dataDir, nodeBinary) {
 }
 
 export function spawnDetachedHost(context, logger) {
-  const args = ["start", "--data-dir", context.dataDir, "--port", String(context.port), "--host", context.listenHost];
-  const child = spawn(context.nodeBinary, [context.cliEntryPath, ...args], {
+  const args = ["start", "--data-dir", normalizeNodePath(context.dataDir), "--port", String(context.port), "--host", context.listenHost];
+  const child = spawn(normalizeNodePath(context.nodeBinary), [normalizeNodePath(context.cliEntryPath), ...args], {
     cwd: context.packageRoot,
     detached: true,
     stdio: "ignore"
@@ -508,10 +524,10 @@ function assertSafeToRemove(targetPath) {
 
 function buildAutostartArguments(context) {
   return [
-    context.cliEntryPath,
+    normalizeNodePath(context.cliEntryPath),
     "start",
     "--data-dir",
-    context.dataDir,
+    normalizeNodePath(context.dataDir),
     "--port",
     String(context.port),
     "--host",
@@ -520,7 +536,7 @@ function buildAutostartArguments(context) {
 }
 
 export function buildLaunchAgentPlist(context) {
-  const args = [context.nodeBinary, ...buildAutostartArguments(context)];
+  const args = [normalizeNodePath(context.nodeBinary), ...buildAutostartArguments(context)];
   const argumentXml = args
     .map((value) => `    <string>${escapeXml(String(value))}</string>`)
     .join("\n");
@@ -554,7 +570,7 @@ export function buildLaunchAgentPlist(context) {
 }
 
 export function buildSystemdUnit(context) {
-  const commandLine = [context.nodeBinary, ...buildAutostartArguments(context)]
+  const commandLine = [normalizeNodePath(context.nodeBinary), ...buildAutostartArguments(context)]
     .map((value) => quoteSystemdArgument(String(value)))
     .join(" ");
 
@@ -576,7 +592,7 @@ export function buildSystemdUnit(context) {
 }
 
 export function buildWindowsLauncherVbs(context) {
-  const commandLine = [context.nodeBinary, ...buildAutostartArguments(context)]
+  const commandLine = [normalizeNodePath(context.nodeBinary), ...buildAutostartArguments(context)]
     .map((value) => `"${String(value)}"`)
     .join(" ");
   // VBS 里双写引号才是字面引号，外层再包一层才是合法的命令字符串。
