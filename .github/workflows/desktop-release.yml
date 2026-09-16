@@ -241,6 +241,11 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile
 
+      # 服务启动包装只能在 Windows 上验：VBS → cmd → node 的引号、输出重定向、进程存活。
+      - name: Verify Windows host launcher
+        shell: bash
+        run: node scripts/verify-windows-host-launcher.mjs
+
       - name: Build Windows installers
         env:
           CODINGNS_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
