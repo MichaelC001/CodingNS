@@ -2,6 +2,9 @@ mod config;
 mod desktop_bridge_plugin;
 mod file_system;
 mod host_discovery;
+mod host_installer;
+mod host_setup;
+mod node_runtime;
 mod rollback;
 mod updater;
 mod window_manager;
@@ -1216,7 +1219,8 @@ pub fn run() {
         )
         .manage(WindowManagerState::default())
         .manage(MacosNativeSidebarState::default())
-        .manage(DownloadedDesktopUpdateState::default());
+        .manage(DownloadedDesktopUpdateState::default())
+        .manage(host_installer::HostInstallerManager::new());
 
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_notification::init());
@@ -1239,6 +1243,12 @@ pub fn run() {
             read_desktop_config,
             write_desktop_config,
             scan_local_hosts,
+            host_setup::probe_host_endpoint,
+            host_setup::probe_host_setup_environment,
+            node_runtime::ensure_node_runtime,
+            host_installer::run_host_installer,
+            host_installer::cancel_host_installer,
+            host_installer::get_host_install_state,
             get_runtime_info,
             check_for_update,
             download_update,

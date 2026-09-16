@@ -7,7 +7,7 @@
     "frontendDist": "../frontend-dist",
     "devUrl": "http://127.0.0.1:4174",
     "beforeDevCommand": "pnpm --dir ../user-app dev -- --host 127.0.0.1 --port 4174",
-    "beforeBuildCommand": "pnpm --dir ../user-app build && node ../../scripts/prepare-desktop-frontend.mjs"
+    "beforeBuildCommand": "pnpm --dir ../user-app build && node ../../scripts/prepare-desktop-frontend.mjs && node ../../scripts/prepare-desktop-resources.mjs"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -38,6 +38,9 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": "all",
+    "resources": [
+      "resources/host-install.mjs"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

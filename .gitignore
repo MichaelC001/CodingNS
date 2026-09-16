@@ -19,6 +19,8 @@ out/
 .nuxt/
 # 桌面壳嵌入的前端快照（由 scripts/prepare-desktop-frontend.mjs 生成）
 apps/desktop/frontend-dist/
+# 桌面壳带上的安装器（由 scripts/prepare-desktop-resources.mjs 从 packages 同步）
+apps/desktop/src-tauri/resources/
 apps/desktop/.frontend-dist-staging/
 apps/desktop/.frontend-dist-previous/
 vendor/*
