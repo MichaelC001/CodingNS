@@ -247,10 +247,41 @@
       现在只认**接入进程**从收到 `http.request` 第一帧到 `http.request.end` 的耗时：
       **1 MB → 45 ms / 22.22 MB/s；16 MB → 3784 ms / 4.23 MB/s**，
       落在验证结论文档给的 werift 上行 3~15 MB/s 区间内
-    - 已知缺口（本轮明确不修，等下一步单独做）：`ws.message` 同样受 64 KB 限制。
-      `fileTree.snapshot` 这类超过 64 KB 的大 WS 消息目前在 DataChannel 上传不过去
-      （旧 WSS 路径没有这个限制，属于功能性回退）。Host 侧目前只做了兜底：
-      编码失败时回一条 `RESPONSE_FRAME_TOO_LARGE` 错误帧并记账，不会把连接带崩
+  - 补充 WS 消息分片（2026-09-16，同一天紧接着 HTTP 分片做的）：
+    - **缺口**：`ws.message` 同样受 64 KB 限制。`ws/workbench-ws-hub.ts` 的
+      `fileTree.snapshot` 没有任何截断，一个正常规模仓库的文件树 JSON 轻松超过 64 KB，
+      而旧 WSS 通道没有这个限制 —— 也就是**远程客户端打开工作台时文件树会直接加载不出来**，
+      是相对旧路径的功能性回退，必须修
+    - **协议**（共享包）：新增 `ws.message.chunk`(15) 与 `ws.message.end`(16)。
+      规则和 HTTP 那条路**不同**：
+      **小消息（≤ 48 KB）只发一条 `ws.message`、不发 end、收到即投递**（主路径零改动）；
+      **大消息只发 `chunk` × N + `end`、不发 `ws.message`**，收到 end 才把拼接结果作为
+      一条完整消息投递。这样 `ws.message` 永远等于「一条完整消息」，不会半截投递
+    - **Host 侧**：
+      - 入站：新增 `webrtc-ws-message-assembler.ts`，按 `streamId` 累积 chunk，
+        收到 `end` 才作为一条 `ws.message` 交给 `RelayTunnelGatewayService` → 本地 `wsSockets`
+      - 出站：`webrtc-frame-bridge.ts` 新增 `gatewayPacketToFrames()`，
+        大 WS 消息展开成 `chunk` × N + `end`，其余包仍是一一对应
+      - 单条消息累积上限 **64 MB**（`WS_MESSAGE_MAX_BYTES`），超了回 `WS_MESSAGE_TOO_LARGE` 并中止该流
+      - 连接断开 / 会话关闭时 `clear()` 清掉所有未完成累积
+      - 收到 `ws.message.end` 但该 streamId 没有任何 chunk → 回
+        `WS_MESSAGE_STREAM_UNKNOWN`，**绝不投递空消息**
+      - 转换层显式接住这两个新类型，不再落进 `UNSUPPORTED_PACKET`
+    - 单测：`tests/integration/webrtc-ws-message-assembler.test.ts` **14 个全绿**，覆盖
+      分片重组（含多流交错不串台、binary 标记跟随首片）、孤儿 end 被拒且不投递空消息、
+      超 64 MB 上限被拒并中止、`end` 后缓冲清零、`clear()` 断开清理、`discard` 单流丢弃，
+      以及出站方向：小消息单帧不分片、正好等于上限也不分片、
+      超限只发 chunk+end（断言**一条 `ws.message` 都没有**）、每帧都小于 64 KB、
+      出站分片能被对端组装回一模一样的字节，
+      外加一条真实场景用例：**一个 200 KB 的 `fileTree.snapshot` 能完整过通道**
+    - 端到端（`scripts/relay-tunnel-webrtc-e2e.mjs`，**15/15**）新增三条：
+      - **Host → 客户端**：本地 WS 推一条 187818 字节的文件树 JSON，
+        客户端收到 4 条 chunk 并拼回，内容与本地发出的逐字节一致（校验和 `7de04d64` 相同）
+      - **客户端 → Host**：客户端发 109931 字节（3 条 chunk + 1 条 end），
+        本地 WS 收到的字节数与校验和（`eb062c66`）完全一致
+      - **小 WS 消息仍走单帧主路径**：服务端回的 ack 只有 63 字节、0 条 chunk
+    - 接入进程日志佐证：
+      `peer.ws_message_assembled {"streamId":"stream-ws-big","bytes":109931,"chunkCount":3,"elapsedMs":3}`
 
 - [x] W1.3 把信令连接接入 TaskManager
   - 状态：DONE
@@ -306,8 +337,8 @@
 
 ## 阶段 W2：客户端接入层
 
-- [ ] W2.1 新增客户端 WebRTC transport
-  - 状态：PARTIAL（客户端这一侧写完了，类型检查与相关单测通过；真实端到端没跑通，见「验证结果」）
+- [x] W2.1 新增客户端 WebRTC transport
+  - 状态：DONE（类型检查、相关单测、真实端到端联调都过了；跨网走中继那条路径留给 W7 验收）
   - 这一步到底做什么：在 user-app 里实现基于 DataChannel 的传输实现，替代现有 relay-tunnel transport；
     同时补上「登录控制站账号 → 换信令票据」这一步（见下面「前置决定」）
   - 做完以后能看到什么结果：客户端能通过 WebRTC 通道访问远程 Host
@@ -332,6 +363,7 @@
     - `apps/user-app/src/features/settings/pages/SettingsPage.tsx`（远程访问区块）
     - `apps/user-app/src/bootstrap/bootstrap-app.ts`（启动时载入登录态）
     - `apps/user-app/src/app/workbench-native.css`、i18n 字典与测试
+    - `apps/user-app/scripts/relay-tunnel-webrtc-client-e2e.mts`（新增，真实端到端联调脚本）
   - 这一步明确不做什么：不重写业务层 API 调用方式；不做账号共享授权；不删旧 relay 实现（W6.1 删）；
     不改控制面、不改共享包
   - 怎么验证：
@@ -348,19 +380,33 @@
       WebSocket 大消息分片与重组、登录与换票各错误分支（401 / 403 / 404 / 409）、
       链路类型上报、会话用量字节统计
     - 安全上下文：HTTPS 或本机地址放行，局域网裸 HTTP 给出「请改用 HTTPS 地址」的人话提示
-    - **端到端没跑通，如实记录**：
-      - 本地栈 `pnpm local:stack:start` 已起并健康：control-api `:18082/healthz` 200、
-        relay-signaling `:18085/healthz` 200 且 `/api/public/meta` 返回
-        `websocketPath=/signal`、`ticketPath=/api/v1/relay/signaling/ticket`（与客户端实现一致）、
-        nginx `:18081/healthz` 200
-      - 卡在凭据：`.env` 里的 bootstrap 管理员初始密码登录返回 401（本地状态文件显示该账号
-        `mustChangePassword: true`，说明早前联调已改过密码）；想临时注册新账号又被本地未配置 SMTP
-        挡住（`POST /api/public/auth/email/request-code` 返回 502），拿不到验证码
-      - Host 侧接入进程（W1.1/W1.2）当时尚未落地，本来也建不起真实 DataChannel
-      - 所以真实控制面只验证到「服务在跑 + 契约路径一致」；登录之后的接口形状由单测覆盖
-    - 待补：拿到一个可用的本地测试账号（邮箱 + 当前密码）后，把
-      「登录 → `GET /api/v1/hosts` → 换票 → 连信令」跑一遍并回填真实输出；
-      再把 `Connected` 之后的真实业务请求补上
+    - **真实端到端联调：9/9 通过**（跑的是 user-app 里真实的客户端 transport，
+      对端是真实的 Host 接入子进程；PeerConnection 用 werift 适配，其余全是生产代码）：
+      命令 `pnpm --dir apps/user-app exec tsx scripts/relay-tunnel-webrtc-client-e2e.mts`
+      ```text
+      [w2-e2e] PASS 控制站登录拿到 accessToken — HTTP 200
+      [w2-e2e] PASS Host 侧登记绑定并写入 DTLS 指纹 — bindingId=binding_b0301a4112a8
+      [w2-e2e] PASS Host 侧换到 host 票据 — HTTP 201
+      [w2-e2e] Host 接入进程已进入 waiting_for_peer
+      [w2-e2e] PASS 客户端通过 DataChannel 拿到真实业务响应 — status=200 body={"ok":true,"from":"local-business","path":"/api/client/runtime-config?from=w2"}
+      [w2-e2e] PASS 1 MB 请求体分片上传（1048576 字节） — Host 侧收到 1048576 字节
+      [w2-e2e] PASS 120 KB WebSocket 大消息往返（分片 + 重组） — 回显 122880 字符，一致=true
+      [w2-e2e] PASS W2.3 真实连接上报链路类型 — phase=connected transportKind=p2p
+      [w2-e2e] PASS W2.2 指纹被换掉时拒绝连接真实 Host — 拒绝原因：对方的身份指纹和你的 Host 记录不一致，连接已断开。这通常意味着连接被第三方劫持了。
+      [w2-e2e] PASS 会话用量统计有上下行字节 — 上行 1173693 / 下行 124026
+      [w2-e2e] 结果：9/9 通过
+      ```
+      前置：`pnpm local:stack:start`（信令服务）+ 一个隔离的文件库控制面（18093，
+      不用共享库）；脚本头部注释里有完整命令。
+    - 控制面契约单独核对过（真实 HTTP，不是 mock）：
+      `GET /api/v1/hosts` 带 Bearer 返回 200、不带 Bearer 返回 401；
+      `POST /api/v1/relay/signaling/ticket` 传 `{ tunnelDomain }` 返回 201 且带
+      `ticket` / `signalingBaseUrl` / `iceServers` / `iceTransportPolicy="all"` /
+      `hostDtlsFingerprint` / `bindingId`；不存在的绑定返回 404 `TUNNEL_NOT_FOUND`；
+      别人的绑定返回 403 `BINDING_FORBIDDEN`；Host 不在线时发 offer 会收到
+      `{"type":"error","errorCode":"HOST_NOT_CONNECTED"}`
+    - 还没验的：真实浏览器里的麦克风/摄像头那种 `srflx`、真正跨网走 TURN 的 `relay` 链路；
+      本轮真实联调两端都在本机，只覆盖了直连（`transportKind=p2p`）
 
 - [x] W2.2 客户端 DTLS 指纹校验
   - 状态：DONE
@@ -513,8 +559,8 @@
 
 ## 阶段 W4：安全验收
 
-- [ ] W4.1 DTLS 指纹登记与下发
-  - 状态：PARTIAL（控制面侧已完成，Host 侧随 W1.1 一起做）
+- [x] W4.1 DTLS 指纹登记与下发
+  - 状态：DONE（控制面 / Host / 客户端三端都已落地，并端到端验证过）
   - 这一步到底做什么：Host 首次启用时生成 DTLS 证书、把指纹注册到控制面，客户端连接前取回
   - 做完以后能看到什么结果：指纹机制替代了原来的公钥指纹
   - 依赖什么：W1.1、W2.1
@@ -543,9 +589,16 @@
       + 4 条归一化单测
     - `pnpm --filter @codingns-proxy/control-api test` → 72 通过，1 个既有失败与本轮无关
       （同 W3.3 记录的那条）
-  - 待完成：
-    - 客户端比对 SDP 里的 `a=fingerprint` 与控制面返回的指纹（随 W2.2）
-    - 端到端联调：指纹不匹配时确认连接被拒
+  - 客户端侧（随 W2.2，2026-09-16 已完成）：
+    - `apps/user-app/src/network/webrtc/dtls-fingerprint.ts`：从 answer SDP 解析 `a=fingerprint`，
+      与控制面下发的值归一化后比对；不一致直接断开，**不提供任何降级开关**
+    - 两个刻意的设计：用抛错而不是返回布尔值（调用点在建连流程里，返回值容易被漏判）；
+      两边都解析不出指纹时判失败（宁可断开，也不要「都没解析出来所以放行」）
+    - **端到端验证**：真实链路上把控制面下发的指纹改掉一位，客户端拒绝连接真实的 Host，
+      给出的原因是「对方的身份指纹和你的 Host 记录不一致，连接已断开。
+      这通常意味着连接被第三方劫持了」，不是裸错误码
+  - 整条链路的说明文档：`docs/20260916-DTLS指纹登记与校验说明.md`
+  - 没做：证书轮换 UI（按任务要求不做）
   - 本次补上的 Host 侧（随 W1.1，2026-09-16）：
     - Host 首次启用时用 werift 的 `RTCDtlsTransport.SetupCertificate()` 生成一张自签 ECDSA P-256 证书，
       指纹按 `sha-256 XX:XX:...` 格式化；证书材料落进 `instance_relay_tunnel_identity` 同一行
@@ -572,7 +625,7 @@
       - 真链路：`scripts/relay-tunnel-webrtc-supervise-e2e.mjs` 里显式把绑定指纹置成旧值，
         验证控制面返回 `409 HOST_DTLS_FINGERPRINT_MISMATCH`，重新登记后换票立即成功（201）
       - 心跳口径：DTLS 指纹 → 204；老的 x25519 指纹 → 409 `HOST_BINDING_MISMATCH`
-    - 没做：证书轮换 UI（按任务要求不做）；客户端侧指纹比对（W2.2）
+    - 没做：证书轮换 UI（按任务要求不做）
 
 - [ ] W4.2 固定「中继不可见明文」的验收清单
   - 状态：PARTIAL（清单与第一层自动化已落地，第二层待 TURN 部署后可执行）
@@ -658,12 +711,27 @@
 
 ## 阶段 W6：下线旧链路
 
-- [ ] W6.1 删除自研加密协议
-  - 状态：IN_PROGRESS（已清掉 relay-edge 那一份的死代码 918 行；剩下两份要等 W1/W2 落地）
+- [x] W6.1 删除自研加密协议
+  - 状态：DONE（三份拷贝全部删除，共约 4800 行）
   - 这一步到底做什么：把三份协议副本全部删掉，包括已经没用的死代码
   - 做完以后能看到什么结果：仓库里再也搜不到自研握手和加密帧
   - 依赖什么：W2.2、W4.1；**第三份副本（relay-edge）要等 W6.2 把 relay-edge 数据面停掉才能删**
-  - **已完成（2026-09-16）**：relay-edge 里那份是**封闭死代码簇**，4 个文件互相引用、外部零引用，
+  - **Host 侧与 user-app 侧已于 2026-09-16 完成**：
+    - Host 侧删除 `relay-tunnel-runtime-adapter.ts`（869 行）、`crypto/relay-tunnel-protocol.ts`（584 行）、
+      `relay-tunnel-edge-proof.ts`（52 行）及对应两个测试文件
+    - user-app 侧删除 6 个源文件（`relay-tunnel-protocol.ts` 658 行等）与 5 个测试文件，共约 2446 行
+    - 前置核实：Host 没有别的入口在服务老客户端（`relay-tunnel-controller.ts` 只是 Fastify HTTP 路由、
+      `ws/ws-server.ts` 里没有 relay 引用），所以这是纯死代码清理，不改运行时行为
+    - 连带改动：`RelayTunnelRuntimeHttpError` 是适配器与服务之间的契约（不是老适配器的私货），
+      已迁到 `relay-tunnel-runtime-error.ts`，`relay-tunnel-background.test.ts` 的 import 跟着改
+    - **验证**：host `tsc` 通过、relay-tunnel 相关 **133 个测试全绿**；
+      user-app `tsc` 通过、相关 **135 个测试全绿**；E2EE 关键词全仓无残留。
+      原先两条长期红灯（老适配器超时、网关用例停留在旧协议形状）一条随删除消失、一条已修
+    - **明确保留**：`relay-tunnel-identity-service.ts`（DTLS 证书材料复用同一行记录）、
+      Host 侧 `relay-tunnel-packets.ts`（网关包类型是业务多路复用协议不是加密套件）、
+      `relay-session-traffic-store.ts`（新传输也在用它记会话用量）、
+      `secret-box.ts` 里的 aes-256-gcm（存控制站 token 用的通用加密，与隧道无关）
+  - **relay-edge 那一份（2026-09-16 已完成）**：那份是**封闭死代码簇**，4 个文件互相引用、外部零引用，
     删除是纯清理、无行为变更，已直接删掉：
     - `relay-tunnel-client-session.ts`（239 行）
     - `relay-tunnel-protocol.ts`（567 行）
@@ -673,51 +741,30 @@
       通过；`pnpm --filter @codingns-proxy/relay-edge test` → 34 通过
     - `host-proof.ts`（172 行）**这次没删**：它还被 `relay-edge/src/app.ts` 用来做 Host 挑战应答，
       属于 W6.2 停用 relay-edge 数据面时的范围
-  - **删除范围（2026-09-16 核准过的清单，别删多了）**：
-    - `apps/host/src/modules/relay-tunnel/crypto/relay-tunnel-protocol.ts`（584 行，握手 / HKDF / AES-GCM 加密帧）
-    - `apps/host/src/modules/relay-tunnel/relay-tunnel-edge-proof.ts`（52 行，Host 接入 claim proof）
-    - `apps/host/src/modules/relay-tunnel/relay-tunnel-runtime-adapter.ts`（869 行，老 WSS 适配器）
-    - 对应测试：`tests/integration/relay-tunnel-protocol.test.ts`、
-      `tests/integration/relay-tunnel-runtime-adapter.test.ts`
-    - `apps/codingns-proxy/apps/relay-edge/src/host-proof.ts`（172 行，随 W6.2）
-  - **Host 侧删除已核实（2026-09-16）**：
-    - 先确认了一个前提问题：**Host 有没有别的入口在服务老客户端？**
-      查下来没有——`relay-tunnel-controller.ts` 只是 Fastify HTTP 路由，
-      `ws/ws-server.ts` 里没有任何 relay 引用，老 WSS 数据面**只存在于那个已不再被构造的适配器里**
-      （`create-server.ts` 已换成 `RelayTunnelWebrtcRuntimeAdapter`），所以删除是纯死代码清理
-    - **一个连带点别漏**：`tests/integration/relay-tunnel-background.test.ts` 从老适配器路径
-      import `RelayTunnelRuntimeHttpError`。这个类型已经搬到 `relay-tunnel-runtime-error.ts`
-      （它是适配器与服务之间的契约，不是老适配器的私货），执行删除时把那行 import 一起改过去
-    - 删除后应验证：`pnpm --dir apps/host exec tsc --noEmit -p tsconfig.json` 通过，
-      且 relay-tunnel 相关测试全绿（老适配器那条长期超时的红灯会随删除一起消失）
-  - **user-app 侧的死簇（2026-09-16 已逐文件核实引用）**：
-    W1/W2 落地后，下面 6 个文件只被彼此和它们自己的测试引用，外部零引用，可以整簇删掉，共约 2446 行：
-    - `network/relay-tunnel-managed-transport.ts`（304 行）
-    - `network/relay-tunnel-client-transport.ts`（522 行）
-    - `network/relay-tunnel-edge-client.ts`（500 行）
-    - `network/relay-tunnel-client-session.ts`（373 行）
-    - `network/relay-tunnel-protocol.ts`（658 行，自研加密协议副本）
-    - `network/relay-tunnel-packets.ts`（89 行）
-    - 对应的 6 个 `*.test.ts` 一起清理
-  - **user-app 侧明确保留**：
-    - `network/relay-session-traffic-store.ts` **不能删**——`features/workbench/components/WorkbenchHostSwitcher.tsx`
-      还在用它展示会话用量。按 W0.3 的口径，用量数据降级为「展示 + 风控参考」，
-      这个 store 正好是展示那一半
-  - **明确不删（2026-09-16 更正）**：
-    - `apps/host/src/modules/relay-tunnel/crypto/relay-tunnel-identity-service.ts` **不能整文件删**。
-      W1.1 把 DTLS 证书材料作为**同一行的新列**存进了 `instance_relay_tunnel_identity`，
-      这个服务仍然负责那行记录的读写。W6.1 只清理 x25519 密钥材料的**使用**，
-      并决定那几列是保留还是走一次迁移删掉
-    - 三份 `relay-tunnel-packets.ts` 里的**网关包类型**。
-      它们是「一个连接上怎么复用多条 HTTP / WebSocket 流」的业务协议（streamId 多路复用），
-      不是加密套件——WebRTC 链路照样要用。WebRTC 只是换掉了它的**编码方式**
-      （从 base64 JSON 换成 `@codingns/relay-tunnel-wire` 的二进制帧）。
-      relay-edge 那份已随死代码清理删掉，主机侧那份留到 W6.2
-  - **明确不删**：三份 `relay-tunnel-packets.ts` 里的**网关包类型**。
-    它们是「一个连接上怎么复用多条 HTTP / WebSocket 流」的业务协议（streamId 多路复用），
-    不是加密套件——WebRTC 链路照样要用。WebRTC 只是换掉了它的**编码方式**
-    （从 base64 JSON 换成 `@codingns/relay-tunnel-wire` 的二进制帧）。
-    relay-edge 那份会随 W6.2 整体下线，属于 W6.2 的范围。
+  - **实际删除清单（执行记录）**：
+    - Host 侧：`relay-tunnel-runtime-adapter.ts`（869 行）、`crypto/relay-tunnel-protocol.ts`（584 行）、
+      `relay-tunnel-edge-proof.ts`（52 行），以及 `relay-tunnel-runtime-adapter.test.ts`、
+      `relay-tunnel-protocol.test.ts`
+    - user-app 侧：`relay-tunnel-protocol.ts`（658 行）、`relay-tunnel-client-transport.ts`（522 行）、
+      `relay-tunnel-edge-client.ts`（500 行）、`relay-tunnel-client-session.ts`（373 行）、
+      `relay-tunnel-managed-transport.ts`（304 行）、`relay-tunnel-packets.ts`（89 行），
+      以及对应 5 个测试文件
+    - relay-edge 侧：见上一段的 918 行（已先行删除）
+  - **明确保留的东西，以及为什么不删**：
+    - `relay-tunnel-identity-service.ts`：DTLS 证书材料是作为**同一行的新列**存在
+      `instance_relay_tunnel_identity` 里的，这个服务仍负责那行记录的读写。
+      x25519 那几列是保留还是走一次迁移删掉，留到后续决定
+    - Host 侧 `relay-tunnel-packets.ts`：里面的**网关包类型**是「一条连接上怎么复用多条
+      HTTP / WebSocket 流」的业务协议（streamId 多路复用），不是加密套件，WebRTC 链路照样要用。
+      WebRTC 只是换掉了它的**编码方式**（base64 JSON → `@codingns/relay-tunnel-wire` 二进制帧）
+    - `network/relay-session-traffic-store.ts`：新传输也在用它记会话用量，
+      工作台的 `WorkbenchHostSwitcher` 还在展示它。按 W0.3 的口径用量数据降级为
+      「展示 + 风控参考」，这个 store 正好是展示那一半
+    - `shared/utils/secret-box.ts` 里的 `aes-256-gcm`：那是存控制站 token 用的通用加密，
+      跟隧道端到端加密没关系，别看到关键词就一起删
+  - **删除后的连带改动**：`RelayTunnelRuntimeHttpError` 已从老适配器搬到
+    `relay-tunnel-runtime-error.ts`（它是适配器与服务之间的契约），
+    `relay-tunnel-background.test.ts` 的 import 跟着改；另更新了两处指向已删文件的过时注释
   - 主要改哪些文件：
     - 上面清单里的 8 个文件，以及引用它们的所有调用点
   - 这一步明确不做什么：不保留「以防万一」的兼容开关
