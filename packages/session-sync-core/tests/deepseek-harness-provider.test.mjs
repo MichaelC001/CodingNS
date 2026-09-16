@@ -462,6 +462,84 @@ describe("DeepSeekHarnessAdapter", () => {
     }
   });
 
+  it("turn/end 之后还有没收尾的 turn 时，会话仍然算运行中", async () => {
+    const adapter = new DeepSeekHarnessAdapter({
+      transport: {
+        call: async (method) => {
+          if (method === "session.list") {
+            return {
+              items: [{
+                sessionId: "h1",
+                cwd: "C:/work",
+                running: false,
+                updatedAt: "2026-08-15T02:22:31.000Z"
+              }]
+            };
+          }
+
+          if (method === "session.history") {
+            return {
+              events: [
+                { event: { type: "turn/end", seq: 12, time: "2026-08-15T02:22:33.000Z", data: { turn: 10, reason: { kind: "completed" } } } },
+                { event: { type: "agent/inbox/spliced", seq: 13, time: "2026-08-15T02:22:33.100Z", data: {} } },
+                { event: { type: "turn/start", seq: 14, time: "2026-08-15T02:22:34.000Z", data: { turn: 11 } } },
+                { event: { type: "assistant/message", seq: 15, time: "2026-08-15T02:22:35.000Z", data: { text: "接着处理剩下的步骤" } } }
+              ]
+            };
+          }
+
+          return { accepted: true };
+        },
+        subscribe: () => ({ close() {} })
+      }
+    });
+
+    await expect(adapter.readSessionActivity("h1", "harness://h1")).resolves.toMatchObject({
+      runningState: "running",
+      confidence: "authoritative",
+      observedAt: "2026-08-15T02:22:34.000Z",
+      runId: null
+    });
+  });
+
+  it("最后一个 turn 已经收尾时不会一直显示运行中", async () => {
+    const adapter = new DeepSeekHarnessAdapter({
+      transport: {
+        call: async (method) => {
+          if (method === "session.list") {
+            return {
+              items: [{
+                sessionId: "h1",
+                cwd: "C:/work",
+                running: false,
+                updatedAt: "2026-08-15T02:22:31.000Z"
+              }]
+            };
+          }
+
+          if (method === "session.history") {
+            return {
+              events: [
+                { event: { type: "turn/start", seq: 14, time: "2026-08-15T02:22:34.000Z", data: { turn: 11 } } },
+                { event: { type: "assistant/message", seq: 15, time: "2026-08-15T02:22:35.000Z", data: { text: "全部完成" } } },
+                { event: { type: "turn/end", seq: 16, time: "2026-08-15T02:22:36.000Z", data: { turn: 11, reason: { kind: "completed" } } } }
+              ]
+            };
+          }
+
+          return { accepted: true };
+        },
+        subscribe: () => ({ close() {} })
+      }
+    });
+
+    await expect(adapter.readSessionActivity("h1", "harness://h1")).resolves.toMatchObject({
+      runningState: "completed",
+      confidence: "authoritative",
+      observedAt: "2026-08-15T02:22:36.000Z"
+    });
+  });
+
   it("使用 Harness sequence cursor 分页，不再把通用 index cursor 传回 DSH", async () => {
     const calls = [];
     const adapter = new DeepSeekHarnessAdapter({

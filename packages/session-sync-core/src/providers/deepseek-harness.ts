@@ -1009,8 +1009,20 @@ function resolveHarnessHistoryActivity(
   fallbackObservedAt: string | null
 ): ProviderSessionActivityObservation | null {
   let latest: DeepSeekHarnessTurnEndActivity | null = null;
+  let openTurnStart: { sequence: number; observedAt: string | null } | null = null;
 
   for (let index = 0; index < entries.length; index += 1) {
+    const entry = readHarnessEntry(entries[index], index);
+
+    if (entry.type === "turn/start") {
+      openTurnStart = { sequence: entry.sequence, observedAt: entry.timestamp };
+      continue;
+    }
+
+    if (entry.type !== "turn/end") {
+      continue;
+    }
+
     const terminal = parseHarnessTurnEndActivity(entries[index], index);
 
     if (!terminal || (latest && terminal.sequence < latest.sequence)) {
@@ -1018,6 +1030,23 @@ function resolveHarnessHistoryActivity(
     }
 
     latest = terminal;
+
+    if (!openTurnStart || openTurnStart.sequence < terminal.sequence) {
+      openTurnStart = null;
+    }
+  }
+
+  // Harness 会在同一个会话里接着跑下一轮 turn（inbox 里还有消息时 turn/end 后立刻 turn/start）。
+  // 只看最后一条 turn/end 会把这类会话判成已完成，所以先确认有没有还没收尾的 turn。
+  if (openTurnStart && (!latest || openTurnStart.sequence > latest.sequence)) {
+    return {
+      runningState: "running",
+      confidence: "authoritative",
+      observedAt: openTurnStart.observedAt ?? fallbackObservedAt,
+      detail: null,
+      errorCode: null,
+      runId: null
+    };
   }
 
   if (!latest) {
