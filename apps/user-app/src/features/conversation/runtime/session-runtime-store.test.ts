@@ -727,6 +727,285 @@ describe("SessionRuntimeStore", () => {
     ]);
   });
 
+  it("runtime 回放的 AI 回复和历史里的同一条只渲染一条", () => {
+    const replayed = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "dsh-runtime-assistant",
+        sessionId: "session-1",
+        role: "assistant",
+        kind: "text",
+        content: "讲一个程序员的冷笑话：他改了一行代码，然后编译了四十分钟。",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:10:00.000Z",
+        sequence: 4,
+        rawRef: "harness://sid-1/stream#seq=4",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    const merged = applyTimelineEventToLayers(replayed.timeline, "session-1", {
+      type: "history.merge",
+      source: "realtime_backfill",
+      replaceSnapshotSeed: false,
+      messages: [
+        createHistoryMessage({
+          messageId: "dsh-history-assistant",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "assistant",
+          content: "讲一个程序员的冷笑话：他改了一行代码，然后编译了四十分钟。",
+          timestamp: "2026-09-16T03:10:01.000Z",
+          sequence: 4,
+          rawRef: "harness://sid-1#seq=4"
+        })
+      ]
+    });
+
+    // 正在流式更新的 overlay 还会继续涨，保留它、把权威副本收掉，避免出现两个气泡。
+    expect(merged.messages.map((item) => item.id)).toEqual(["dsh-runtime-assistant"]);
+    expect(merged.messages.filter((item) => item.role === "assistant")).toHaveLength(1);
+  });
+
+  it("同一条 AI 回复被回放两次时只渲染一条", () => {
+    const first = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "dsh-replay-assistant-1",
+        sessionId: "session-1",
+        role: "assistant",
+        kind: "text",
+        content: "先看看目录里有什么。",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:10:00.000Z",
+        sequence: 4,
+        rawRef: "harness://sid-1/stream#seq=4",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    const second = applyTimelineEventToLayers(first.timeline, "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "dsh-replay-assistant-2",
+        sessionId: "session-1",
+        role: "assistant",
+        kind: "text",
+        content: "先看看目录里有什么。",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:10:01.000Z",
+        sequence: 5,
+        rawRef: "harness://sid-1/stream#seq=5",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    expect(second.messages.map((item) => item.id)).toEqual(["dsh-replay-assistant-1"]);
+  });
+
+  it("重复回放的思考过程只渲染一条", () => {
+    const first = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "opencode-thinking-1",
+        sessionId: "session-1",
+        role: "assistant",
+        kind: "thinking",
+        content: "用户想要一个两百字的笑话，我先定个主题。",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:10:00.000Z",
+        sequence: 3,
+        rawRef: "opencode://session/ses-1/message/msg-1/part/prt-t1?part=1001",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    const second = applyTimelineEventToLayers(first.timeline, "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "opencode-thinking-2",
+        sessionId: "session-1",
+        role: "assistant",
+        kind: "thinking",
+        content: "用户想要一个两百字的笑话，我先定个主题。",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:10:01.000Z",
+        sequence: 4,
+        rawRef: "opencode://session/ses-1/message/msg-1/part/prt-t2?part=1002",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    expect(second.messages.map((item) => item.id)).toEqual(["opencode-thinking-1"]);
+  });
+
+  it("同一 Codex 会话文件里行号不同的两条相同文案各自保留", () => {
+    const first = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "codex-runtime-assistant-1",
+        sessionId: "session-1",
+        role: "assistant",
+        kind: "text",
+        content: "好的，我来处理。",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:20:00.000Z",
+        sequence: 101,
+        rawRef: "codex:///Users/jackson/.codex/sessions/demo.jsonl#line=101",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    const second = applyTimelineEventToLayers(first.timeline, "session-1", {
+      type: "runtime.message",
+      source: "session.runtime_message",
+      message: {
+        id: "codex-runtime-assistant-2",
+        sessionId: "session-1",
+        role: "assistant",
+        kind: "text",
+        content: "好的，我来处理。",
+        toolCall: null,
+        attachments: [],
+        attachmentPayloads: null,
+        origin: null,
+        originRef: null,
+        timestamp: "2026-09-16T03:20:01.000Z",
+        sequence: 102,
+        rawRef: "codex:///Users/jackson/.codex/sessions/demo.jsonl#line=102",
+        deliveryState: "sent",
+        clientRequestId: null
+      }
+    });
+
+    expect(second.messages.map((item) => item.id)).toEqual([
+      "codex-runtime-assistant-1",
+      "codex-runtime-assistant-2"
+    ]);
+  });
+
+  it("相邻但内容不同的 AI 回复不会被合并", () => {
+    const result = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "history.merge",
+      source: "realtime_backfill",
+      replaceSnapshotSeed: false,
+      messages: [
+        createHistoryMessage({
+          messageId: "dsh-assistant-1",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "assistant",
+          content: "先看看目录里有什么。",
+          timestamp: "2026-09-16T03:10:00.000Z",
+          sequence: 3,
+          rawRef: "harness://sid-1#seq=3"
+        }),
+        createHistoryMessage({
+          messageId: "dsh-assistant-2",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "assistant",
+          content: "先看看目录里有什么。另外再看看配置。",
+          timestamp: "2026-09-16T03:10:01.000Z",
+          sequence: 4,
+          rawRef: "harness://sid-1#seq=4"
+        })
+      ]
+    });
+
+    expect(result.messages.map((item) => item.id)).toEqual(["dsh-assistant-1", "dsh-assistant-2"]);
+  });
+
+  it("两次相同文案的 AI 回复中间隔着工具卡片时不会被合并", () => {
+    const result = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
+      type: "history.merge",
+      source: "realtime_backfill",
+      replaceSnapshotSeed: false,
+      messages: [
+        createHistoryMessage({
+          messageId: "dsh-assistant-1",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "assistant",
+          content: "先看看目录里有什么。",
+          timestamp: "2026-09-16T03:10:00.000Z",
+          sequence: 3,
+          rawRef: "harness://sid-1#seq=3"
+        }),
+        {
+          messageId: "dsh-tool-1",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "tool",
+          kind: "tool_call",
+          content: '{"command":"ls"}',
+          toolCall: {
+            id: "dsh-tool-1",
+            name: "shell",
+            input: "ls",
+            output: "package.json",
+            status: "completed"
+          },
+          timestamp: "2026-09-16T03:10:01.000Z",
+          sequence: 4,
+          rawRef: "harness://sid-1#seq=4"
+        },
+        createHistoryMessage({
+          messageId: "dsh-assistant-2",
+          provider: "deepseek-harness",
+          providerSessionId: "raw-1",
+          role: "assistant",
+          content: "先看看目录里有什么。",
+          timestamp: "2026-09-16T03:10:02.000Z",
+          sequence: 5,
+          rawRef: "harness://sid-1#seq=5"
+        })
+      ]
+    });
+
+    expect(result.messages.map((item) => item.id)).toEqual([
+      "dsh-assistant-1",
+      "dsh-tool-1",
+      "dsh-assistant-2"
+    ]);
+  });
+
   it("两次相同文案的用户消息之间隔着 assistant 正文时不会被合并", () => {
     const result = applyTimelineEventToLayers(createTimelineLayersState(), "session-1", {
       type: "history.merge",
