@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   TUNNEL_FRAME_HEADER_BYTES,
+  TUNNEL_MAX_FRAME_BODY_BYTES,
   TUNNEL_MAX_META_BYTES,
   TUNNEL_WIRE_VERSION,
   TunnelFrameError,
@@ -14,7 +15,7 @@ import {
 
 const textEncoder = new TextEncoder();
 
-/** 一份覆盖全部 12 种帧类型的样本，往返测试用它。 */
+/** 一份覆盖全部 14 种帧类型的样本，往返测试用它。 */
 const SAMPLE_FRAMES: TunnelFrame[] = [
   {
     type: "http.request",
@@ -23,6 +24,16 @@ const SAMPLE_FRAMES: TunnelFrame[] = [
     path: "/api/v1/sessions?limit=20",
     headers: { "content-type": "application/json", "x-token": "abc" },
     body: textEncoder.encode("{\"hello\":\"世界\"}")
+  },
+  {
+    // 请求体的后续分片：大上传靠它，不能塞进一条 http.request
+    type: "http.request.chunk",
+    streamId: "s-1",
+    body: new Uint8Array([9, 8, 7, 6])
+  },
+  {
+    type: "http.request.end",
+    streamId: "s-1"
   },
   {
     type: "http.response.start",
@@ -98,7 +109,14 @@ const SAMPLE_FRAMES: TunnelFrame[] = [
 ];
 
 describe("帧编解码往返", () => {
-  it.each(SAMPLE_FRAMES.map((frame) => [frame.type + (frame.streamId ?? ""), frame] as const))(
+  it.each(
+    SAMPLE_FRAMES.map(
+      // hello / ping / pong 本来就没有 streamId，这里必须先收窄再取，
+      // 不能直接写 frame.streamId（会报类型错，而 test 脚本只跑 vitest、不做类型检查，
+      // 所以这个错一直没被发现——pnpm typecheck 才看得出来）。
+      (frame) => [frame.type + ("streamId" in frame ? frame.streamId : ""), frame] as const
+    )
+  )(
     "%s 编码后再解码内容一致",
     (_label, frame) => {
       const encoded = encodeFrame(frame);
@@ -269,6 +287,42 @@ describe("非法帧拒绝", () => {
     view.setUint32(6, 0);
 
     expect(() => decodeFrame(header)).toThrowError(/超过上限/);
+  });
+
+  it("单帧 body 超过 48 KB 时编码直接拒绝，并指出该走哪条分片路径", () => {
+    // 这条守的是一个实测事实：DataChannel 单条消息上限是 64 KB，
+    // 超了会在 send() 阶段抛一句和业务无关的错、对端一个字节都收不到。
+    // 所以必须在编码阶段就拦下来。
+    const oversized = new Uint8Array(TUNNEL_MAX_FRAME_BODY_BYTES + 1);
+
+    expect(() =>
+      encodeFrame({
+        type: "http.request",
+        streamId: "s",
+        method: "POST",
+        path: "/upload",
+        headers: {},
+        body: oversized
+      })
+    ).toThrowError(/超过单帧上限/);
+
+    // 报错得说清楚该怎么改，否则拿到这个错的人只会一脸茫然
+    expect(() =>
+      encodeFrame({
+        type: "http.request.chunk",
+        streamId: "s",
+        body: oversized
+      })
+    ).toThrowError(/http\.request\.chunk/);
+
+    // 正好卡在上限上要能过（边界不能少算一个字节）
+    expect(() =>
+      encodeFrame({
+        type: "http.request.chunk",
+        streamId: "s",
+        body: new Uint8Array(TUNNEL_MAX_FRAME_BODY_BYTES)
+      })
+    ).not.toThrow();
   });
 
   it("meta 不是合法 JSON 时抛错", () => {

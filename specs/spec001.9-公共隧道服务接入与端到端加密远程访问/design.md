@@ -268,7 +268,30 @@ DataChannel 本身就是可靠的、有序的字节流，业务层直接收发�
 - WebSocket 消息：直接透传
 - 心跳：用 DataChannel 自身的状态 + 应用层轻量 ping
 
-对比原来的设计，这里省掉了：帧类型枚举、AAD 构造、base64 编解码、JSON 信封。
+对比原来的设计，这里省掉了：AAD 构造、base64 编解码。
+
+**但「不再需要自定义帧结构」这句当时说过头了**（2026-09-16 实测后更正）：
+
+DataChannel 有硬性的大小限制。实测两个 werift peer 之间发单条消息：
+
+| 单条消息大小 | 结果 |
+| --- | --- |
+| 64 KB | 正常送达 |
+| 256 KB 及以上 | 发送直接抛 `max-message-size exceeded: 262144 > 65536`，对端一个字节都收不到 |
+
+**单条 DataChannel 消息上限就是 64 KB。** 所以「可靠有序的字节流」这句话只在
+单条消息之内成立，超过就必须自己分片——这一层躲不掉，只是分片逻辑比自研加密简单得多。
+
+因此帧协议保留了一个**极薄的二进制头**（版本 + 类型 + meta 长度 + body 长度），
+并把单帧 body 上限定成 **48 KB**（留出协议头与不同实现差异的余量）：
+
+- HTTP 请求体：`http.request`（第一段）+ 若干 `http.request.chunk` + `http.request.end`
+- HTTP 响应体：`http.response.start` + 若干 `http.response.chunk` + `http.response.end`
+- 单帧超过上限时在**编码阶段**就抛错并说明该走哪条分片路径，
+  而不是等到 DataChannel `send()` 才炸出一句和业务无关的报错
+
+**已知缺口**：`ws.message` 目前仍是整条消息一帧，**超过 64 KB 的大 WebSocket 消息会失败**。
+本轮不处理，需要时按同样的三段式补 `ws.message.chunk` / `ws.message.end`。
 
 ## 5. 加密方案
 

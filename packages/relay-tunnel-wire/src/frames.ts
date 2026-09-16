@@ -32,6 +32,22 @@ export const TUNNEL_FRAME_HEADER_BYTES = 10;
 /** meta 段大小上限。超了说明对面发了不该发的东西，直接抛错而不是静默丢掉。 */
 export const TUNNEL_MAX_META_BYTES = 1024 * 1024;
 
+/**
+ * 单帧 body 上限：48 KB。
+ *
+ * 为什么必须有这个上限：**DataChannel 单条消息的硬上限是 64 KB**
+ * （werift 实测报 `max-message-size exceeded: 262144 > 65536`，超了直接抛错，
+ * 对端一个字节都收不到）。留出协议头、meta 和不同实现差异的余量，取 48 KB。
+ *
+ * 所以超过这个大小的东西**必须自己分片**，不能指望一条帧发出去：
+ * HTTP 请求体走 `http.request` + `http.request.chunk` + `http.request.end`；
+ * HTTP 响应体走 `http.response.start/chunk/end`。
+ *
+ * 这里在编码阶段就拦下来，是为了让错误出现在**帧这一层**、带上帧类型，
+ * 而不是等到调用 DataChannel.send() 时才炸出一句和业务无关的报错。
+ */
+export const TUNNEL_MAX_FRAME_BODY_BYTES = 48 * 1024;
+
 /** 帧类型编号。写死在协议里，客户端要按这张表对接。 */
 export const TUNNEL_FRAME_TYPE_CODES = {
   "http.request": 1,
@@ -45,7 +61,9 @@ export const TUNNEL_FRAME_TYPE_CODES = {
   error: 9,
   hello: 10,
   ping: 11,
-  pong: 12
+  pong: 12,
+  "http.request.chunk": 13,
+  "http.request.end": 14
 } as const;
 
 export type TunnelFrameType = keyof typeof TUNNEL_FRAME_TYPE_CODES;
@@ -82,8 +100,25 @@ export interface TunnelHttpRequestFrame extends TunnelFrameBase {
   method: string;
   path: string;
   headers: Record<string, string>;
-  /** 请求体原始字节；没有请求体时是空数组。 */
+  /**
+   * 请求体的**第一段**（没有请求体时是空数组）。
+   *
+   * 超过 {@link TUNNEL_MAX_FRAME_BODY_BYTES} 的部分要用后续的
+   * `http.request.chunk` 帧发，最后以 `http.request.end` 收尾。
+   * 不要试图把整个大请求体塞进这一条帧——DataChannel 发不出去。
+   */
   body: Uint8Array;
+}
+
+/** 请求体的后续分片。只在 `http.request` 之后发，顺序不能乱。 */
+export interface TunnelHttpRequestChunkFrame extends TunnelFrameBase {
+  type: "http.request.chunk";
+  body: Uint8Array;
+}
+
+/** 请求体发完了。Host 收到这一帧才开始真正发起本地请求。 */
+export interface TunnelHttpRequestEndFrame extends TunnelFrameBase {
+  type: "http.request.end";
 }
 
 export interface TunnelHttpResponseStartFrame extends TunnelFrameBase {
@@ -155,6 +190,8 @@ export interface TunnelPongFrame {
 
 export type TunnelFrame =
   | TunnelHttpRequestFrame
+  | TunnelHttpRequestChunkFrame
+  | TunnelHttpRequestEndFrame
   | TunnelHttpResponseStartFrame
   | TunnelHttpResponseChunkFrame
   | TunnelHttpResponseEndFrame
@@ -179,6 +216,7 @@ export class TunnelFrameError extends Error {
       | "META_NOT_JSON"
       | "META_INVALID"
       | "BODY_NOT_ALLOWED"
+      | "BODY_TOO_LARGE"
   ) {
     super(message);
     this.name = "TunnelFrameError";
@@ -209,6 +247,18 @@ export function encodeFrame(frame: TunnelFrame): Uint8Array {
     throw new TunnelFrameError(
       `帧 ${frame.type} 的 meta 有 ${metaBytes.byteLength} 字节，超过上限 ${TUNNEL_MAX_META_BYTES}`,
       "META_TOO_LARGE"
+    );
+  }
+
+  // DataChannel 单条消息发不了超过 64 KB 的东西，超了会在 send() 阶段抛一句
+  // 和业务完全无关的错。这里提前拦住，并说清楚该走哪条分片路径。
+  if (body.byteLength > TUNNEL_MAX_FRAME_BODY_BYTES) {
+    throw new TunnelFrameError(
+      `帧 ${frame.type} 的 body 有 ${body.byteLength} 字节，超过单帧上限 ${TUNNEL_MAX_FRAME_BODY_BYTES}`
+        + "（DataChannel 单条消息上限是 64 KB，所以必须自己分片："
+        + "请求体走 http.request.chunk，响应体走 http.response.chunk，"
+        + "WebSocket 大消息目前还没有分片支持）",
+      "BODY_TOO_LARGE"
     );
   }
 
@@ -368,6 +418,8 @@ function buildMeta(frame: TunnelFrame): Record<string, unknown> {
       };
     case "http.response.chunk":
     case "http.response.end":
+    case "http.request.chunk":
+    case "http.request.end":
       return { streamId: frame.streamId };
     case "ws.open":
       return {
@@ -417,6 +469,7 @@ function buildMeta(frame: TunnelFrame): Record<string, unknown> {
 function buildBody(frame: TunnelFrame): Uint8Array {
   switch (frame.type) {
     case "http.request":
+    case "http.request.chunk":
     case "http.response.chunk":
     case "ws.message":
       return frame.body;
@@ -451,6 +504,17 @@ function buildFrameFromParts(
         streamId: requireString(meta, "streamId", type),
         status: requireNumber(meta, "status", type),
         headers: requireHeaders(meta, type)
+      };
+    case "http.request.chunk":
+      return {
+        type,
+        streamId: requireString(meta, "streamId", type),
+        body
+      };
+    case "http.request.end":
+      return {
+        type,
+        streamId: requireString(meta, "streamId", type)
       };
     case "http.response.chunk":
       return {
