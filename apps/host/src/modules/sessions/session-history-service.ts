@@ -5747,16 +5747,19 @@ export class SessionHistoryService {
         );
       } catch (error) {
         // Command Code 可能先发出真实 session ID，再异步落盘 transcript。
-        // changed-files 只是辅助展示，暂时没有文件时等下一次索引即可。
+        // 这里不能标记已索引，否则后续不会再重试，会话会一直停在空列表。
         if (binding.provider === "command-code" && isProviderSessionNotFoundError(error)) {
-          this.sessionChangedFileService.markSessionIndexed(sessionId, nowIso());
           return;
         }
         throw error;
       }
 
       if (!page.nextCursor || seenCursors.has(page.nextCursor)) {
-        this.sessionChangedFileService.markSessionIndexed(sessionId, nowIso());
+        // 空页只说明 transcript 还没落盘，这里标记已索引会导致后续读取直接跳过，
+        // 会话的文件列表会一直停在空；等真正读到消息再确认索引完成。
+        if (page.messages.length > 0) {
+          this.sessionChangedFileService.markSessionIndexed(sessionId, nowIso());
+        }
         return;
       }
 

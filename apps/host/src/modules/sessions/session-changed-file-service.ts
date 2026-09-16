@@ -56,7 +56,9 @@ export class SessionChangedFileService {
     const collected = new Map<string, MutableChangedFileRecord>();
 
     for (const message of messages) {
-      if (message.role !== "tool" || !message.toolCall) {
+      // Provider 对工具调用的 role 约定不一致：Claude/Codex 用 "tool"，
+      // Command Code 与 Kimi 把 tool_use 归到 "assistant"，这里只认 toolCall 是否存在。
+      if (!message.toolCall) {
         continue;
       }
 

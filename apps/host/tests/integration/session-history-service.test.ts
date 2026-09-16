@@ -449,7 +449,8 @@ describe("SessionHistoryService", () => {
     await expect((service as unknown as {
       ensureSessionChangedFilesIndexed: (sessionId: string) => Promise<void>;
     }).ensureSessionChangedFilesIndexed("session-1")).resolves.toBeUndefined();
-    expect(markSessionIndexed).toHaveBeenCalledWith("session-1", expect.any(String));
+    // 不能标记已索引，否则 transcript 稍后落盘也不会再重试，会话会一直显示 0。
+    expect(markSessionIndexed).not.toHaveBeenCalled();
   });
 
   it("command-code pending binding 的历史订阅返回空页，不把 pending ID 交给 provider", async () => {
