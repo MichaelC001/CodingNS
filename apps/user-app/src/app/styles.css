@@ -8057,12 +8057,19 @@ textarea:focus-visible {
   font-weight: 500;
 }
 
+/* 列宽下限由脚本按模型名实测宽度写入：空间够时列就停在内容宽度上，名字不会被省略号截断，
+   空间不够时脚本不写这个变量，退回下面的比例分配。 */
 .composer-deployment-select-panel[data-columns="2"] {
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  grid-template-columns:
+    minmax(var(--deployment-model-column-min, 0px), 1.1fr)
+    minmax(var(--deployment-reasoning-column-min, 0px), 1fr);
 }
 
 .composer-deployment-select-panel[data-columns="3"] {
-  grid-template-columns: minmax(120px, 132px) minmax(0, 1.1fr) minmax(0, 1fr);
+  grid-template-columns:
+    minmax(var(--deployment-preset-column-min, 120px), 132px)
+    minmax(var(--deployment-model-column-min, 0px), 1.1fr)
+    minmax(var(--deployment-reasoning-column-min, 0px), 1fr);
 }
 
 @media (max-width: 720px) {

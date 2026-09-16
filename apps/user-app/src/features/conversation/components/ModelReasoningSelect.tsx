@@ -1,9 +1,48 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties
+} from "react";
 import { createPortal } from "react-dom";
 
 import { t } from "../../../shared/i18n";
-import { useShrinkTriggerLabel, type MacSelectOption } from "./MacSelect";
+import {
+  measureMacSelectTextWidth,
+  useShrinkTriggerLabel,
+  type MacSelectOption
+} from "./MacSelect";
 import type { DeploymentPresetOption } from "./provider-deployment";
+
+/** 选项里除了文字之外还要占掉的宽度：18px 勾选图标 + 6px 列间距 + 20px 左右内边距。 */
+const DEPLOYMENT_SELECT_OPTION_CHROME_WIDTH = 44;
+/** 面板列之间的间距，和 .composer-deployment-select-panel 的 gap 保持一致。 */
+const DEPLOYMENT_SELECT_COLUMN_GAP = 8;
+/** 面板自身左右内边距，和 .composer-deployment-select-popover 的 padding 保持一致。 */
+const DEPLOYMENT_SELECT_POPOVER_PADDING = 12;
+const DEPLOYMENT_SELECT_MIN_POPOVER_WIDTH = 320;
+/** 面板宽到 720px 已经能放下很长的模型名，再宽就会挡到输入框，所以留一个上限。 */
+const DEPLOYMENT_SELECT_MAX_POPOVER_WIDTH = 720;
+
+/** 量出这一列里最长的一条选项要占多宽，作为该列不被压扁的下限。 */
+function measureDeploymentSelectColumnWidth(
+  referenceElement: HTMLElement | null,
+  labels: string[]
+): number {
+  if (!referenceElement) {
+    return 0;
+  }
+
+  const widestLabel = labels.reduce(
+    (widest, label) => Math.max(widest, measureMacSelectTextWidth(referenceElement, label)),
+    0
+  );
+
+  return Math.ceil(widestLabel) + DEPLOYMENT_SELECT_OPTION_CHROME_WIDTH;
+}
 
 /**
  * 把「模型」和「推理强度」合并成一个触发按钮：按钮上并排显示模型名和强度，
@@ -83,6 +122,19 @@ export function ModelReasoningSelect({
     compactLabel: compactLabelText
   });
 
+  const presetOptionLabels = useMemo(
+    () => presetOptions.map((option) => option.label),
+    [presetOptions]
+  );
+  const modelOptionLabels = useMemo(
+    () => modelOptions.map((option) => option.label),
+    [modelOptions]
+  );
+  const reasoningOptionLabels = useMemo(
+    () => reasoningOptions.map((option) => option.label),
+    [reasoningOptions]
+  );
+
   const updatePopoverStyle = useCallback(() => {
     const trigger = triggerRef.current;
 
@@ -98,11 +150,33 @@ export function ModelReasoningSelect({
     const edgePadding = 12;
     const gap = 8;
     const preferredPopoverHeight = 320;
-    const maxWidth = Math.min(560, Math.max(320, viewportWidth - edgePadding * 2));
+    const maxWidth = Math.min(
+      DEPLOYMENT_SELECT_MAX_POPOVER_WIDTH,
+      Math.max(DEPLOYMENT_SELECT_MIN_POPOVER_WIDTH, viewportWidth - edgePadding * 2)
+    );
     const preferredWidth = columnCount >= 3 ? 520 : 400;
+    // 模型名往往比固定的面板宽度长，先量一遍每列真正需要多宽，够宽时就让名字完整显示。
+    const measureReference = labelRef.current ?? trigger;
+    const columnWidths = {
+      preset: hasPresetColumn
+        ? measureDeploymentSelectColumnWidth(measureReference, presetOptionLabels)
+        : 0,
+      model: measureDeploymentSelectColumnWidth(measureReference, modelOptionLabels),
+      reasoning: hasReasoningColumn
+        ? measureDeploymentSelectColumnWidth(measureReference, reasoningOptionLabels)
+        : 0
+    };
+    const contentWidth =
+      columnWidths.preset
+      + columnWidths.model
+      + columnWidths.reasoning
+      + DEPLOYMENT_SELECT_COLUMN_GAP * Math.max(0, columnCount - 1)
+      + DEPLOYMENT_SELECT_POPOVER_PADDING;
+    // 只有整个面板放得下时才把列宽撑到内容宽度，否则退回按比例分配，避免列撑破面板。
+    const fitsContent = contentWidth <= maxWidth;
     const width = Math.max(
-      Math.min(maxWidth, Math.max(preferredWidth, Math.round(rect.width * 1.6))),
-      Math.min(320, maxWidth)
+      Math.min(maxWidth, Math.max(preferredWidth, contentWidth, Math.round(rect.width * 1.6))),
+      Math.min(DEPLOYMENT_SELECT_MIN_POPOVER_WIDTH, maxWidth)
     );
     const left = Math.min(
       Math.max(edgePadding, rect.left),
@@ -125,9 +199,25 @@ export function ModelReasoningSelect({
       maxWidth,
       zIndex: 1905,
       top: shouldPlaceAbove ? undefined : rect.bottom + gap,
-      bottom: shouldPlaceAbove ? viewportHeight - rect.top + gap : undefined
-    });
-  }, [columnCount]);
+      bottom: shouldPlaceAbove ? viewportHeight - rect.top + gap : undefined,
+      "--deployment-preset-column-min": fitsContent && columnWidths.preset > 0
+        ? `${columnWidths.preset}px`
+        : undefined,
+      "--deployment-model-column-min": fitsContent && columnWidths.model > 0
+        ? `${columnWidths.model}px`
+        : undefined,
+      "--deployment-reasoning-column-min": fitsContent && columnWidths.reasoning > 0
+        ? `${columnWidths.reasoning}px`
+        : undefined
+    } as CSSProperties);
+  }, [
+    columnCount,
+    hasPresetColumn,
+    hasReasoningColumn,
+    modelOptionLabels,
+    presetOptionLabels,
+    reasoningOptionLabels
+  ]);
 
   useEffect(() => {
     if (!open) {

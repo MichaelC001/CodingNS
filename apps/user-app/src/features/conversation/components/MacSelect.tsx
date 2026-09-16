@@ -25,7 +25,7 @@ const MAC_SELECT_OPTION_EXTRA_WIDTH = 72;
 
 let macSelectMeasureCanvas: HTMLCanvasElement | null = null;
 
-function measureMacSelectTextWidth(referenceElement: HTMLElement, text: string): number {
+export function measureMacSelectTextWidth(referenceElement: HTMLElement, text: string): number {
   if (typeof document === "undefined") {
     return text.length * 8;
   }
