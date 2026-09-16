@@ -287,8 +287,9 @@ export function encodeFrame(frame: TunnelFrame): Uint8Array {
     throw new TunnelFrameError(
       `帧 ${frame.type} 的 body 有 ${body.byteLength} 字节，超过单帧上限 ${TUNNEL_MAX_FRAME_BODY_BYTES}`
         + "（DataChannel 单条消息上限是 64 KB，所以必须自己分片："
-        + "请求体走 http.request.chunk，响应体走 http.response.chunk，"
-        + "WebSocket 大消息目前还没有分片支持）",
+        + "请求体走 http.request.chunk + http.request.end，"
+        + "响应体走 http.response.chunk + http.response.end，"
+        + "WebSocket 大消息走 ws.message.chunk + ws.message.end）",
       "BODY_TOO_LARGE"
     );
   }
