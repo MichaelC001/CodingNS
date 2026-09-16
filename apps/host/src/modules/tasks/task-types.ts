@@ -29,6 +29,7 @@ export const HOST_TASK_TYPES = {
   templateRuntimeStatusDiscovery: "terminal.template_runtime_status_discovery",
   debugRuntimeStaleReconciliation: "debug_runtime.stale_reconciliation",
   serviceNpmGlobalUpdateInstall: "service.npm_global_update_install",
+  sqliteIncrementalVacuum: "sqlite.incremental_vacuum",
   assistantAutomationTick: "assistant.automation.tick",
   assistantAutomationEvaluate: "assistant.automation.evaluate",
   verificationRunExecute: "butler.verification_run.execute",

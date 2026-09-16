@@ -352,6 +352,8 @@ import { DeepSeekHarnessProviderAdapter } from "../modules/sessions/deepseek-har
 import { DeepSeekHarnessSidecarManager } from "../modules/sessions/deepseek-harness/deepseek-harness-sidecar-manager.js";
 import { DeepSeekHarnessRuntimeAdapter } from "../modules/sessions/deepseek-harness/deepseek-harness-runtime-adapter.js";
 import { ProviderPriceBookScheduler } from "../modules/provider/provider-price-book-scheduler.js";
+import { SqliteMaintenanceScheduler } from "../modules/system/sqlite-maintenance-scheduler.js";
+import { SqliteMaintenanceService } from "../modules/system/sqlite-maintenance-service.js";
 
 export function createServer(config: HostConfig) {
   const affairsLibraryDebugLogPath = getAffairsLibraryDebugLogPath();
@@ -534,6 +536,17 @@ export function createServer(config: HostConfig) {
     schedulerMetrics
   );
   providerPriceBookScheduler.start();
+  const sqliteMaintenanceService = new SqliteMaintenanceService(
+    database.db,
+    database.writeQueue,
+    taskManager
+  );
+  sqliteMaintenanceService.registerTask();
+  const sqliteMaintenanceScheduler = new SqliteMaintenanceScheduler(
+    sqliteMaintenanceService,
+    schedulerMetrics
+  );
+  sqliteMaintenanceScheduler.start();
   const deepSeekHarnessSidecarManager = new DeepSeekHarnessSidecarManager({
     taskManager,
     commandPath: config.deepseekHarnessCliPath,
