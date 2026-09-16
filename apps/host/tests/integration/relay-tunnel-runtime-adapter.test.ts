@@ -190,7 +190,7 @@ describe("RelayTunnelRuntimeEdgeAdapter", () => {
             method: "GET",
             path: "/hello",
             headers: {},
-            bodyBase64Url: null
+            body: null
           })
         )
       })
@@ -204,7 +204,7 @@ describe("RelayTunnelRuntimeEdgeAdapter", () => {
 
     expect(httpResponsePacket.status).toBe(200);
     expect(
-      JSON.parse(Buffer.from(httpResponsePacket.bodyBase64Url ?? "", "base64url").toString("utf8"))
+      JSON.parse(Buffer.from(httpResponsePacket.body ?? new Uint8Array(0)).toString("utf8"))
     ).toEqual({
       ok: true,
       source: "local-target"
@@ -244,7 +244,7 @@ describe("RelayTunnelRuntimeEdgeAdapter", () => {
             type: "ws.message",
             streamId: "ws_1",
             binary: false,
-            dataBase64Url: Buffer.from("ping", "utf8").toString("base64url")
+            data: new Uint8Array(Buffer.from("ping", "utf8"))
           })
         )
       })
@@ -256,7 +256,7 @@ describe("RelayTunnelRuntimeEdgeAdapter", () => {
       (packet): packet is RelayTunnelWsMessagePacket => packet.type === "ws.message"
     );
 
-    expect(Buffer.from(wsMessagePacket.dataBase64Url, "base64url").toString("utf8")).toBe("ping");
+    expect(Buffer.from(wsMessagePacket.data).toString("utf8")).toBe("ping");
 
     const status = relayRepository.findStatus();
     expect(status?.phase).toBe("running");

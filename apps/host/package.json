@@ -7,9 +7,9 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "predev": "pnpm --dir ../../packages/session-sync-core build",
-    "prebuild": "pnpm --dir ../../packages/session-sync-core build",
-    "pretest": "pnpm --dir ../../packages/session-sync-core build",
+    "predev": "pnpm --dir ../../packages/session-sync-core build && pnpm --dir ../../packages/relay-tunnel-wire build",
+    "prebuild": "pnpm --dir ../../packages/session-sync-core build && pnpm --dir ../../packages/relay-tunnel-wire build",
+    "pretest": "pnpm --dir ../../packages/session-sync-core build && pnpm --dir ../../packages/relay-tunnel-wire build",
     "dev": "npm run dev:watch",
     "dev:watch": "tsx watch --clear-screen=false --include \"../../packages/session-sync-core/dist/**/*.js\" src/main.ts",
     "build": "node scripts/build.mjs",
@@ -19,6 +19,7 @@
     "test:changed": "pnpm exec vitest --changed"
   },
   "dependencies": {
+    "@codingns/relay-tunnel-wire": "workspace:*",
     "@codingns/session-sync-core": "workspace:*",
     "libsql": "^0.5.29",
     "chokidar": "^5.0.0",
@@ -28,6 +29,7 @@
     "playwright-core": "^1.54.2",
     "pptxgenjs": "^4.0.1",
     "qrcode": "^1.5.4",
+    "werift": "^0.24.4",
     "ws": "^8.20.0"
   },
   "devDependencies": {

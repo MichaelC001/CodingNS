@@ -98,17 +98,14 @@ interface ActiveRelaySession {
   inboundQueue: Promise<void>;
 }
 
-export class RelayTunnelRuntimeHttpError extends Error {
-  constructor(
-    readonly statusCode: number,
-    readonly errorCode: string | null,
-    readonly detail: string,
-    prefix: string
-  ) {
-    super(`${prefix}：${detail}`);
-    this.name = "RelayTunnelRuntimeHttpError";
-  }
-}
+/**
+ * 这个类型已经搬到 `relay-tunnel-runtime-error.ts`——它是适配器与服务之间的契约，
+ * 不是老 WSS 适配器的私货。这里只做转出，保持既有 import 路径不破。
+ * 老适配器下线（W6.2）时连这行一起删。
+ */
+import { RelayTunnelRuntimeHttpError } from "./relay-tunnel-runtime-error.js";
+
+export { RelayTunnelRuntimeHttpError };
 
 const IDLE_POLL_MS = 1_000;
 const ERROR_RETRY_MS = 2_000;

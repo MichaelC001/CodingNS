@@ -2198,7 +2198,15 @@ CREATE TABLE IF NOT EXISTS instance_relay_tunnel_identity (
   public_key_pem TEXT NOT NULL,
   key_fingerprint TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  -- WebRTC 承载层改用 DTLS 证书做身份，指纹必须长期稳定，所以和老的 x25519 材料放同一行。
+  -- 这几列可空：老库升级上来、或者还没启用公共隧道时就是空的。
+  dtls_private_key_pem TEXT,
+  dtls_cert_pem TEXT,
+  dtls_signature_hash TEXT,
+  dtls_fingerprint TEXT,
+  dtls_created_at TEXT,
+  dtls_updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS instance_relay_tunnel_status (

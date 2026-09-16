@@ -260,6 +260,11 @@ describe("公共隧道系统接口", () => {
     });
 
     expect(bindResponse.statusCode).toBe(200);
+
+    // 绑定之后 Host 的对外身份指纹就是 DTLS 证书指纹（x25519 公钥仍然一起返回，但不再是身份）。
+    const boundHostFingerprint = bindResponse.json<{ hostKeyFingerprint: string }>().hostKeyFingerprint;
+    expect(boundHostFingerprint).toMatch(/^sha-256 ([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
+
     expect(bindResponse.json()).toEqual({
       activated: false,
       enabled: false,
@@ -272,7 +277,7 @@ describe("公共隧道系统接口", () => {
       tunnelDomain: "demo.codingns.example",
       bindingId: "binding_demo",
       hostPublicKey: identityStatus.hostPublicKey,
-      hostKeyFingerprint: identityStatus.hostKeyFingerprint,
+      hostKeyFingerprint: boundHostFingerprint,
       localTargetBaseUrl: "http://127.0.0.1:4312",
       candidateEndpoints: [
         {
@@ -302,7 +307,7 @@ describe("公共隧道系统接口", () => {
       ],
       phase: "disabled",
       connected: false,
-      hostFingerprint: identityStatus.hostKeyFingerprint,
+      hostFingerprint: boundHostFingerprint,
       trafficUsedBytes: null,
       trafficRemainingBytes: null,
       quotaResetAt: null,
@@ -332,7 +337,7 @@ describe("公共隧道系统接口", () => {
       tunnelDomain: "demo.codingns.example",
       bindingId: "binding_demo",
       hostPublicKey: identityStatus.hostPublicKey,
-      hostKeyFingerprint: identityStatus.hostKeyFingerprint,
+      hostKeyFingerprint: boundHostFingerprint,
       localTargetBaseUrl: "http://127.0.0.1:4312",
       candidateEndpoints: [
         {
@@ -362,7 +367,7 @@ describe("公共隧道系统接口", () => {
       ],
       phase: "connecting",
       connected: false,
-      hostFingerprint: identityStatus.hostKeyFingerprint,
+      hostFingerprint: boundHostFingerprint,
       trafficUsedBytes: null,
       trafficRemainingBytes: null,
       quotaResetAt: null,
@@ -392,7 +397,7 @@ describe("公共隧道系统接口", () => {
       tunnelDomain: "demo.codingns.example",
       bindingId: "binding_demo",
       hostPublicKey: identityStatus.hostPublicKey,
-      hostKeyFingerprint: identityStatus.hostKeyFingerprint,
+      hostKeyFingerprint: boundHostFingerprint,
       localTargetBaseUrl: "http://127.0.0.1:4312",
       candidateEndpoints: [
         {
@@ -422,7 +427,7 @@ describe("公共隧道系统接口", () => {
       ],
       phase: "disabled",
       connected: false,
-      hostFingerprint: identityStatus.hostKeyFingerprint,
+      hostFingerprint: boundHostFingerprint,
       trafficUsedBytes: null,
       trafficRemainingBytes: null,
       quotaResetAt: null,
@@ -452,7 +457,7 @@ describe("公共隧道系统接口", () => {
       tunnelDomain: null,
       bindingId: null,
       hostPublicKey: identityStatus.hostPublicKey,
-      hostKeyFingerprint: identityStatus.hostKeyFingerprint,
+      hostKeyFingerprint: boundHostFingerprint,
       localTargetBaseUrl: "http://127.0.0.1:4312",
       candidateEndpoints: [
         {
@@ -474,7 +479,7 @@ describe("公共隧道系统接口", () => {
       ],
       phase: "disabled",
       connected: false,
-      hostFingerprint: identityStatus.hostKeyFingerprint,
+      hostFingerprint: boundHostFingerprint,
       trafficUsedBytes: null,
       trafficRemainingBytes: null,
       quotaResetAt: null,
@@ -630,7 +635,9 @@ describe("公共隧道系统接口", () => {
     expect(bindPayload.tunnelDomain).toBe("macmini.channel.codingns.com");
     expect(bindPayload.controlAccountEmail).toBe("demo@example.com");
     expect(bindPayload.hostPublicKey).toContain("BEGIN PUBLIC KEY");
-    expect(bindPayload.hostKeyFingerprint).toMatch(/^SHA256:/);
+    // 换成 WebRTC 承载层后，Host 的对外身份指纹是 DTLS 证书指纹，
+    // 不再是 x25519 公钥指纹（公钥本身仍然一起上报，只是不做身份用）。
+    expect(bindPayload.hostKeyFingerprint).toMatch(/^sha-256 ([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
 
     const walletResponse = await hosted.app.inject({
       method: "GET",
@@ -747,6 +754,19 @@ describe("公共隧道系统接口", () => {
       }
     });
 
+    // DTLS 证书指纹必须跨重启稳定，否则客户端那边的指纹校验每次重启都会失败。
+    // 先记下启用后的指纹，重启后逐字比对。
+    const beforeRestart = await firstHosted.app.inject({
+      method: "GET",
+      url: "/api/system/relay-tunnel/status",
+      headers: {
+        authorization: `Bearer ${accessToken}`
+      }
+    });
+    const stableHostFingerprint = beforeRestart.json<{ hostFingerprint: string }>().hostFingerprint;
+
+    expect(stableHostFingerprint).toMatch(/^sha-256 ([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
+
     await firstHosted.app.close();
     activeServers.pop();
 
@@ -779,7 +799,7 @@ describe("公共隧道系统接口", () => {
       tunnelDomain: "demo.codingns.example",
       bindingId: "binding_demo",
       hostPublicKey: identityStatus.hostPublicKey,
-      hostKeyFingerprint: identityStatus.hostKeyFingerprint,
+      hostKeyFingerprint: stableHostFingerprint,
       localTargetBaseUrl: "http://127.0.0.1:4174",
       candidateEndpoints: [
         {
@@ -807,13 +827,15 @@ describe("公共隧道系统接口", () => {
           source: "host_reported"
         }
       ],
-      phase: "connecting",
+      // 这个用例是「本地 bind 但没登录控制站」，换到 WebRTC 承载层后拿不到信令票据，
+      // 所以状态如实置成 error 并写清原因；不再像老 WSS 实现那样一直挂在 connecting。
+      phase: "error",
       connected: false,
-      hostFingerprint: identityStatus.hostKeyFingerprint,
+      hostFingerprint: stableHostFingerprint,
       trafficUsedBytes: null,
       trafficRemainingBytes: null,
       quotaResetAt: null,
-      lastError: null,
+      lastError: "RELAY_TUNNEL_CONTROL_SESSION_REQUIRED: 当前还没有登录控制站账号，请先在设置页登录",
       observedAt: expect.any(String),
       updatedAt: expect.any(String)
     });

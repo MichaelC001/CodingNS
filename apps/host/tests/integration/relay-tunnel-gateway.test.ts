@@ -49,7 +49,7 @@ describe("RelayTunnelGatewayService", () => {
         authorization: "Bearer relay-demo",
         "content-type": "application/json"
       },
-      bodyBase64Url: Buffer.from(JSON.stringify({ hello: "world" }), "utf8").toString("base64url")
+      body: new Uint8Array(Buffer.from(JSON.stringify({ hello: "world" }), "utf8"))
     });
 
     expect(packets).toHaveLength(1);
@@ -66,13 +66,12 @@ describe("RelayTunnelGatewayService", () => {
         "x-relay-feedback": "host-ok",
         "x-codingns-relay-session-id": "relay-session-1"
       }),
-      bodyBase64Url: expect.any(String)
+      body: expect.any(Uint8Array)
     });
     expect(
       JSON.parse(
         Buffer.from(
-          (packets[0] as Extract<RelayTunnelGatewayPacket, { type: "http.response" }>).bodyBase64Url!,
-          "base64url"
+          (packets[0] as Extract<RelayTunnelGatewayPacket, { type: "http.response" }>).body!
         ).toString("utf8")
       )
     ).toEqual({
@@ -126,7 +125,7 @@ describe("RelayTunnelGatewayService", () => {
       type: "ws.message",
       streamId: "stream-ws-1",
       binary: false,
-      dataBase64Url: Buffer.from("ping", "utf8").toString("base64url")
+      data: new Uint8Array(Buffer.from("ping", "utf8"))
     });
 
     const messagePacket = await waitFor(
@@ -137,7 +136,7 @@ describe("RelayTunnelGatewayService", () => {
         ),
       "等待 ws.message 超时"
     );
-    expect(Buffer.from(messagePacket.dataBase64Url, "base64url").toString("utf8")).toBe("pong:ping:198.51.100.10");
+    expect(Buffer.from(messagePacket.data).toString("utf8")).toBe("pong:ping:198.51.100.10");
     const openedPacket = packets.find(
       (packet): packet is Extract<RelayTunnelGatewayPacket, { type: "ws.opened" }> =>
         packet.type === "ws.opened" && packet.streamId === "stream-ws-1"

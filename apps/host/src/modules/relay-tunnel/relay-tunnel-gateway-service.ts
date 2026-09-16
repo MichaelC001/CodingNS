@@ -102,7 +102,7 @@ export class RelayTunnelGatewayService {
       const response = await fetch(requestUrl, {
         method: packet.method,
         headers,
-        body: packet.bodyBase64Url ? Buffer.from(packet.bodyBase64Url, "base64url") : undefined
+        body: packet.body ?? undefined
       });
 
       const responseStartPacket: RelayTunnelHttpResponseStartPacket = {
@@ -195,7 +195,7 @@ export class RelayTunnelGatewayService {
         type: "ws.message",
         streamId: packet.streamId,
         binary: isBinary,
-        dataBase64Url: toBuffer(data).toString("base64url")
+        data: toUint8Array(data)
       };
       void this.onPacket(messagePacket);
     });
@@ -234,7 +234,7 @@ export class RelayTunnelGatewayService {
       return;
     }
 
-    socket.send(Buffer.from(packet.dataBase64Url, "base64url"), {
+    socket.send(toNodeBuffer(packet.data), {
       binary: packet.binary
     });
   }
@@ -260,7 +260,8 @@ export class RelayTunnelGatewayService {
       const packet: RelayTunnelHttpResponseChunkPacket = {
         type: "http.response.chunk",
         streamId,
-        bodyChunkBase64Url: Buffer.from(chunk).toString("base64url")
+        // 复制一份：这个分片会被异步发出去，不能继续引用上游 reader 的 buffer。
+        bodyChunk: new Uint8Array(chunk)
       };
       await this.onPacket(packet);
     }
@@ -417,18 +418,34 @@ function sanitizeProtocols(protocols: string[]): string[] {
   return sanitized;
 }
 
-function toBuffer(value: WebSocket.RawData): Buffer {
+function toUint8Array(value: WebSocket.RawData): Uint8Array {
   if (typeof value === "string") {
-    return Buffer.from(value, "utf8");
+    return new Uint8Array(Buffer.from(value, "utf8"));
   }
 
   if (value instanceof ArrayBuffer) {
-    return Buffer.from(value);
+    return new Uint8Array(value.slice(0));
   }
 
   if (Array.isArray(value)) {
-    return Buffer.concat(value.map((item) => Buffer.from(item)));
+    return new Uint8Array(Buffer.concat(value.map((item) => Buffer.from(item))));
   }
 
-  return Buffer.from(value);
+  // Buffer 本身就是 Uint8Array；这里再复制一份，避免下游异步处理时上游 buffer 被复用。
+  return new Uint8Array(Buffer.from(value));
+}
+
+/**
+ * 把 `Uint8Array` 包成 Node Buffer 视图。
+ *
+ * `ws.send()` 只在拿到 Buffer / ArrayBuffer 时才按二进制帧发；
+ * 直接传普通的 `Uint8Array`（来自帧解包器）在部分路径下会被当成对象处理。
+ * 这里不复制字节，只做视图。
+ */
+function toNodeBuffer(bytes: Uint8Array): Buffer {
+  if (Buffer.isBuffer(bytes)) {
+    return bytes;
+  }
+
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }

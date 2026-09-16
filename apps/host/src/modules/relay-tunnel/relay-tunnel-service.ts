@@ -7,7 +7,11 @@ import { AppError } from "../../shared/errors/app-error.js";
 import { decryptSecret, encryptSecret } from "../../shared/utils/secret-box.js";
 import { nowIso } from "../../shared/utils/time.js";
 import { RelayTunnelIdentityService } from "./crypto/relay-tunnel-identity-service.js";
-import { RelayTunnelRuntimeHttpError } from "./relay-tunnel-runtime-adapter.js";
+import {
+  ensureRelayTunnelDtlsIdentity,
+  readRelayTunnelDtlsIdentity
+} from "./webrtc/webrtc-dtls-certificate.js";
+import { RelayTunnelRuntimeHttpError } from "./relay-tunnel-runtime-error.js";
 import type { BootstrapStateRepository } from "../../storage/repositories/bootstrap-state-repository.js";
 import type { InstanceRelayTunnelIdentityRepository } from "../../storage/repositories/instance-relay-tunnel-identity-repository.js";
 import type { InstanceRelayTunnelRepository } from "../../storage/repositories/instance-relay-tunnel-repository.js";
@@ -151,7 +155,7 @@ export class RelayTunnelService {
   constructor(
     private readonly db: SqliteDatabase,
     private readonly bootstrapStateRepository: BootstrapStateRepository,
-    identityRepository: InstanceRelayTunnelIdentityRepository,
+    private readonly identityRepository: InstanceRelayTunnelIdentityRepository,
     private readonly repository: InstanceRelayTunnelRepository,
     options: {
       defaultLocalTargetBaseUrl: string;
@@ -376,6 +380,9 @@ export class RelayTunnelService {
     const normalizedHostLabel = normalizeRequiredText(hostLabel, "hostLabel");
     const { controlBaseUrl, accessToken, accountId } = this.requireControlSession(snapshot.config);
     const identity = this.identityService.ensureIdentity();
+    // WebRTC 承载层里 Host 的身份是 DTLS 证书指纹，绑定登记的就是它。
+    // 老的 x25519 公钥仍然一起上报，只是不再作为身份指纹使用。
+    const dtlsIdentity = await ensureRelayTunnelDtlsIdentity(this.identityRepository);
     const bindResponse = await this.requestControlApi<RelayControlBindResponse>({
       controlBaseUrl,
       path: "/api/v1/hosts/bind",
@@ -387,7 +394,7 @@ export class RelayTunnelService {
       body: JSON.stringify({
         hostLabel: normalizedHostLabel,
         hostPublicKey: identity.publicKeyPem,
-        hostFingerprint: identity.keyFingerprint
+        hostFingerprint: dtlsIdentity.fingerprint
       }),
       failurePrefix: "绑定 Host 失败"
     });
@@ -437,6 +444,9 @@ export class RelayTunnelService {
       });
     }
 
+    // 绑定落库时就把 DTLS 证书备好，这样配置里的 Host 指纹从头到尾都是客户端要校验的那个。
+    await ensureRelayTunnelDtlsIdentity(this.identityRepository);
+
     const timestamp = nowIso();
     const nextConfig: InstanceRelayTunnelConfig = {
       ...snapshot.config,
@@ -446,7 +456,7 @@ export class RelayTunnelService {
       tunnelDomain,
       bindingId,
       hostPublicKey: identity.publicKeyPem,
-      hostKeyFingerprint: identity.keyFingerprint,
+      hostKeyFingerprint: this.resolveHostFingerprint() ?? identity.keyFingerprint,
       updatedAt: timestamp
     };
     const nextStatus = buildSkeletonStatus(
@@ -522,6 +532,10 @@ export class RelayTunnelService {
         detail: "当前实例还没有绑定 CodingNS Connect"
       });
     }
+
+    // WebRTC 承载层里 Host 的对外身份是 DTLS 证书指纹。证书要在这里就准备好，
+    // 否则启用瞬间状态里显示的还是老的 x25519 指纹，客户端那边对不上。
+    await ensureRelayTunnelDtlsIdentity(this.identityRepository);
 
     const timestamp = nowIso();
     const nextConfig: InstanceRelayTunnelConfig = {
@@ -863,19 +877,22 @@ export class RelayTunnelService {
       return config;
     }
 
+    const hostFingerprint = this.resolveHostFingerprint() ?? identity.keyFingerprint;
+
     return {
       ...config,
       hostPublicKey: identity.publicKeyPem,
-      hostKeyFingerprint: identity.keyFingerprint
+      hostKeyFingerprint: hostFingerprint
     };
   }
 
   private syncIdentityIntoConfig(config: InstanceRelayTunnelConfig): InstanceRelayTunnelConfig {
     const identity = this.identityService.ensureIdentity();
+    const hostFingerprint = this.resolveHostFingerprint() ?? identity.keyFingerprint;
 
     if (
       config.hostPublicKey === identity.publicKeyPem
-      && config.hostKeyFingerprint === identity.keyFingerprint
+      && config.hostKeyFingerprint === hostFingerprint
     ) {
       return config;
     }
@@ -883,10 +900,22 @@ export class RelayTunnelService {
     const nextConfig: InstanceRelayTunnelConfig = {
       ...config,
       hostPublicKey: identity.publicKeyPem,
-      hostKeyFingerprint: identity.keyFingerprint
+      hostKeyFingerprint: hostFingerprint
     };
     this.repository.upsertConfig(nextConfig);
     return nextConfig;
+  }
+
+  /**
+   * Host 现在对外的身份指纹就是 DTLS 证书指纹。
+   *
+   * DTLS 身份还没生成时回退到老的 x25519 指纹——那不是「兼容模式」，
+   * 只是还没走到生成那一步（绑定 / 启用时会先生成）。
+   */
+  private resolveHostFingerprint(): string | null {
+    return readRelayTunnelDtlsIdentity(this.identityRepository)?.fingerprint
+      ?? this.identityService.getIdentity()?.keyFingerprint
+      ?? null;
   }
 
   private clearBoundState(

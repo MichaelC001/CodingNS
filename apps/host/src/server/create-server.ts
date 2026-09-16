@@ -106,7 +106,7 @@ import { PresentationExportTaskService } from "../modules/presentation/presentat
 import { PresentationPdfExportService } from "../modules/presentation/presentation-pdf-export-service.js";
 import { PresentationPptxExportService } from "../modules/presentation/presentation-pptx-export-service.js";
 import { RelayTunnelController } from "../modules/relay-tunnel/relay-tunnel-controller.js";
-import { RelayTunnelRuntimeEdgeAdapter } from "../modules/relay-tunnel/relay-tunnel-runtime-adapter.js";
+import { RelayTunnelWebrtcRuntimeAdapter } from "../modules/relay-tunnel/webrtc/relay-tunnel-webrtc-runtime-adapter.js";
 import { RelayTunnelService } from "../modules/relay-tunnel/relay-tunnel-service.js";
 import { CcSwitchAdapter } from "../modules/model-switch/cc-switch-adapter.js";
 import { ModelSwitchController } from "../modules/model-switch/model-switch-controller.js";
@@ -734,11 +734,17 @@ export function createServer(config: HostConfig) {
       controlSessionSecret: config.gitCredentialSecret
     },
     taskManager,
-    new RelayTunnelRuntimeEdgeAdapter(
+    // WebRTC 承载层：主进程只做编排，werift PeerConnection 全部跑在独立接入进程里。
+    // 老的 WSS 盲中继实现 `RelayTunnelRuntimeEdgeAdapter` 先留着，等 W6.2 整体下线。
+    new RelayTunnelWebrtcRuntimeAdapter(
       repositories.instanceRelayTunnelIdentityRepository,
       repositories.instanceRelayTunnelRepository,
+      taskManager,
       {
-        controlSessionSecret: config.gitCredentialSecret
+        controlSessionSecret: config.gitCredentialSecret,
+        logger: (event, detail) => {
+          console.log(`[relay-tunnel-webrtc] ${event}${detail ? ` ${JSON.stringify(detail)}` : ""}`);
+        }
       }
     )
   );
