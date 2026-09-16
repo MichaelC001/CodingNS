@@ -253,3 +253,152 @@ test("CommandCodeRuntimeAdapter 收到 SIGINT 后报告 interrupted", async () =
     rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+test("CommandCodeRuntimeAdapter 显式抬高 --max-turns，避免落到 CLI 的 100 轮默认值", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-max-turns-"));
+  const scriptPath = createRuntimeFixture(homeDir);
+  const captured = [];
+  const sink = { updateSessionBinding() {}, async emit() {} };
+
+  try {
+    const adapter = new CommandCodeRuntimeAdapter({
+      commandPath: process.execPath,
+      homeDir,
+      spawnFactory: (command, args, options) => {
+        captured.push(args);
+        return spawn(command, [scriptPath, ...args], options);
+      }
+    });
+    await (await adapter.startSession(createRequest(), sink)).completed;
+
+    const maxTurnsIndex = captured[0].indexOf("--max-turns");
+    assert.ok(maxTurnsIndex > 0, "启动参数里必须显式带上 --max-turns");
+    assert.deepEqual(captured[0].slice(maxTurnsIndex, maxTurnsIndex + 2), ["--max-turns", "500"]);
+
+    const customAdapter = new CommandCodeRuntimeAdapter({
+      commandPath: process.execPath,
+      homeDir,
+      maxTurns: 120,
+      spawnFactory: (command, args, options) => {
+        captured.push(args);
+        return spawn(command, [scriptPath, ...args], options);
+      }
+    });
+    await (await customAdapter.startSession(createRequest(), sink)).completed;
+    const customIndex = captured[1].indexOf("--max-turns");
+    assert.deepEqual(captured[1].slice(customIndex, customIndex + 2), ["--max-turns", "120"]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeRuntimeAdapter 撞到 --max-turns 后自动续跑并复用同一 CLI 会话", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-auto-continue-"));
+  const scriptPath = join(homeDir, "auto-continue.mjs");
+  writeFileSync(scriptPath, `
+const args = process.argv.slice(2);
+if (args.includes("--resume")) {
+  console.log(JSON.stringify({ type: "event", event: { type: "text_delta", delta: "续跑完成" } }));
+  console.log(JSON.stringify({ type: "event", event: { type: "run_end", result: { finalText: "续跑完成", stopReason: "end_turn" } } }));
+  console.log(JSON.stringify({ type: "result", subtype: "success", stopReason: "end_turn", sessionId: "cc-auto-continue", finalText: "续跑完成" }));
+} else {
+  console.log(JSON.stringify({ type: "event", event: { type: "text_delta", delta: "第一段" } }));
+  console.log(JSON.stringify({ type: "event", event: { type: "run_end", result: { finalText: "第一段", stopReason: "max_turns" } } }));
+  console.log(JSON.stringify({ type: "result", subtype: "max_turns", stopReason: "max_turns", sessionId: "cc-auto-continue", finalText: "第一段" }));
+  process.exitCode = 8;
+}
+`, "utf8");
+  const captured = [];
+  const { events, sink } = createSink();
+
+  try {
+    const adapter = new CommandCodeRuntimeAdapter({
+      commandPath: process.execPath,
+      homeDir,
+      spawnFactory: (command, args, options) => {
+        captured.push(args);
+        return spawn(command, [scriptPath, ...args], options);
+      }
+    });
+    await (await adapter.startSession(createRequest(), sink)).completed;
+
+    assert.equal(captured.length, 2);
+    assert.equal(captured[0].includes("--resume"), false);
+    const resumeIndex = captured[1].indexOf("--resume");
+    assert.deepEqual(captured[1].slice(resumeIndex, resumeIndex + 2), ["--resume", "cc-auto-continue"]);
+    assert.equal(captured[1][1], "继续");
+    assert.equal(captured[1].includes("--fork-session"), false);
+    assert.equal(
+      events.some((event) => event.type === "status" && event.detail?.startsWith("COMMAND_CODE_MAX_TURNS_AUTO_CONTINUE")),
+      true
+    );
+    assert.equal(events.at(-1).type, "complete");
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeRuntimeAdapter 自动续跑次数用尽后按轮次上限失败，不再伪装成完成", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-auto-continue-limit-"));
+  const scriptPath = join(homeDir, "always-max-turns.mjs");
+  writeFileSync(scriptPath, `
+console.log(JSON.stringify({ type: "event", event: { type: "run_end", result: { finalText: "半截", stopReason: "max_turns" } } }));
+console.log(JSON.stringify({ type: "result", subtype: "max_turns", stopReason: "max_turns", sessionId: "cc-max-turns", finalText: "半截" }));
+process.exitCode = 8;
+`, "utf8");
+  const captured = [];
+  const { events, sink } = createSink();
+
+  try {
+    const adapter = new CommandCodeRuntimeAdapter({
+      commandPath: process.execPath,
+      homeDir,
+      autoContinueMaxAttempts: 2,
+      spawnFactory: (command, args, options) => {
+        captured.push(args);
+        return spawn(command, [scriptPath, ...args], options);
+      }
+    });
+    await (await adapter.startSession(createRequest(), sink)).completed;
+
+    assert.equal(captured.length, 3);
+    assert.equal(events.some((event) => event.type === "complete"), false);
+    const errorEvent = events.find((event) => event.type === "error");
+    assert.equal(errorEvent?.errorCode, "COMMAND_CODE_MAX_TURNS");
+    assert.match(errorEvent?.detail ?? "", /COMMAND_CODE_MAX_TURNS_REACHED/);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("CommandCodeRuntimeAdapter 不会把单个 turn_end 当成整个 run 的终态", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-turn-end-"));
+  const scriptPath = join(homeDir, "turn-end.mjs");
+  writeFileSync(scriptPath, `
+console.log(JSON.stringify({ type: "event", event: { type: "turn_end", turnNumber: 1, hadToolCalls: true } }));
+console.log(JSON.stringify({ type: "event", event: { type: "text_delta", delta: "还在跑" } }));
+console.log(JSON.stringify({ type: "event", event: { type: "run_end", result: { finalText: "还在跑", stopReason: "end_turn" } } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", stopReason: "end_turn", sessionId: "cc-turn-end", finalText: "还在跑" }));
+`, "utf8");
+  const { events, sink } = createSink();
+
+  try {
+    const adapter = new CommandCodeRuntimeAdapter({
+      commandPath: process.execPath,
+      spawnFactory: (command, args, options) => spawn(command, [scriptPath, ...args], options)
+    });
+    await (await adapter.startSession(createRequest(), sink)).completed;
+
+    const completeEvents = events.filter((event) => event.type === "complete");
+    assert.equal(completeEvents.length, 1);
+    assert.equal(events.at(-1).type, "complete");
+    const turnEndIndex = events.findIndex((event) => event.detail?.startsWith("COMMAND_CODE_TURN_END"));
+    const assistantTextIndex = events.findIndex(
+      (event) => event.type === "message" && event.message.kind === "text" && event.message.content === "还在跑"
+    );
+    assert.ok(turnEndIndex >= 0, "turn_end 仍应作为运行中状态上报");
+    assert.ok(assistantTextIndex > turnEndIndex, "turn_end 之后的消息不能被终态截断");
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});

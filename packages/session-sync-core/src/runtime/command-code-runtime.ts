@@ -20,6 +20,12 @@ export interface CommandCodeRuntimeOptions {
   homeDir?: string;
   spawnFactory?: typeof spawn;
   interruptGraceMs?: number;
+  /** 传给 CLI 的 --max-turns；不传时用 DEFAULT_MAX_TURNS，避免落到 CLI 的 100 轮默认值。 */
+  maxTurns?: number;
+  /** 撞到 --max-turns 上限后自动续跑的次数上限；0 表示撞上限即结束。 */
+  autoContinueMaxAttempts?: number;
+  /** 自动续跑时发给 CLI 的输入文本。 */
+  autoContinuePrompt?: string;
 }
 
 interface CommandCodeEvent extends Record<string, unknown> {
@@ -38,6 +44,18 @@ interface ProgressiveMessageRef {
 }
 
 const DEFAULT_INTERRUPT_GRACE_MS = 1_200;
+/**
+ * CLI 的 --max-turns 默认只有 100，复杂任务经常在半途被截断。
+ *
+ * 这里显式抬高预算，避免“还没做完就输出结束”；真撞到了再由自动续跑兜底。
+ */
+const DEFAULT_MAX_TURNS = 500;
+const DEFAULT_AUTO_CONTINUE_ATTEMPTS = 3;
+const AUTO_CONTINUE_PROMPT = "继续";
+/** CLI 在 -p 模式撞到 --max-turns 时的退出码（MAX_TURNS_REACHED）。 */
+const COMMAND_CODE_MAX_TURNS_EXIT_CODE = 8;
+/** 自动续跑时保留的 stderr 片段长度，用于拼终止原因。 */
+const MAX_TURNS_STDERR_TAIL_LENGTH = 500;
 
 const COMMAND_CODE_DEBUG_ENABLED = /^(1|true|yes|on)$/i.test(
   process.env.CODINGNS_COMMAND_CODE_DEBUG?.trim() ?? ""
@@ -50,6 +68,9 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
   private readonly homeDir: string;
   private readonly spawnFactory: typeof spawn;
   private readonly interruptGraceMs: number;
+  private readonly maxTurns: number;
+  private readonly autoContinueMaxAttempts: number;
+  private readonly autoContinuePrompt: string;
 
   constructor(commandPathOrOptions: string | CommandCodeRuntimeOptions = "command-code") {
     const options = typeof commandPathOrOptions === "string"
@@ -59,6 +80,12 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     this.homeDir = options.homeDir?.trim() || join(homedir(), ".commandcode");
     this.spawnFactory = options.spawnFactory ?? spawn;
     this.interruptGraceMs = options.interruptGraceMs ?? DEFAULT_INTERRUPT_GRACE_MS;
+    this.maxTurns = normalizePositiveInteger(options.maxTurns, DEFAULT_MAX_TURNS);
+    this.autoContinueMaxAttempts = normalizeNonNegativeInteger(
+      options.autoContinueMaxAttempts,
+      DEFAULT_AUTO_CONTINUE_ATTEMPTS
+    );
+    this.autoContinuePrompt = options.autoContinuePrompt?.trim() || AUTO_CONTINUE_PROMPT;
   }
 
   async startSession(
@@ -85,7 +112,10 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
   ): ProviderRuntimeLaunchResult {
     // Command Code 的会话文件跟随真实 HOME，工作区 runtime 目录只承载 Host 注入的环境与规则。
     const homeDir = this.homeDir;
-    const args = buildCommandCodeArgs(request, mode);
+    const maxTurns = this.maxTurns;
+    const autoContinueMaxAttempts = this.autoContinueMaxAttempts;
+    const autoContinuePrompt = this.autoContinuePrompt;
+    const args = buildCommandCodeArgs(request, mode, maxTurns);
     const pendingProviderSessionId = request.providerSessionId?.trim()
       || `pending://${request.sessionId}`;
     let providerSessionId = pendingProviderSessionId;
@@ -98,6 +128,9 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     let terminalEmitted = false;
     let interrupted = false;
     let settled = false;
+    let maxTurnsReached = false;
+    let autoContinueCount = 0;
+    let child: ChildProcess | null = null;
     let resolveCompleted!: () => void;
     let rejectCompleted!: (error: Error) => void;
     const completed = new Promise<void>((resolve, reject) => {
@@ -109,11 +142,6 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     let nextSequence = Math.max(0, request.sequenceBase ?? 0);
     const toolStates = new Map<string, NormalizedMessage["toolCall"]>();
     const childEnv = buildCommandCodeEnv(request.runtimeEnv);
-    const child = this.spawnFactory(this.commandPath, args, {
-      cwd: request.workspacePath,
-      env: childEnv,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
 
     logCommandCodeDebug("launch", {
       sessionId: request.sessionId,
@@ -123,6 +151,8 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       workspacePath: request.workspacePath,
       mode,
       outputFormat: "json",
+      maxTurns,
+      autoContinueMaxAttempts,
       runtimeHomeDir: request.runtimeHomeDir,
       childHome: childEnv.HOME ?? null,
       childUserProfile: childEnv.USERPROFILE ?? null
@@ -260,11 +290,32 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
         return;
       }
 
-      if (normalizedType === "result" || normalizedType === "run_end" || normalizedType === "run-end" || normalizedType === "turn_end" || normalizedType === "turn-end") {
-        const resultText = readText(event.result ?? event.output ?? event.text);
+      if (normalizedType === "turn_end" || normalizedType === "turn-end") {
+        // CLI 每个 agent turn 结束都会发 turn_end，工具轮次也照样发。
+        // 它只是“这一轮跑完了”，不是整个 run 的终态；当成终态会把还在跑的任务显示成已结束。
+        if (!terminalState) {
+          emitStatus("status", "running", event, `COMMAND_CODE_TURN_END:${readText(event.turnNumber)}`);
+        }
+        return;
+      }
+
+      if (normalizedType === "result" || normalizedType === "run_end" || normalizedType === "run-end") {
+        const resultText = readText(
+          event.finalText
+            ?? asRecord(event.result).finalText
+            ?? (typeof event.result === "string" ? event.result : undefined)
+            ?? event.output
+            ?? event.text
+        );
         if (resultText && resultText !== messageState.text) {
           messageState.text = resultText;
           emitMessage("text", "assistant", resultText, null, event);
+        }
+        if (isMaxTurnsOutcome(event)) {
+          // 撞到 CLI 的轮次上限：这里只记账，等进程退出后决定自动续跑还是明确报错。
+          // 直接发完成事件就是“任务没做完却显示已结束”的老毛病。
+          maxTurnsReached = true;
+          return;
         }
         const resultState = normalizedType === "result"
           ? mapResultState(event)
@@ -313,65 +364,155 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
         else resolveCompleted();
       });
     };
-    const emitTerminal = (state: RuntimeRunState, event: CommandCodeEvent, detail?: string): void => {
+    const emitTerminal = (
+      state: RuntimeRunState,
+      event: CommandCodeEvent,
+      detail?: string,
+      errorCode?: string
+    ): void => {
       if (terminalEmitted) return;
       terminalEmitted = true;
-      const type = state === "interrupted" ? "interrupted" : state === "failed" ? "status" : "complete";
+      // 带明确错误码的失败走 error 事件，Host 才能把错误码和详情落库；其余失败沿用原状态事件。
+      const type = state === "interrupted"
+        ? "interrupted"
+        : state === "failed"
+          ? (errorCode ? "error" : "status")
+          : "complete";
       enqueue({
         type,
         status: state,
         detail: detail ?? stringifyStructuredValue(event),
-        errorCode: state === "failed" ? "COMMAND_CODE_RUNTIME_ERROR" : undefined,
+        errorCode: state === "failed" ? (errorCode ?? "COMMAND_CODE_RUNTIME_ERROR") : undefined,
         interruptSource: state === "interrupted" ? "user" : null,
         providerSessionId,
         rawStoreRef,
         rawEventRef: buildRawEventRef(rawStoreRef, request.sessionId, lineNumber)
       });
     };
+    const canAutoContinueAfterClose = (code: number | null): boolean =>
+      (code === COMMAND_CODE_MAX_TURNS_EXIT_CODE || maxTurnsReached)
+      && !interrupted
+      && !settled
+      && !terminalState
+      && autoContinueCount < autoContinueMaxAttempts
+      && isResumableCommandCodeSessionId(providerSessionId);
+    const buildAutoContinueArgs = (): string[] => {
+      // 续跑必须落在同一个 CLI 会话上：--continue 语义是“接最近一个”，--fork-session 会分叉。
+      const autoContinueOptions = {
+        ...request.options,
+        content: autoContinuePrompt,
+        providerPrompt: autoContinuePrompt,
+        continue: false,
+        forkSession: false
+      } as ProviderRuntimeRunRequest["options"] & { continue: boolean; forkSession: boolean };
 
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdoutBuffer += chunk.toString("utf8");
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() ?? "";
-      lines.forEach(processLine);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderrBuffer = `${stderrBuffer}${chunk.toString("utf8")}`.slice(-8_192);
-    });
-    child.on("error", (error) => {
-      if (!terminalState) {
-        terminalState = "failed";
-        emitTerminal("failed", { type: "error", error: error.message }, error.message);
-      }
-      settle(error);
-    });
-    child.on("close", (code, signal) => {
-      if (stdoutBuffer.trim()) processLine(stdoutBuffer);
-      if (!terminalState) {
-        terminalState = interrupted || code === 130 || signal === "SIGINT"
-          ? "interrupted"
-          : code === 0
-            ? "completed"
-            : "failed";
-        emitTerminal(
-          terminalState,
-          { type: "process_exit", code, signal, stderr: stderrBuffer || null },
-          terminalState === "failed" ? `COMMAND_CODE_EXIT_${code ?? signal ?? "UNKNOWN"}` : undefined
-        );
-      }
-      logCommandCodeDebug("process.close", {
-        sessionId: request.sessionId,
-        providerSessionId,
-        rawStoreRef,
-        code,
-        signal,
-        stderrLength: stderrBuffer.length,
-        stderrTail: stderrBuffer.trim().slice(-500)
+      return buildCommandCodeArgs(
+        { ...request, providerSessionId, options: autoContinueOptions },
+        "continue",
+        maxTurns
+      );
+    };
+
+    const spawnAttempt = (attemptArgs: string[], trigger: "initial" | "auto_continue"): void => {
+      stdoutBuffer = "";
+      const activeChild = this.spawnFactory(this.commandPath, attemptArgs, {
+        cwd: request.workspacePath,
+        env: childEnv,
+        stdio: ["ignore", "pipe", "pipe"]
       });
-      settle(terminalState === "failed" && code !== 0
-        ? new Error(`COMMAND_CODE_EXIT_${code ?? signal ?? "UNKNOWN"}`)
-        : undefined);
-    });
+      child = activeChild;
+
+      if (trigger === "auto_continue") {
+        // 新进程的增量必须从零开始拼，避免把上一段文本接在后面。
+        progressiveMessageRefs.clear();
+        messageState.text = "";
+        messageState.thinking = "";
+        logCommandCodeDebug("auto_continue.spawn", {
+          sessionId: request.sessionId,
+          providerSessionId,
+          attempt: autoContinueCount,
+          maxAttempts: autoContinueMaxAttempts,
+          args: attemptArgs
+        });
+      }
+
+      activeChild.stdout?.on("data", (chunk: Buffer) => {
+        stdoutBuffer += chunk.toString("utf8");
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() ?? "";
+        lines.forEach(processLine);
+      });
+      activeChild.stderr?.on("data", (chunk: Buffer) => {
+        stderrBuffer = `${stderrBuffer}${chunk.toString("utf8")}`.slice(-8_192);
+      });
+      activeChild.on("error", (error) => {
+        if (!terminalState) {
+          terminalState = "failed";
+          emitTerminal("failed", { type: "error", error: error.message }, error.message);
+        }
+        settle(error);
+      });
+      activeChild.on("close", (code, signal) => {
+        if (stdoutBuffer.trim()) processLine(stdoutBuffer);
+        const maxTurnsHit = code === COMMAND_CODE_MAX_TURNS_EXIT_CODE || maxTurnsReached;
+
+        logCommandCodeDebug("process.close", {
+          sessionId: request.sessionId,
+          providerSessionId,
+          rawStoreRef,
+          attempt: autoContinueCount,
+          code,
+          signal,
+          maxTurnsHit,
+          autoContinue: canAutoContinueAfterClose(code),
+          stderrLength: stderrBuffer.length,
+          stderrTail: stderrBuffer.trim().slice(-MAX_TURNS_STDERR_TAIL_LENGTH)
+        });
+
+        if (canAutoContinueAfterClose(code)) {
+          autoContinueCount += 1;
+          maxTurnsReached = false;
+          stderrBuffer = "";
+          emitStatus(
+            "status",
+            "running",
+            { type: "auto_continue", attempt: autoContinueCount, maxAttempts: autoContinueMaxAttempts },
+            `COMMAND_CODE_MAX_TURNS_AUTO_CONTINUE:${autoContinueCount}/${autoContinueMaxAttempts}`
+          );
+          spawnAttempt(buildAutoContinueArgs(), "auto_continue");
+          return;
+        }
+
+        if (!terminalState) {
+          terminalState = interrupted || code === 130 || signal === "SIGINT"
+            ? "interrupted"
+            : code === 0
+              ? "completed"
+              : "failed";
+          if (terminalState === "failed" && maxTurnsHit) {
+            emitTerminal(
+              "failed",
+              { type: "process_exit", code, signal, reason: "max_turns", stderr: stderrBuffer || null },
+              buildMaxTurnsReachedDetail(autoContinueCount, maxTurns),
+              "COMMAND_CODE_MAX_TURNS"
+            );
+          } else {
+            emitTerminal(
+              terminalState,
+              { type: "process_exit", code, signal, stderr: stderrBuffer || null },
+              terminalState === "failed" ? `COMMAND_CODE_EXIT_${code ?? signal ?? "UNKNOWN"}` : undefined
+            );
+          }
+        }
+
+        // 轮次上限已经转成明确错误，不再抛异常重复上报一次失败。
+        settle(terminalState === "failed" && code !== 0 && !maxTurnsHit
+          ? new Error(`COMMAND_CODE_EXIT_${code ?? signal ?? "UNKNOWN"}`)
+          : undefined);
+      });
+    };
+
+    spawnAttempt(args, "initial");
 
     enqueue({
       type: "status",
@@ -387,20 +528,24 @@ export class CommandCodeRuntimeAdapter implements ProviderRuntimeAdapter {
       rawStoreRef,
       completed,
       interrupt: async () => {
-        if (settled || !isChildAlive(child)) return;
+        const activeChild = child;
+        if (settled || !activeChild || !isChildAlive(activeChild)) return;
         interrupted = true;
-        child.kill("SIGINT");
-        const exited = await waitForExit(child, this.interruptGraceMs);
-        if (!exited && isChildAlive(child)) {
-          await terminateChildProcess(child, { initialSignal: "SIGTERM", graceMs: 800, killWaitMs: 500 });
+        activeChild.kill("SIGINT");
+        const exited = await waitForExit(activeChild, this.interruptGraceMs);
+        if (!exited && isChildAlive(activeChild)) {
+          await terminateChildProcess(activeChild, { initialSignal: "SIGTERM", graceMs: 800, killWaitMs: 500 });
         }
         if (!terminalState) {
           terminalState = "interrupted";
           emitTerminal("interrupted", { type: "interrupt", signal: "SIGINT" }, "COMMAND_CODE_INTERRUPTED");
         }
-        if (!isChildAlive(child)) settle();
+        if (!isChildAlive(activeChild)) settle();
       },
-      isAlive: () => isChildAlive(child)
+      isAlive: () => {
+        const activeChild = child;
+        return activeChild ? isChildAlive(activeChild) : false;
+      }
     };
   }
 }
@@ -427,7 +572,8 @@ function formatCommandCodeDebugValue(value: unknown): string {
 
 function buildCommandCodeArgs(
   request: ProviderRuntimeRunRequest,
-  mode: "start" | "continue"
+  mode: "start" | "continue",
+  maxTurns: number
 ): string[] {
   const options = request.options as ProviderRuntimeRunRequest["options"] & {
     plan?: boolean;
@@ -436,7 +582,16 @@ function buildCommandCodeArgs(
     enableAskUserQuestion?: boolean;
   };
   const prompt = options.providerPrompt?.trim() || options.content.trim();
-  const args = ["-p", prompt, "--output-format", "json", "--skip-onboarding"];
+  const args = [
+    "-p",
+    prompt,
+    "--output-format",
+    "json",
+    "--skip-onboarding",
+    // CLI 默认 --max-turns 100，复杂任务经常在完成前被截断；这里显式抬高预算。
+    "--max-turns",
+    String(maxTurns)
+  ];
   const attachmentDirectories = Array.from(
     new Set(options.attachments.map((attachment) => dirname(attachment.filePath)))
   );
@@ -505,6 +660,52 @@ function readText(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === undefined || value === null) return "";
   return stringifyStructuredValue(value);
+}
+
+/**
+ * 读取 CLI 的结束原因。
+ *
+ * result 行的 subtype/stopReason 在顶层，run_end 的 stopReason 藏在 result 里，两种都要认，
+ * 否则 max_turns 会被当成正常完成。
+ */
+function readOutcomeSignal(event: CommandCodeEvent): string {
+  const nested = asRecord(event.result);
+  return readText(
+    event.subtype
+      ?? event.stopReason
+      ?? event.stop_reason
+      ?? nested.stopReason
+      ?? nested.stop_reason
+      ?? nested.subtype
+  ).trim().toLowerCase();
+}
+
+function isMaxTurnsOutcome(event: CommandCodeEvent): boolean {
+  const signal = readOutcomeSignal(event);
+  return signal.includes("max_turns") || signal.includes("max-turns") || signal.includes("maxturns");
+}
+
+/** 只有拿到真实会话 ID 才能 --resume 续跑；pending:// 前缀表示 CLI 还没回传 ID。 */
+function isResumableCommandCodeSessionId(providerSessionId: string): boolean {
+  const normalized = providerSessionId.trim();
+  return normalized.length > 0 && !normalized.startsWith("pending://");
+}
+
+function buildMaxTurnsReachedDetail(autoContinueCount: number, maxTurns: number): string {
+  const autoContinueSuffix = autoContinueCount > 0
+    ? `，自动续跑 ${autoContinueCount} 次后仍未完成`
+    : "";
+  return `COMMAND_CODE_MAX_TURNS_REACHED:单次运行达到 --max-turns ${maxTurns} 上限${autoContinueSuffix}，会话已停止，任务可能尚未完成。`;
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : fallback;
+}
+
+function normalizeNonNegativeInteger(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
 }
 
 function isToolCallEvent(type: string): boolean {

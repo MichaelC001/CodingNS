@@ -51,6 +51,10 @@ export interface HostConfig {
   grokApiBaseUrl: string | null;
   commandCodeCliPath: string;
   commandCodeHomeDir: string;
+  /** 传给 Command Code CLI 的 --max-turns；为空时用 runtime 默认预算。 */
+  commandCodeMaxTurns: number | null;
+  /** 撞到 --max-turns 后自动续跑的次数上限；为空时用 runtime 默认次数。 */
+  commandCodeAutoContinueAttempts: number | null;
   /** Pi Agent CLI 路径；缺省走 PATH 里的 `pi`。 */
   piCliPath: string;
   /**
@@ -172,6 +176,12 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
     overrides.commandCodeHomeDir
     ?? process.env.CODINGNS_COMMAND_CODE_HOME
     ?? path.join(homeDir, ".commandcode");
+  const commandCodeMaxTurns =
+    overrides.commandCodeMaxTurns
+    ?? readOptionalNumber(process.env.CODINGNS_COMMAND_CODE_MAX_TURNS);
+  const commandCodeAutoContinueAttempts =
+    overrides.commandCodeAutoContinueAttempts
+    ?? readOptionalNumber(process.env.CODINGNS_COMMAND_CODE_AUTO_CONTINUE_ATTEMPTS);
   const configuredOpenCodeBaseUrl = normalizeOptionalText(
     overrides.opencodeBaseUrl ?? process.env.CODINGNS_OPENCODE_BASE_URL ?? null
   );
@@ -280,6 +290,8 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
     grokApiBaseUrl,
     commandCodeCliPath,
     commandCodeHomeDir,
+    commandCodeMaxTurns,
+    commandCodeAutoContinueAttempts,
     piCliPath,
     // 测试会显式传一个隔离目录；不传时才落在数据库目录下，不污染用户工作区。
     piDataRootDir: overrides.piDataRootDir ?? path.dirname(databasePath),

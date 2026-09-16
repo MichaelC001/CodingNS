@@ -5090,7 +5090,11 @@ function createProviderRuntimeAdapters(
       }),
       new CommandCodeRuntimeAdapter({
         commandPath: config.commandCodeCliPath,
-        homeDir: config.commandCodeHomeDir
+        homeDir: config.commandCodeHomeDir,
+        ...(config.commandCodeMaxTurns !== null ? { maxTurns: config.commandCodeMaxTurns } : {}),
+        ...(config.commandCodeAutoContinueAttempts !== null
+          ? { autoContinueMaxAttempts: config.commandCodeAutoContinueAttempts }
+          : {})
       }),
       new PiRuntimeAdapter({
         commandPath: config.piCliPath,
