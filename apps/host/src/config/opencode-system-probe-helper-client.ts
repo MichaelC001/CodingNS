@@ -51,7 +51,9 @@ export class OpenCodeSystemProbeHelperClient {
       cwd: process.cwd(),
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32"
+      detached: process.platform !== "win32",
+      // Windows 服务进程没有自己的控制台，不给这个标记每拉一个 helper 就会弹一个黑窗口。
+      windowsHide: true
     });
     this.stdoutReader = readline.createInterface({
       input: this.child.stdout
