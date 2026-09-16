@@ -64,9 +64,10 @@ if (normalizedFiles.length === 0) {
 
 const hostPlan = buildPackagePlan("host", normalizedFiles);
 const userAppPlan = buildPackagePlan("user-app", normalizedFiles);
+const codingnsPlan = buildCodingnsPlan(normalizedFiles);
 
-if (!hostPlan && !userAppPlan) {
-  console.log("[related-test] 本次变更没有命中 host / user-app 测试范围，不执行测试。");
+if (!hostPlan && !userAppPlan && !codingnsPlan) {
+  console.log("[related-test] 本次变更没有命中 host / user-app / codingns 测试范围，不执行测试。");
   process.exit(0);
 }
 
@@ -78,10 +79,59 @@ try {
   if (userAppPlan) {
     runUserAppPlan(userAppPlan);
   }
+
+  if (codingnsPlan) {
+    runCodingnsPlan(codingnsPlan);
+  }
 } catch (error) {
   const detail = error instanceof Error ? error.message : String(error);
   console.error(`[related-test] 执行失败：${detail}`);
   process.exit(1);
+}
+
+function buildCodingnsPlan(files) {
+  const relevant = files.filter((file) => file.startsWith("packages/codingns/"));
+
+  if (relevant.length === 0) {
+    return null;
+  }
+
+  const testsDir = path.join(repoRoot, "packages", "codingns", "tests");
+  const matchedTests = new Set();
+
+  for (const file of relevant) {
+    const baseName = path.basename(file).replace(/\.(mjs|ts|js)$/, "");
+    const candidate = path.join(testsDir, `${baseName}.test.mjs`);
+
+    if (fs.existsSync(candidate)) {
+      matchedTests.add(candidate);
+    }
+  }
+
+  if (matchedTests.size === 0 && relevant.some((file) => file.includes("/scripts/"))) {
+    const fallback = path.join(testsDir, "host-install.test.mjs");
+
+    if (fs.existsSync(fallback)) {
+      matchedTests.add(fallback);
+    }
+  }
+
+  return matchedTests.size > 0 ? Array.from(matchedTests) : null;
+}
+
+function runCodingnsPlan(testFiles) {
+  const relativeTests = testFiles.map((file) => path.relative(repoRoot, file));
+
+  console.log(`[related-test] codingns 包测试：${relativeTests.join(", ")}`);
+
+  const result = spawnSync("node", ["--test", ...testFiles], {
+    cwd: repoRoot,
+    stdio: "inherit"
+  });
+
+  if (result.status !== 0) {
+    throw new Error("packages/codingns 测试没有全过");
+  }
 }
 
 function detectChangedFiles() {

@@ -47,6 +47,8 @@ USE_PM2="1"
 INSTALL_PM2="1"
 START_PM2_SERVICE="1"
 ENABLE_STARTUP="1"
+HOST_INSTALLER_USED="0"
+INSTALL_DESKTOP_CLIENT="0"
 PROMPT_INPUT_FD=""
 PREREQUISITE_ISSUES=()
 INSTALL_OPENCODE="0"
@@ -243,6 +245,30 @@ msg() {
     zh:warn_install_log_path) printf '失败日志位置：%s' "$@";;
     en:warn_install_log_path) printf 'Failure log path: %s' "$@";;
     zh:info_configuring_startup) printf '开始配置 PM2 开机自启（%s）...' "$@";;
+    zh:info_using_host_installer) printf '使用统一安装器完成配置、启动与开机自启...';;
+    en:info_managed_by_installer) printf 'Service is now managed by the unified installer.';;
+    zh:info_managed_by_installer) printf '服务已经交给统一安装器管理。';;
+    zh:prompt_install_desktop_client) printf '顺便安装桌面客户端吗？';;
+    en:prompt_install_desktop_client) printf 'Also install the desktop client?';;
+    zh:info_desktop_client_downloading) printf '正在下载桌面客户端安装包...';;
+    en:info_desktop_client_downloading) printf 'Downloading the desktop client installer...';;
+    zh:info_desktop_client_installed) printf '桌面客户端已经装到 %s。';;
+    en:info_desktop_client_installed) printf 'Desktop client installed to %s.';;
+    zh:warn_desktop_client_download_failed) printf '桌面客户端下载失败，服务端不受影响。可以稍后从 GitHub Release 手动下载。';;
+    en:warn_desktop_client_download_failed) printf 'Desktop client download failed; the service install is unaffected. Download it later from GitHub Releases.';;
+    zh:warn_desktop_client_install_failed) printf '桌面客户端安装失败，服务端不受影响。';;
+    en:warn_desktop_client_install_failed) printf 'Desktop client install failed; the service install is unaffected.';;
+    zh:warn_desktop_client_unsupported) printf '当前平台暂不支持自动安装桌面客户端，请到 GitHub Release 手动下载。';;
+    en:warn_desktop_client_unsupported) printf 'Automatic desktop client install is not supported on this platform yet. Download it from GitHub Releases.';;
+    en:info_installer_service_hint) printf 'Autostart, startup, and the health check were handled by the installer.';;
+    zh:info_installer_service_hint) printf '开机自启、服务启动和健康检查都已经由安装器完成。';;
+    en:info_installer_state_hint) printf 'Open the desktop app settings to see the service state, or run codingns start / stop directly.';;
+    zh:info_installer_state_hint) printf '可以在桌面端设置页查看服务状态，也可以直接运行 codingns start / stop。';;
+    en:info_using_host_installer) printf 'Using the unified installer for setup, startup, and autostart...';;
+    zh:warn_host_installer_fallback) printf '统一安装器不可用，回退到旧的 pm2 流程。';;
+    en:warn_host_installer_fallback) printf 'Unified installer unavailable, falling back to the legacy pm2 flow.';;
+    zh:warn_legacy_pm2_detected) printf '检测到旧的 pm2 托管痕迹（%s）。新安装不会重复拉起第二个服务，需要清理时再手动处理 pm2。' "$@";;
+    en:warn_legacy_pm2_detected) printf 'Legacy pm2 traces detected (%s). The new install will not start a second service; clean up pm2 manually when you want to.' "$@";;
     en:info_configuring_startup) printf 'Configuring PM2 to start on boot (%s)...' "$@";;
     zh:info_done) printf '安装流程已完成。';;
     en:info_done) printf 'The installation flow is complete.';;
@@ -1462,6 +1488,11 @@ collect_install_options() {
   fi
 
   INSTALL_CODINGNS="$(read_yes_no "$(msg prompt_install_codingns)" "y")"
+  if [[ -n "${CODINGNS_INSTALL_DESKTOP_CLIENT:-}" ]]; then
+    INSTALL_DESKTOP_CLIENT="$CODINGNS_INSTALL_DESKTOP_CLIENT"
+  else
+    INSTALL_DESKTOP_CLIENT="$(read_yes_no "$(msg prompt_install_desktop_client)" "n")"
+  fi
   USE_PM2="$(read_yes_no "$(msg prompt_use_pm2)" "y")"
 
   if [[ "$USE_PM2" == "1" ]]; then
@@ -1485,6 +1516,9 @@ print_install_summary() {
   fi
   printf -- '- %s\n' "$(msg info_install_codingns "$(localized_bool "$INSTALL_CODINGNS")")"
   printf -- '- %s\n' "$(msg info_use_pm2 "$(localized_bool "$USE_PM2")")"
+  if [[ "$INSTALL_DESKTOP_CLIENT" == "1" ]]; then
+    printf -- '- %s\n' "$(msg prompt_install_desktop_client)"
+  fi
 }
 
 probe_registry() {
@@ -1997,6 +2031,189 @@ refresh_deepseek_harness_launcher() {
   fi
 }
 
+resolve_host_installer_script() {
+  local candidate="$INSTALL_SCRIPT_DIR/packages/codingns/scripts/host-install.mjs"
+
+  if [[ -f "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
+detect_legacy_pm2_paths() {
+  local -a found=()
+  local file=""
+
+  if [[ -d "$HOME/Library/LaunchAgents" ]]; then
+    for file in "$HOME/Library/LaunchAgents"/pm2*.plist; do
+      [[ -f "$file" ]] && found+=("$file")
+    done
+  fi
+
+  if [[ -d "$HOME/.config/systemd/user" ]]; then
+    for file in "$HOME/.config/systemd/user"/pm2*.service; do
+      [[ -f "$file" ]] && found+=("$file")
+    done
+  fi
+
+  if [[ -d "$HOME/.pm2" ]]; then
+    found+=("$HOME/.pm2")
+  fi
+
+  if [[ ${#found[@]} -gt 0 ]]; then
+    printf '%s\n' "${found[*]}"
+  fi
+}
+
+# 走统一安装器：装包已经由 install_or_resolve_codingns 做完，这里用 --reuse-existing 复用，
+# 由安装器负责写开机自启、启动服务、健康检查和安装状态落盘。
+run_host_installer_setup() {
+  local installer_script=""
+  installer_script="$(resolve_host_installer_script || true)"
+  [[ -n "$installer_script" ]] || return 1
+  [[ -n "$NODE_BIN" ]] || return 1
+
+  local -a args=(
+    "install"
+    "--data-dir" "$SELECTED_DATA_DIR"
+    "--port" "$SELECTED_PORT"
+    "--install-prefix" "$NPM_GLOBAL_PREFIX"
+    "--reuse-existing"
+  )
+
+  if [[ "$ENABLE_STARTUP" == "1" ]]; then
+    args+=("--autostart")
+  fi
+
+  say_info info_using_host_installer
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say_info_custom "node $installer_script ${args[*]}"
+    HOST_INSTALLER_USED="1"
+    return 0
+  fi
+
+  if "$NODE_BIN" "$installer_script" "${args[@]}"; then
+    HOST_INSTALLER_USED="1"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_desktop_release_asset_url() {
+  local pattern="$1"
+  local api_url="https://api.github.com/repos/jingyi0605/CodingNS/releases/latest"
+  local payload=""
+
+  payload="$(curl -fsSL "$api_url" 2>/dev/null || true)"
+  [[ -n "$payload" ]] || return 1
+
+  printf '%s' "$payload" \
+    | tr ',' '\n' \
+    | grep -o 'https://[^"]*'"$pattern" \
+    | head -1
+}
+
+install_desktop_client_macos() {
+  local url=""
+  local tmp_dir=""
+  local mount_point=""
+  local app_source=""
+  url="$(resolve_desktop_release_asset_url '\.dmg')"
+
+  if [[ -z "$url" ]]; then
+    say_warn_custom "$(msg warn_desktop_client_download_failed)"
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say_info_custom "下载 ${url} 后挂载 dmg，并把 CodingNS.app 复制到 $HOME/Applications"
+    return 0
+  fi
+
+  say_info_custom "$(msg info_desktop_client_downloading)"
+  tmp_dir="$(mktemp -d)"
+
+  if ! curl -fL --retry 2 -o "$tmp_dir/CodingNS.dmg" "$url"; then
+    say_warn_custom "$(msg warn_desktop_client_download_failed)"
+    rm -rf "$tmp_dir"
+    return 0
+  fi
+
+  mount_point="$(hdiutil attach "$tmp_dir/CodingNS.dmg" -nobrowse -readonly 2>/dev/null | tail -1 | awk '{print $NF}')"
+
+  if [[ -z "$mount_point" || ! -d "$mount_point" ]]; then
+    say_warn_custom "$(msg warn_desktop_client_install_failed)"
+    rm -rf "$tmp_dir"
+    return 0
+  fi
+
+  app_source="$(find "$mount_point" -maxdepth 1 -name "*.app" | head -1)"
+  mkdir -p "$HOME/Applications"
+
+  if [[ -n "$app_source" ]] && cp -R "$app_source" "$HOME/Applications/"; then
+    say_info_custom "$(msg info_desktop_client_installed "$HOME/Applications")"
+  else
+    say_warn_custom "$(msg warn_desktop_client_install_failed)"
+  fi
+
+  hdiutil detach "$mount_point" >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
+}
+
+install_desktop_client_windows() {
+  local url=""
+  local tmp_file=""
+  url="$(resolve_desktop_release_asset_url '\.exe')"
+
+  if [[ -z "$url" ]]; then
+    say_warn_custom "$(msg warn_desktop_client_download_failed)"
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say_info_custom "下载 $url 并静默安装桌面客户端"
+    return 0
+  fi
+
+  say_info_custom "$(msg info_desktop_client_downloading)"
+  tmp_file="$(mktemp -t codingns-desktop-client-XXXXXX.exe)"
+
+  if ! curl -fL --retry 2 -o "$tmp_file" "$url"; then
+    say_warn_custom "$(msg warn_desktop_client_download_failed)"
+    rm -f "$tmp_file"
+    return 0
+  fi
+
+  if "$tmp_file" /S; then
+    say_info_custom "$(msg info_desktop_client_installed "$LOCALAPPDATA")"
+  else
+    say_warn_custom "$(msg warn_desktop_client_install_failed)"
+  fi
+
+  rm -f "$tmp_file"
+}
+
+# 桌面客户端装失败只提示，不影响已经装好的服务端。
+install_desktop_client_if_requested() {
+  [[ "$INSTALL_DESKTOP_CLIENT" == "1" ]] || return 0
+
+  case "$(uname -s)" in
+    Darwin)
+      install_desktop_client_macos
+      ;;
+    MINGW* | MSYS* | CYGWIN*)
+      install_desktop_client_windows
+      ;;
+    *)
+      say_warn_custom "$(msg warn_desktop_client_unsupported)"
+      ;;
+  esac
+}
+
 install_or_resolve_pm2() {
   if [[ "$USE_PM2" != "1" ]]; then
     say_info info_skip_pm2_management
@@ -2311,6 +2528,11 @@ print_success_summary() {
   printf -- '- %s\n' "$(msg info_password_setup_hint)"
 
   printf '\n'
+  if [[ "$HOST_INSTALLER_USED" == "1" ]]; then
+    say_info_custom "$(msg info_managed_by_installer)"
+    printf -- '- %s\n' "$(msg info_installer_service_hint)"
+    printf -- '- %s\n' "$(msg info_installer_state_hint)"
+  else
   say_info info_pm2_title
   if [[ "$USE_PM2" == "1" ]]; then
     printf -- '- %s\n' "$(msg info_process_name "$PROCESS_NAME")"
@@ -2335,8 +2557,9 @@ print_success_summary() {
   else
     printf -- '- %s\n' "$(msg info_pm2_skipped)"
   fi
+  fi
 
-  if [[ "$USE_PM2" != "1" || "$START_PM2_SERVICE" != "1" ]]; then
+  if [[ "$HOST_INSTALLER_USED" != "1" ]] && [[ "$USE_PM2" != "1" || "$START_PM2_SERVICE" != "1" ]]; then
     printf '\n'
     say_info info_manual_start_title
     printf '%s start --host 0.0.0.0 --port %s --data-dir %s\n' "$CODINGNS_BIN" "$SELECTED_PORT" "$SELECTED_DATA_DIR"
@@ -2368,11 +2591,23 @@ main() {
   ensure_registry_if_needed
   install_or_resolve_codingns
   refresh_deepseek_harness_launcher
-  install_or_resolve_pm2
-  resolve_pm2_start_script_path
   write_private_runtime_state
-  start_pm2_service
-  configure_startup
+
+  local legacy_pm2_paths=""
+  legacy_pm2_paths="$(detect_legacy_pm2_paths || true)"
+  if [[ -n "$legacy_pm2_paths" ]]; then
+    say_warn_custom "$(msg warn_legacy_pm2_detected "$legacy_pm2_paths")"
+  fi
+
+  if ! run_host_installer_setup; then
+    say_warn_custom "$(msg warn_host_installer_fallback)"
+    install_or_resolve_pm2
+    resolve_pm2_start_script_path
+    start_pm2_service
+    configure_startup
+  fi
+
+  install_desktop_client_if_requested
   print_success_summary
 }
 

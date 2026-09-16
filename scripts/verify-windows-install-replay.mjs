@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const dataDir = process.argv[2];
 const installOutputLogPath = process.argv[3] || "";
@@ -46,8 +47,51 @@ assertExists(installState.pm2Command, "pm2 命令");
 verifyNodeExecutable(installState.nodeExe);
 verifyInstallLogs(logsRoot);
 verifyInstallOutput(installOutput);
+verifyHostAutostartLifecycle(dataDir, installState.nodeExe);
 
 console.log("[windows-replay] Windows 安装回放校验通过。");
+
+function verifyHostAutostartLifecycle(dataDir, nodeExe) {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const installerScript = path.join(repoRoot, "packages", "codingns", "scripts", "host-install.mjs");
+  const taskName = "CodingNS Host";
+
+  if (!fs.existsSync(installerScript)) {
+    return;
+  }
+
+  if (!queryScheduledTask(taskName)) {
+    // 统一安装器没跑通时会回退到旧的 pm2 链路，那时不会有计划任务。
+    console.log("[windows-replay] 没有检测到 CodingNS Host 计划任务，本次回放走的是旧链路。");
+    return;
+  }
+
+  const disableResult = spawnSync(
+    nodeExe ?? process.execPath,
+    [installerScript, "autostart", "--disable", "--data-dir", dataDir],
+    { encoding: "utf8" }
+  );
+
+  if (disableResult.status !== 0) {
+    throw new Error(`关闭开机自启失败：${formatSpawnFailure(disableResult)}`);
+  }
+
+  if (queryScheduledTask(taskName)) {
+    throw new Error("自启已经关闭，但计划任务还在");
+  }
+
+  console.log("[windows-replay] 自启创建与清理都验证过了。");
+}
+
+function queryScheduledTask(taskName) {
+  const result = spawnSync("schtasks", ["/Query", "/TN", taskName], { encoding: "utf8" });
+
+  return result.status === 0;
+}
 
 function assertExists(targetPath, label) {
   if (!fs.existsSync(targetPath)) {
