@@ -9,6 +9,8 @@ export interface HostConnectionEmptyStateLocalHost {
 export interface HostConnectionEmptyStateProps {
   serverBaseUrl: string;
   localHost: HostConnectionEmptyStateLocalHost | null;
+  /** 探测失败的原始原因，用来区分「服务没起来」和「客户端连不上服务」。 */
+  failureDetail?: string | null;
   connecting: boolean;
   retrying: boolean;
   onConnectLocalHost: () => void;
@@ -20,6 +22,7 @@ export interface HostConnectionEmptyStateProps {
 export function HostConnectionEmptyState({
   serverBaseUrl,
   localHost,
+  failureDetail,
   connecting,
   retrying,
   onConnectLocalHost,
@@ -46,6 +49,14 @@ export function HostConnectionEmptyState({
           </span>
           <span className="cyber-host-empty-address-value">{address}</span>
         </p>
+        {failureDetail ? (
+          <p className="cyber-host-empty-failure">
+            <span className="cyber-host-empty-address-label">
+              {t("auth.hostConnectionEmptyFailureLabel")}
+            </span>
+            <span className="cyber-host-empty-failure-value">{failureDetail}</span>
+          </p>
+        ) : null}
       </div>
 
       <div className="cyber-host-empty-actions">

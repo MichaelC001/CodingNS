@@ -240,6 +240,7 @@ export function LoginPage() {
   const [rememberPassword, setRememberPassword] = useState(() => Boolean(rememberedLogin));
   const persistedServerBaseUrl = useServerConfigSelector((state) => state.baseUrl);
   const [probeServerBaseUrl, setProbeServerBaseUrl] = useState(persistedServerBaseUrl);
+  const [hostProbeFailureDetail, setHostProbeFailureDetail] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [hostReachability, setHostReachability] = useState<HostReachability>("unknown");
   const [retryingHostProbe, setRetryingHostProbe] = useState(false);
@@ -331,6 +332,7 @@ export function LoginPage() {
         .then((status) => {
           if (disposed) return;
           setHostReachability(status.reachable ? "reachable" : "unreachable");
+          setHostProbeFailureDetail(status.failureDetail);
           if (status.demoMode) {
             setDemoMode(true);
             // 检测是否因 token 过期被踢回登录页
@@ -342,9 +344,10 @@ export function LoginPage() {
             navigate("/bootstrap", { replace: true });
           }
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           if (!disposed) {
             setHostReachability("unreachable");
+            setHostProbeFailureDetail(error instanceof Error ? error.message : String(error));
             setStatusText(t("auth.authUnavailable"));
           }
         });
@@ -475,6 +478,7 @@ export function LoginPage() {
       const status = await probeHost(probeServerBaseUrl);
 
       setHostReachability(status.reachable ? "reachable" : "unreachable");
+      setHostProbeFailureDetail(status.failureDetail);
 
       if (status.reachable && !status.initialized) {
         navigate("/bootstrap", { replace: true });
@@ -482,8 +486,9 @@ export function LoginPage() {
       }
 
       void localHostDiscoveryStore.refresh({ force: true });
-    } catch {
+    } catch (error: unknown) {
       setHostReachability("unreachable");
+      setHostProbeFailureDetail(error instanceof Error ? error.message : String(error));
     } finally {
       setRetryingHostProbe(false);
     }
@@ -556,6 +561,7 @@ export function LoginPage() {
               <HostConnectionEmptyState
                 serverBaseUrl={probeServerBaseUrl}
                 localHost={localHostCandidate}
+                failureDetail={hostProbeFailureDetail}
                 connecting={connectingLocalHost}
                 retrying={retryingHostProbe}
                 onConnectLocalHost={() => {

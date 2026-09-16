@@ -45,6 +45,7 @@ export const enUS = {
     hostConnectionEmptyDescription:
       "You can install a service on this computer, or switch to another server address. The install stays inside your user folder and never asks for admin rights.",
     hostConnectionEmptyAddressLabel: "Current address",
+    hostConnectionEmptyFailureLabel: "Reason",
     hostConnectionEmptyInstallAction: "Install a service on this computer",
     hostConnectionEmptyChangeAddressAction: "Use another server address",
     hostConnectionEmptyLocalTitle: "A service is already running on this computer",

@@ -208,6 +208,35 @@ describe("LoginPage 连不上服务时的首屏引导", () => {
     expect(screen.queryByText(t("auth.hostConnectionEmptyTitle"))).not.toBeInTheDocument();
   });
 
+  it("连不上时把探测的失败原因一并显示出来，便于区分服务没起来和跨源被拦", async () => {
+    useDesktopRuntime();
+    mockUnreachableHost();
+
+    renderLoginPage();
+
+    expect(await screen.findByText(t("auth.hostConnectionEmptyTitle"))).toBeInTheDocument();
+    expect(screen.getByText(t("auth.hostConnectionEmptyFailureLabel"))).toBeInTheDocument();
+    expect(screen.getByText(/连不上主机/)).toBeInTheDocument();
+  });
+
+  it("服务返回了错误码时，失败原因是 HTTP 状态而不是一句「连不上」", async () => {
+    useDesktopRuntime();
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url.endsWith("/api/public/bootstrap-status")) {
+        return createJsonResponse({ detail: "服务正在升级", error_code: "SERVICE_UPGRADING" }, 503);
+      }
+
+      throw new Error(`未处理的请求: ${url}`);
+    }) as typeof fetch;
+
+    renderLoginPage();
+
+    expect(await screen.findByText(t("auth.hostConnectionEmptyTitle"))).toBeInTheDocument();
+    expect(screen.getByText(/HTTP 503/)).toBeInTheDocument();
+  });
+
   it("扫描到本机可达服务时优先给出连接动作", async () => {
     useDesktopRuntime();
     mockUnreachableHost();

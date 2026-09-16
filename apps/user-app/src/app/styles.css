@@ -23552,6 +23552,22 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   flex-shrink: 0;
 }
 
+.cyber-host-empty-failure {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--cyber-text-dim);
+}
+
+.cyber-host-empty-failure-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--cyber-danger, #ff6b6b);
+  word-break: break-all;
+}
+
 .cyber-host-empty-address-value {
   flex: 1;
   min-width: 0;

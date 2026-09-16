@@ -43,6 +43,7 @@ export const zhCN = {
     hostConnectionEmptyDescription:
       "可以在这台电脑上装一个服务，或者改用其他服务地址。装服务全程在用户目录里，不需要管理员权限。",
     hostConnectionEmptyAddressLabel: "当前地址",
+    hostConnectionEmptyFailureLabel: "失败原因",
     hostConnectionEmptyInstallAction: "在这台电脑上安装服务",
     hostConnectionEmptyChangeAddressAction: "改用其他服务地址",
     hostConnectionEmptyLocalTitle: "这台电脑上已经有服务在运行",
