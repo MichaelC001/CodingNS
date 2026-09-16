@@ -290,4 +290,33 @@ describe("DeepSeekHarnessSidecarManager", () => {
       await manager.shutdown();
     }
   });
+
+  it("CLI 不存在时按启动失败上报，不产生未处理的 Promise rejection", async () => {
+    const manager = new DeepSeekHarnessSidecarManager({
+      taskManager: createTaskManager(),
+      reclaimOrphanSidecars: false,
+      // 绝对路径且不存在：spawn 会在进程起来之前就失败，等同于机器上没装 dsh。
+      commandPath: path.join(tmpdir(), `codingns-missing-dsh-${process.pid}-${Date.now()}`),
+      startupTimeoutMs: 2_000
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      await expect(manager.ensureReady()).rejects.toThrow(/ENOENT/u);
+      // 留出 Node 判定 unhandledRejection 的时机；Host 里这个事件会直接终止进程。
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(unhandled).toEqual([]);
+      expect(manager.getState()).toMatchObject({
+        status: "failed",
+        lastErrorCode: "ENOENT",
+        lastErrorStage: "spawn"
+      });
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      await manager.shutdown();
+    }
+  });
 });

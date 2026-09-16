@@ -117,6 +117,18 @@ interface ReadySidecar {
   compatibility: DeepSeekHarnessCompatibility;
 }
 
+/**
+ * 子进程退出信号。
+ *
+ * 只暴露 resolve：启动失败的错误单独放在 {@link ChildExitSignal.readError} 里，
+ * 调用方在等到信号后主动读取。这样 promise 永远不会处于"已 reject 但没人 await"
+ * 的状态，不会把正常的启动失败升级成整个 Host 的 unhandledRejection。
+ */
+interface ChildExitSignal {
+  promise: Promise<void>;
+  readError: () => unknown;
+}
+
 /** 只管理 CodingNS 自己启动的 sidecar，外部进程不会被接管。 */
 export class DeepSeekHarnessSidecarManager {
   private readonly options: Required<Pick<DeepSeekHarnessSidecarManagerOptions, "requestTimeoutMs" | "startupTimeoutMs">> & DeepSeekHarnessSidecarManagerOptions;
@@ -548,31 +560,46 @@ export class DeepSeekHarnessSidecarManager {
       child.stdout?.resume();
       child.stderr?.resume();
 
-      const exitPromise = new Promise<void>((resolve, reject) => {
-        child!.once("error", reject);
-        child!.once("exit", (code, signalName) => {
-          if (this.child === child && this.state.status !== "stopping") {
-            startupStage = "child_exit";
-            const detail = code === null ? `HARNESS_SIDECAR_EXITED:${signalName ?? "unknown"}` : `HARNESS_SIDECAR_EXITED:${code}`;
-            this.state = resetHandshakeState({
-              ...this.state,
-              status: "failed",
-              pid: null,
-              baseUrl: null,
-              lastError: detail,
-              lastErrorCode: "HARNESS_SIDECAR_EXITED",
-              lastErrorStage: "child_exit"
-            });
-            console.warn("[deepseek-harness-sidecar] sidecar 进程退出", {
-              stage: "child_exit",
-              code: "HARNESS_SIDECAR_EXITED",
-              detail
-            });
-            this.child = null;
-          }
-          resolve();
-        });
-      });
+      // 退出信号只走 resolve，错误单独记录。若这里用 reject，spawn 失败（命令不存在）
+      // 的 rejection 会先于 describe 探测失败发生，中间这段没人 await 的窗口会被 Node
+      // 判定成 unhandledRejection，进而被 Host 的致命处理直接终止进程。
+      let spawnError: unknown = null;
+      const exit: ChildExitSignal = {
+        promise: new Promise<void>((resolve) => {
+          child!.once("error", (error) => {
+            // 没有 pid 说明进程从未起来（例如命令不存在），归因到 spawn 阶段，
+            // 避免被随后的协议探测阶段盖住，看不出是 CLI 缺失。
+            if (child!.pid === undefined) {
+              startupStage = "spawn";
+            }
+            spawnError = error;
+            resolve();
+          });
+          child!.once("exit", (code, signalName) => {
+            if (this.child === child && this.state.status !== "stopping") {
+              startupStage = "child_exit";
+              const detail = code === null ? `HARNESS_SIDECAR_EXITED:${signalName ?? "unknown"}` : `HARNESS_SIDECAR_EXITED:${code}`;
+              this.state = resetHandshakeState({
+                ...this.state,
+                status: "failed",
+                pid: null,
+                baseUrl: null,
+                lastError: detail,
+                lastErrorCode: "HARNESS_SIDECAR_EXITED",
+                lastErrorStage: "child_exit"
+              });
+              console.warn("[deepseek-harness-sidecar] sidecar 进程退出", {
+                stage: "child_exit",
+                code: "HARNESS_SIDECAR_EXITED",
+                detail
+              });
+              this.child = null;
+            }
+            resolve();
+          });
+        }),
+        readError: () => spawnError
+      };
 
       let authCookie: string | null = null;
       const createClient = async () => {
@@ -593,7 +620,7 @@ export class DeepSeekHarnessSidecarManager {
           authCookie
         });
       };
-      const description = await waitForReady(createClient, this.options.startupTimeoutMs, exitPromise, signal);
+      const description = await waitForReady(createClient, this.options.startupTimeoutMs, exit, signal);
       const harnessVersion = commandVersion ?? readVersion(description);
       const handshake = parseHarnessHandshake(description, harnessVersion);
       const compatibility = resolveDeepSeekHarnessCompatibility(handshake);
@@ -655,7 +682,7 @@ function resetHandshakeState(state: DeepSeekHarnessSidecarState): DeepSeekHarnes
 async function waitForReady(
   createClient: () => Promise<DeepSeekHarnessApiClient>,
   timeoutMs: number,
-  exitPromise: Promise<unknown>,
+  exit: ChildExitSignal,
   signal: AbortSignal | undefined
 ): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
@@ -673,13 +700,13 @@ async function waitForReady(
       if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("HARNESS_SIDECAR_START_ABORTED");
       const outcome = await Promise.race([
         delay(150).then(() => ({ kind: "waiting" as const })),
-        exitPromise.then(
-          () => ({ kind: "exited" as const }),
-          (error) => ({ kind: "error" as const, error })
-        )
+        exit.promise.then(() => ({ kind: "exited" as const }))
       ]);
-      if (outcome.kind === "error") throw outcome.error;
-      if (outcome.kind === "exited") throw new Error("HARNESS_SIDECAR_EXITED");
+      if (outcome.kind === "exited") {
+        // 启动失败会把原始错误留在信号里；正常退出才是通用的 HARNESS_SIDECAR_EXITED。
+        const exitError = exit.readError();
+        throw exitError instanceof Error ? exitError : new Error("HARNESS_SIDECAR_EXITED");
+      }
     }
   }
   if (lastError instanceof Error) throw lastError;
