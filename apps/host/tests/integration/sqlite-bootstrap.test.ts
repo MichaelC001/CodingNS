@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveHostConfig } from "../../src/config/env.js";
 import Database from "../../src/shared/runtime/sqlite-runtime.js";
 import { createDatabaseClient } from "../../src/storage/sqlite/client.js";
+import {
+  DatabaseAccessError,
+  isDatabaseAccessError,
+  toDatabaseAccessError
+} from "../../src/storage/sqlite/database-access-error.js";
 
 const tempDirs: string[] = [];
 
@@ -1685,6 +1690,68 @@ describe("sqlite 启动引导", () => {
     );
     expect(logFileIndex?.name).toBe("idx_terminal_log_files_terminal_id");
     expect(logSegmentIndex?.name).toBe("idx_terminal_log_segments_terminal_id_start_seq");
+  });
+
+  it("数据库文件不可写时抛出可修复的启动错误，而不是 SQLite 堆栈", () => {
+    if (process.getuid?.() === 0) {
+      return;
+    }
+
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-readonly-database-"));
+    tempDirs.push(tempDir);
+    const databasePath = path.join(tempDir, "host.sqlite");
+    createDatabaseClient(databasePath).close();
+    chmodSync(databasePath, 0o444);
+
+    try {
+      let failure: unknown = null;
+
+      try {
+        createDatabaseClient(databasePath);
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(isDatabaseAccessError(failure)).toBe(true);
+      expect(failure).toBeInstanceOf(DatabaseAccessError);
+      expect((failure as DatabaseAccessError).code).toBe("DATABASE_NOT_WRITABLE");
+      expect((failure as DatabaseAccessError).message).toContain(databasePath);
+      expect((failure as DatabaseAccessError).message).not.toContain("SqliteError");
+      expect((failure as DatabaseAccessError).hintLines.join("\n")).toContain("chown");
+    } finally {
+      chmodSync(databasePath, 0o644);
+    }
+  });
+
+  it("数据库所在目录不可写时抛出同一类可控错误", () => {
+    if (process.getuid?.() === 0) {
+      return;
+    }
+
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-readonly-database-dir-"));
+    tempDirs.push(tempDir);
+    const dataDir = path.join(tempDir, "data");
+    mkdirSync(dataDir);
+    chmodSync(dataDir, 0o555);
+
+    try {
+      expect(() => createDatabaseClient(path.join(dataDir, "host.sqlite")))
+        .toThrowError(DatabaseAccessError);
+    } finally {
+      chmodSync(dataDir, 0o755);
+    }
+  });
+
+  it("libsql 只给扩展码的只读错误也能被识别", () => {
+    const sqliteError = Object.assign(new Error("attempt to write a readonly database"), {
+      code: "UNKNOWN_SQLITE_ERROR_1544",
+      rawCode: 1544
+    });
+
+    const converted = toDatabaseAccessError(sqliteError, "/tmp/codingns/host.sqlite");
+
+    expect(isDatabaseAccessError(converted)).toBe(true);
+    expect((converted as DatabaseAccessError).hintLines.join("\n")).toContain("chown");
   });
 
 });

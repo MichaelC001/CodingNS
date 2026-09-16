@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { SqliteDatabase } from "../../shared/runtime/sqlite-runtime.js";
 import Database from "../../shared/runtime/sqlite-runtime.js";
+import { assertDatabaseWritable, toDatabaseAccessError } from "./database-access-error.js";
 import { runHostMigrations } from "./host-migrations.js";
 import { installSlowQueryDiagnostics } from "./slow-query-diagnostics.js";
 import { SqliteWriteQueue } from "./write-queue.js";
@@ -15,10 +16,38 @@ export interface DatabaseClient {
 
 export function createDatabaseClient(databasePath: string): DatabaseClient {
   if (databasePath !== ":memory:") {
+    assertDatabaseWritable(databasePath);
     fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   }
 
   const db = new Database(databasePath);
+
+  try {
+    initializeDatabase(db);
+  } catch (error) {
+    const databaseAccessError = toDatabaseAccessError(error, databasePath);
+
+    if (!databaseAccessError) {
+      throw error;
+    }
+
+    try {
+      db.close();
+    } catch {
+      // 初始化已经失败，关闭连接再失败不影响要抛出的错误。
+    }
+
+    throw databaseAccessError;
+  }
+
+  return {
+    db,
+    writeQueue: new SqliteWriteQueue(),
+    close: () => db.close()
+  };
+}
+
+function initializeDatabase(db: SqliteDatabase): void {
   db.pragma("journal_mode = WAL");
   // libsql 在 WAL 下的 synchronous 默认落在 FULL，会让每次提交都 fsync WAL；
   // 慢盘上 I/O 争用时这个尾延迟能到百毫秒级，且直接阻塞主线程，这里显式降到 NORMAL。
@@ -100,12 +129,6 @@ export function createDatabaseClient(databasePath: string): DatabaseClient {
   ensureVerificationRunSchema(db);
   // 迁移完成后才观测业务查询，避免把建库/升级误报成运行时阻塞。
   installSlowQueryDiagnostics(db);
-
-  return {
-    db,
-    writeQueue: new SqliteWriteQueue(),
-    close: () => db.close()
-  };
 }
 
 function ensurePreSchemaCompatibility(db: SqliteDatabase): void {
