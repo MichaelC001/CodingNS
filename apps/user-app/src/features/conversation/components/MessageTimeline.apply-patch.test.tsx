@@ -582,6 +582,68 @@ describe("MessageTimeline apply patch", () => {
     expect(document.querySelectorAll(".apply-patch-summary-row")).toHaveLength(1);
   });
 
+  it("renders Command Code edit_file tool with the same edit-style preview", async () => {
+    render(
+      <MessageTimeline
+        historyState="ready"
+        provider="command-code"
+        onRetryMessage={vi.fn()}
+        messages={[
+          createToolMessage({
+            id: "tool-call-command-code-edit-file",
+            callId: "call-command-code-edit-file",
+            name: "edit_file",
+            kind: "tool_call",
+            content: JSON.stringify({
+              file_path: "/Users/jackson/Code/CodingNS/apps/desktop/src-tauri/Cargo.toml",
+              old_string: "serde = { version = \"1.0\" }",
+              new_string: "serde = { version = \"1.0\" }\nsha2 = \"0.10\""
+            })
+          })
+        ]}
+      />
+    );
+
+    expect(screen.queryByText(/^edit_file$/)).not.toBeInTheDocument();
+    expect(screen.getByText("Cargo.toml")).toBeInTheDocument();
+    expect(document.querySelectorAll(".apply-patch-summary-row")).toHaveLength(1);
+    expect(screen.getAllByText("+2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("-1").length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /Cargo\.toml/i }));
+
+    const diffViewText = document.querySelector(".apply-patch-diff-view")?.textContent ?? "";
+    expect(diffViewText).toContain("+sha2 = \"0.10\"");
+    expect(diffViewText).toContain("-serde = { version = \"1.0\" }");
+  });
+
+  it("renders Command Code write_file tool with the same edit-style preview", () => {
+    render(
+      <MessageTimeline
+        historyState="ready"
+        provider="command-code"
+        onRetryMessage={vi.fn()}
+        messages={[
+          createToolMessage({
+            id: "tool-call-command-code-write-file",
+            callId: "call-command-code-write-file",
+            name: "write_file",
+            kind: "tool_call",
+            content: JSON.stringify({
+              file_path: "/Users/jackson/Code/CodingNS/notes.md",
+              content: "第一行\n第二行"
+            })
+          })
+        ]}
+      />
+    );
+
+    expect(screen.queryByText(/^write_file$/)).not.toBeInTheDocument();
+    expect(screen.getByText("notes.md")).toBeInTheDocument();
+    expect(document.querySelectorAll(".apply-patch-summary-row")).toHaveLength(1);
+    expect(screen.getAllByText("+2").length).toBeGreaterThan(0);
+  });
+
   it("同一文件出现多个 patch 段时不会因为重复 key 报警", () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

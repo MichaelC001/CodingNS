@@ -2310,8 +2310,7 @@ function buildEditableToolPreview(tool: ResolvedToolCall): ApplyPatchPreview | n
     return normalizedInput ? parseApplyPatchPreview(normalizedInput) : null;
   }
 
-  const normalizedToolName = tool.name.trim().toLowerCase();
-  const editableToolKind = resolveEditableToolKind(normalizedToolName);
+  const editableToolKind = resolveEditableToolKind(tool.name);
 
   if (!editableToolKind) {
     return null;
@@ -2385,17 +2384,19 @@ function buildEditableToolPreview(tool: ResolvedToolCall): ApplyPatchPreview | n
 }
 
 function resolveEditableToolKind(
-  normalizedToolName: string
+  toolName: string
 ): "write" | "edit" | "multiedit" | null {
-  if (normalizedToolName === "write" || normalizedToolName === "overwrite") {
+  const normalized = toolName.trim().toLowerCase().replace(/[\s_.-]+/g, "");
+
+  if (normalized === "write" || normalized === "overwrite" || normalized === "writefile") {
     return "write";
   }
 
-  if (normalizedToolName === "edit") {
+  if (normalized === "edit" || normalized === "editfile") {
     return "edit";
   }
 
-  if (normalizedToolName === "multiedit" || normalizedToolName === "multi_edit") {
+  if (normalized === "multiedit") {
     return "multiedit";
   }
 
