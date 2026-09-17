@@ -11009,6 +11009,56 @@ textarea:focus-visible {
   color: var(--text-secondary);
 }
 
+/* 超长正文只渲染开头，这里给出明确的「展开全文」入口。 */
+.markdown-truncation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.markdown-truncation-notice {
+  font-size: 12px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--text-tertiary) 88%, var(--text-secondary));
+}
+
+.markdown-truncation-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.markdown-truncation-toggle::after {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  color: var(--text-tertiary);
+  content: "";
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.markdown-truncation-toggle[aria-expanded="true"]::after {
+  transform: rotate(225deg) translateY(-1px);
+}
+
+.markdown-truncation-toggle:hover,
+.markdown-truncation-toggle:focus-visible {
+  color: var(--text-primary);
+}
+
 .thinking-message-text {
   min-width: 0;
   max-width: 100%;

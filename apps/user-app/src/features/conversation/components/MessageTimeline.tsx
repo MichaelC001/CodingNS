@@ -55,6 +55,7 @@ import {
   type ConversationTaskSnapshot
 } from "../session-task-progress";
 import { ConversationTaskProgressCard } from "./ConversationTaskProgressCard";
+import { MarkdownTruncationNotice } from "./MessageMarkdown";
 import { useWorkbenchShell } from "./WorkbenchLayout";
 import {
   CopyActionIcon,
@@ -66,6 +67,7 @@ import {
   findConversationTimelineRuntimeThinkingLabel,
   type ConversationTimelineSourceItem
 } from "../timeline-source-items";
+import { resolveRenderedMarkdownContent } from "../markdown-truncation";
 import { isSessionRunning } from "../session-activity-display";
 
 import type {
@@ -3798,7 +3800,17 @@ function MessageMarkdownBody({
   const { showToast } = useToast();
   const platform = usePlatform();
   const { navigationGroups, currentWorkspaceId, revealWorkspaceFile } = useWorkbenchShell();
+  const [contentExpanded, setContentExpanded] = useState(false);
   const [markdownImagePreviewSources, setMarkdownImagePreviewSources] = useState<Record<string, string>>({});
+  // 超长正文只渲染开头，避免同步解析上百万字符把主线程占死。
+  const renderedContent = useMemo(
+    () =>
+      resolveRenderedMarkdownContent(content, {
+        expanded: contentExpanded,
+        disabled: exportMode
+      }),
+    [content, contentExpanded, exportMode]
+  );
   const currentWorkspace = useMemo(
     () =>
       navigationGroups.find((group) => group.workspace.id === currentWorkspaceId)?.workspace
@@ -3811,7 +3823,7 @@ function MessageMarkdownBody({
 
   useEffect(() => {
     const markdownImageMatches = Array.from(
-      content.matchAll(/!\[[^\]]*]\(([^)\s]+(?:\s+"[^"]*")?)\)|<img\b[^>]*src=["']([^"']+)["'][^>]*>/gi)
+      renderedContent.content.matchAll(/!\[[^\]]*]\(([^)\s]+(?:\s+"[^"]*")?)\)|<img\b[^>]*src=["']([^"']+)["'][^>]*>/gi)
     );
     const markdownImageUrls = markdownImageMatches
       .map((match) => (match[1] ?? match[2] ?? "").trim())
@@ -3946,7 +3958,7 @@ function MessageMarkdownBody({
     return () => {
       cancelled = true;
     };
-  }, [content, currentWorkspaceId, normalizedWorkspacePath, platform.isDesktop]);
+  }, [renderedContent.content, currentWorkspaceId, normalizedWorkspacePath, platform.isDesktop]);
 
   async function handleCopyText(text: string) {
     if (!text.trim()) {
@@ -4057,8 +4069,14 @@ function MessageMarkdownBody({
           }
         }}
       >
-        {content}
+        {renderedContent.content}
       </Markdown>
+      {renderedContent.isLong ? (
+        <MarkdownTruncationNotice
+          expanded={!renderedContent.isCollapsed}
+          onToggle={() => setContentExpanded((current) => !current)}
+        />
+      ) : null}
     </div>
   );
 }
