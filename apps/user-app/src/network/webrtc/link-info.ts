@@ -25,6 +25,62 @@ export interface TunnelLinkInfo {
   updatedAt: string;
 }
 
+/** `getStats()` 摊平后我们真正会读的字段。 */
+export interface RawStatsEntry {
+  type?: string;
+  id?: string;
+  state?: string;
+  nominated?: boolean;
+  candidateType?: string;
+  protocol?: string;
+  address?: string;
+  selectedCandidatePairId?: string;
+  localCandidateId?: string;
+  remoteCandidateId?: string;
+}
+
+/**
+ * 把 `getStats()` 的返回值摊平成对象数组。
+ *
+ * 这里要同时伺候三种实现，浏览器和 Node 侧给的东西并不一样：
+ *
+ * - 浏览器给的是 `RTCStatsReport`。它是 maplike，`instanceof Map` 和 `Array.isArray`
+ *   都是 false，只能靠 `forEach` 遍历。早先只认 Map / 数组，结果浏览器里摊平出来是空数组，
+ *   「直连还是经中继」永远显示不出来。
+ * - werift 给的是 `Map`。
+ * - 测试里的假实现给的是数组。
+ *
+ * 摊平时把 map 的 key 补回成 `id`（有些统计对象本身不带 id），
+ * 否则按 id 找候选对会对不上。
+ */
+export function toStatsArray(rawStats: unknown): RawStatsEntry[] {
+  const entries: Array<readonly [string, unknown]> = [];
+
+  if (rawStats instanceof Map) {
+    entries.push(...(rawStats.entries() as IterableIterator<[string, unknown]>));
+  } else if (Array.isArray(rawStats)) {
+    rawStats.forEach((value, index) => {
+      entries.push([String(index), value] as const);
+    });
+  } else if (rawStats && typeof (rawStats as { forEach?: unknown }).forEach === "function") {
+    // maplike：RTCStatsReport 走这条。回调参数是 (value, key, parent)。
+    (rawStats as { forEach: (callback: (value: unknown, key: string) => void) => void }).forEach(
+      (value, key) => {
+        entries.push([String(key), value] as const);
+      }
+    );
+  }
+
+  return entries.map(([key, value]) => {
+    const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+
+    return {
+      ...record,
+      id: typeof record.id === "string" ? record.id : String(key)
+    } as RawStatsEntry;
+  });
+}
+
 /** 判断一组候选对算不算「经中继」。 */
 export function resolveTunnelLinkTransportKind(
   localCandidateType: string | null | undefined,

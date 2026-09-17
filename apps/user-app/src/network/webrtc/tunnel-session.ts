@@ -24,6 +24,7 @@ import { WebRtcTunnelError, describeUnknownError } from "./errors";
 import {
   resolveSelectedCandidatePair,
   resolveTunnelLinkTransportKind,
+  toStatsArray,
   type TunnelLinkIceCandidateSummary,
   type TunnelLinkInfo
 } from "./link-info";
@@ -626,40 +627,9 @@ function createDeferred<T>(): {
 }
 
 /**
- * 把 `getStats()` 的返回值摊平成数组。
- *
- * 浏览器给的是 `RTCStatsReport`（本质是 Map<id, 统计对象>）。
- * 直接 `Array.from(report)` 拿到的是 `[id, 对象]` 这种二元数组，
- * 后面按 `entry.type` 找候选对就永远找不到，所以这里显式摊平成对象数组，
- * 并把 map 的 key 补回成 `id`（有些统计对象本身不带 id）。
+ * 摊平逻辑已挪到 `link-info.ts`（`toStatsArray`）：
+ * 那里和候选对解析放在一起，浏览器 maplike 的兼容分支也好单独测。
  */
-function toStatsArray(rawStats: unknown): Array<{
-  type?: string;
-  id?: string;
-  state?: string;
-  nominated?: boolean;
-  candidateType?: string;
-  protocol?: string;
-  address?: string;
-  selectedCandidatePairId?: string;
-  localCandidateId?: string;
-  remoteCandidateId?: string;
-}> {
-  const entries = rawStats instanceof Map
-    ? Array.from(rawStats.entries())
-    : Array.isArray(rawStats)
-      ? rawStats.map((value, index) => [String(index), value] as const)
-      : [];
-
-  return entries.map(([key, value]) => {
-    const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
-
-    return {
-      ...record,
-      id: typeof record.id === "string" ? record.id : String(key)
-    } as ReturnType<typeof toStatsArray>[number];
-  });
-}
 
 function debugIgnore(error: unknown): void {
   void error;
