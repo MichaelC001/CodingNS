@@ -490,8 +490,8 @@
       客户端发 offer 被 Host 收到 → Host 回 answer 被客户端收到 → 双方都收到 `peer-ready`
     - 信令服务已接入本地栈（`pnpm local:stack:start`），监听 18085，nginx 反代 `/signaling/*`
 
-- [ ] W3.2 部署 coturn 并接入控制面
-  - 状态：PARTIAL（模板与文档就绪，目标机器上的实际部署待执行）
+- [x] W3.2 部署 coturn 并接入控制面
+  - 状态：DONE（2026-09-17 安全组放行后完成公网验收）
   - 这一步到底做什么：部署 TURN 服务，控制面负责下发 ICE 配置和临时凭据
   - 做完以后能看到什么结果：NAT 打洞失败的用户能通过 TURN 连上
   - 依赖什么：W3.1
@@ -568,11 +568,22 @@
     - 回滚手段：代码回滚点 `3488bac`；`.env` 与 nginx 配置都有带时间戳的备份；
       nginx 备份放在 `/root/nginx-backups/`（**不能放在 `sites-enabled/` 里**，
       那个目录被 `include` 通配，放进去会导致「重复的 default server」而重载失败）
-  - 待完成：
-    - **在腾讯云安全组放行后从外网实测**：`3478/udp`、`3478/tcp`、`49152-49200/udp`。
-      目前从外网测 `turn:42.193.118.236:3478` 是**不可达**的（控制面与信令都通，说明是这几个新端口没开）；
-      从服务器自身走公网 IP 的 hairpin 也不通
-    - 放行后跑跨网强制 relay 实测 + 抓包确认 TURN 上只有 DTLS 密文
+  - **公网验收已完成（2026-09-17，安全组放行后）**：
+    - 腾讯云安全组已放行 `3478/udp`、`3478/tcp`、`49152-49200/udp`（中继段已从默认一万多个
+      收窄成 49 个，只开一小段就够）
+    - **从外网实测端口真的通了**：`nc -z 42.193.118.236 3478` → TCP succeeded；
+      自己发 STUN Binding Request → 收到 `0x101` 响应，magic cookie 与 txId 都对
+    - **`pnpm verify:turn` 从外网跑 → `exit 0`**：第 2 步回显的映射地址是公网地址
+      `144.255.31.231`（不是内网地址，说明 `external-ip` 配对了）；第 3 步
+      **真的完成了一次 TURN Allocate**，分配到中继地址（realm `channel.codingns.com`）——
+      这条同时证明了共享密钥一致、两台机器时间同步
+    - **从外网强制 relay 真跑通**（`turn-relay-check.mjs`，只给 TURN 不给 STUN）：
+      两端候选都是 `relay`，选中的候选对 `relay 42.193.118.236:49193 ↔ relay 42.193.118.236:49175`
+      （端口都落在收窄后的 49152-49200 段内），一条特意造的内容原样穿过中继，`exit 0`
+    - **真实完整链路也跑通**：隔离控制面开 `FORCE_TURN_BY_DEFAULT=true` + 生产 coturn，
+      跑 user-app 的真实端到端脚本（真实 `ManagedWebRtcTunnelHostTransport` 对真实 Host 接入子进程）
+      → **9/9 通过**，`transportKind=relay`，含 1 MB 分片上传与 120 KB WebSocket 大消息
+    - 完整记录：`specs/spec001.9.1-公共隧道服务二阶段收口与生产化验收/docs/20260917-生产环境TURN跨网与中继密文验收记录.md`
   - 备注：按账号粒度的 TURN 开关还没做，目前只有全局开关，等 W5 订阅模型落地后一起补。
 
 - [x] W3.3 ICE 配置下发
@@ -669,8 +680,8 @@
       - 心跳口径：DTLS 指纹 → 204；老的 x25519 指纹 → 409 `HOST_BINDING_MISMATCH`
     - 没做：证书轮换 UI（按任务要求不做）
 
-- [ ] W4.2 固定「中继不可见明文」的验收清单
-  - 状态：PARTIAL（清单与第一层自动化已落地，第二层待 TURN 部署后可执行）
+- [x] W4.2 固定「中继不可见明文」的验收清单
+  - 状态：DONE（2026-09-17 三层全部通过，第二层已在生产服务器上真抓包）
   - 这一步到底做什么：写出并执行抓包、日志、数据库三层验收步骤，证明信令和 TURN 都拿不到明文
   - 做完以后能看到什么结果：有一份可重复执行的验收记录
   - 依赖什么：W3.2、W4.1
@@ -689,7 +700,7 @@
       → 25 通过
     - 记了一条已知边界：SDP 是文本字段，理论上可以被塞额外字节让信令服务器搬运；
       这不影响「中继不可见明文」（DTLS 密钥不在 SDP 里），但信令通道不该当数据通道用
-  - 待完成：
+  - 第二层执行要求（已按此执行完毕）与此前的有限条件记录：
     - **第二层（TURN 抓包）必须在 TURN 部署完成后真跑**：强制 `iceTransportPolicy: "relay"`，
       先用 `apps/host/scripts/relay-tunnel-webrtc-e2e.mjs` 确认链路类型真的是 `relay`
       （不是 `p2p`），再用一个自己造的、不可能碰巧出现的字符串做业务内容，
@@ -723,8 +734,34 @@
       而且以后有人加了内容列这个检查会立刻失败。清单里附了两张表的完整列。
       信令日志与 Host 侧已可从代码走查确认（Host 接入进程不写任何持久化）
     - 按清单要求把三层的原始输出追加成一份验收记录
-  - 结论口径：**第二层没真跑完之前，W4.2 不算完成**。
-    第一层通过只说明「我们自己的服务没被当通道用」，说明不了「中继看不到明文」
+  - 结论口径（已满足）：**第二层没真跑完之前，W4.2 不算完成**。
+    第一层通过只说明「我们自己的服务没被当通道用」，说明不了「中继看不到明文」。
+    下面是 2026-09-17 第二层真跑完的结果。
+  - **第二层已在生产服务器上真抓包完成（2026-09-17，安全组放行后）**：
+    - 抓包窗口里跑的是**真实完整链路**，不是构造的 demo：真实客户端 transport
+      （`ManagedWebRtcTunnelHostTransport`）+ 真实 Host 接入子进程，端到端 **9/9 通过**，
+      含 `GET /api/client/runtime-config`、1 MB 的 `POST /api/client/upload`、
+      120 KB 的 WebSocket 大消息。抓的就是这些真实业务字节
+    - 服务器上 `sudo tcpdump -i any -n -s0 -U -w /tmp/turn-cap.pcap
+      'port 3478 or udp portrange 49152-49200'`，共 `9166` 个包，按网络跳拆开判定：
+      - **跨网跳（本机 ↔ 生产 TURN，3478）：6120 个包 / 4,535,648 字节载荷，
+        业务明文 0 命中**；DTLS 记录 `Handshake 26` + `ApplicationData 6040` + `ChangeCipherSpec 4`
+      - 服务器本地 `lo`（中继端口互转）：3046 个包 / 2,254,360 字节，业务明文 0 命中，
+        DTLS 记录 `Handshake 13` + `ApplicationData 3020` + `ChangeCipherSpec 2`
+    - 搜的明文特征**全部 0 次命中**：`runtime-config`、`/api/client/upload`、`local-business`、
+      `GET ` / `POST `、`HTTP/1.1`、`/api/`、`Host:`、`content-type`、
+      120 KB WS 消息内容（`zzzz…`）、`"ok":true`
+    - **正向证据齐**：中继链路上确实抓到了 6040 条 DTLS ApplicationData。
+      「0 命中」如果建立在空抓包上没有意义，这次不是空抓包
+    - coturn 全程没改配置、没重启，服务 `active`；抓包用 root，做完即停并清理临时文件
+    - 第三层也在生产库上跑了：`relay_usage_events` / `relay_usage_daily_summaries`
+      的列只有标识、字节数、时间戳；全库按 `body/content/payload/message/request/response`
+      搜列名只命中 `email_verification_requests` 的 `request_id` / `requested_at`（都不是业务内容）；
+      信令日志里 `GET `/`POST `/`/api/`/`HTTP/1.1` 各 0 命中
+    - **这次明确没做到的**：两个 WebRTC peer 都在本机，所以 `client ↔ TURN` 那一跳是真跨公网的
+      （4.5 MB 载荷，只有密文），而 `peer ↔ TURN` 那一跳落在服务器本地 `lo`。
+      完整的双公网端点形态属于 W7，**不能用这次结果冒充**
+    - 完整记录：`specs/spec001.9.1-公共隧道服务二阶段收口与生产化验收/docs/20260917-生产环境TURN跨网与中继密文验收记录.md`
 
 ---
 
@@ -797,8 +834,8 @@
     - `relay-tunnel-packets.ts`（75 行）
     - 共 918 行。验证：`pnpm --filter @codingns-proxy/relay-edge exec tsc -p tsconfig.json --noEmit`
       通过；`pnpm --filter @codingns-proxy/relay-edge test` → 34 通过
-    - `host-proof.ts`（172 行）**这次没删**：它还被 `relay-edge/src/app.ts` 用来做 Host 挑战应答，
-      属于 W6.2 停用 relay-edge 数据面时的范围
+    - `host-proof.ts`（172 行）当时没删：它还被 `relay-edge/src/app.ts` 用来做 Host 挑战应答。
+      已在 W6.2 连同整个 `apps/relay-edge` 一起删除
   - **实际删除清单（执行记录）**：
     - Host 侧：`relay-tunnel-runtime-adapter.ts`（869 行）、`crypto/relay-tunnel-protocol.ts`（584 行）、
       `relay-tunnel-edge-proof.ts`（52 行），以及 `relay-tunnel-runtime-adapter.test.ts`、
@@ -833,16 +870,36 @@
     - `pnpm --dir apps/host exec tsc --noEmit -p tsconfig.json` 与
       `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json` 通过
 
-- [ ] W6.2 relay-edge 数据面下线
-  - 状态：TODO
+- [x] W6.2 relay-edge 数据面下线
+  - 状态：DONE
   - 这一步到底做什么：停用密文帧中继职责，保留控制面内部接口但改语义
   - 做完以后能看到什么结果：数据面只剩信令和 TURN
   - 依赖什么：W3.1、W3.2
+  - 实际做了什么：
+    - 删掉 `apps/relay-edge/*` 全部代码（密文转发、会话注册表、Redis 共享状态、usage 补报）
+    - 在线会话改从信令服务读（`GET /api/internal/signaling/bindings`），
+      `relay-edge-client` 相应改名成 `online-session-source`
+    - `POST /api/v1/tunnels/:tunnelDomain/connect-init` 改成 410 `LEGACY_TRANSPORT_RETIRED`
+    - 四级域名入口跳转从 relay-edge 搬到 control-api。这是动手时才发现的范围：
+      它不是数据面，但一直挂在 relay-edge 上，而新前端依赖它，
+      所以必须在停进程之前先搬走
+    - 部署链路同时清掉 relay-edge 与 Redis：pm2 模板、nginx 模板、
+      一键部署脚本、本地联调脚本
   - 主要改哪些文件：
-    - `apps/codingns-proxy/apps/relay-edge/*`
+    - `apps/codingns-proxy/apps/relay-edge/*`（删除）
+    - `apps/codingns-proxy/apps/control-api/src/entry-redirect.ts`（新增）
+    - `apps/codingns-proxy/apps/control-api/src/online-session-source.ts`（新增）
+    - `apps/codingns-proxy/deploy/templates/*`、`scripts/deploy-production.sh`
   - 这一步明确不做什么：不保留双轨长期运行
   - 怎么验证：
     - 部署验证 + 旧链路明确拒绝
+    - 生产实测（2026-09-17）：
+      - `pm2 delete codingns-proxy-relay-edge`，4320 端口已无监听；
+        relay-edge 日志自 2026-04-21 起一直是 0 字节，确认本来就没人用
+      - 四级域名 `izozo.channel.codingns.com` 仍返回 302 到
+        `https://app.codingns.com/connect/...`，参数与停用前完全一致
+      - 旧链路 `POST /api/v1/tunnels/.../connect-init` 返回 410
+      - 主站首页、`/api/public/meta`、`/signaling/healthz` 均 200
 
 - [ ] W6.3 存量绑定与订阅迁移
   - 状态：TODO
