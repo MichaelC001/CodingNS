@@ -274,9 +274,9 @@ test("CommandCodeAdapter 按会话模型解析上下文窗口，不沿用 CLI �
   const homeDir = mkdtempSync(join(tmpdir(), "codingns-command-code-window-model-map-"));
   const fixture = createTranscript(homeDir, "/Users/jackson/Code/CodingNS");
   appendUsageRecord(fixture.filePath, fixture.sessionId, "deepseek/deepseek-v4.1-flash", {
-    inputTokens: 128000,
+    inputTokens: 279843,
     outputTokens: 100,
-    cacheReadTokens: 127000,
+    cacheReadTokens: 279552,
     cacheWriteTokens: 0
   });
 
@@ -287,9 +287,9 @@ test("CommandCodeAdapter 按会话模型解析上下文窗口，不沿用 CLI �
     });
     const context = await adapter.readContextUsage(fixture.sessionId, fixture.filePath);
 
-    assert.equal(context.contextWindow, 256_000);
+    assert.equal(context.contextWindow, 1_000_000);
     assert.equal(context.contextWindowSource, "model-map");
-    assert.equal(context.usageRatio, 0.5);
+    assert.equal(context.usageRatio, 279843 / 1_000_000);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
