@@ -105,6 +105,18 @@ test("发布包的 files 必须列出两个打进目录，否则 npm 不会把�
   }
 });
 
+test("发布暂存目录必须复制两个 workspace 运行时依赖", () => {
+  const source = fs.readFileSync(
+    path.join(workspaceRoot, "codingns", "scripts", "create-publish-staging.mjs"),
+    "utf8"
+  );
+
+  assert.match(source, /copyBundledSessionSyncCore\(\);/);
+  assert.match(source, /copyBundledRelayTunnelWire\(\);/);
+  assert.match(source, /path\.join\(workspaceRoot, "packages", "relay-tunnel-wire"\)/);
+  assert.match(source, /path\.join\(stagingRoot,[\s\S]*?"relay-tunnel-wire"/);
+});
+
 test("stripPackLifecycleScripts 会移除 prepack 和 postpack，避免 staging 再跑一遍打包脚本", () => {
   const packageJson = {
     scripts: {

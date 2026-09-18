@@ -39,6 +39,7 @@ fs.cpSync(packageRoot, stagingRoot, {
 });
 
 copyBundledSessionSyncCore();
+copyBundledRelayTunnelWire();
 
 const packageJson = rewritePackageJsonForPublish(
   readJson(packageJsonPath),
@@ -73,5 +74,25 @@ function copyBundledSessionSyncCore() {
     delete sourcePackageJson.dependencies.libsql;
   }
 
+  writeJson(path.join(targetRoot, "package.json"), sourcePackageJson);
+}
+
+function copyBundledRelayTunnelWire() {
+  const sourceRoot = path.join(workspaceRoot, "packages", "relay-tunnel-wire");
+  const sourceDistRoot = path.join(sourceRoot, "dist");
+  const targetRoot = path.join(
+    stagingRoot,
+    "node_modules",
+    "@codingns",
+    "relay-tunnel-wire"
+  );
+
+  if (!fs.existsSync(sourceDistRoot)) {
+    throw new Error(`缺少 relay-tunnel-wire 构建产物：${sourceDistRoot}`);
+  }
+
+  fs.mkdirSync(targetRoot, { recursive: true });
+  fs.cpSync(sourceDistRoot, path.join(targetRoot, "dist"), { recursive: true });
+  const sourcePackageJson = readJson(path.join(sourceRoot, "package.json"));
   writeJson(path.join(targetRoot, "package.json"), sourcePackageJson);
 }
