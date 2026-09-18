@@ -455,7 +455,7 @@ describe("ManagedWebRtcTunnelHostTransport", () => {
       path: "/api/client/runtime-config",
       url: "https://demo.channel.codingns.com/api/client/runtime-config",
       init: {}
-    })).rejects.toThrow("需要先登录 CodingNS 账号");
+    })).rejects.toThrow("需要先登录 CodingNS Connect 账号");
 
     expect(harness.signalSocket.offers).toHaveLength(0);
   });

@@ -10,6 +10,7 @@ export async function registerAuthRoutes(
   app.post("/api/auth/refresh", authController.refresh);
   app.post("/api/auth/logout", authController.logout);
   app.get("/api/auth/devices", authController.getDevices);
+  app.get("/api/public/host-login-accounts", authController.listRemoteLoginUsers);
   app.post("/api/auth/devices/current/primary", authController.updateCurrentDevicePrimary);
   app.post("/api/auth/devices/logout-others", authController.logoutOtherDevices);
   app.post("/api/auth/devices/:deviceId/logout", authController.logoutDevice);

@@ -61,6 +61,55 @@ afterEach(async () => {
 });
 
 describe("公共隧道系统接口", () => {
+  it("只有经过 CodingNS Connect 隧道才能读取活动 Host 账号，且不泄露密码材料", async () => {
+    const fixture = createEmptyFixture();
+    activeFixtures.push(fixture);
+    const hosted = createTestApp(fixture);
+    activeServers.push(hosted);
+    await hosted.app.ready();
+
+    const accessToken = await bootstrapAndLogin(hosted);
+    const withoutRelay = await hosted.app.inject({
+      method: "GET",
+      url: "/api/public/host-login-accounts"
+    });
+    expect(withoutRelay.statusCode).toBe(403);
+    expect(withoutRelay.json()).toMatchObject({ errorCode: "RELAY_SESSION_REQUIRED" });
+
+    const created = await hosted.app.inject({
+      method: "POST",
+      url: "/api/admin/users",
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { username: "disabled-user", password: "disabled1234" }
+    });
+    expect(created.statusCode).toBe(201);
+    const disabledUserId = created.json<{ userId: string }>().userId;
+
+    const disabled = await hosted.app.inject({
+      method: "PATCH",
+      url: `/api/admin/users/${disabledUserId}/status`,
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { status: "disabled" }
+    });
+    expect(disabled.statusCode).toBe(200);
+
+    const withRelay = await hosted.app.inject({
+      method: "GET",
+      url: "/api/public/host-login-accounts",
+      headers: { "x-codingns-relay-session-id": "relay-session-test" }
+    });
+    expect(withRelay.statusCode).toBe(200);
+    expect(withRelay.json()).toEqual({
+      accounts: [{
+        userId: expect.any(String),
+        username: "admin",
+        role: "admin"
+      }]
+    });
+    expect(JSON.stringify(withRelay.json())).not.toContain("passwordHash");
+    expect(JSON.stringify(withRelay.json())).not.toContain("disabled-user");
+  });
+
   it("未授权请求会被拒绝", async () => {
     const fixture = createEmptyFixture();
     const databasePath = path.join(fixture.rootDir, "host.sqlite");

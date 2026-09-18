@@ -186,7 +186,7 @@ function normalizeOptionalDisplayName(value: string | null | undefined): string 
   return normalized ? normalized : null;
 }
 
-function buildRelayAccessBaseUrl(tunnelDomain: string, controlBaseUrl: string): string {
+export function buildRelayAccessBaseUrl(tunnelDomain: string, controlBaseUrl: string): string {
   const controlUrl = new URL(controlBaseUrl);
   controlUrl.hostname = tunnelDomain;
   controlUrl.username = "";

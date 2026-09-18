@@ -220,7 +220,7 @@ export async function listControlHostBindings(
   const session = options?.session ?? environment.getStoredSession();
 
   if (!session) {
-    throw new WebRtcTunnelError("需要先登录 CodingNS 账号", "CONTROL_LOGIN_REQUIRED");
+    throw new WebRtcTunnelError("需要先登录 CodingNS Connect 账号", "CONTROL_LOGIN_REQUIRED");
   }
 
   if (isControlSessionExpired(session, environment.now())) {
@@ -292,7 +292,7 @@ export async function requestSignalingTicket(
   const session = options?.session ?? environment.getStoredSession();
 
   if (!session) {
-    throw new WebRtcTunnelError("需要先登录 CodingNS 账号", "CONTROL_LOGIN_REQUIRED");
+    throw new WebRtcTunnelError("需要先登录 CodingNS Connect 账号", "CONTROL_LOGIN_REQUIRED");
   }
 
   if (isControlSessionExpired(session, environment.now())) {

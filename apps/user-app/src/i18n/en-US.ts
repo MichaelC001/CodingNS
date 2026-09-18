@@ -70,6 +70,24 @@ export const enUS = {
     relayEntryDescription:
       "Switching to this Host's trusted remote entry. You will be returned to the login page automatically.",
     relayEntryInvalid: "The remote access entry parameters are incomplete. Open the access URL again.",
+    relayConnectLoginTitle: "Sign in to CodingNS Connect",
+    relayConnectLoginDescription: "Sign in to confirm that this CodingNS Connect account can access the remote computer.",
+    relayConnectDeviceHint: "Target device: {domain}",
+    relayConnectEmailLabel: "CodingNS Connect email",
+    relayConnectEmailPlaceholder: "Enter your CodingNS Connect email",
+    relayConnectPasswordLabel: "CodingNS Connect password",
+    relayConnectPasswordPlaceholder: "Enter your CodingNS Connect password",
+    relayConnectLoginAction: "Sign in and continue",
+    relayConnectLoggingIn: "Checking CodingNS Connect...",
+    relayHostLoginTitle: "Sign in to CodingNS Host",
+    relayHostLoginDescription: "Choose an account on this computer, then enter its Host password.",
+    relayHostAccountLabel: "Host account",
+    relayHostAccountPlaceholder: "Choose a Host account",
+    relayHostPasswordLabel: "Host password",
+    relayHostPasswordPlaceholder: "Enter the Host account password",
+    relayHostLoginAction: "Sign in to Host",
+    relayHostLoggingIn: "Signing in to Host...",
+    relayHostAccountsEmpty: "This Host has no available accounts. Create an account on the Host first.",
     trustedEntryOnlyTitle: "Open This Through Your Remote Access URL",
     trustedEntryOnlyDescription:
       "This trusted frontend only loads the connection UI. It is not the Host API entry itself. Open the device's remote access URL again.",
@@ -555,8 +573,8 @@ export const enUS = {
     remoteAccessFeatureDisabledValue: "Off",
     remoteAccessClientSectionTitle: "Connect to other computers from this device",
     remoteAccessClientSectionDescription:
-      "Sign in with your CodingNS account to reach the computers on that account. Opening a link used to be enough; now you sign in first.",
-    remoteAccessClientLoginTitle: "Sign in to your CodingNS account",
+      "Sign in with your CodingNS Connect account to reach the computers on that account. Opening a link used to be enough; now you sign in first.",
+    remoteAccessClientLoginTitle: "Sign in to your CodingNS Connect account",
     remoteAccessClientLoginDescription: "You need to sign in before connecting to your computers.",
     remoteAccessClientEmailLabel: "Account email",
     remoteAccessClientEmailPlaceholder: "For example: you@example.com",
@@ -569,7 +587,7 @@ export const enUS = {
     remoteAccessClientLoggedInUnknownAccount: "Signed in",
     remoteAccessClientLogoutAction: "Sign out",
     remoteAccessClientLoggingOut: "Signing out...",
-    remoteAccessClientLogoutSuccess: "Signed out of your CodingNS account.",
+    remoteAccessClientLogoutSuccess: "Signed out of your CodingNS Connect account.",
     remoteAccessClientDeviceListTitle: "My computers",
     remoteAccessClientDeviceListDescription:
       "Pick a computer to check whether the remote connection works.",
@@ -594,8 +612,8 @@ export const enUS = {
     remoteAccessClientStateConnected: "Connected",
     remoteAccessClientStateFailed: "Connection failed",
     remoteAccessClientStateClosed: "Disconnected",
-    remoteAccessErrorLoginRequired: "Sign in with your CodingNS account before connecting to your computers.",
-    remoteAccessErrorLoginInvalid: "Wrong email or password. Please try again.",
+    remoteAccessErrorLoginRequired: "Sign in with your CodingNS Connect account before connecting to your computers.",
+    remoteAccessErrorLoginInvalid: "The CodingNS Connect email or password is incorrect. Please try again.",
     remoteAccessErrorBindingForbidden:
       "This remote access address belongs to a different account. Sign in with that account and try again.",
     remoteAccessErrorTunnelNotFound:
@@ -610,6 +628,7 @@ export const enUS = {
       "Could not connect to this computer. Make sure CodingNS is running there, then try again.",
     remoteAccessErrorTunnelConfigMissing:
       "This computer has not turned on remote access yet, so it cannot be reached.",
+    remoteAccessErrorHostLoginAccountsUnavailable: "Could not read the Host account list. Try again later.",
     remoteAccessErrorTunnelClosed: "The remote connection was closed. Please try again.",
     remoteAccessErrorUnknown: "That did not work. Please try again later.",
     abilityManagement: "Capability Management",

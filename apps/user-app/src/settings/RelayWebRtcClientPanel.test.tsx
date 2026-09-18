@@ -363,6 +363,7 @@ describe("远程访问相关 i18n 文案", () => {
       "remoteAccessErrorWebrtcUnavailable",
       "remoteAccessErrorSignalingFailed",
       "remoteAccessErrorTunnelConfigMissing",
+      "remoteAccessErrorHostLoginAccountsUnavailable",
       "remoteAccessErrorTunnelClosed",
       "remoteAccessErrorUnknown"
     ] as const;

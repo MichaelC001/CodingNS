@@ -187,6 +187,18 @@
 3. WHEN 需要关闭某个账号或某类场景的 TURN 时 THEN System SHALL 支持通过配置开关控制
 4. WHEN TURN 用量异常增长 THEN System SHALL 触发告警
 
+### 需求 13：远程入口必须区分 Connect 认证和 Host 认证
+
+**用户故事：** 作为远程访问用户，我希望先证明自己拥有这台设备的 CodingNS Connect 绑定，再用这台 Host 上的本地账号登录业务，避免把两种账号混在一起。
+
+#### 验收标准
+
+1. WHEN 用户打开四级域名入口且没有有效 Connect 会话 THEN System SHALL 先显示 CodingNS Connect 邮箱和密码表单，不得直接调用 Host 登录接口
+2. WHEN Connect 认证成功并且 WebRTC 隧道建立 THEN System SHALL 通过隧道读取当前 Host 的活动账号列表
+3. WHEN Host 返回账号列表 THEN System SHALL 只返回 `userId`、`username`、`role`，不得返回密码、密码哈希、Token、设备或会话信息
+4. WHEN 用户选择 Host 账号并提交密码 THEN System SHALL 继续调用原有 Host `/api/auth/login`，由 Host 本地权限决定是否登录成功
+5. WHEN 请求账号列表没有 relay session THEN System SHALL 返回 403，不能因为知道四级域名就读取本地账号
+
 ## 非功能需求
 
 ### 非功能需求 1：安全性

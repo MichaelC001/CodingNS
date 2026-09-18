@@ -26,6 +26,8 @@ export type WebRtcTunnelErrorCode =
   | "SIGNALING_FAILED"
   /** 需要既有的客户端配置，但读不到（例如没配置隧道域名）。 */
   | "TUNNEL_CONFIG_MISSING"
+  /** 隧道建立后读取 Host 登录账号失败。 */
+  | "HOST_LOGIN_ACCOUNTS_UNAVAILABLE"
   /** 通道还没建好就被关掉了。 */
   | "TUNNEL_CLOSED"
   /** 其他没归类的问题。 */

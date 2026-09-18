@@ -9,6 +9,7 @@ const PUBLIC_ROUTE_RULES = new Set([
   "POST:/api/public/setup",
   "POST:/api/auth/login",
   "POST:/api/auth/refresh",
+  "GET:/api/public/host-login-accounts",
   "POST:/api/providers/claude-code/hook-bridge/events"
 ]);
 

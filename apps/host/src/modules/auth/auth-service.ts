@@ -155,6 +155,13 @@ export interface AuthUserView {
   updatedAt: string;
 }
 
+/** 远程登录前可展示的 Host 账号信息，不包含密码或其他认证材料。 */
+export interface RemoteLoginUserView {
+  userId: string;
+  username: string;
+  role: "admin";
+}
+
 export interface DeleteUserResult {
   success: true;
   deletedUserId: string;
@@ -524,6 +531,18 @@ export class AuthService {
   listUsers(auth: AuthContext): AuthUserView[] {
     this.ensureAdmin(auth);
     return this.authUserRepository.list().map(toAuthUserView);
+  }
+
+  /** 只返回活动账号的最小展示信息，供已建立隧道的远程登录页使用。 */
+  listRemoteLoginUsers(): RemoteLoginUserView[] {
+    return this.authUserRepository
+      .list()
+      .filter((user) => user.status === "active")
+      .map((user) => ({
+        userId: user.id,
+        username: user.username,
+        role: user.role
+      }));
   }
 
   createUser(auth: AuthContext, input: CreateUserInput): AuthUserView {

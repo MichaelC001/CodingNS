@@ -26,6 +26,13 @@ import {
   type WebRtcTunnelErrorCode
 } from "../network/webrtc/errors";
 import { webrtcLinkStore } from "../network/webrtc/webrtc-link-store";
+import { buildRelayAccessBaseUrl } from "../config/relay-entry";
+
+export interface HostLoginAccount {
+  userId: string;
+  username: string;
+  role: "admin";
+}
 
 /** 设备列表：控制站里的「绑定」就是设备，不新造概念。 */
 export async function loadControlDevices(
@@ -79,6 +86,64 @@ export async function testControlDeviceConnection(input: {
   };
 }
 
+/** 通过已认证的 CodingNS Connect 隧道读取目标 Host 的活动账号。 */
+export async function loadHostLoginAccounts(input: {
+  controlBaseUrl: string;
+  tunnelDomain: string;
+}): Promise<HostLoginAccount[]> {
+  const baseUrl = buildRelayAccessBaseUrl(input.tunnelDomain, input.controlBaseUrl);
+  const transport = resolveHostTransport(baseUrl);
+
+  try {
+    const response = await transport.fetch({
+      path: "/api/public/host-login-accounts",
+      baseUrl,
+      url: `${baseUrl.replace(/\/$/, "")}/api/public/host-login-accounts`,
+      init: { method: "GET" }
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json() as { accounts?: unknown };
+
+    if (!Array.isArray(payload.accounts)) {
+      throw new Error("响应缺少 accounts");
+    }
+
+    return payload.accounts.flatMap((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return [];
+      }
+
+      const record = item as { userId?: unknown; username?: unknown; role?: unknown };
+
+      if (
+        typeof record.userId !== "string"
+        || !record.userId.trim()
+        || typeof record.username !== "string"
+        || !record.username.trim()
+        || record.role !== "admin"
+      ) {
+        return [];
+      }
+
+      return [{
+        userId: record.userId.trim(),
+        username: record.username.trim(),
+        role: "admin"
+      } satisfies HostLoginAccount];
+    });
+  } catch (error) {
+    throw new WebRtcTunnelError(
+      "读取 Host 账号列表失败",
+      "HOST_LOGIN_ACCOUNTS_UNAVAILABLE",
+      describeUnknownError(error)
+    );
+  }
+}
+
 /** 清掉当前账号已经建好的隧道。退出登录、切换账号时必须调用。 */
 export function resetControlConnection(): void {
   // 退出登录后旧账号建好的隧道不能继续留给新账号用，所以连接一并关掉。
@@ -104,6 +169,7 @@ const CONTROL_ERROR_MESSAGE_KEYS: Record<WebRtcTunnelErrorCode, string> = {
   WEBRTC_UNAVAILABLE: "settings.remoteAccessErrorWebrtcUnavailable",
   SIGNALING_FAILED: "settings.remoteAccessErrorSignalingFailed",
   TUNNEL_CONFIG_MISSING: "settings.remoteAccessErrorTunnelConfigMissing",
+  HOST_LOGIN_ACCOUNTS_UNAVAILABLE: "settings.remoteAccessErrorHostLoginAccountsUnavailable",
   TUNNEL_CLOSED: "settings.remoteAccessErrorTunnelClosed",
   UNKNOWN: "settings.remoteAccessErrorUnknown"
 };

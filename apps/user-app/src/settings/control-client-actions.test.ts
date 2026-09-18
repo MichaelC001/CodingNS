@@ -1,14 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { zhCN } from "../i18n/zh-CN";
 import { enUS } from "../i18n/en-US";
 import {
   describeControlError,
+  loadHostLoginAccounts,
   listControlErrorCodes,
   listControlErrorMessageKeys,
   resolveControlErrorMessageKey
 } from "./control-client-actions";
 import { WebRtcTunnelError } from "../network/webrtc/errors";
+import { resetHostTransportRegistryForTesting, setHostTransportResolverForTesting } from "../network/host-transport-registry";
+
+afterEach(() => {
+  resetHostTransportRegistryForTesting();
+});
 
 /**
  * 这一组不 mock 模块，专门验「错误码 → i18n 键」这层映射。
@@ -31,6 +37,30 @@ function readDictionaryValue(dictionary: Record<string, unknown>, key: string): 
 }
 
 describe("control-client-actions 错误码映射", () => {
+  it("通过 WebRTC transport 解析 Host 账号，并过滤不完整记录", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      accounts: [
+        { userId: "u1", username: "admin", role: "admin", passwordHash: "must-not-leak" },
+        { userId: "u2", username: "disabled", role: "user" },
+        { userId: "u3", username: "", role: "admin" }
+      ]
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    setHostTransportResolverForTesting(() => ({
+      fetch: fetchMock,
+      createWebSocket: () => { throw new Error("not used"); }
+    }));
+
+    await expect(loadHostLoginAccounts({
+      controlBaseUrl: "https://channel.codingns.com:1443",
+      tunnelDomain: "demo.channel.codingns.com"
+    })).resolves.toEqual([{ userId: "u1", username: "admin", role: "admin" }]);
+    expect(fetchMock).toHaveBeenCalledWith(expect.objectContaining({
+      path: "/api/public/host-login-accounts",
+      baseUrl: "https://demo.channel.codingns.com:1443"
+    }));
+  });
+
   it("每个错误码都能解析出一个已翻译、且不等于 key 本身的文案", () => {
     const codes = listControlErrorCodes();
     expect(codes.length).toBeGreaterThan(0);

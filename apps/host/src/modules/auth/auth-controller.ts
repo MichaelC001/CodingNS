@@ -48,6 +48,23 @@ export class AuthController {
     reply.send(this.authService.listDeviceManagement(requireAuthContext(request)));
   };
 
+  readonly listRemoteLoginUsers = async (
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> => {
+    const relaySessionId = readRelaySessionId(request);
+
+    if (!relaySessionId) {
+      reply.code(403).send({
+        errorCode: "RELAY_SESSION_REQUIRED",
+        detail: "读取 Host 账号列表必须通过已建立的 CodingNS Connect 连接"
+      });
+      return;
+    }
+
+    reply.send({ accounts: this.authService.listRemoteLoginUsers() });
+  };
+
   readonly updateCurrentDevicePrimary = async (
     request: FastifyRequest<{ Body: UpdateCurrentDevicePrimaryInput }>,
     reply: FastifyReply
@@ -192,4 +209,10 @@ function requireAuthContext(request: FastifyRequest): AuthContext {
   }
 
   return request.auth;
+}
+
+function readRelaySessionId(request: FastifyRequest): string | null {
+  const value = request.headers["x-codingns-relay-session-id"];
+  const normalized = Array.isArray(value) ? value[0]?.trim() : value?.trim();
+  return normalized || null;
 }

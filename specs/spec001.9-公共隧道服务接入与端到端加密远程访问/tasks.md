@@ -915,6 +915,38 @@
 
 ---
 
+## 阶段 W2.4：远程入口双阶段登录（2026-09-18）
+
+- [x] W2.4.1 先认证 CodingNS Connect，再读取 Host 账号
+  - 状态：DONE
+  - 这一步到底做什么：修正四级域名入口的登录顺序。用户先输入 CodingNS Connect 账号，认证成功并建立 WebRTC 隧道后，页面再读取当前 Host 的活动账号，最后由用户输入 Host 账号密码。
+  - 做完以后能看到什么结果：打开 `https://*.channel.codingns.com:1443` 后不会再把 Host 登录请求直接发给控制站；页面会明确区分「CodingNS Connect 账号」和「CodingNS Host 账号」，并在两步之间显示清晰的状态。
+  - 依赖什么：W2.1 WebRTC 客户端承载层、现有 Host 登录接口。
+  - 主要改哪些文件：
+    - `apps/host/src/modules/auth/auth-service.ts`
+    - `apps/host/src/modules/auth/auth-controller.ts`
+    - `apps/host/src/routes/auth.ts`
+    - `apps/host/src/middlewares/auth-guard.ts`
+    - `apps/user-app/src/settings/control-client-actions.ts`
+    - `apps/user-app/src/features/auth/pages/RelayConnectEntryPage.tsx`
+    - `apps/user-app/src/i18n/zh-CN.ts`
+    - `apps/user-app/src/i18n/en-US.ts`
+  - 这一步明确不做什么：不返回 Host 密码、密码哈希、Token、设备或会话信息；不改变 Host 原有 `/api/auth/login` 的校验逻辑；不把 Host 本地账号当成 CodingNS Connect 账号。
+  - 怎么验证：Host 集成测试验证无 relay session 返回 403、只返回活动账号且不含敏感字段；客户端页面测试验证 Connect 登录、Host 账号选择、Host 登录和跳转顺序；两端 TypeScript 检查通过。
+  - 验证结果：已完成。Host 接口和页面双阶段流程已落地，相关最小测试通过。
+
+- [x] W2.4.2 回归错误文案和账号边界
+  - 状态：DONE
+  - 这一步到底做什么：把原来笼统的“CodingNS 账号”改成明确的“CodingNS Connect 账号”，并为读取 Host 账号失败补充中英文 i18n。
+  - 做完以后能看到什么结果：Connect 认证失败、绑定不属于当前账号、Host 账号列表读取失败时，页面能给出对应阶段的提示，不把控制站错误误显示成 Host 登录错误。
+  - 依赖什么：W2.4.1。
+  - 主要改哪些文件：`apps/user-app/src/i18n/zh-CN.ts`、`apps/user-app/src/i18n/en-US.ts`、`apps/user-app/src/network/webrtc/errors.ts`、相关客户端测试。
+  - 这一步明确不做什么：不在组件里硬编码显示文案，不新增第三套登录态。
+  - 怎么验证：错误码映射测试逐项检查中英文翻译，页面测试检查两阶段表单和失败分支。
+  - 验证结果：已完成。
+
+---
+
 ## 阶段 W7：回归与验收
 
 - [ ] W7.1 真实网络吞吐验收
