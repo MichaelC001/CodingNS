@@ -167,6 +167,7 @@ test("Windows 安装回放使用 npm tarball 并避开 Bash 4 专属语法", () 
     path.join(repositoryRoot, "scripts", "run-windows-install-replay.sh"),
     "utf8"
   );
+  const installSource = fs.readFileSync(path.join(repositoryRoot, "install.sh"), "utf8");
   const workflowSource = fs.readFileSync(
     path.join(repositoryRoot, ".github", "workflows", "windows-install-replay.yml"),
     "utf8"
@@ -181,6 +182,11 @@ test("Windows 安装回放使用 npm tarball 并避开 Bash 4 专属语法", () 
     workflowSource,
     /codingns-replay-data\/runtime\/logs/,
     "失败产物必须包含服务日志，不能只上传安装日志"
+  );
+  assert.match(
+    installSource,
+    /if ! run_host_installer_setup; then[\s\S]*?fi\s+#[^\n]*托管方式确定后再写[\s\S]*?write_private_runtime_state/,
+    "PM2 回退完成后才能写运行状态"
   );
 });
 

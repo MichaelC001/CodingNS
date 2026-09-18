@@ -2613,7 +2613,6 @@ main() {
   ensure_registry_if_needed
   install_or_resolve_codingns
   refresh_deepseek_harness_launcher
-  write_private_runtime_state
 
   local legacy_pm2_paths=""
   legacy_pm2_paths="$(detect_legacy_pm2_paths || true)"
@@ -2628,6 +2627,10 @@ main() {
     start_pm2_service
     configure_startup
   fi
+
+  # 必须等托管方式确定后再写：统一安装器失败并回退到 PM2 时，
+  # 此时 PM2_BIN 才有值，否则状态文件会错误地把回退安装记成统一安装器。
+  write_private_runtime_state
 
   install_desktop_client_if_requested
   print_success_summary
