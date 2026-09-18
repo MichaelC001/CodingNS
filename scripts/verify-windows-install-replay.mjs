@@ -96,14 +96,14 @@ async function verifyUnifiedInstallerInstall({ dataDir, installOutput, unifiedSt
   const serviceLogPath = path.join(dataDir, "runtime", "logs", "host-service.log");
   console.log(`[windows-replay] 服务日志：${fs.existsSync(serviceLogPath) ? serviceLogPath : "本次没有走启动包装，日志文件未生成"}`);
 
-  await verifyHostHealth(unifiedState.port);
+  await verifyHostHealth(unifiedState.port, serviceLogPath);
 
   console.log(
     `[windows-replay] 统一安装器接管服务：端口 ${unifiedState.port}，自启 ${unifiedState.autostartEnabled ? unifiedState.autostartKind || "已启用" : "未启用"}`
   );
 }
 
-async function verifyHostHealth(port, timeoutMs = 30_000) {
+async function verifyHostHealth(port, serviceLogPath, timeoutMs = 30_000) {
   const url = `http://127.0.0.1:${port}/api/public/bootstrap-status`;
   const deadline = Date.now() + timeoutMs;
   let lastFailure = "unknown";
@@ -124,7 +124,20 @@ async function verifyHostHealth(port, timeoutMs = 30_000) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  throw new Error(`统一安装器装完，但服务没有响应：${url}（${lastFailure}）`);
+  const serviceLog = readFileTail(serviceLogPath);
+  throw new Error(
+    `统一安装器装完，但服务没有响应：${url}（${lastFailure}）\n` +
+    `服务日志：\n${serviceLog}`
+  );
+}
+
+function readFileTail(filePath, maxLength = 12_000) {
+  if (!fs.existsSync(filePath)) {
+    return `未生成：${filePath}`;
+  }
+
+  const content = fs.readFileSync(filePath, "utf8");
+  return content.length > maxLength ? content.slice(-maxLength) : content;
 }
 
 function verifyHostAutostartLifecycle(dataDir, nodeExe) {

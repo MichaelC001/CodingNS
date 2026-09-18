@@ -176,6 +176,11 @@ test("Windows 安装回放使用 npm tarball 并避开 Bash 4 专属语法", () 
   assert.doesNotMatch(prepareSource, /mapfile/);
   assert.match(runSource, /CODINGNS_PACKAGE_SPEC="\$PACKAGE_SPEC"/);
   assert.match(workflowSource, /codingns-package\.tgz/);
+  assert.match(
+    workflowSource,
+    /codingns-replay-data\/runtime\/logs/,
+    "失败产物必须包含服务日志，不能只上传安装日志"
+  );
 });
 
 test("Android 发布 workflow 不再请求已废弃的 tools SDK 包", () => {

@@ -81,4 +81,4 @@ jobs:
           path: |
             ${{ runner.temp }}/windows-install-replay
             ${{ runner.temp }}/codingns-replay-data/runtime/service
-            ${{ runner.temp }}/codingns-replay-data/runtime/logs/install
+            ${{ runner.temp }}/codingns-replay-data/runtime/logs
