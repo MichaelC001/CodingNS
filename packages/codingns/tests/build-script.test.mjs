@@ -63,6 +63,7 @@ test("rewritePackageJsonForPublish 会改写 workspace 依赖并补齐 bundle �
 
   assert.equal(rewritten.dependencies["@codingns/session-sync-core"], "0.1.0");
   assert.equal(rewritten.dependencies["@codingns/relay-tunnel-wire"], "0.1.0");
+  assert.equal(rewritten.dependencies.werift, "^0.24.4");
   assert.deepEqual(rewritten.bundleDependencies, [
     "@codingns/session-sync-core",
     "@codingns/relay-tunnel-wire"

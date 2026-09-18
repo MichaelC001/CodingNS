@@ -46,6 +46,10 @@ if (packageJson.optionalDependencies?.libsql !== "^0.5.29") {
   problems.push("发布包 package.json 没声明 libsql");
 }
 
+if (packageJson.dependencies?.werift !== "^0.24.4") {
+  problems.push("发布包 package.json 没声明 WebRTC 运行时依赖 werift");
+}
+
 const sqliteDependencyNames = Object.keys({
   ...packageJson.dependencies,
   ...packageJson.optionalDependencies
