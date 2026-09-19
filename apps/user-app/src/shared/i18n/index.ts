@@ -67,9 +67,9 @@ const extensionZhCN = {
     serverUpdateReady: "\u53d1\u73b0\u65b0\u7248\u672c",
     serverUpToDate: "\u5df2\u662f\u6700\u65b0\u7248\u672c",
     serverCheckFailed: "\u68c0\u67e5\u5931\u8d25",
-    serverInstallWarning: "\u5b89\u88c5\u66f4\u65b0\u4f1a\u901a\u8fc7 PM2 \u81ea\u52a8\u91cd\u542f CodingNS \u670d\u52a1\uff0c\u8fde\u63a5\u4f1a\u77ed\u6682\u4e2d\u65ad\u3002",
+    serverInstallWarning: "\u5b89\u88c5\u66f4\u65b0\u4f1a\u81ea\u52a8\u91cd\u542f CodingNS \u670d\u52a1，\u8fde\u63a5\u4f1a\u77ed\u6682\u4e2d\u65ad\u3002",
     serverInstallConfirmTitle: "\u5b89\u88c5\u670d\u52a1\u7aef\u66f4\u65b0",
-    serverInstallConfirmDescription: "\u7ee7\u7eed\u540e\u4f1a\u5148\u5b89\u88c5\u65b0\u7248\u672c\uff0c\u518d\u7531 PM2 \u81ea\u52a8\u91cd\u542f\u5f53\u524d CodingNS \u670d\u52a1\u3002",
+    serverInstallConfirmDescription: "\u7ee7\u7eed\u540e\u4f1a\u5148\u5b89\u88c5\u65b0\u7248\u672c，\u518d\u81ea\u52a8\u91cd\u542f\u5f53\u524d CodingNS \u670d\u52a1\u3002",
     serverInstallConfirmAction: "\u7ee7\u7eed\u5b89\u88c5\u5e76\u91cd\u542f\u670d\u52a1",
     serverRestarting: "\u66f4\u65b0\u5df2\u5b89\u88c5\uff0c\u6b63\u5728\u91cd\u542f CodingNS \u670d\u52a1",
     serverProgressLabel: "\u670d\u52a1\u7aef\u66f4\u65b0\u8fdb\u5ea6",
@@ -77,10 +77,13 @@ const extensionZhCN = {
     serverProgressQueued: "\u5df2\u52a0\u5165\u66f4\u65b0\u961f\u5217",
     serverProgressInstalling: "\u6b63\u5728\u5b89\u88c5\u670d\u52a1\u7aef\u66f4\u65b0",
     serverProgressRestarting: "\u6b63\u5728\u91cd\u542f\u670d\u52a1",
-    serverProgressHint: "\u670d\u52a1\u7aef\u5347\u7ea7\u7531 npm \u548c PM2 \u6267\u884c\uff0c\u5f53\u524d\u53ea\u80fd\u663e\u793a\u9636\u6bb5\uff0c\u4e0d\u80fd\u663e\u793a\u51c6\u786e\u767e\u5206\u6bd4\u3002",
+    serverProgressHint: "\u670d\u52a1\u7aef\u5347\u7ea7\u7531 npm \u6267\u884c，\u5f53\u524d\u53ea\u80fd\u663e\u793a\u9636\u6bb5，\u4e0d\u80fd\u663e\u793a\u51c6\u786e\u767e\u5206\u6bd4。",
     serverProgressCurrentStage: "\u5f53\u524d\u9636\u6bb5\uff1a{stage}",
     updateCheckAll: "\u68c0\u67e5\u66f4\u65b0",
     updateChecking: "\u6b63\u5728\u68c0\u67e5",
+    updateInstallAll: "\u4e00\u952e\u66f4\u65b0\u5168\u90e8",
+    updateInstallAllSucceeded: "\u670d\u52a1\u7aef\u548c\u684c\u9762\u7aef\u66f4\u65b0\u5df2\u5b8c\u6210，\u91cd\u542f\u5e94\u7528\u540e\u751f\u6548。",
+    updateInstallAllFailed: "\u4e00\u952e\u66f4\u65b0\u672a\u5b8c\u6210",
     serverInstallQueued: "\u5df2\u52a0\u5165\u66f4\u65b0\u961f\u5217",
     serverInstalling: "\u6b63\u5728\u5b89\u88c5\u66f4\u65b0",
     serverInstallSucceeded: "\u66f4\u65b0\u5df2\u5b8c\u6210",
@@ -3402,10 +3405,10 @@ const extensionEnUS = {
     serverUpToDate: "Up to date",
     serverCheckFailed: "Check failed",
     serverInstallWarning:
-      "Installing the update will restart the CodingNS service through PM2 and briefly interrupt the connection.",
+      "Installing the update will restart the CodingNS service and briefly interrupt the connection.",
     serverInstallConfirmTitle: "Install Server Update",
     serverInstallConfirmDescription:
-      "Continuing will install the new version first, then let PM2 restart the current CodingNS service automatically.",
+      "Continuing will install the new version first, then restart the current CodingNS service automatically.",
     serverInstallConfirmAction: "Install And Restart",
     serverRestarting: "Update installed. Restarting the CodingNS service",
     serverProgressLabel: "Server update progress",
@@ -3413,7 +3416,7 @@ const extensionEnUS = {
     serverProgressQueued: "Queued for update",
     serverProgressInstalling: "Installing server update",
     serverProgressRestarting: "Restarting service",
-    serverProgressHint: "Server updates run through npm and PM2, so only stages are available here, not exact percentages.",
+    serverProgressHint: "Server updates run through npm, so only stages are available here, not exact percentages.",
     serverProgressCurrentStage: "Current stage: {stage}",
     updateCheckAll: "Check updates",
     updateChecking: "Checking",
@@ -6798,27 +6801,27 @@ export function I18nProvider({ children, language }: I18nProviderProps) {
 /**
  * 响应式的翻译hook，语言切换时会自动触发组件重新渲染
  */
-export function useT(): (key: string) => string {
+export function useT(): (key: string, params?: TranslationParams) => string {
   const language = usePreferencesSelector((state) => state.profile.language);
 
-  return (key: string) => {
+  return (key: string, params?: TranslationParams) => {
     const localeCandidates: AppLanguage[] = language === "en-US" ? ["en-US", "zh-CN"] : ["zh-CN"];
 
     for (const locale of localeCandidates) {
       const extensionValue = readValue(key, extensionDictionaries[locale]);
 
       if (extensionValue !== key) {
-        return extensionValue;
+        return interpolateTemplate(extensionValue, params);
       }
 
       const dictionaryValue = readValue(key, dictionaries[locale]);
 
       if (dictionaryValue !== key) {
-        return dictionaryValue;
+        return interpolateTemplate(dictionaryValue, params);
       }
     }
 
-    return key;
+    return interpolateTemplate(key, params);
   };
 }
 
