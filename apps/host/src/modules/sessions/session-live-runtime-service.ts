@@ -46,6 +46,9 @@ import type { SessionSendQueueRepository } from "../../storage/repositories/sess
 import type { SessionStateRepository } from "../../storage/repositories/session-state-repository.js";
 import type { SessionStatusSnapshotRepository } from "../../storage/repositories/session-status-snapshot-repository.js";
 import type { SqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
+import { isSqliteBusyError as sharedIsSqliteBusyError } from "../../storage/sqlite/write-queue-errors.js";
+import { retrySqliteWrite } from "../../storage/sqlite/write-retry.js";
+import { isInsideSqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
 import type {
   SessionActivityConfidence,
   SessionInterruptSource,
@@ -2144,20 +2147,24 @@ export class SessionLiveRuntimeService {
     const currentState = this.sessionStateRepository.findBySessionAndUser(request.sessionId, userId);
 
     this.attachRuntimePersistence(handle, request.sessionId, request.workspaceId, userId);
-    this.sessionHistoryService.persistSessionBinding(request.sessionId, request.workspaceId, {
-      ...snapshot,
-      userId
-    });
-    this.sessionStateRepository.upsert({
-      sessionId: request.sessionId,
-      userId,
-      runningState: toStoredRunningState(snapshot.runningState),
-      activitySource: "runtime",
-      favorite: currentState?.favorite ?? false,
-      lastEventAt: snapshot.lastEventAt,
-      completedAt: snapshot.completedAt,
-      lastSeenAt: currentState?.lastSeenAt ?? null,
-      updatedAt: nowIso()
+
+    // 绑定 + 运行状态是一次逻辑写入：放进共享写队列，和运行时事件、扫描回写排同一条 FIFO。
+    await this.runRuntimeSqliteWrite(request.sessionId, "start_runtime_run_records", () => {
+      this.sessionHistoryService.persistSessionBinding(request.sessionId, request.workspaceId, {
+        ...snapshot,
+        userId
+      });
+      this.sessionStateRepository.upsert({
+        sessionId: request.sessionId,
+        userId,
+        runningState: toStoredRunningState(snapshot.runningState),
+        activitySource: "runtime",
+        favorite: currentState?.favorite ?? false,
+        lastEventAt: snapshot.lastEventAt,
+        completedAt: snapshot.completedAt,
+        lastSeenAt: currentState?.lastSeenAt ?? null,
+        updatedAt: nowIso()
+      });
     });
     this.sessionActivityAuthorityService.observe(
       createRuntimeActivityObservation(request.sessionId, snapshot)
@@ -3425,7 +3432,8 @@ export class SessionLiveRuntimeService {
     scope: string,
     operation: () => void
   ): Promise<void> {
-    if (this.sqliteWriteQueue) {
+    // 已经在写队列任务里时直接执行：嵌套入队会等自己，直接死锁。
+    if (this.sqliteWriteQueue && !isInsideSqliteWriteQueue()) {
       await this.sqliteWriteQueue.enqueue(
         `session.runtime.${scope}`,
         operation
@@ -3441,34 +3449,31 @@ export class SessionLiveRuntimeService {
     scope: string,
     operation: () => TResult
   ): Promise<TResult> {
-    let attempt = 0;
-
-    while (true) {
-      try {
-        return operation();
-      } catch (error) {
-        if (!isSqliteBusyError(error) || attempt >= RUNTIME_EVENT_SQLITE_BUSY_RETRY_DELAYS_MS.length) {
-          throw error;
-        }
-
-        const delayMs = RUNTIME_EVENT_SQLITE_BUSY_RETRY_DELAYS_MS[attempt]!;
-        attempt += 1;
+    // 读操作也要能扛过瞬时锁竞争，但读不进写队列：否则会把读串行化到写后面。
+    const result = await retrySqliteWrite(operation, {
+      scope: `session.runtime.${scope}`,
+      retryDelaysMs: RUNTIME_EVENT_SQLITE_BUSY_RETRY_DELAYS_MS,
+      log: (payload) => {
         logPerformance(
           "session.runtime_event.sqlite_busy_retry",
-          delayMs,
+          payload.delayMs,
           {
             sessionId,
             scope,
-            attempt
+            attempt: payload.attempt,
+            errorKind: payload.errorKind,
+            errorCode: payload.errorCode,
+            exhausted: payload.exhausted
           },
           {
             thresholdMs: 0,
             force: true
           }
         );
-        await delay(delayMs);
       }
-    }
+    });
+
+    return result.value;
   }
 
   private async emitTerminalStateEvent(event: SessionTerminalStateEvent): Promise<void> {
@@ -3485,39 +3490,42 @@ export class SessionLiveRuntimeService {
     const runningState = toStoredRunningState(runtime.runningState);
     const currentSnapshot = this.sessionStatusSnapshotRepository.findBySessionId(sessionId);
 
-    for (const userId of this.authUserRepository.listIds()) {
-      const current = this.sessionStateRepository.findBySessionAndUser(sessionId, userId);
+    // 状态行 + 快照是一次逻辑收敛：放进共享写队列，避免和运行时事件、扫描回写交错抢锁。
+    await this.runRuntimeSqliteWrite(sessionId, "reconcile_terminal_snapshot", () => {
+      for (const userId of this.authUserRepository.listIds()) {
+        const current = this.sessionStateRepository.findBySessionAndUser(sessionId, userId);
 
-      if (
-        current?.lastEventAt
-        && current.lastEventAt.localeCompare(timestamp) > 0
-        && isTerminalSessionRunningState(current.runningState)
-      ) {
-        continue;
+        if (
+          current?.lastEventAt
+          && current.lastEventAt.localeCompare(timestamp) > 0
+          && isTerminalSessionRunningState(current.runningState)
+        ) {
+          continue;
+        }
+
+        this.sessionStateRepository.upsert({
+          sessionId,
+          userId,
+          runningState,
+          activitySource: "runtime",
+          favorite: current?.favorite ?? false,
+          lastEventAt: timestamp,
+          completedAt: isTerminalSessionRunningState(runningState)
+            ? (runtime.completedAt ?? timestamp)
+            : current?.completedAt ?? null,
+          lastSeenAt: current?.lastSeenAt ?? null,
+          updatedAt: nowIso()
+        });
       }
 
-      this.sessionStateRepository.upsert({
-        sessionId,
-        userId,
-        runningState,
-        activitySource: "runtime",
-        favorite: current?.favorite ?? false,
-        lastEventAt: timestamp,
-        completedAt: isTerminalSessionRunningState(runningState)
-          ? (runtime.completedAt ?? timestamp)
-          : current?.completedAt ?? null,
-        lastSeenAt: current?.lastSeenAt ?? null,
-        updatedAt: nowIso()
+      this.upsertSnapshot(sessionId, {
+        syncStatus: runningState === "failed" ? "error" : "idle",
+        syncCursor: currentSnapshot?.syncCursor ?? null,
+        lastSyncAt: timestamp,
+        lastErrorCode: runningState === "failed" ? runtime.errorCode ?? null : null,
+        lastErrorDetail: runningState === "failed" ? runtime.detail ?? null : null,
+        resumedAt: currentSnapshot?.resumedAt ?? null
       });
-    }
-
-    this.upsertSnapshot(sessionId, {
-      syncStatus: runningState === "failed" ? "error" : "idle",
-      syncCursor: currentSnapshot?.syncCursor ?? null,
-      lastSyncAt: timestamp,
-      lastErrorCode: runningState === "failed" ? runtime.errorCode ?? null : null,
-      lastErrorDetail: runningState === "failed" ? runtime.detail ?? null : null,
-      resumedAt: currentSnapshot?.resumedAt ?? null
     });
     this.sessionActivityAuthorityService.observe(createRuntimeActivityObservation(sessionId, runtime));
     await this.emitExternalRuntimeEnvelope({
@@ -5219,14 +5227,7 @@ function normalizeOptionalBindingValue(value: string | null | undefined): string
 }
 
 function isSqliteBusyError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-
-  const sqliteCode = "code" in error ? error.code : null;
-  const message = error instanceof Error ? error.message : String(error);
-
-  return sqliteCode === "SQLITE_BUSY" || message.includes("database is locked");
+  return sharedIsSqliteBusyError(error);
 }
 
 async function delay(ms: number): Promise<void> {
