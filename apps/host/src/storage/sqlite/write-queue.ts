@@ -1,10 +1,30 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { performance } from "node:perf_hooks";
 
-import { isSqliteBusyError } from "./write-queue-errors.js";
+import { retrySqliteWrite, type SqliteRetryLogPayload } from "./write-retry.js";
+
+/**
+ * 标记“当前异步调用栈已经在写队列任务里”。
+ *
+ * 队列是 FIFO 的：一个已经拿到独占权的任务如果再次 enqueue，就会等自己，直接死锁。
+ * 用 AsyncLocalStorage 而不是布尔标志，是因为布尔标志会跨越 await，
+ * 把并发调用误判成嵌套调用，从而绕过队列。
+ */
+const writeQueueContext = new AsyncLocalStorage<true>();
+
+/** 当前是否正处在共享写队列的任务里（含其 await 出来的异步分支）。 */
+export function isInsideSqliteWriteQueue(): boolean {
+  return writeQueueContext.getStore() === true;
+}
 
 export interface SqliteWriteQueueOptions {
   maxRetries?: number;
   retryDelaysMs?: readonly number[];
+  /** 所有重试等待时间上限，避免一次写入无界等待。 */
+  maxTotalWaitMs?: number;
+  /** 时间注入：测试可以替换成同步 sleep，不真的等待。 */
+  sleep?: (ms: number) => Promise<void>;
+  log?: (payload: SqliteRetryLogPayload) => void;
 }
 
 export interface SqliteWriteQueueStats {
@@ -15,14 +35,15 @@ export interface SqliteWriteQueueStats {
   busyRetries: number;
 }
 
-const DEFAULT_RETRY_DELAYS_MS = [50, 100, 250, 500, 1_000] as const;
-
 /**
- * Host 进程内所有高频 SQLite 写入共用的 FIFO 队列。
+ * Host 进程内所有 SQLite 写入共用的 FIFO 队列。
  *
- * libsql 的调用是同步的，队列的作用不是把同步调用变成异步调用，
- * 而是避免多个 async 链路在 await 之后交错进入长事务，并把 busy 重试放到
- * 一个可观测、可释放的边界里。
+ * 队列只串行化“写”，读操作不走这里，所以不会把整个数据库变成单线程。
+ * 它的作用是：同一个进程里的多个 async 写链路（会话运行时事件、扫描回写、
+ * 终端活动时间戳）不会在 await 之后交错进入写事务，从而避免互相把锁升级成死锁。
+ *
+ * busy 重试复用 `retrySqliteWrite`：次数和总等待时间都有上限，非锁错误立即抛出，
+ * 重试耗尽后抛最后一次的原始错误。
  */
 export class SqliteWriteQueue {
   private readonly defaultOptions: SqliteWriteQueueOptions;
@@ -49,41 +70,38 @@ export class SqliteWriteQueue {
       this.pending -= 1;
       this.running += 1;
       const startedAt = performance.now();
-      const retryDelays = options.retryDelaysMs
-        ?? this.defaultOptions.retryDelaysMs
-        ?? DEFAULT_RETRY_DELAYS_MS;
-      const maxRetries = Math.max(
-        0,
-        Math.min(
-          options.maxRetries
-            ?? this.defaultOptions.maxRetries
-            ?? retryDelays.length,
-          retryDelays.length
-        )
-      );
+      const merged = { ...this.defaultOptions, ...options };
       let retryCount = 0;
 
       try {
-        while (true) {
-          try {
-            const value = await operation();
-            this.completed += 1;
-            reportQueueMetric(scope, "completed", queuedAt, startedAt, retryCount);
-            return value;
-          } catch (error) {
-            if (!isSqliteBusyError(error) || retryCount >= maxRetries) {
-              this.failed += 1;
-              reportQueueMetric(scope, "failed", queuedAt, startedAt, retryCount);
-              throw error;
-            }
+        // 在队列任务内运行，并打上上下文标记：
+        // 任务内部（含 await 出来的分支）再调用 enqueue 时，调用方可以据此
+        // 判断自己已经持有独占权，避免嵌套入队自等待死锁。
+        const result = await writeQueueContext.run(true, async () =>
+          retrySqliteWrite(operation, {
+            scope,
+            maxRetries: merged.maxRetries,
+            retryDelaysMs: merged.retryDelaysMs,
+            maxTotalWaitMs: merged.maxTotalWaitMs,
+            sleep: merged.sleep,
+            log: (payload) => {
+              if (!payload.exhausted) {
+                retryCount = payload.attempt;
+                this.busyRetries += 1;
+              }
 
-            const delayMs = retryDelays[retryCount] ?? 0;
-            retryCount += 1;
-            this.busyRetries += 1;
-            reportQueueMetric(scope, "busy_retry", queuedAt, startedAt, retryCount, delayMs);
-            await delay(delayMs);
-          }
-        }
+              reportRetry(payload, merged.log);
+            }
+          })
+        );
+        retryCount = result.retryCount;
+        this.completed += 1;
+        reportQueueMetric(scope, "completed", queuedAt, startedAt, retryCount);
+        return result.value;
+      } catch (error) {
+        this.failed += 1;
+        reportQueueMetric(scope, "failed", queuedAt, startedAt, retryCount);
+        throw error;
       } finally {
         this.running -= 1;
       }
@@ -109,29 +127,31 @@ export class SqliteWriteQueue {
   }
 }
 
+function reportRetry(payload: SqliteRetryLogPayload, customLog?: (payload: SqliteRetryLogPayload) => void): void {
+  if (customLog) {
+    customLog(payload);
+    return;
+  }
+
+  if (payload.exhausted) {
+    console.error("[sqlite.write-queue] retry_exhausted", payload);
+    return;
+  }
+
+  console.warn("[sqlite.write-queue] busy_retry", payload);
+}
+
 function reportQueueMetric(
   scope: string,
-  event: "completed" | "failed" | "busy_retry",
+  event: "completed" | "failed",
   queuedAt: number,
   startedAt: number,
-  retryCount: number,
-  delayMs = 0
+  retryCount: number
 ): void {
   const waitMs = Math.max(0, startedAt - queuedAt);
   const runMs = Math.max(0, performance.now() - startedAt);
 
-  if (event === "busy_retry") {
-    console.warn("[sqlite.write-queue] busy_retry", {
-      scope,
-      retryCount,
-      delayMs,
-      waitMs: Math.round(waitMs),
-      runMs: Math.round(runMs)
-    });
-    return;
-  }
-
-  if (waitMs >= 100 || runMs >= 100 || event === "failed") {
+  if (waitMs >= 100 || runMs >= 100 || event === "failed" || retryCount > 0) {
     console.info("[sqlite.write-queue] completed", {
       scope,
       status: event,
@@ -140,15 +160,4 @@ function reportQueueMetric(
       retryCount
     });
   }
-}
-
-async function delay(ms: number): Promise<void> {
-  if (ms <= 0) {
-    return;
-  }
-
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref?.();
-  });
 }
