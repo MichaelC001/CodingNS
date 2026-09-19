@@ -195,7 +195,6 @@ import {
   buildWorkspaceSessionPath,
   buildWorkspaceButlerPath,
   buildWorkspaceTerminalsPath,
-  buildWorkspacePluginsPath,
   buildWorkspaceToolFilesPath,
   buildWorkspaceToolGitPath,
   buildWorkspaceToolProcessesPath,
@@ -866,9 +865,6 @@ function resolveRouteWorkspaceId(pathname: string, search: string): string | nul
     "/workspaces/:workspaceId/tools/git",
     "/workspaces/:workspaceId/tools/processes",
     "/workspaces/:workspaceId/terminals",
-    "/workspaces/:workspaceId/plugins",
-    "/workspaces/:workspaceId/plugins/:pluginId",
-    "/workspaces/:workspaceId/plugins/:pluginId/run",
     "/workspaces/:workspaceId/butler"
   ] as const;
 
@@ -1093,14 +1089,6 @@ function isButlerRoute(pathname: string) {
   return Boolean(matchPath("/workspaces/:workspaceId/butler", pathname));
 }
 
-function isPluginsRoute(pathname: string) {
-  return Boolean(
-    matchPath("/workspaces/:workspaceId/plugins", pathname)
-    || matchPath("/workspaces/:workspaceId/plugins/:pluginId", pathname)
-    || matchPath("/workspaces/:workspaceId/plugins/:pluginId/run", pathname)
-  );
-}
-
 function resolveFallbackWorkspaceRoute(
   pathname: string,
   workspaceId: string,
@@ -1132,10 +1120,6 @@ function resolveFallbackWorkspaceRoute(
 
   if (isButlerRoute(pathname)) {
     return buildWorkspaceButlerPath(workspaceId, undefined, workspaceRef);
-  }
-
-  if (isPluginsRoute(pathname)) {
-    return buildWorkspacePluginsPath(workspaceId, workspaceRef);
   }
 
   return buildWorkspaceSessionIndexPath(workspaceId, workspaceRef);

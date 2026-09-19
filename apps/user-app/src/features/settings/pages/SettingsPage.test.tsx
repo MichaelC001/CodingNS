@@ -99,153 +99,6 @@ vi.mock("../../../platform/server/service-update-manager", () => ({
   }))
 }));
 
-vi.mock("../../plugins/api/plugins-api", async () => {
-  const actual = await vi.importActual<typeof import("../../plugins/api/plugins-api")>("../../plugins/api/plugins-api");
-
-  return {
-    ...actual,
-    listPlugins: vi.fn(async () => ({
-      items: [
-        {
-          id: "demo.plugin",
-          name: "演示插件",
-          version: "1.0.0",
-          enabled: true,
-          installRoot: "/plugins/demo",
-          hasFrontend: true,
-          hasBackend: true,
-          updatedAt: "2026-05-21T00:00:00.000Z"
-        }
-      ]
-    })),
-    getPlugin: vi.fn(async () => ({
-      definition: {
-        id: "demo.plugin",
-        version: "1.0.0",
-        name: "演示插件",
-        installRoot: "/plugins/demo",
-        manifestJson: "{}",
-        hasFrontend: true,
-        hasBackend: true,
-        createdAt: "2026-05-21T00:00:00.000Z",
-        updatedAt: "2026-05-21T00:00:00.000Z"
-      },
-      manifest: {
-        id: "demo.plugin",
-        name: "演示插件",
-        version: "1.0.0",
-        frontend: {
-          entry: "index.html",
-          mode: "static_html"
-        },
-        backend: {
-          runtime: "node",
-          mode: "on_demand",
-          actions: [
-            {
-              id: "run-report",
-              title: "运行报表",
-              entry: "action.js",
-              timeoutMs: 3000
-            }
-          ]
-        },
-        permissions: {
-          workspaceRead: true,
-          network: false,
-          desktop: ["open_file"]
-        }
-      },
-      enablement: {
-        pluginId: "demo.plugin",
-        enabled: true,
-        enabledByUserId: "user-1",
-        enabledAt: "2026-05-21T00:00:00.000Z",
-        disabledByUserId: null,
-        disabledAt: null,
-        reason: null,
-        updatedAt: "2026-05-21T00:00:00.000Z"
-      },
-      auditEvents: [],
-      frontend: {
-        basePath: "/preview/plugins/demo.plugin/frontend",
-        entryUrl: "/preview/plugins/demo.plugin/frontend/index.html"
-      }
-    })),
-    listPluginPermissionGrants: vi.fn(async () => ({
-      items: [
-        {
-          id: "grant-1",
-          pluginId: "demo.plugin",
-          workspaceId: "workspace-1",
-          permissionKey: "workspace.write_file",
-          scopeType: "directory",
-          scopePath: "reports",
-          grantMode: "persistent",
-          grantedByUserId: "user-1",
-          runtimeSessionId: null,
-          createdAt: "2026-05-21T00:00:00.000Z",
-          expiresAt: null,
-          revokedAt: null
-        }
-      ]
-    })),
-    revokePluginPermissionGrant: vi.fn(async () => ({
-      id: "grant-1",
-      pluginId: "demo.plugin",
-      workspaceId: "workspace-1",
-      permissionKey: "workspace.write_file",
-      scopeType: "directory",
-      scopePath: "reports",
-      grantMode: "persistent",
-      grantedByUserId: "user-1",
-      runtimeSessionId: null,
-      createdAt: "2026-05-21T00:00:00.000Z",
-      expiresAt: null,
-      revokedAt: "2026-05-21T00:05:00.000Z"
-    })),
-    listPluginRuns: vi.fn(async () => ({
-      items: [
-        {
-          id: "run-1",
-          pluginId: "demo.plugin",
-          workspaceId: "workspace-1",
-          triggerKind: "frontend",
-          actionId: "run-report",
-          status: "succeeded",
-          inputSummaryJson: null,
-          outputSummaryJson: null,
-          errorCode: null,
-          errorMessage: null,
-          startedAt: "2026-05-21T00:00:00.000Z",
-          finishedAt: "2026-05-21T00:00:01.000Z",
-          createdAt: "2026-05-21T00:00:00.000Z"
-        }
-      ]
-    })),
-    enablePlugin: vi.fn(async () => ({
-      pluginId: "demo.plugin",
-      enabled: true,
-      enabledByUserId: "user-1",
-      enabledAt: "2026-05-21T00:00:00.000Z",
-      disabledByUserId: null,
-      disabledAt: null,
-      reason: null,
-      updatedAt: "2026-05-21T00:00:00.000Z"
-    })),
-    disablePlugin: vi.fn(async () => ({
-      pluginId: "demo.plugin",
-      enabled: false,
-      enabledByUserId: "user-1",
-      enabledAt: "2026-05-21T00:00:00.000Z",
-      disabledByUserId: "user-1",
-      disabledAt: "2026-05-21T00:10:00.000Z",
-      reason: "由用户在插件详情页停用",
-      updatedAt: "2026-05-21T00:10:00.000Z"
-    }))
-  };
-});
-
 describe("SettingsPage", () => {
   beforeEach(() => {
     affairsLibraryCapabilityMock.state = {
@@ -427,19 +280,6 @@ describe("SettingsPage", () => {
     expect(screen.getByText(t("settings.providerManagement"))).toBeInTheDocument();
     expect(await screen.findByTestId("model-management-panel")).toBeInTheDocument();
     expect(screen.getByTestId("provider-management-panel")).toBeInTheDocument();
-  });
-
-  it("桌面设置页可以打开插件管理模态框", async () => {
-    renderSettingsPage();
-
-    await userEvent.click(screen.getByRole("button", { name: t("settings.pluginManagementAction") }));
-
-    const dialog = await screen.findByRole("dialog", { name: t("settings.pluginManagementModalTitle") });
-    expect(within(dialog).getByText(t("settings.pluginManagementModalListTitle"))).toBeInTheDocument();
-    expect(within(dialog).getAllByText("演示插件").length).toBeGreaterThan(0);
-    expect(within(dialog).getByText(t("plugins.runHistoryTitle"))).toBeInTheDocument();
-    expect(within(dialog).getByText(t("plugins.grantedPermissionTitle"))).toBeInTheDocument();
-    expect(within(dialog).getByText(t("plugins.permissionAuditTitle"))).toBeInTheDocument();
   });
 
   it("桌面设置页的能力管理分类会提供 ONLYOFFICE 设置入口", async () => {
@@ -644,17 +484,6 @@ describe("SettingsPage", () => {
     expect(within(dialog).getByRole("button", { name: t("settings.teableSyncNowAction") })).toBeEnabled();
   });
 
-  it("移动设置页可以打开插件管理弹层", async () => {
-    setViewportWidth(390);
-    renderSettingsPage();
-
-    await userEvent.click(screen.getByRole("button", { name: new RegExp(t("settings.abilityManagement")) }));
-    await userEvent.click(screen.getByRole("button", { name: t("settings.pluginManagementAction") }));
-
-    const dialog = await screen.findByRole("dialog", { name: t("settings.pluginManagementModalTitle") });
-    expect(within(dialog).getAllByText("演示插件").length).toBeGreaterThan(0);
-  });
-
 
   it("移动设置页可以打开 Teable 设置弹层", async () => {
     global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -681,17 +510,6 @@ describe("SettingsPage", () => {
     await userEvent.click(within(dialog).getByRole("tab", { name: t("settings.teableTabTableSyncSettings") }));
     expect(await within(dialog).findByText(t("settings.teableTableSyncListTitle"))).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: t("settings.teableSyncNowAction") })).toBeInTheDocument();
-  });
-
-  it("插件管理弹窗里可以撤销当前工作区授权", async () => {
-    renderSettingsPage();
-
-    await userEvent.click(screen.getByRole("button", { name: t("settings.pluginManagementAction") }));
-
-    const dialog = await screen.findByRole("dialog", { name: t("settings.pluginManagementModalTitle") });
-    await userEvent.click(await within(dialog).findByRole("button", { name: t("plugins.revokeGrantAction") }));
-
-    expect(await screen.findByText(t("plugins.revokeGrantSuccess"))).toBeInTheDocument();
   });
 
   it("旧的模型和 provider 路由别名会落到能力管理页", async () => {

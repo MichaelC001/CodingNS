@@ -126,17 +126,6 @@ export function buildWorkspaceToolProcessesPath(workspaceId: string, workspaceRe
 }
 
 
-export function buildWorkspacePluginsPath(workspaceId: string, workspaceRef?: WorkspaceRef | null): string {
-  return appendTargetHostId(`${buildWorkspaceBasePath(workspaceId)}/plugins`, workspaceRef);
-}
-
-export function buildWorkspacePluginDetailPath(workspaceId: string, pluginId: string, workspaceRef?: WorkspaceRef | null): string {
-  return appendTargetHostId(`${buildWorkspaceBasePath(workspaceId)}/plugins/${encodeURIComponent(pluginId)}`, workspaceRef);
-}
-
-export function buildWorkspacePluginContainerPath(workspaceId: string, pluginId: string, workspaceRef?: WorkspaceRef | null): string {
-  return appendTargetHostId(`${buildWorkspaceBasePath(workspaceId)}/plugins/${encodeURIComponent(pluginId)}/run`, workspaceRef);
-}
 export function buildWorkspaceTerminalsPath(workspaceId: string, workspaceRef?: WorkspaceRef | null): string {
   return appendTargetHostId(`${buildWorkspaceBasePath(workspaceId)}/terminals`, workspaceRef);
 }

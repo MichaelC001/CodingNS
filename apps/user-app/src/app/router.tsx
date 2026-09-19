@@ -267,27 +267,6 @@ const onboardingGuardedRoutes = [
               "TerminalPage"
             )
           },
-          {
-            path: "workspaces/:workspaceId/plugins",
-            lazy: lazyRouteComponent(
-              () => import("../features/plugins/pages/PluginsListPage"),
-              "PluginsListPage"
-            )
-          },
-          {
-            path: "workspaces/:workspaceId/plugins/:pluginId",
-            lazy: lazyRouteComponent(
-              () => import("../features/plugins/pages/PluginDetailPage"),
-              "PluginDetailPage"
-            )
-          },
-          {
-            path: "workspaces/:workspaceId/plugins/:pluginId/run",
-            lazy: lazyRouteComponent(
-              () => import("../features/plugins/pages/PluginContainerPage"),
-              "PluginContainerPage"
-            )
-          },
           ...(BUTLER_FEATURE_ENABLED ? [{
             path: "workspaces/:workspaceId/butler",
             lazy: lazyRouteComponent(
