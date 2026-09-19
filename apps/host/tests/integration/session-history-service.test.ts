@@ -489,6 +489,62 @@ describe("SessionHistoryService", () => {
       total: 0
     });
   });
+
+  it("markSessionError 的持久化失败不会产生未处理 Promise，也不会吞掉原始错误", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    // 让快照写入抛出非锁错误：markSessionError 必须自己消化掉，
+    // 同时不能改变调用方正在抛出的 provider 错误语义。
+    const sessionStatusSnapshotRepository = {
+      findBySessionId: vi.fn(() => null),
+      upsert: vi.fn(() => {
+        throw Object.assign(new Error("disk I/O error"), { code: "SQLITE_IOERR" });
+      })
+    };
+    const sessionBindingRepository = {
+      findBySessionId: vi.fn(() => ({
+        sessionId: "session-1",
+        userId: "user-1",
+        workspaceId: "workspace-1",
+        provider: "claude-code",
+        providerSessionId: "provider-1",
+        rawStoreRef: "claude-code://provider-1",
+        providerConfigMode: "global-default",
+        providerPresetId: null,
+        runtimeHomeDir: null,
+        selectedModel: null,
+        createdAt: "2026-06-10T00:00:00.000Z",
+        updatedAt: "2026-06-10T00:00:00.000Z"
+      })),
+      findBySessionIdForUser: vi.fn(() => null),
+      findByProviderSession: vi.fn(() => null),
+      findByRawStoreRef: vi.fn(() => null),
+      upsert: vi.fn()
+    };
+    const service = createService({
+      sessionBindingRepository,
+      sessionStatusSnapshotRepository
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await expect(service.readSessionHistory("session-1", null, 20, "backward", "user-1"))
+        .rejects.toBeTruthy();
+
+      // 让任何潜在的错误 Promise 有机会冒出来。
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(sessionStatusSnapshotRepository.upsert).toHaveBeenCalled();
+      expect(unhandled).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
 });
 
 function createService(overrides?: {
@@ -496,6 +552,8 @@ function createService(overrides?: {
     findById: ReturnType<typeof vi.fn>;
   };
   taskManager?: ReturnType<typeof createTaskManager>;
+  sessionBindingRepository?: Record<string, unknown>;
+  sessionStatusSnapshotRepository?: Record<string, unknown>;
 }): SessionHistoryService {
   const database = createDatabaseClient(":memory:");
   const db = database.db;
@@ -553,13 +611,13 @@ function createService(overrides?: {
     (overrides?.workspaceRepository ?? {
       findById: vi.fn(() => null)
     }) as never,
-    {
+    (overrides?.sessionBindingRepository ?? {
       findBySessionId: vi.fn(() => null),
       findBySessionIdForUser: vi.fn(() => null),
       findByProviderSession: vi.fn(() => null),
       findByRawStoreRef: vi.fn(() => null),
       upsert: vi.fn()
-    } as never,
+    }) as never,
     {
       recordMessages: vi.fn()
     } as never,
@@ -579,10 +637,10 @@ function createService(overrides?: {
       deleteBySessionId: vi.fn(),
       updateFavorite: vi.fn()
     } as never,
-    {
+    (overrides?.sessionStatusSnapshotRepository ?? {
       findBySessionId: vi.fn(() => null),
       upsert: vi.fn()
-    } as never,
+    }) as never,
     config,
     undefined,
     null,

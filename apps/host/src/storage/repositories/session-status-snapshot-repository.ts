@@ -1,12 +1,23 @@
 import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionStatusSnapshot } from "../../types/domain.js";
+import { runSqliteWriteSync, type SqliteSyncWriteOptions } from "../sqlite/write-serializer.js";
+
+export interface SessionStatusSnapshotRepositoryOptions {
+  /** 该仓库所有写入的重试配置；默认是有限次、有总等待上限的锁竞争重试。 */
+  retry?: Omit<SqliteSyncWriteOptions, "scope" | "inTransaction">;
+}
 
 export class SessionStatusSnapshotRepository {
   private readonly findBySessionIdStatement: SqliteStatement<any[], any>;
   private readonly upsertStatement: SqliteStatement<any[], any>;
+  private readonly retryOptions: Omit<SqliteSyncWriteOptions, "scope" | "inTransaction">;
 
-  constructor(private readonly db: SqliteDatabase) {
+  constructor(
+    private readonly db: SqliteDatabase,
+    options: SessionStatusSnapshotRepositoryOptions = {}
+  ) {
+    this.retryOptions = options.retry ?? {};
     this.findBySessionIdStatement = this.db.prepare(
       `SELECT session_id, sync_status, sync_cursor, last_sync_at, last_error_code, last_error_detail, resumed_at, updated_at
        FROM session_status_snapshots
@@ -47,17 +58,25 @@ export class SessionStatusSnapshotRepository {
   }
 
   upsert(record: SessionStatusSnapshot): void {
-    this.upsertStatement
-      .run(
-        record.sessionId,
-        record.syncStatus,
-        record.syncCursor,
-        record.lastSyncAt,
-        record.lastErrorCode,
-        record.lastErrorDetail,
-        record.resumedAt,
-        record.updatedAt
-      );
+    runSqliteWriteSync(
+      () => {
+        this.upsertStatement.run(
+          record.sessionId,
+          record.syncStatus,
+          record.syncCursor,
+          record.lastSyncAt,
+          record.lastErrorCode,
+          record.lastErrorDetail,
+          record.resumedAt,
+          record.updatedAt
+        );
+      },
+      {
+        scope: "session_status_snapshot.upsert",
+        ...this.retryOptions,
+        inTransaction: () => this.db.inTransaction === true
+      }
+    );
   }
 }
 

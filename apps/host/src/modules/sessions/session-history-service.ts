@@ -70,6 +70,9 @@ import type { SessionStateRepository } from "../../storage/repositories/session-
 import type { SessionStatusSnapshotRepository } from "../../storage/repositories/session-status-snapshot-repository.js";
 import { SessionStatsSnapshotRepository } from "../../storage/repositories/session-stats-snapshot-repository.js";
 import type { SqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
+import { isInsideSqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
+import { isSqliteBusyError as sharedIsSqliteBusyError } from "../../storage/sqlite/write-queue-errors.js";
+import { retrySqliteWrite } from "../../storage/sqlite/write-retry.js";
 import type { WorkspaceRepository } from "../../storage/repositories/workspace-repository.js";
 import type { ParallelSessionGroupRepository } from "../../storage/repositories/parallel-session-group-repository.js";
 import type { ParallelSessionMemberRepository } from "../../storage/repositories/parallel-session-member-repository.js";
@@ -471,8 +474,9 @@ type WorkspaceDiscoveryTrigger = "automatic" | "explicit";
 const ALLOW_AUTOMATIC_WORKSPACE_DISCOVERY = false;
 const SESSION_TRANSACTION_HOTSPOT_THRESHOLD_MS = 150;
 const WORKSPACE_STATE_REFRESH_COOLDOWN_MS = 1_500;
-const SQLITE_BUSY_RETRY_LIMIT = 3;
-const SQLITE_BUSY_RETRY_DELAY_MS = 100;
+/** 批量回写的锁重试：次数有限，总等待不超过 1 秒，避免拖住工作区发现。 */
+const SQLITE_BUSY_RETRY_DELAYS_MS = [100, 200, 400] as const;
+const SQLITE_BUSY_RETRY_MAX_TOTAL_WAIT_MS = 1_000;
 const SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE = 500;
 
 export class SessionHistoryService {
@@ -1624,7 +1628,7 @@ export class SessionHistoryService {
     let snapshotIdleMs = 0;
 
     const snapshotSyncingStartedAt = Date.now();
-    this.upsertSnapshot(resolvedSessionId, {
+    await this.upsertSnapshotQueued(resolvedSessionId, {
       syncStatus: "syncing",
       syncCursor: current?.syncCursor ?? cursor,
       lastSyncAt: current?.lastSyncAt ?? null,
@@ -1649,7 +1653,7 @@ export class SessionHistoryService {
       readDurationMs = Date.now() - readStartedAt;
 
       const snapshotIdleStartedAt = Date.now();
-      this.upsertSnapshot(resolvedSessionId, {
+      await this.upsertSnapshotQueued(resolvedSessionId, {
         syncStatus: "idle",
         syncCursor:
           direction === "backward" && cursor !== null
@@ -2309,7 +2313,7 @@ export class SessionHistoryService {
         binding.rawStoreRef
       );
 
-      this.upsertSnapshot(sessionId, {
+      await this.upsertSnapshotQueued(sessionId, {
         syncStatus: "idle",
         syncCursor:
           this.sessionStatusSnapshotRepository.findBySessionId(sessionId)?.syncCursor ?? null,
@@ -2999,7 +3003,7 @@ export class SessionHistoryService {
       createdAt: existing?.createdAt ?? nowIso(),
       updatedAt: result.message.timestamp
     });
-    this.upsertSnapshot(sessionId, {
+    await this.upsertSnapshotQueued(sessionId, {
       syncStatus: "idle",
       syncCursor:
         this.sessionStatusSnapshotRepository.findBySessionId(sessionId)?.syncCursor ?? null,
@@ -5439,7 +5443,7 @@ export class SessionHistoryService {
 
     await this.syncSessionTitleFromProvider(sessionId, binding);
     const snapshot = this.sessionStatusSnapshotRepository.findBySessionId(sessionId);
-    this.upsertSnapshot(sessionId, {
+    await this.upsertSnapshotQueued(sessionId, {
       syncStatus: "idle",
       syncCursor: page.cursor,
       lastSyncAt: nowIso(),
@@ -7461,12 +7465,27 @@ export class SessionHistoryService {
     });
   }
 
+  private async upsertSnapshotQueued(
+    sessionId: string,
+    input: Omit<SessionStatusSnapshot, "sessionId" | "updatedAt">
+  ): Promise<void> {
+    await this.enqueueSqliteWrite("session_status_snapshot.upsert", () => {
+      this.upsertSnapshot(sessionId, input);
+    });
+  }
+
   private async enqueueSqliteWrite<T>(scope: string, operation: () => T): Promise<T> {
-    if (this.sqliteWriteQueue) {
-      return await this.sqliteWriteQueue.enqueue(scope, operation);
+    if (!this.sqliteWriteQueue) {
+      return operation();
     }
 
-    return operation();
+    // 防重入：队列是 FIFO 的，已经在队列任务里的代码再入队会等自己，直接死锁。
+    // 这里用异步上下文（而不是布尔标志）判断，避免并发调用被误判成嵌套而绕过队列。
+    if (isInsideSqliteWriteQueue()) {
+      return operation();
+    }
+
+    return await this.sqliteWriteQueue.enqueue(scope, operation);
   }
 
   private markSessionError(sessionId: string, errorCode: string, error: unknown): void {
@@ -7478,16 +7497,31 @@ export class SessionHistoryService {
 
     const current = this.sessionStatusSnapshotRepository.findBySessionId(resolvedSessionId);
 
-    this.sessionStatusSnapshotRepository.upsert({
-      sessionId: resolvedSessionId,
-      syncStatus: "error",
-      syncCursor: current?.syncCursor ?? null,
-      lastSyncAt: current?.lastSyncAt ?? null,
-      lastErrorCode: errorCode,
-      lastErrorDetail: error instanceof Error ? error.message : "unknown",
-      resumedAt: current?.resumedAt ?? null,
-      updatedAt: nowIso()
-    });
+    // 这里是 catch 块里的同步收尾，紧接着就会 throw 原始错误，不能 await。
+    // 单条 upsert 在 Node 单线程下本身就是原子的，不会和别的写交错，
+    // 所以同步路径不需要排队；busy 重试由仓储内部的有限退避负责。
+    // 写失败只记结构化日志：既不能盖掉调用方正在抛的原始错误，
+    // 也不能把异常留在任何未 await 的 Promise 里。
+    try {
+      this.sessionStatusSnapshotRepository.upsert({
+        sessionId: resolvedSessionId,
+        syncStatus: "error",
+        syncCursor: current?.syncCursor ?? null,
+        lastSyncAt: current?.lastSyncAt ?? null,
+        lastErrorCode: errorCode,
+        lastErrorDetail: error instanceof Error ? error.message : "unknown",
+        resumedAt: current?.resumedAt ?? null,
+        updatedAt: nowIso()
+      });
+    } catch (persistError) {
+      console.warn("[session_history] mark_session_error_persist_failed", {
+        scope: "session_history.mark_session_error",
+        sessionId: resolvedSessionId,
+        errorCode,
+        persistErrorCode: isSqliteBusyError(persistError) ? "SQLITE_BUSY" : null,
+        detail: persistError instanceof Error ? persistError.message : String(persistError)
+      });
+    }
   }
 
   private shouldSuppressDeepSeekHarnessSubscriptionFailure(
@@ -9734,14 +9768,7 @@ function areEquivalentSessionStatusSnapshots(
 }
 
 function isSqliteBusyError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-
-  const sqliteCode = "code" in error ? error.code : null;
-  const message = error instanceof Error ? error.message : String(error);
-
-  return sqliteCode === "SQLITE_BUSY" || message.includes("database is locked");
+  return sharedIsSqliteBusyError(error);
 }
 
 async function runBatchedTransactions<TItem>(
@@ -9765,39 +9792,29 @@ async function runBatchedTransactions<TItem>(
   for (let index = 0; index < items.length; index += normalizedBatchSize) {
     const batch = items.slice(index, index + normalizedBatchSize);
     const batchStartedAt = Date.now();
-    let retryCount = 0;
+    const scope = logOptions?.scope ?? "session_history.batch_write";
 
-    while (true) {
-      try {
-        if (writeQueue) {
-          await writeQueue.enqueue(
-            logOptions?.scope ?? "session_history.batch_write",
-            () => transaction(batch)
-          );
-        } else {
-          transaction(batch);
-        }
-        break;
-      } catch (error) {
-        if (!isSqliteBusyError(error) || retryCount >= SQLITE_BUSY_RETRY_LIMIT) {
-          throw error;
-        }
+    // 有共享队列时，busy 重试由队列统一负责；没有队列（例如单测直接构造服务）时，
+    // 这里用同一个共享重试实现兜底，保证两条路径的退避和日志口径一致。
+    const batchRetryOptions = {
+      retryDelaysMs: SQLITE_BUSY_RETRY_DELAYS_MS,
+      maxTotalWaitMs: SQLITE_BUSY_RETRY_MAX_TOTAL_WAIT_MS
+    };
+    const retryCount = writeQueue
+      ? 0
+      : (await retrySqliteWrite(() => transaction(batch), { scope, ...batchRetryOptions })).retryCount;
 
-        retryCount += 1;
-        await delay(SQLITE_BUSY_RETRY_DELAY_MS * retryCount);
-      }
+    if (writeQueue) {
+      await writeQueue.enqueue(scope, () => transaction(batch), batchRetryOptions);
     }
-
-    const batchDurationMs = Date.now() - batchStartedAt;
-    const nextBatchIndex = batchCount + 1;
 
     if (logOptions) {
       logPerformance(
         logOptions.scope,
-        batchDurationMs,
+        Date.now() - batchStartedAt,
         {
           ...logOptions.detail,
-          batchIndex: nextBatchIndex,
+          batchIndex: batchCount + 1,
           batchSize: batch.length,
           batchStartIndex: index,
           retryCount,
@@ -9809,6 +9826,8 @@ async function runBatchedTransactions<TItem>(
         }
       );
     }
+
+    const batchDurationMs = Date.now() - batchStartedAt;
 
     batchCount += 1;
     maxBatchMs = Math.max(maxBatchMs, batchDurationMs);

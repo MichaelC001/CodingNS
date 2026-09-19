@@ -32,6 +32,8 @@ export interface SqliteDatabase {
   transaction(fn: (...parameters: any[]) => any): (...parameters: any[]) => any;
   exec(sql: string): void;
   pragma(source: string, options?: { simple?: boolean }): unknown;
+  /** libsql 运行时属性：当前连接是否处于事务中。事务内不做单语句 busy 重试。 */
+  readonly inTransaction?: boolean;
   close(): void;
 }
 
