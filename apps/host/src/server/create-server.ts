@@ -11,6 +11,8 @@ import { AuthService } from "../modules/auth/auth-service.js";
 import { AssistantCapabilityController } from "../modules/assistant-capability/assistant-capability-controller.js";
 import { AssistantCapabilityService } from "../modules/assistant-capability/assistant-capability-service.js";
 import { BootstrapController } from "../modules/bootstrap/bootstrap-controller.js";
+import { HealthController } from "../modules/health/health-controller.js";
+import { HealthService } from "../modules/health/health-service.js";
 import { BootstrapService } from "../modules/bootstrap/bootstrap-service.js";
 import { AssistantAutomationService } from "../modules/butler/assistant-automation-service.js";
 import { ButlerControlTimerScheduler } from "../modules/butler/butler-control-timer-scheduler.js";
@@ -212,6 +214,7 @@ import { registerPresentationRoutes } from "../routes/presentation.js";
 import { registerPreferenceRoutes } from "../routes/preferences.js";
 import { registerProviderRoutes } from "../routes/providers.js";
 import { registerPublicRoutes } from "../routes/public.js";
+import { registerHealthRoutes } from "../routes/health.js";
 import { registerProxyRoutes } from "../routes/proxy.js";
 import { registerSessionContextRoutes } from "../routes/session-contexts.js";
 import { registerSessionCleanupRoutes } from "../routes/session-cleanup.js";
@@ -1545,6 +1548,8 @@ export function createServer(config: HostConfig) {
 
 
   const bootstrapController = new BootstrapController(bootstrapService);
+  const healthService = new HealthService(database.db);
+  const healthController = new HealthController(healthService);
   const clientController = new ClientController(clientService);
   const channelController = new ChannelController(channelsService);
   const channelGatewayController = new ChannelGatewayController(channelGatewayService);
@@ -1889,6 +1894,7 @@ export function createServer(config: HostConfig) {
     }
   }
 
+  void registerHealthRoutes(app, healthController);
   void registerPublicRoutes(app, bootstrapController, channelGatewayController, hostHandshakeController);
   void registerProxyRoutes(app, templateReverseProxyService);
   void registerAuthRoutes(app, authController);
@@ -2018,6 +2024,7 @@ export function createServer(config: HostConfig) {
     services: {
       config,
       database,
+      healthService,
       repositories,
       modules: {
         bootstrapService,
