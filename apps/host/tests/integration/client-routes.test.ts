@@ -29,17 +29,15 @@ vi.mock("node:child_process", async () => {
     ...actual,
     spawn: ((command: string, ...args: unknown[]) => {
       const commandArgs = Array.isArray(args[0]) ? args[0] : [];
-      const isPm2RestartHelper =
+      const isDetachedRestartHelper =
         command === process.execPath
         && commandArgs[0] === "-e";
 
       if (
         command === "npm" ||
         command === "npm.cmd" ||
-        command === "pm2" ||
-        command === "pm2.cmd" ||
         command === "ssh" ||
-        isPm2RestartHelper
+        isDetachedRestartHelper
       ) {
         return spawnMock(command, ...args);
       }
@@ -572,7 +570,7 @@ describe("client routes", () => {
     });
   }, SLOW_TEST_TIMEOUT_MS);
 
-  it("支持触发服务端全局 npm 安装任务，并调度 PM2 自动重启", async () => {
+  it("支持触发服务端全局 npm 安装任务，并调度服务重启", async () => {
     const fixture = createEmptyFixture();
     activeFixtures.push(fixture);
 
@@ -679,21 +677,13 @@ describe("client routes", () => {
       })
     );
     expect(spawnMock).toHaveBeenCalledWith(
-      process.platform === "win32" ? "pm2.cmd" : "pm2",
-      ["describe", "codingns"],
-      expect.objectContaining({
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true
-      })
-    );
-    expect(spawnMock).toHaveBeenCalledWith(
       process.execPath,
       expect.arrayContaining([
         "-e",
         expect.any(String),
         "3000",
-        process.platform === "win32" ? "pm2.cmd" : "pm2",
-        "codingns"
+        expect.stringContaining("host-install.mjs"),
+        expect.any(String)
       ]),
       expect.objectContaining({
         stdio: "ignore",

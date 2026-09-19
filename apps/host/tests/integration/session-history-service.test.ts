@@ -546,7 +546,6 @@ function createService(overrides?: {
     claudeHookBridgeToken: "test",
     serverUpdatePackageName: "@codingns/test",
     npmRegistryBaseUrl: "https://registry.npmjs.org",
-    pm2ProcessName: "codingns-test",
     demoMode: false
   };
 

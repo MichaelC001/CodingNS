@@ -27,7 +27,7 @@ if (databaseProcesses.length > 0) {
       console.error(`- PID ${processId} ${readProcessCommand(processId)}`);
     }
     console.error("");
-    console.error("请先停止 Host（pm2 或终端会话）后重新执行本脚本。");
+    console.error("请先停止 Host（系统自启服务或终端会话）后重新执行本脚本。");
     process.exit(1);
   }
 

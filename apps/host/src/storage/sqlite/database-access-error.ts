@@ -174,7 +174,7 @@ function buildRepairHintLines(databasePath: string, readOnlyFileSystem: boolean)
     "修复方式：",
     `  sudo chown -R "$(id -u):$(id -g)" ${quotedDir}`,
     `  chmod -R u+rwX ${quotedDir}`,
-    "如果 Host 正以管理员身份运行（sudo 启动，或 root 下的 pm2 / launchd 服务），先停掉再改属主。"
+    "如果 Host 正以管理员身份运行（sudo 启动或系统自启服务），先停掉再改属主。"
   ];
 }
 

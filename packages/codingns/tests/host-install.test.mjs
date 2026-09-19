@@ -14,7 +14,6 @@ import {
   buildWindowsLauncherVbs,
   prepareAutostart,
   resolveHostLaunchPlan,
-  detectLegacyPm2,
   expandHome,
   normalizeNodePath,
   parseArgv,

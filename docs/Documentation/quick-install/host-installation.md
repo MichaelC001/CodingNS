@@ -1,243 +1,112 @@
-# 安装 Host 服务
+# 安装 CodingNS Host
 
-请先在一台准备长期使用的设备上安装 CodingNS Host。  
-桌面端、手机和浏览器后续都会连接到这台 Host。
+请先在一台准备长期使用的设备上安装 CodingNS Host。桌面端、手机和浏览器后续都会连接到这台 Host。
 
 ## 安装方式
 
-如果你只是想尽快装好、少记命令，直接用 `curl` 快速安装。  
-如果你更喜欢自己一步步确认，也可以手动用 `npm + PM2` 安装。
+### 一键安装
 
-### 选择建议
-
-- 希望快速完成安装，选 `curl` 快速安装。
-- 想自己掌控每一步，选手动 `npm + PM2` 安装。
-- 装完桌面客户端之后，也可以直接在客户端里点几下把服务装好，见下面"在桌面端安装"一节。
-
-### 关于开机自启
-
-`curl` 快速安装（`install.sh`）现在会调用统一安装器来配置服务：开机自启用操作系统自带的能力
-（macOS 用 LaunchAgent、Linux 用 systemd user、Windows 用登录计划任务），不再依赖 `pm2` 完成自启。
-
-如果你机器上已经有 `pm2` 托管的旧服务，安装脚本会检测到并提示，但不会自动停掉它；
-需要迁移时先手动 `pm2 delete codingns`，再重新跑一次安装。
-
-手动 `npm + PM2` 这条老路依然可用，只是自启要自己用 `pm2 startup` 配。
-
-## 在桌面端安装
-
-桌面客户端首次启动时，如果没有可连的服务，会进入首次运行向导：
-
-1. 选"在这台电脑上安装服务"。
-2. 向导会先检查系统、Node 运行时、是否已装过、端口是否被占用。
-3. 填端口、数据目录，决定要不要开机自启、要不要允许局域网访问。
-4. 点"开始安装"，界面里能看到装包、启动、自检每一步的进度，中途可以取消。
-5. 装完自动回到登录页，地址就是刚装好的本机服务。
-
-全程不需要打开终端，也不需要管理员权限：Node、服务包、日志都放在用户目录下
-（默认 `~/.codingns`）。
-
-## 开始前只要确认两件事
-
-开始前，先确认这台机器已经装好：
-
-- Node.js `22` 或更高版本
-- npm `10` 或更高版本
-
-CodingNS 依赖 `libsql`、`@lydell/node-pty` 这类原生模块。
-如果 npm 没拿到预编译包，就会自动退回本机编译，所以不同系统的前置条件不一样。
-
-Linux 上建议先装编译工具：
-
-```bash
-apt-get update
-apt-get install -y build-essential python3
-```
-
-Windows 上如果你准备用 `npm install -g` 或安装脚本，建议先确认这两件事：
-
-- 优先使用 Node.js `22 LTS`
-- 已安装 Visual Studio Build Tools 2022，并勾选 `Desktop development with C++`
-
-这是因为 Windows 上原生模块的预编译包通常从 GitHub Releases 下载。  
-一旦下载失败，npm 就会回退到 `node-gyp` 本机编译；这时候如果没有 C++ Build Tools，安装一定失败。  
-只切换 npm 源，解决不了这类问题。
-
-如果这台机器以后准备长期运行，建议将它作为常驻 Host 使用，方便后续在其他设备上继续访问。
-
-## 使用 CURL 安装
-
-这是最直接的安装方式。执行一条命令后，按提示完成配置即可。
+想少记命令，直接运行安装脚本：
 
 ```bash
 curl -fsSL https://codingns.com/install | bash
 ```
 
-运行后，安装脚本会依次问你这些内容：
+也可以在仓库目录中运行：
 
-- 服务端口
-  默认是 `3002`
-- 数据保存目录
-  默认是 `~/.codingns`
-- 是否启用开机自动启动
-  默认会帮你打开
+```bash
+bash install.sh
+```
 
-脚本还会自动完成这些步骤：
+脚本会检查 Node.js、npm 和原生依赖，安装或更新 `@jingyi0605/codingns`，然后调用统一安装器完成服务启动和开机自启。安装时会询问端口、数据目录和是否启用开机自启。默认端口是 `3002`，默认数据目录是 `~/.codingns`。
 
-- 先检查 Node.js、npm 和必需的编译工具
-- 在支持的系统上，缺什么就先询问你是否自动安装
-- 检查当前机器上已经装了哪些受支持的 CLI
-- 如果官方 npm 源暂时不可用，自动切到国内镜像继续安装
-- 安装 `@jingyi0605/codingns`
-- 安装 `pm2`
-- 用 `pm2` 把 Host 托管起来
-- 在支持的系统上配置开机自动启动
+开机自启使用操作系统原生机制：
 
-如果你在 Windows 上运行脚本，它会提示你检查 Visual Studio Build Tools。  
-这一项目前不会自动替你安装，因为自动装完整 C++ 工具链又慢又脆，失败时还更难排查。
+- macOS：LaunchAgent
+- Linux：systemd user service
+- Windows：计划任务；计划任务不可用时使用用户启动文件夹
 
-### 安装完成后
+安装脚本不再安装或调用第三方进程管理器。服务状态、启动、停止、重启和自启开关都由 `codingns` 统一安装器处理。
 
-正常完成后，你会看到：
+### 在桌面端安装
 
-- Host 访问地址
-- 数据保存目录
-- `pm2` 常用命令提示
+桌面客户端首次启动时，如果没有可连的服务，会进入首次运行向导：
 
-这时候通常就已经可以继续下一步去连接客户端了。
+1. 选择“在这台电脑上安装服务”。
+2. 向导检查系统、Node 运行时、已有安装、端口和数据目录。
+3. 填写端口和数据目录，选择是否开机自启以及是否允许局域网访问。
+4. 点击“开始安装”，查看装包、启动和自检进度。
+5. 安装完成后回到登录页，地址就是刚安装的本机服务。
 
-## 手动安装
+Node、服务包和日志默认放在用户目录下，不需要管理员权限。
 
-如果你想把每一步都自己确认一遍，可以按下面的顺序来。
+## 开始前的准备
 
-### 第一步：安装 CodingNS
+请确认机器上有：
 
-如果你在 Linux 上手动安装，先执行：
+- Node.js `22` 或更高版本
+- npm `10` 或更高版本
+
+Linux 如果需要本机编译原生依赖，先安装：
 
 ```bash
 apt-get update
 apt-get install -y build-essential python3
 ```
 
-然后再执行：
+Windows 建议使用 Node.js `22 LTS`，并准备 Visual Studio Build Tools 2022 的 `Desktop development with C++` 工作负载，以便预编译包下载失败时仍能完成安装。
+
+## 手动安装和管理
+
+先安装服务包：
 
 ```bash
 npm install -g @jingyi0605/codingns
 ```
 
-如果你在 Windows 上手动安装，先确认：
-
-- `node -v` 应为 `v22` 或更高版本
-- 已安装 Visual Studio Build Tools 2022，并勾选 `Desktop development with C++`
-
-再执行：
+让统一安装器安装服务、启动服务并配置开机自启：
 
 ```bash
-npm install -g @jingyi0605/codingns
+HOST_INSTALLER="$(npm root -g)/@jingyi0605/codingns/scripts/host-install.mjs"
+node "$HOST_INSTALLER" install --host 0.0.0.0 --port 3002 --data-dir ~/.codingns --autostart
 ```
 
-### 第二步：先手工启动一次
+常用管理命令：
 
-先启动一次，确认服务可以正常运行：
+```bash
+node "$HOST_INSTALLER" status --data-dir ~/.codingns
+node "$HOST_INSTALLER" start --data-dir ~/.codingns
+node "$HOST_INSTALLER" stop --data-dir ~/.codingns
+node "$HOST_INSTALLER" restart --data-dir ~/.codingns
+node "$HOST_INSTALLER" autostart --disable --data-dir ~/.codingns
+```
+
+如果只想在当前终端临时运行，可以直接执行：
 
 ```bash
 codingns start --host 0.0.0.0 --port 3002 --data-dir ~/.codingns
 ```
 
-这一步建议你重点确认两件事：
+## 端口和数据目录
 
-- 浏览器打开 `http://127.0.0.1:3002/` 能看到页面
-- 你自己选的端口和数据目录都符合预期
-
-如果只是先试一试，做到这里也可以。  
-如果你想让它长期稳定运行，继续下一步把它交给 `PM2`。
-
-### 第三步：安装 PM2
+默认端口是 `3002`。端口被占用时，可以换成例如 `3300`：
 
 ```bash
-npm install -g pm2
+node "$HOST_INSTALLER" install --port 3300 --data-dir ~/.codingns --autostart
 ```
 
-### 第四步：交给 PM2 托管
-
-```bash
-pm2 start "$(which codingns)" --name codingns -- start --host 0.0.0.0 --port 3002 --data-dir ~/.codingns
-```
-
-这一步做完后，Host 就不需要一直占着当前终端窗口了。
-
-### 第五步：保存并开启开机自动启动
-
-先保存当前进程列表：
-
-```bash
-pm2 save
-```
-
-然后生成开机自动启动配置：
-
-```bash
-pm2 startup
-```
-
-执行完 `pm2 startup` 输出的那条系统命令后，再执行一次：
-
-```bash
-pm2 save
-```
-
-这样以后机器重启后，Host 也会跟着自动起来。
-
-## 端口与数据目录
-
-### 端口
-
-默认端口是 `3002`。  
-如果这台机器上 `3002` 已经被别的程序占用了，你可以换成别的端口，比如：
-
-```bash
-codingns start --port 3300
-```
-
-或者：
-
-```bash
-pm2 start "$(which codingns)" --name codingns -- start --host 0.0.0.0 --port 3300 --data-dir ~/.codingns
-```
-
-### 数据保存目录
-
-默认会放到：
-
-```bash
-~/.codingns
-```
-
-如果你更希望把数据放到单独的位置，也可以自己指定，比如：
-
-```bash
-codingns start --data-dir /var/lib/codingns
-```
+默认数据目录是 `~/.codingns`。需要放到其他位置时，给 `--data-dir` 传绝对路径。
 
 ## 下一步
 
-接下来直接看 [连接客户端](/quick-install/client-connection)。  
-连上之后，你会进入初始化或登录流程，再接着去 [首次登录与开始使用](/quick-install/first-login)。
+接下来查看[连接客户端](/quick-install/client-connection)。连上后再看[首次登录与开始使用](/quick-install/first-login)。
 
 ## 常见失败原因
 
-### Windows 上看到 `Could not find any Visual Studio installation to use`
+### Windows 缺少 Visual Studio C++ 工具
 
-这不是 CodingNS 自己的业务错误，就是本机缺少 C++ 编译工具。  
-安装 Visual Studio Build Tools 2022，并勾选 `Desktop development with C++`，然后重试。
+如果看到 `Could not find any Visual Studio installation to use`，请安装 Visual Studio Build Tools 2022，并勾选 `Desktop development with C++`，然后重新运行统一安装器。
 
-### Windows 上看到 `prebuild-install warn install read ECONNRESET` 或 `Request timed out`
+### Windows 下载预编译包失败
 
-这通常表示原生模块从 GitHub Releases 下载预编译包失败。  
-它和 npm 官方源、镜像源不是一回事，所以单纯切换 npm registry 往往没用。
-
-遇到这种情况，优先按下面顺序处理：
-
-1. 改用 Node.js `22 LTS`
-2. 装好 Visual Studio Build Tools 2022，让 npm 至少还能回退到本机编译
-3. 再重新执行安装
+`prebuild-install` 的网络错误通常来自 GitHub Releases 下载失败，与 npm registry 不是同一个链路。优先使用 Node.js `22 LTS`，准备好 C++ Build Tools，再重试安装。

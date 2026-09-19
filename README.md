@@ -220,76 +220,25 @@ The script will:
 - Recommend `OpenCode` if no supported CLI is installed
 - Automatically switch to `https://registry.npmmirror.com` when the official npm registry is unreachable
 - Install or update `@jingyi0605/codingns`
-- If you choose service mode, automatically install `pm2`, register the `codingns` service, and configure start on boot
+- If you enable start on boot, configure the operating system's native startup mechanism for the `codingns` service
 
-#### Start On Boot With PM2
+#### Start On Boot With the Native Installer
 
-Install PM2:
+The installer uses the operating system's own startup mechanism: LaunchAgent on macOS, a systemd user service on Linux, and Task Scheduler on Windows. You can configure it with the same installer used by the desktop client:
 
 ```bash
-npm install -g pm2
+npm install -g @jingyi0605/codingns
+HOST_INSTALLER="$(npm root -g)/@jingyi0605/codingns/scripts/host-install.mjs"
+node "$HOST_INSTALLER" install --port 3002 --data-dir ~/.codingns --autostart
 ```
 
-Run the service with a custom port and data directory.
-
-Do not let PM2 run `codingns` directly. Use a small wrapper script instead, so the saved PM2 dump always points to one stable script and cannot degrade into a bare `codingns` command after restarts:
+The installer writes the service state and startup entry under the data directory. Useful management commands are:
 
 ```bash
-mkdir -p ~/.codingns/pm2-service
-cat > ~/.codingns/pm2-service/start-codingns.mjs <<'EOF'
-import { spawn } from "node:child_process";
-
-const child = spawn("codingns", [
-  "start",
-  "--host", "0.0.0.0",
-  "--port", "3300",
-  "--data-dir", `${process.env.HOME}/.codingns`
-], {
-  stdio: "inherit",
-  env: {
-    ...process.env,
-    PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
-  },
-  windowsHide: true
-});
-
-child.on("exit", (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exit(code ?? 0);
-});
-
-child.on("error", (error) => {
-  console.error(`[codingns-pm2] failed to start: ${error?.message || error}`);
-  process.exit(1);
-});
-EOF
-
-pm2 start ~/.codingns/pm2-service/start-codingns.mjs --name codingns --cwd ~/.codingns --interpreter "$(which node)"
-```
-
-Save the process list and generate startup configuration:
-
-```bash
-pm2 save
-pm2 startup
-```
-
-After executing the system command printed by `pm2 startup`, run:
-
-```bash
-pm2 save
-```
-
-Common PM2 commands:
-
-```bash
-pm2 status
-pm2 logs codingns
-pm2 restart codingns
-pm2 stop codingns
+node "$HOST_INSTALLER" status --data-dir ~/.codingns
+node "$HOST_INSTALLER" restart --data-dir ~/.codingns
+node "$HOST_INSTALLER" stop --data-dir ~/.codingns
+node "$HOST_INSTALLER" autostart --disable --data-dir ~/.codingns
 ```
 
 #### Develop From Source
@@ -631,83 +580,20 @@ bash install.sh
 - 如果没有检测到任何受支持 CLI，推荐优先安装 `OpenCode`
 - 官方 `npm` 源不可用时，自动切换到 `https://registry.npmmirror.com`
 - 自动安装或更新 `@jingyi0605/codingns`
-- 如果你选择“安装为服务并开机自动启动”，脚本会自动安装 `pm2`、托管 `codingns`，并配置开机自启
+- 如果你选择开机自动启动，脚本会使用系统原生自启机制管理 `codingns`
 
-#### 通过 PM2 开机启动和自定义端口
+#### 使用统一安装器开机启动和自定义端口
 
-如果你在 Linux 上手工走这条路，也建议先装好编译工具，再执行下面的 `npm install -g`：
-
-```bash
-apt-get update
-apt-get install -y build-essential python3
-```
-
-先安装 PM2：
+统一安装器按系统选择原生自启：macOS 使用 LaunchAgent，Linux 使用 systemd user，Windows 使用计划任务。
 
 ```bash
-npm install -g pm2
-```
-
-使用 PM2 托管，并自定义端口和数据目录。
-
-不要让 PM2 直接运行 `codingns`。这里用一个固定启动脚本托管，PM2 的 dump 里只保存这个脚本路径，不会在重启后退化成裸 `codingns` 命令：
-
-```bash
-mkdir -p ~/.codingns/pm2-service
-cat > ~/.codingns/pm2-service/start-codingns.mjs <<'EOF'
-import { spawn } from "node:child_process";
-
-const child = spawn("codingns", [
-  "start",
-  "--host", "0.0.0.0",
-  "--port", "3300",
-  "--data-dir", `${process.env.HOME}/.codingns`
-], {
-  stdio: "inherit",
-  env: {
-    ...process.env,
-    PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ""}`
-  },
-  windowsHide: true
-});
-
-child.on("exit", (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exit(code ?? 0);
-});
-
-child.on("error", (error) => {
-  console.error(`[codingns-pm2] 启动失败：${error?.message || error}`);
-  process.exit(1);
-});
-EOF
-
-pm2 start ~/.codingns/pm2-service/start-codingns.mjs --name codingns --cwd ~/.codingns --interpreter "$(which node)"
-```
-
-保存当前进程列表并生成开机自启配置：
-
-```bash
-pm2 save
-pm2 startup
-```
-
-执行 `pm2 startup` 输出的那条系统命令后，再执行一次：
-
-```bash
-pm2 save
-```
-
-常用 PM2 命令：
-
-```bash
-pm2 status
-pm2 logs codingns
-pm2 restart codingns
-pm2 stop codingns
+npm install -g @jingyi0605/codingns
+HOST_INSTALLER="$(npm root -g)/@jingyi0605/codingns/scripts/host-install.mjs"
+node "$HOST_INSTALLER" install --port 3300 --data-dir ~/.codingns --autostart
+node "$HOST_INSTALLER" status --data-dir ~/.codingns
+node "$HOST_INSTALLER" restart --data-dir ~/.codingns
+node "$HOST_INSTALLER" stop --data-dir ~/.codingns
+node "$HOST_INSTALLER" autostart --disable --data-dir ~/.codingns
 ```
 
 #### 从源码开发

@@ -136,12 +136,6 @@ export function SetupServerEnvironmentStep() {
         </dl>
       ) : null}
 
-      {environment?.existingInstall?.autostartKind === "pm2" ? (
-        <p className="setup-wizard-status" data-tone="muted">
-          {t("setup.environmentLegacyPm2Hint")}
-        </p>
-      ) : null}
-
       <div className="setup-wizard-test-row">
         <button
           type="button"

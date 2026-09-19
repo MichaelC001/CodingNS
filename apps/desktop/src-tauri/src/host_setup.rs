@@ -406,8 +406,7 @@ fn detect_autostart() -> Option<(&'static str, PathBuf)> {
             return Some(("launchd", path));
         }
 
-        // 旧版 install.sh 用 pm2 托管，自启项是 pm2 自己的 LaunchAgent。
-        return find_pm2_autostart(&launch_agents_dir, ".plist");
+        return None;
     }
 
     if cfg!(target_os = "windows") {
@@ -432,20 +431,6 @@ fn detect_autostart() -> Option<(&'static str, PathBuf)> {
 
     if path.is_file() {
         return Some(("systemd", path));
-    }
-
-    find_pm2_autostart(&systemd_user_dir, ".service")
-}
-
-fn find_pm2_autostart(dir: &Path, suffix: &str) -> Option<(&'static str, PathBuf)> {
-    let entries = fs::read_dir(dir).ok()?;
-
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-
-        if name.starts_with("pm2") && name.ends_with(suffix) {
-            return Some(("pm2", entry.path()));
-        }
     }
 
     None

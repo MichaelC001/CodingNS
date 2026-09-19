@@ -202,41 +202,6 @@ export function readInstallState(dataDir) {
   }
 }
 
-function safeReadDirNames(dirPath) {
-  try {
-    return fs.readdirSync(dirPath);
-  } catch {
-    return [];
-  }
-}
-
-/** 旧版 install.sh 用 pm2 托管服务和自启，这里把它的痕迹找出来。 */
-export function detectLegacyPm2(homeDir = os.homedir()) {
-  const matched = [];
-
-  const launchAgentsDir = path.join(homeDir, "Library", "LaunchAgents");
-  const systemdUserDir = path.join(homeDir, ".config", "systemd", "user");
-
-  for (const [dir, suffix] of [
-    [launchAgentsDir, ".plist"],
-    [systemdUserDir, ".service"]
-  ]) {
-    for (const name of safeReadDirNames(dir)) {
-      if (name.toLowerCase().startsWith("pm2") && name.endsWith(suffix)) {
-        matched.push(path.join(dir, name));
-      }
-    }
-  }
-
-  const pm2Home = path.join(homeDir, ".pm2");
-
-  if (fs.existsSync(pm2Home)) {
-    matched.push(pm2Home);
-  }
-
-  return matched;
-}
-
 export function writeInstallState(dataDir, state) {
   const stateFilePath = resolveStateFilePath(dataDir);
   const runtimeDir = resolveRuntimeDir(dataDir);
@@ -1836,15 +1801,9 @@ function buildStatusPayload(dataDir) {
   const state = readInstallState(dataDir);
   const runningProcess = detectRunningHost(dataDir, state);
 
-  const legacyPm2Paths = detectLegacyPm2();
-
   return {
     dataDir,
     installed: state !== null,
-    legacyPm2: {
-      detected: legacyPm2Paths.length > 0,
-      paths: legacyPm2Paths
-    },
     running: runningProcess !== null,
     pid: runningProcess?.pid ?? null,
     port: typeof state?.port === "number" ? state.port : null,
@@ -1863,18 +1822,8 @@ function runCheck(options, logger) {
 
   emitStep("check-install-state", "done");
 
-  const legacyPm2Paths = detectLegacyPm2();
-
-  if (legacyPm2Paths.length > 0) {
-    emitLog(`检测到旧的 pm2 托管痕迹：${legacyPm2Paths.join("，")}`);
-  }
-
   emitResult({
-    install: state,
-    legacyPm2: {
-      detected: legacyPm2Paths.length > 0,
-      paths: legacyPm2Paths
-    }
+    install: state
   });
 
   return EXIT_OK;

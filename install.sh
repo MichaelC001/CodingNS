@@ -4,12 +4,10 @@ set -euo pipefail
 shopt -s extglob
 
 PACKAGE_SPEC="${CODINGNS_PACKAGE_SPEC:-@jingyi0605/codingns}"
-PM2_PACKAGE_SPEC="${CODINGNS_PM2_PACKAGE_SPEC:-pm2}"
 DEFAULT_PORT="${CODINGNS_DEFAULT_PORT:-3002}"
 DEFAULT_DATA_DIR="${CODINGNS_DEFAULT_DATA_DIR:-$HOME/.codingns}"
 OFFICIAL_NPM_REGISTRY="${CODINGNS_OFFICIAL_REGISTRY:-https://registry.npmjs.org}"
 MIRROR_NPM_REGISTRY="${CODINGNS_MIRROR_REGISTRY:-https://registry.npmmirror.com}"
-PROCESS_NAME="${CODINGNS_PM2_PROCESS_NAME:-codingns}"
 DRY_RUN="${CODINGNS_INSTALL_DRY_RUN:-0}"
 REGISTRY_PROBE_PACKAGE_SPEC="${CODINGNS_REGISTRY_PROBE_SPEC:-@openai/codex-sdk}"
 PTY_PACKAGE_NAME="@lydell/node-pty"
@@ -34,7 +32,6 @@ INSTALLED_CLI_COUNT=0
 ACTIVE_NPM_REGISTRY=""
 NPM_BIN=""
 NODE_BIN=""
-PM2_BIN=""
 CODINGNS_BIN=""
 CODINGNS_SCRIPT=""
 NPM_GLOBAL_PREFIX=""
@@ -43,11 +40,7 @@ BREW_BIN=""
 SELECTED_PORT=""
 SELECTED_DATA_DIR=""
 INSTALL_CODINGNS="1"
-USE_PM2="1"
-INSTALL_PM2="1"
-START_PM2_SERVICE="1"
 ENABLE_STARTUP="1"
-HOST_INSTALLER_USED="0"
 INSTALL_DESKTOP_CLIENT="0"
 PROMPT_INPUT_FD=""
 PREREQUISITE_ISSUES=()
@@ -69,10 +62,8 @@ PRIVATE_NPM_CACHE_DIR=""
 PRIVATE_DOWNLOAD_CACHE_DIR=""
 PRIVATE_LOG_DIR=""
 PRIVATE_INSTALL_LOG_DIR=""
-PRIVATE_PM2_HOME=""
 PRIVATE_SERVICE_STATE_DIR=""
 PRIVATE_NPM_USERCONFIG=""
-PRIVATE_PM2_START_SCRIPT=""
 TARGET_RUNTIME_UNSUPPORTED_PACKAGES=()
 TARGET_RUNTIME_FALLBACK_PACKAGES=()
 TARGET_RUNTIME_MANAGED_PACKAGE_SUMMARY=()
@@ -131,12 +122,10 @@ msg() {
     en:error_registry_unavailable) printf 'Both the official npm registry and the mirror are unavailable. Please check your network and try again.';;
     zh:error_no_codingns_after_install) printf '安装完成后仍未找到 codingns 命令。';;
     en:error_no_codingns_after_install) printf 'The codingns command was still not found after installation.';;
-    zh:error_no_pm2_after_install) printf '安装完成后仍未找到 pm2 命令。';;
-    en:error_no_pm2_after_install) printf 'The pm2 command was still not found after installation.';;
+    zh:error_host_installer_failed) printf '统一安装器执行失败，安装已中止，请查看安装日志后重试。';;
+    en:error_host_installer_failed) printf 'The unified installer failed, so installation was stopped. Check the install log and retry.';;
     zh:error_skip_codingns_without_existing) printf '你跳过了 CodingNS 安装，但当前机器上也没有可用的 codingns 命令。';;
     en:error_skip_codingns_without_existing) printf 'You skipped CodingNS installation, but there is no existing codingns command on this machine.';;
-    zh:error_skip_pm2_without_existing) printf '你跳过了 PM2 安装，但当前机器上也没有可用的 pm2 命令。';;
-    en:error_skip_pm2_without_existing) printf 'You skipped PM2 installation, but there is no existing pm2 command on this machine.';;
     zh:error_prompt_interrupted) printf '没有读取到终端输入，安装流程已中止。请在交互式终端里重新运行脚本。';;
     en:error_prompt_interrupted) printf 'No terminal input was received. The installation was aborted. Please run the script again in an interactive terminal.';;
     zh:error_prereq_auto_install_cancelled) printf '缺少必备环境，且你没有同意自动安装，安装流程已中止。';;
@@ -152,8 +141,6 @@ msg() {
 
     zh:info_need_sudo) printf '检测到 npm 全局目录需要管理员权限，后续全局安装会使用 sudo。';;
     en:info_need_sudo) printf 'The npm global directory needs administrator permission. The installer will use sudo for global installs.';;
-    zh:info_intro) printf '这会通过交互式向导安装或更新 %s，并按你的选择配置 PM2。' "$@";;
-    en:info_intro) printf 'This interactive installer will install or update %s and configure PM2 only for the steps you choose.' "$@";;
     zh:info_prereq_check_title) printf '开始检查必备运行环境...';;
     en:info_prereq_check_title) printf 'Checking required runtime dependencies...';;
     zh:info_prereq_missing_title) printf '检测到以下必备环境缺失或版本不符合要求：';;
@@ -164,10 +151,6 @@ msg() {
     en:info_installing_nodejs) printf 'Installing or upgrading the Node.js runtime automatically...';;
     zh:info_installing_linux_build_tools) printf '开始自动安装 Linux 编译工具链...';;
     en:info_installing_linux_build_tools) printf 'Installing the Linux native build toolchain automatically...';;
-    zh:info_installing_pm2_missing) printf '未检测到 PM2，开始自动安装 PM2...';;
-    en:info_installing_pm2_missing) printf 'PM2 was not found. Installing PM2 automatically...';;
-    zh:info_using_existing_pm2) printf '检测到已有 PM2，继续复用当前安装。';;
-    en:info_using_existing_pm2) printf 'An existing PM2 installation was found. Reusing it.';;
     zh:info_auto_install_done) printf '必备环境已准备完成，继续安装流程。';;
     en:info_auto_install_done) printf 'Required dependencies are now ready. Continuing the installation flow.';;
     zh:info_detect_clis) printf '检测当前机器上的受支持 CLI：';;
@@ -188,18 +171,16 @@ msg() {
     en:warn_opencode_install_requires_curl) printf 'curl was not found on this machine, so OpenCode cannot be installed automatically right now.';;
     zh:info_summary_title) printf '安装计划：';;
     en:info_summary_title) printf 'Installation plan:';;
+    zh:prompt_enable_startup) printf '是否配置开机自动启动？';;
+    en:prompt_enable_startup) printf 'Enable start on boot?';;
+    zh:info_enable_startup) printf '开机自动启动：%s' "$@";;
+    en:info_enable_startup) printf 'Start on boot: %s' "$@";;
     zh:info_port) printf '服务端口：%s' "$@";;
     en:info_port) printf 'Service port: %s' "$@";;
     zh:info_data_dir) printf '数据目录：%s' "$@";;
     en:info_data_dir) printf 'Data directory: %s' "$@";;
     zh:info_install_codingns) printf '安装或更新 CodingNS：%s' "$@";;
     en:info_install_codingns) printf 'Install or update CodingNS: %s' "$@";;
-    zh:info_use_pm2) printf '安装为服务并开机自动启动：%s' "$@";;
-    en:info_use_pm2) printf 'Install as a service and start on boot: %s' "$@";;
-    zh:info_install_pm2) printf '安装或更新 PM2：%s' "$@";;
-    en:info_install_pm2) printf 'Install or update PM2: %s' "$@";;
-    zh:info_start_service) printf '用 PM2 启动服务：%s' "$@";;
-    en:info_start_service) printf 'Start the service with PM2: %s' "$@";;
     zh:info_startup) printf '配置开机自启：%s' "$@";;
     en:info_startup) printf 'Configure start on boot: %s' "$@";;
     zh:info_begin) printf '开始执行你选中的步骤...';;
@@ -214,20 +195,8 @@ msg() {
     en:info_installing_codingns) printf 'Installing or updating CodingNS...';;
     zh:info_skip_codingns) printf '已跳过 CodingNS 安装，继续使用当前机器上的现有命令。';;
     en:info_skip_codingns) printf 'Skipped CodingNS installation. The installer will use the existing command on this machine.';;
-    zh:info_installing_pm2) printf '开始安装或更新 PM2...';;
-    en:info_installing_pm2) printf 'Installing or updating PM2...';;
-    zh:info_skip_pm2_install) printf '已跳过 PM2 安装，继续使用当前机器上的现有命令。';;
-    en:info_skip_pm2_install) printf 'Skipped PM2 installation. The installer will use the existing pm2 command on this machine.';;
-    zh:info_existing_pm2_process) printf '检测到已有 PM2 进程 %s，先删除旧配置再重建。' "$@";;
-    en:info_existing_pm2_process) printf 'An existing PM2 process named %s was found. The installer will replace it with the new configuration.' "$@";;
-    zh:info_skip_pm2_management) printf '已按你的选择跳过 PM2 托管。';;
-    en:info_skip_pm2_management) printf 'PM2 management was skipped as requested.';;
-    zh:info_skip_service_start) printf '已按你的选择跳过用 PM2 启动服务。';;
-    en:info_skip_service_start) printf 'Starting the service with PM2 was skipped as requested.';;
     zh:info_skip_startup) printf '已按你的选择跳过开机自启配置。';;
     en:info_skip_startup) printf 'Start-on-boot configuration was skipped as requested.';;
-    zh:warn_no_startup_platform) printf '当前系统未识别到可自动配置的开机自启平台，已跳过这一步。你后续可以手工执行 pm2 startup。';;
-    en:warn_no_startup_platform) printf 'This system does not expose a supported start-on-boot platform for automatic setup, so that step was skipped. You can still run pm2 startup manually later.';;
     zh:warn_linux_startup_no_sudo) printf '当前 Linux 平台需要 sudo 才能写入 systemd 启动项，已跳过自动配置。';;
     en:warn_linux_startup_no_sudo) printf 'This Linux machine needs sudo to write the systemd startup entry, so automatic startup setup was skipped.';;
     zh:warn_windows_missing_build_tools) printf '当前是 Windows 环境，但未检测到 Visual Studio C++ Build Tools。CodingNS 依赖 libsql、@lydell/node-pty 这类原生模块；如果预编译包下载失败，npm 会回退到本机编译，并要求你先安装 Visual Studio Build Tools 2022，勾选“Desktop development with C++”。';;
@@ -244,7 +213,6 @@ msg() {
     en:info_windows_managed_package_summary) printf 'Managed native package check: %s' "$@";;
     zh:warn_install_log_path) printf '失败日志位置：%s' "$@";;
     en:warn_install_log_path) printf 'Failure log path: %s' "$@";;
-    zh:info_configuring_startup) printf '开始配置 PM2 开机自启（%s）...' "$@";;
     zh:info_using_host_installer) printf '使用统一安装器完成配置、启动与开机自启...';;
     en:info_managed_by_installer) printf 'Service is now managed by the unified installer.';;
     zh:info_managed_by_installer) printf '服务已经交给统一安装器管理。';;
@@ -262,14 +230,9 @@ msg() {
     en:warn_desktop_client_unsupported) printf 'Automatic desktop client install is not supported on this platform yet. Download it from GitHub Releases.';;
     en:info_installer_service_hint) printf 'Autostart, startup, and the health check were handled by the installer.';;
     zh:info_installer_service_hint) printf '开机自启、服务启动和健康检查都已经由安装器完成。';;
-    en:info_installer_state_hint) printf 'Open the desktop app settings to see the service state, or run codingns start / stop directly.';;
-    zh:info_installer_state_hint) printf '可以在桌面端设置页查看服务状态，也可以直接运行 codingns start / stop。';;
+    en:info_installer_state_hint) printf 'Open the desktop app settings to see the service state, or run the unified installer status command.';;
+    zh:info_installer_state_hint) printf '可以在桌面端设置页查看服务状态，也可以直接运行统一安装器的 status 命令。';;
     en:info_using_host_installer) printf 'Using the unified installer for setup, startup, and autostart...';;
-    zh:warn_host_installer_fallback) printf '统一安装器不可用，回退到旧的 pm2 流程。';;
-    en:warn_host_installer_fallback) printf 'Unified installer unavailable, falling back to the legacy pm2 flow.';;
-    zh:warn_legacy_pm2_detected) printf '检测到旧的 pm2 托管痕迹（%s）。新安装不会重复拉起第二个服务，需要清理时再手动处理 pm2。' "$@";;
-    en:warn_legacy_pm2_detected) printf 'Legacy pm2 traces detected (%s). The new install will not start a second service; clean up pm2 manually when you want to.' "$@";;
-    en:info_configuring_startup) printf 'Configuring PM2 to start on boot (%s)...' "$@";;
     zh:info_done) printf '安装流程已完成。';;
     en:info_done) printf 'The installation flow is complete.';;
     zh:info_registry) printf '当前 npm 源：%s' "$@";;
@@ -278,14 +241,10 @@ msg() {
     en:info_runtime_node) printf 'Runtime Node.js: %s' "$@";;
     zh:info_runtime_prefix) printf '实际 npm 前缀：%s' "$@";;
     en:info_runtime_prefix) printf 'Runtime npm prefix: %s' "$@";;
-    zh:info_runtime_pm2_home) printf '实际 PM2 HOME：%s' "$@";;
-    en:info_runtime_pm2_home) printf 'Runtime PM2 HOME: %s' "$@";;
     zh:info_runtime_pty) printf '实际 PTY 依赖：%s' "$@";;
     en:info_runtime_pty) printf 'Runtime PTY dependency: %s' "$@";;
     zh:info_access_title) printf '访问方式：';;
     en:info_access_title) printf 'Access:';;
-    zh:info_process_name) printf 'PM2 进程名称：%s' "$@";;
-    en:info_process_name) printf 'PM2 process name: %s' "$@";;
     zh:info_service_url) printf '浏览器或客户端连接地址：http://127.0.0.1:%s/' "$@";;
     en:info_service_url) printf 'Browser or client URL: http://127.0.0.1:%s/' "$@";;
     zh:info_password_title) printf '登录说明：';;
@@ -296,10 +255,6 @@ msg() {
     en:info_password_setup_hint) printf 'On first access, you will see the bootstrap page and create the admin account and password yourself.';;
     zh:info_manual_start_title) printf '你还没有让脚本替你启动服务。后续可以手工执行：';;
     en:info_manual_start_title) printf 'You chose not to let the installer start the service. You can run this command later:';;
-    zh:info_pm2_title) printf '后续 PM2 管理方式：';;
-    en:info_pm2_title) printf 'PM2 management:';;
-    zh:info_pm2_skipped) printf '你这次没有启用 PM2 托管。';;
-    en:info_pm2_skipped) printf 'PM2 management was not enabled in this installation.';;
     zh:info_open_docs_title) printf '如果你想继续看后续操作说明，可以访问：';;
     en:info_open_docs_title) printf 'If you want the next-step guide, open:';;
     zh:info_docs_link) printf 'https://docs.codingns.com/quick-install/host-installation';;
@@ -315,8 +270,6 @@ msg() {
     en:prompt_install_opencode) printf 'No supported CLI was detected. Install OpenCode now?';;
     zh:prompt_install_codingns) printf '现在安装或更新 CodingNS 吗？';;
     en:prompt_install_codingns) printf 'Install or update CodingNS now?';;
-    zh:prompt_use_pm2) printf '是否将 CodingNS 安装为服务并开机自动启动？';;
-    en:prompt_use_pm2) printf 'Install CodingNS as a service and start it automatically on boot?';;
     zh:prompt_confirm_plan) printf '按上面的计划继续吗？';;
     en:prompt_confirm_plan) printf 'Continue with this plan?';;
     zh:prompt_aborted) printf '已取消安装流程。';;
@@ -451,7 +404,6 @@ build_windows_runtime_paths() {
   PRIVATE_DOWNLOAD_CACHE_DIR="$RUNTIME_HOME/cache/downloads"
   PRIVATE_LOG_DIR="$RUNTIME_HOME/logs"
   PRIVATE_INSTALL_LOG_DIR="$PRIVATE_LOG_DIR/install"
-  PRIVATE_PM2_HOME="$RUNTIME_HOME/pm2"
   PRIVATE_SERVICE_STATE_DIR="$RUNTIME_HOME/service"
   PRIVATE_NPM_USERCONFIG="$PRIVATE_NPM_PREFIX/npmrc"
 }
@@ -462,7 +414,6 @@ ensure_windows_runtime_dirs() {
     "$PRIVATE_NPM_CACHE_DIR" \
     "$PRIVATE_DOWNLOAD_CACHE_DIR" \
     "$PRIVATE_INSTALL_LOG_DIR" \
-    "$PRIVATE_PM2_HOME" \
     "$PRIVATE_SERVICE_STATE_DIR"
 }
 
@@ -1359,14 +1310,12 @@ prepare_windows_install_runtime() {
   PRIVATE_INSTALL_CONTEXT="1"
   INSTALL_ENV_ARGS=(
     "PATH=${PRIVATE_NPM_PREFIX}:${SYSTEM_PATH_SNAPSHOT}"
-    "PM2_HOME=${PRIVATE_PM2_HOME}"
     "npm_config_prefix=${PRIVATE_NPM_PREFIX}"
     "npm_config_cache=${PRIVATE_NPM_CACHE_DIR}"
     "npm_config_userconfig=${PRIVATE_NPM_USERCONFIG}"
     "CODINGNS_DATA_DIR=${SELECTED_DATA_DIR}"
     "CODINGNS_RUNTIME_ROOT=${RUNTIME_HOME}"
     "CODINGNS_RUNTIME_NODE_VERSION=${TARGET_NODE_VERSION}"
-    "CODINGNS_PM2_PROCESS_NAME=${PROCESS_NAME}"
   )
   USE_SUDO_FOR_NPM="0"
 }
@@ -1493,17 +1442,7 @@ collect_install_options() {
   else
     INSTALL_DESKTOP_CLIENT="$(read_yes_no "$(msg prompt_install_desktop_client)" "n")"
   fi
-  USE_PM2="$(read_yes_no "$(msg prompt_use_pm2)" "y")"
-
-  if [[ "$USE_PM2" == "1" ]]; then
-    INSTALL_PM2="1"
-    START_PM2_SERVICE="1"
-    ENABLE_STARTUP="1"
-  else
-    INSTALL_PM2="0"
-    START_PM2_SERVICE="0"
-    ENABLE_STARTUP="0"
-  fi
+  ENABLE_STARTUP="$(read_yes_no "$(msg prompt_enable_startup)" "y")"
 }
 
 print_install_summary() {
@@ -1515,7 +1454,7 @@ print_install_summary() {
     printf -- '- %s\n' "$(msg info_install_opencode "$(localized_bool "$INSTALL_OPENCODE")")"
   fi
   printf -- '- %s\n' "$(msg info_install_codingns "$(localized_bool "$INSTALL_CODINGNS")")"
-  printf -- '- %s\n' "$(msg info_use_pm2 "$(localized_bool "$USE_PM2")")"
+  printf -- '- %s\n' "$(msg info_enable_startup "$(localized_bool "$ENABLE_STARTUP")")"
   if [[ "$INSTALL_DESKTOP_CLIENT" == "1" ]]; then
     printf -- '- %s\n' "$(msg prompt_install_desktop_client)"
   fi
@@ -1817,12 +1756,9 @@ write_private_runtime_state() {
   CODINGNS_STATE_NODE_EXE="${NODE_BIN}" \
   CODINGNS_STATE_NPM_CMD="${NPM_BIN}" \
   CODINGNS_STATE_NPM_PREFIX="${NPM_GLOBAL_PREFIX}" \
-  CODINGNS_STATE_PM2_HOME="${PRIVATE_PM2_HOME}" \
   CODINGNS_STATE_CODINGNS_COMMAND="${CODINGNS_BIN}" \
-  CODINGNS_STATE_PM2_COMMAND="${PM2_BIN}" \
   CODINGNS_STATE_DATA_DIR="${SELECTED_DATA_DIR}" \
   CODINGNS_STATE_PORT="${SELECTED_PORT}" \
-  CODINGNS_STATE_PROCESS_NAME="${PROCESS_NAME}" \
   CODINGNS_STATE_INSTALLED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     "$NODE_BIN" - "$install_state_path" <<'EOF'
 const fs = require("node:fs");
@@ -1842,12 +1778,9 @@ const payload = {
   nodeExe: process.env.CODINGNS_STATE_NODE_EXE ?? "",
   npmCmd: process.env.CODINGNS_STATE_NPM_CMD ?? "",
   npmPrefix: process.env.CODINGNS_STATE_NPM_PREFIX ?? "",
-  pm2Home: process.env.CODINGNS_STATE_PM2_HOME ?? "",
   codingnsCommand: process.env.CODINGNS_STATE_CODINGNS_COMMAND ?? "",
-  pm2Command: process.env.CODINGNS_STATE_PM2_COMMAND ?? "",
   dataDir: process.env.CODINGNS_STATE_DATA_DIR ?? "",
   port: Number(process.env.CODINGNS_STATE_PORT ?? "0"),
-  processName: process.env.CODINGNS_STATE_PROCESS_NAME ?? "",
   installedAt: process.env.CODINGNS_STATE_INSTALLED_AT ?? ""
 };
 
@@ -1855,28 +1788,24 @@ fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
 EOF
 
   CODINGNS_LAUNCH_PATH="${PRIVATE_NPM_PREFIX}:${SYSTEM_PATH_SNAPSHOT}" \
-  CODINGNS_LAUNCH_PM2_HOME="${PRIVATE_PM2_HOME}" \
   CODINGNS_LAUNCH_NPM_PREFIX="${PRIVATE_NPM_PREFIX}" \
   CODINGNS_LAUNCH_NPM_CACHE="${PRIVATE_NPM_CACHE_DIR}" \
   CODINGNS_LAUNCH_NPM_USERCONFIG="${PRIVATE_NPM_USERCONFIG}" \
   CODINGNS_LAUNCH_DATA_DIR="${SELECTED_DATA_DIR}" \
   CODINGNS_LAUNCH_RUNTIME_ROOT="${RUNTIME_HOME}" \
   CODINGNS_LAUNCH_RUNTIME_NODE_VERSION="${TARGET_NODE_VERSION}" \
-  CODINGNS_LAUNCH_PM2_PROCESS_NAME="${PROCESS_NAME}" \
     "$NODE_BIN" - "$launch_env_path" <<'EOF'
 const fs = require("node:fs");
 
 const outputPath = process.argv[2];
 const payload = {
   PATH: process.env.CODINGNS_LAUNCH_PATH ?? "",
-  PM2_HOME: process.env.CODINGNS_LAUNCH_PM2_HOME ?? "",
   npm_config_prefix: process.env.CODINGNS_LAUNCH_NPM_PREFIX ?? "",
   npm_config_cache: process.env.CODINGNS_LAUNCH_NPM_CACHE ?? "",
   npm_config_userconfig: process.env.CODINGNS_LAUNCH_NPM_USERCONFIG ?? "",
   CODINGNS_DATA_DIR: process.env.CODINGNS_LAUNCH_DATA_DIR ?? "",
   CODINGNS_RUNTIME_ROOT: process.env.CODINGNS_LAUNCH_RUNTIME_ROOT ?? "",
   CODINGNS_RUNTIME_NODE_VERSION: process.env.CODINGNS_LAUNCH_RUNTIME_NODE_VERSION ?? "",
-  CODINGNS_PM2_PROCESS_NAME: process.env.CODINGNS_LAUNCH_PM2_PROCESS_NAME ?? ""
 };
 
 fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
@@ -1932,7 +1861,7 @@ EOF
 }
 
 ensure_registry_if_needed() {
-  if [[ "$INSTALL_CODINGNS" == "1" || "$INSTALL_PM2" == "1" ]]; then
+  if [[ "$INSTALL_CODINGNS" == "1" ]]; then
     resolve_registry
   fi
 }
@@ -2054,43 +1983,21 @@ refresh_deepseek_harness_launcher() {
 }
 
 resolve_host_installer_script() {
-  local candidate="$INSTALL_SCRIPT_DIR/packages/codingns/scripts/host-install.mjs"
+  local candidate=""
+  local -a candidates=(
+    "$INSTALL_SCRIPT_DIR/packages/codingns/scripts/host-install.mjs"
+    "${CODINGNS_PACKAGE_ROOT:-}/scripts/host-install.mjs"
+  )
 
-  if [[ -f "$candidate" ]]; then
+  for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" && -f "$candidate" ]] || continue
     printf '%s\n' "$candidate"
     return 0
-  fi
+  done
 
   return 1
 }
 
-detect_legacy_pm2_paths() {
-  local -a found=()
-  local file=""
-
-  if [[ -d "$HOME/Library/LaunchAgents" ]]; then
-    for file in "$HOME/Library/LaunchAgents"/pm2*.plist; do
-      [[ -f "$file" ]] && found+=("$file")
-    done
-  fi
-
-  if [[ -d "$HOME/.config/systemd/user" ]]; then
-    for file in "$HOME/.config/systemd/user"/pm2*.service; do
-      [[ -f "$file" ]] && found+=("$file")
-    done
-  fi
-
-  if [[ -d "$HOME/.pm2" ]]; then
-    found+=("$HOME/.pm2")
-  fi
-
-  if [[ ${#found[@]} -gt 0 ]]; then
-    printf '%s\n' "${found[*]}"
-  fi
-}
-
-# 走统一安装器：装包已经由 install_or_resolve_codingns 做完，这里用 --reuse-existing 复用，
-# 由安装器负责写开机自启、启动服务、健康检查和安装状态落盘。
 run_host_installer_setup() {
   local installer_script=""
   installer_script="$(resolve_host_installer_script || true)"
@@ -2113,12 +2020,10 @@ run_host_installer_setup() {
 
   if [[ "$DRY_RUN" == "1" ]]; then
     say_info_custom "node $installer_script ${args[*]}"
-    HOST_INSTALLER_USED="1"
     return 0
   fi
 
   if "$NODE_BIN" "$installer_script" "${args[@]}"; then
-    HOST_INSTALLER_USED="1"
     return 0
   fi
 
@@ -2236,278 +2141,6 @@ install_desktop_client_if_requested() {
   esac
 }
 
-install_or_resolve_pm2() {
-  if [[ "$USE_PM2" != "1" ]]; then
-    say_info info_skip_pm2_management
-    return
-  fi
-
-  PM2_BIN="$(resolve_installed_binary "pm2")"
-  if [[ -n "$PM2_BIN" ]]; then
-    say_info info_using_existing_pm2
-    return
-  fi
-
-  if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" || "$INSTALL_PM2" == "1" ]]; then
-    say_info info_installing_pm2_missing
-    install_global_package "$PM2_PACKAGE_SPEC" "PM2"
-  fi
-
-  PM2_BIN="$(resolve_installed_binary "pm2")"
-  [[ -n "$PM2_BIN" ]] || die error_no_pm2_after_install
-}
-
-resolve_pm2_start_script_path() {
-  if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
-    PRIVATE_PM2_START_SCRIPT="$PRIVATE_SERVICE_STATE_DIR/start-codingns.mjs"
-  else
-    PRIVATE_PM2_START_SCRIPT="$SELECTED_DATA_DIR/pm2-service/start-codingns.mjs"
-  fi
-}
-
-write_private_pm2_start_script() {
-  [[ -n "$NODE_BIN" ]] || die error_no_node
-  [[ -n "$CODINGNS_SCRIPT" ]] || die error_no_codingns_after_install
-
-  resolve_pm2_start_script_path
-
-  mkdir -p "$(dirname "$PRIVATE_PM2_START_SCRIPT")"
-
-  local native_pm2_start_script=""
-  local native_codingns_script=""
-  local native_data_dir=""
-  native_pm2_start_script="$(native_path_for_node_runtime "$PRIVATE_PM2_START_SCRIPT")"
-  native_codingns_script="$(native_path_for_node_runtime "$CODINGNS_SCRIPT")"
-  native_data_dir="$(native_path_for_node_runtime "$SELECTED_DATA_DIR")"
-
-  CODINGNS_PM2_TARGET_SCRIPT="$native_codingns_script" \
-  CODINGNS_PM2_TARGET_PORT="$SELECTED_PORT" \
-  CODINGNS_PM2_TARGET_DATA_DIR="$native_data_dir" \
-    "$NODE_BIN" - "$native_pm2_start_script" <<'EOF'
-const fs = require("node:fs");
-
-const outputPath = process.argv[2];
-const targetScript = process.env.CODINGNS_PM2_TARGET_SCRIPT ?? "";
-const targetPort = process.env.CODINGNS_PM2_TARGET_PORT ?? "";
-const targetDataDir = process.env.CODINGNS_PM2_TARGET_DATA_DIR ?? "";
-
-const script = `import { spawn } from "node:child_process";
-
-const child = spawn(process.execPath, [
-  ${JSON.stringify(targetScript)},
-  "start",
-  "--host",
-  "0.0.0.0",
-  "--port",
-  ${JSON.stringify(targetPort)},
-  "--data-dir",
-  ${JSON.stringify(targetDataDir)}
-], {
-  stdio: "inherit",
-  windowsHide: true
-});
-
-child.on("exit", (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exit(code ?? 0);
-});
-
-child.on("error", (error) => {
-  console.error("[codingns-pm2] 启动失败：" + (error?.message || error));
-  process.exit(1);
-});
-`;
-
-fs.writeFileSync(outputPath, script);
-EOF
-  chmod +x "$PRIVATE_PM2_START_SCRIPT"
-}
-
-start_pm2_service() {
-  if [[ "$USE_PM2" != "1" || "$START_PM2_SERVICE" != "1" ]]; then
-    say_info info_skip_service_start
-    return
-  fi
-
-  mkdir -p "$SELECTED_DATA_DIR"
-  resolve_pm2_start_script_path
-
-  if [[ "$DRY_RUN" == "1" ]]; then
-    if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
-      say_info_custom "env ${INSTALL_ENV_ARGS[*]} \"$PM2_BIN\" delete $PROCESS_NAME"
-      say_info_custom "env ${INSTALL_ENV_ARGS[*]} \"$PM2_BIN\" start $PRIVATE_PM2_START_SCRIPT --name $PROCESS_NAME --cwd $SELECTED_DATA_DIR --interpreter $NODE_BIN"
-      say_info_custom "env ${INSTALL_ENV_ARGS[*]} \"$PM2_BIN\" save"
-    else
-      say_info_custom "pm2 delete $PROCESS_NAME"
-      say_info_custom "pm2 start $PRIVATE_PM2_START_SCRIPT --name $PROCESS_NAME --cwd $SELECTED_DATA_DIR --interpreter $NODE_BIN"
-      say_info_custom "pm2 save"
-    fi
-    return
-  fi
-
-  write_private_pm2_start_script
-
-  if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
-    if env "${INSTALL_ENV_ARGS[@]}" "$PM2_BIN" describe "$PROCESS_NAME" >/dev/null 2>&1; then
-      say_info info_existing_pm2_process "$PROCESS_NAME"
-      env "${INSTALL_ENV_ARGS[@]}" "$PM2_BIN" delete "$PROCESS_NAME" >/dev/null 2>&1 || true
-    fi
-
-    local native_pm2_start_script=""
-    local native_service_cwd=""
-    local native_node_bin=""
-    native_pm2_start_script="$(native_path_for_node_runtime "$PRIVATE_PM2_START_SCRIPT")"
-    native_service_cwd="$(native_path_for_node_runtime "$SELECTED_DATA_DIR")"
-    native_node_bin="$(native_path_for_node_runtime "$NODE_BIN")"
-
-    env "${INSTALL_ENV_ARGS[@]}" "$PM2_BIN" start "$native_pm2_start_script" --name "$PROCESS_NAME" --cwd "$native_service_cwd" --interpreter "$native_node_bin"
-
-    env "${INSTALL_ENV_ARGS[@]}" "$PM2_BIN" save >/dev/null
-    return
-  fi
-
-  if "$PM2_BIN" describe "$PROCESS_NAME" >/dev/null 2>&1; then
-    say_info info_existing_pm2_process "$PROCESS_NAME"
-    "$PM2_BIN" delete "$PROCESS_NAME" >/dev/null 2>&1 || true
-  fi
-
-  "$PM2_BIN" start "$PRIVATE_PM2_START_SCRIPT" --name "$PROCESS_NAME" --cwd "$SELECTED_DATA_DIR" --interpreter "$NODE_BIN"
-
-  "$PM2_BIN" save >/dev/null
-}
-
-write_launchd_pm2_resurrect_agent() {
-  local launch_agent_dir="$HOME/Library/LaunchAgents"
-  local launch_agent_path="$launch_agent_dir/com.codingns.pm2-resurrect.plist"
-  local launch_log_dir="$SELECTED_DATA_DIR/pm2-service"
-  local node_bin_dir=""
-  node_bin_dir="$(dirname "$NODE_BIN")"
-
-  mkdir -p "$launch_agent_dir" "$launch_log_dir"
-
-  cat > "$launch_agent_path" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.codingns.pm2-resurrect</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$PM2_BIN</string>
-    <string>resurrect</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOME</key>
-    <string>$HOME</string>
-    <key>PM2_HOME</key>
-    <string>$HOME/.pm2</string>
-    <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$node_bin_dir</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>$launch_log_dir/launchd-pm2.out.log</string>
-  <key>StandardErrorPath</key>
-  <string>$launch_log_dir/launchd-pm2.err.log</string>
-</dict>
-</plist>
-EOF
-
-  chmod 644 "$launch_agent_path"
-
-  if command_exists plutil; then
-    plutil -lint "$launch_agent_path" >/dev/null
-  fi
-
-  local launchctl_domain="gui/$(id -u)"
-  launchctl bootout "$launchctl_domain/com.codingns.pm2-resurrect" >/dev/null 2>&1 || true
-  launchctl bootstrap "$launchctl_domain" "$launch_agent_path"
-  launchctl enable "$launchctl_domain/com.codingns.pm2-resurrect" >/dev/null 2>&1 || true
-  launchctl kickstart -k "$launchctl_domain/com.codingns.pm2-resurrect" >/dev/null 2>&1 || true
-}
-
-configure_startup() {
-  if [[ "$USE_PM2" != "1" || "$START_PM2_SERVICE" != "1" || "$ENABLE_STARTUP" != "1" ]]; then
-    say_info info_skip_startup
-    return
-  fi
-
-  local system_name startup_platform
-  system_name="$(uname -s)"
-  startup_platform=""
-
-  case "$system_name" in
-    Darwin)
-      startup_platform="launchd"
-      ;;
-    Linux)
-      if command_exists systemctl; then
-        startup_platform="systemd"
-      fi
-      ;;
-  esac
-
-  if [[ -z "$startup_platform" ]]; then
-    say_warn warn_no_startup_platform
-    return
-  fi
-
-  if [[ "$DRY_RUN" == "1" ]]; then
-    if [[ "$startup_platform" == "launchd" ]]; then
-      say_info_custom "cat > $HOME/Library/LaunchAgents/com.codingns.pm2-resurrect.plist"
-      say_info_custom "launchctl bootstrap gui/\$(id -u) $HOME/Library/LaunchAgents/com.codingns.pm2-resurrect.plist"
-      say_info_custom "launchctl kickstart -k gui/\$(id -u)/com.codingns.pm2-resurrect"
-      say_info_custom "pm2 save"
-    elif [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
-      say_info_custom "env ${INSTALL_ENV_ARGS[*]} \"$PM2_BIN\" startup $startup_platform -u $USER --hp $HOME"
-      say_info_custom "env ${INSTALL_ENV_ARGS[*]} \"$PM2_BIN\" save"
-    else
-      say_info_custom "pm2 startup $startup_platform -u $USER --hp $HOME"
-      say_info_custom "pm2 save"
-    fi
-    return
-  fi
-
-  say_info info_configuring_startup "$startup_platform"
-
-  if [[ "$startup_platform" == "launchd" ]]; then
-    write_launchd_pm2_resurrect_agent
-    "$PM2_BIN" save >/dev/null
-    return
-  fi
-
-  if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
-    if is_root_user; then
-      env PATH="$PATH" "${INSTALL_ENV_ARGS[@]}" "$PM2_BIN" startup systemd -u "$USER" --hp "$HOME"
-    elif command_exists sudo; then
-      sudo env PATH="$PATH" "${INSTALL_ENV_ARGS[@]}" "$PM2_BIN" startup systemd -u "$USER" --hp "$HOME"
-    else
-      say_warn warn_linux_startup_no_sudo
-      return
-    fi
-
-    env "${INSTALL_ENV_ARGS[@]}" "$PM2_BIN" save >/dev/null
-    return
-  fi
-
-  if is_root_user; then
-    env PATH="$PATH" "$PM2_BIN" startup systemd -u "$USER" --hp "$HOME"
-  elif command_exists sudo; then
-    sudo env PATH="$PATH" "$PM2_BIN" startup systemd -u "$USER" --hp "$HOME"
-  else
-    say_warn warn_linux_startup_no_sudo
-    return
-  fi
-
-  "$PM2_BIN" save >/dev/null
-}
-
 print_success_summary() {
   printf '\n'
   say_info info_done
@@ -2519,7 +2152,6 @@ print_success_summary() {
   if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
     printf -- '- %s\n' "$(msg info_runtime_node "${TARGET_NODE_VERSION:-unknown}")"
     printf -- '- %s\n' "$(msg info_runtime_prefix "$NPM_GLOBAL_PREFIX")"
-    printf -- '- %s\n' "$(msg info_runtime_pm2_home "$PRIVATE_PM2_HOME")"
     if [[ -n "$CODINGNS_PTY_PACKAGE_NAME" ]]; then
       local runtime_pty_summary="$CODINGNS_PTY_PACKAGE_NAME"
       if [[ -n "$CODINGNS_PTY_PACKAGE_VERSION" ]]; then
@@ -2527,7 +2159,6 @@ print_success_summary() {
       fi
       printf -- '- %s\n' "$(msg info_runtime_pty "$runtime_pty_summary")"
     fi
-
     if [[ -n "$CODINGNS_SQLITE_PACKAGE_NAME" ]]; then
       local runtime_sqlite_summary="$CODINGNS_SQLITE_PACKAGE_NAME"
       if [[ -n "$CODINGNS_SQLITE_PACKAGE_VERSION" ]]; then
@@ -2550,42 +2181,9 @@ print_success_summary() {
   printf -- '- %s\n' "$(msg info_password_setup_hint)"
 
   printf '\n'
-  if [[ "$HOST_INSTALLER_USED" == "1" ]]; then
-    say_info_custom "$(msg info_managed_by_installer)"
-    printf -- '- %s\n' "$(msg info_installer_service_hint)"
-    printf -- '- %s\n' "$(msg info_installer_state_hint)"
-  else
-  say_info info_pm2_title
-  if [[ "$USE_PM2" == "1" ]]; then
-    printf -- '- %s\n' "$(msg info_process_name "$PROCESS_NAME")"
-    if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
-      printf -- '- env PM2_HOME=%s %s status\n' "$PRIVATE_PM2_HOME" "$PM2_BIN"
-      printf -- '- env PM2_HOME=%s %s logs %s\n' "$PRIVATE_PM2_HOME" "$PM2_BIN" "$PROCESS_NAME"
-      printf -- '- env PM2_HOME=%s %s restart %s\n' "$PRIVATE_PM2_HOME" "$PM2_BIN" "$PROCESS_NAME"
-      printf -- '- env PM2_HOME=%s %s stop %s\n' "$PRIVATE_PM2_HOME" "$PM2_BIN" "$PROCESS_NAME"
-    else
-      printf -- '- pm2 status\n'
-      printf -- '- pm2 logs %s\n' "$PROCESS_NAME"
-      printf -- '- pm2 restart %s\n' "$PROCESS_NAME"
-      printf -- '- pm2 stop %s\n' "$PROCESS_NAME"
-    fi
-    if [[ "$START_PM2_SERVICE" != "1" ]]; then
-      if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]]; then
-        printf -- '- env PM2_HOME=%s %s start %s --name %s --cwd %s --interpreter %s\n' "$PRIVATE_PM2_HOME" "$PM2_BIN" "$PRIVATE_PM2_START_SCRIPT" "$PROCESS_NAME" "$SELECTED_DATA_DIR" "$NODE_BIN"
-      else
-        printf -- '- pm2 start %s --name %s --cwd %s --interpreter %s\n' "$PRIVATE_PM2_START_SCRIPT" "$PROCESS_NAME" "$SELECTED_DATA_DIR" "$NODE_BIN"
-      fi
-    fi
-  else
-    printf -- '- %s\n' "$(msg info_pm2_skipped)"
-  fi
-  fi
-
-  if [[ "$HOST_INSTALLER_USED" != "1" ]] && [[ "$USE_PM2" != "1" || "$START_PM2_SERVICE" != "1" ]]; then
-    printf '\n'
-    say_info info_manual_start_title
-    printf '%s start --host 0.0.0.0 --port %s --data-dir %s\n' "$CODINGNS_BIN" "$SELECTED_PORT" "$SELECTED_DATA_DIR"
-  fi
+  say_info_custom "$(msg info_managed_by_installer)"
+  printf -- '- %s\n' "$(msg info_installer_service_hint)"
+  printf -- '- %s\n' "$(msg info_installer_state_hint)"
 
   printf '\n'
   say_info info_open_docs_title
@@ -2614,22 +2212,10 @@ main() {
   install_or_resolve_codingns
   refresh_deepseek_harness_launcher
 
-  local legacy_pm2_paths=""
-  legacy_pm2_paths="$(detect_legacy_pm2_paths || true)"
-  if [[ -n "$legacy_pm2_paths" ]]; then
-    say_warn_custom "$(msg warn_legacy_pm2_detected "$legacy_pm2_paths")"
-  fi
-
   if ! run_host_installer_setup; then
-    say_warn_custom "$(msg warn_host_installer_fallback)"
-    install_or_resolve_pm2
-    resolve_pm2_start_script_path
-    start_pm2_service
-    configure_startup
+    die error_host_installer_failed
   fi
 
-  # 必须等托管方式确定后再写：统一安装器失败并回退到 PM2 时，
-  # 此时 PM2_BIN 才有值，否则状态文件会错误地把回退安装记成统一安装器。
   write_private_runtime_state
 
   install_desktop_client_if_requested

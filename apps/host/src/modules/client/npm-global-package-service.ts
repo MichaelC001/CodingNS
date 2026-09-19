@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 
 import type { HostConfig } from "../../config/env.js";
 import { AppError } from "../../shared/errors/app-error.js";
@@ -28,7 +30,8 @@ export interface NpmGlobalPackageInstallResult {
   restartDelayMs: number | null;
 }
 
-const PM2_RESTART_DELAY_MS = 3_000;
+const HOST_RESTART_DELAY_MS = 3_000;
+const HOST_INSTALLER_FILE_NAME = path.join("scripts", "host-install.mjs");
 
 export class NpmGlobalPackageService {
   constructor(private readonly config: HostConfig) {}
@@ -120,12 +123,11 @@ export class NpmGlobalPackageService {
       signal: input.signal,
       failureLabel: "npm install -g 执行失败"
     });
-    await this.ensurePm2ProcessReady(input.signal);
-    await this.schedulePm2Restart();
+    await this.scheduleHostRestart();
 
     return {
       restartScheduled: true,
-      restartDelayMs: PM2_RESTART_DELAY_MS
+      restartDelayMs: HOST_RESTART_DELAY_MS
     };
   }
 
@@ -141,39 +143,27 @@ export class NpmGlobalPackageService {
     });
   }
 
-  private async ensurePm2ProcessReady(signal: AbortSignal): Promise<void> {
-    try {
-      await runCommand({
-        command: resolvePm2Command(),
-        args: ["describe", this.config.pm2ProcessName],
-        cwd: os.homedir(),
-        signal,
-        failureLabel: `未找到 PM2 进程 ${this.config.pm2ProcessName}`
-      });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "未知错误";
+  private async scheduleHostRestart(): Promise<void> {
+    const installerScript = resolveHostInstallerScript();
 
-      throw new Error(
-        `npm 包已更新，但无法确认 PM2 进程 ${this.config.pm2ProcessName} 可被自动重启。请检查 pm2 是否可用，并手工执行 pm2 restart ${this.config.pm2ProcessName}。${detail ? ` ${detail}` : ""}`
-      );
+    if (!installerScript) {
+      throw new Error("npm 包已更新，但找不到统一安装器脚本，无法调度服务重启。请重新运行安装脚本。");
     }
-  }
 
-  private async schedulePm2Restart(): Promise<void> {
     try {
       await spawnDetachedNodeProcess({
-        script: PM2_RESTART_HELPER_SOURCE,
+        script: HOST_RESTART_HELPER_SOURCE,
         args: [
-          String(PM2_RESTART_DELAY_MS),
-          resolvePm2Command(),
-          this.config.pm2ProcessName
+          String(HOST_RESTART_DELAY_MS),
+          installerScript,
+          path.dirname(this.config.databasePath)
         ]
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "未知错误";
 
       throw new Error(
-        `npm 包已更新，但自动调度 PM2 重启失败。请手工执行 pm2 restart ${this.config.pm2ProcessName}。${detail ? ` ${detail}` : ""}`
+        `npm 包已更新，但无法调度服务重启。请手工运行统一安装器 restart --data-dir ${path.dirname(this.config.databasePath)}。${detail ? ` ${detail}` : ""}`
       );
     }
   }
@@ -340,8 +330,46 @@ function resolveNpmCommand(): string {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
-function resolvePm2Command(): string {
-  return process.platform === "win32" ? "pm2.cmd" : "pm2";
+function resolveHostInstallerScript(): string | null {
+  const candidates = [];
+  const configuredPath = process.env.CODINGNS_HOST_INSTALLER_SCRIPT?.trim();
+
+  if (configuredPath) {
+    candidates.push(path.resolve(configuredPath));
+  }
+
+  const entryPath = process.argv[1];
+
+  if (entryPath) {
+    let currentDirectory = path.dirname(path.resolve(entryPath));
+
+    for (let index = 0; index < 6; index += 1) {
+      candidates.push(path.join(currentDirectory, HOST_INSTALLER_FILE_NAME));
+      const parentDirectory = path.dirname(currentDirectory);
+
+      if (parentDirectory === currentDirectory) {
+        break;
+      }
+
+      currentDirectory = parentDirectory;
+    }
+  }
+
+  let currentDirectory = path.resolve(process.cwd());
+
+  for (let index = 0; index < 6; index += 1) {
+    candidates.push(path.join(currentDirectory, HOST_INSTALLER_FILE_NAME));
+    candidates.push(path.join(currentDirectory, "packages", "codingns", HOST_INSTALLER_FILE_NAME));
+    const parentDirectory = path.dirname(currentDirectory);
+
+    if (parentDirectory === currentDirectory) {
+      break;
+    }
+
+    currentDirectory = parentDirectory;
+  }
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
 async function runCommand(input: {
@@ -439,19 +467,19 @@ async function spawnDetachedNodeProcess(input: {
   });
 }
 
-const PM2_RESTART_HELPER_SOURCE = String.raw`
+const HOST_RESTART_HELPER_SOURCE = String.raw`
 const { spawn } = require("node:child_process");
 
 const delayMs = Number(process.argv[1] || "0");
-const command = process.argv[2];
-const processName = process.argv[3];
+const installerScript = process.argv[2];
+const dataDir = process.argv[3];
 
 function exit(code) {
   process.exit(typeof code === "number" ? code : 0);
 }
 
 setTimeout(() => {
-  const child = spawn(command, ["restart", processName], {
+  const child = spawn(process.execPath, [installerScript, "restart", "--data-dir", dataDir], {
     cwd: process.cwd(),
     env: process.env,
     stdio: "ignore",

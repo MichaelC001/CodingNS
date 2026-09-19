@@ -185,9 +185,10 @@ test("Windows 安装回放使用 npm tarball 并避开 Bash 4 专属语法", () 
   );
   assert.match(
     installSource,
-    /if ! run_host_installer_setup; then[\s\S]*?fi\s+#[^\n]*托管方式确定后再写[\s\S]*?write_private_runtime_state/,
-    "PM2 回退完成后才能写运行状态"
+    /if ! run_host_installer_setup; then\s+die error_host_installer_failed\s+fi\s+\s+write_private_runtime_state/,
+    "统一安装器失败时必须中止，不能回退到旧托管方式"
   );
+  assert.doesNotMatch(installSource, /pm2/i, "安装脚本不能再包含 PM2 回退逻辑");
 });
 
 test("Android 发布 workflow 不再请求已废弃的 tools SDK 包", () => {

@@ -76,7 +76,6 @@ export interface HostConfig {
   claudeHookBridgeToken: string;
   serverUpdatePackageName: string;
   npmRegistryBaseUrl: string;
-  pm2ProcessName: string;
   authAdminUserId: string;
   demoMode: boolean;
 }
@@ -329,10 +328,6 @@ export function resolveHostConfig(overrides: Partial<HostConfig> = {}): HostConf
       overrides.npmRegistryBaseUrl ??
       process.env.CODINGNS_NPM_REGISTRY_BASE_URL ??
       "https://registry.npmjs.org",
-    pm2ProcessName:
-      overrides.pm2ProcessName ??
-      process.env.CODINGNS_PM2_PROCESS_NAME ??
-      "codingns",
     authAdminUserId:
       overrides.authAdminUserId ??
       process.env.CODINGNS_AUTH_ADMIN_USER_ID ??
