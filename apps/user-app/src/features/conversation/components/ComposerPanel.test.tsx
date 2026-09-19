@@ -1101,6 +1101,9 @@ describe("ComposerPanel", () => {
     expect(tooltip).toHaveTextContent("订阅类型 Pro");
     expect(tooltip).toHaveTextContent(/\d+小时\d+分钟/);
     expect(tooltip).toHaveTextContent(t("conversation.codexRateLimitCredits", { count: 1 }));
+    expect(tooltip.querySelector(".composer-codex-rate-limit-tooltip-windows")).toHaveClass("is-single-window");
+    const progress = tooltip.querySelector(".composer-codex-rate-limit-tooltip-window-progress");
+    expect(progress?.querySelector("strong")?.parentElement).toBe(progress?.querySelector("span"));
 
     fireEvent.click(screen.getByRole("button", {
       name: t("conversation.codexRateLimitResetButton")

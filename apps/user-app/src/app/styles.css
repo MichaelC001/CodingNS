@@ -8698,6 +8698,10 @@ textarea:focus-visible {
   margin-top: 12px;
 }
 
+.composer-codex-rate-limit-tooltip-windows.is-single-window {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .composer-codex-rate-limit-tooltip-window {
   min-width: 0;
 }
@@ -8727,6 +8731,8 @@ textarea:focus-visible {
 }
 
 .composer-codex-rate-limit-tooltip-window-progress {
+  --codex-rate-limit-fill: #31c667;
+  --codex-rate-limit-fill-text: #fff;
   position: relative;
   height: 18px;
   margin-top: 7px;
@@ -8736,20 +8742,26 @@ textarea:focus-visible {
 }
 
 .composer-codex-rate-limit-tooltip-window-progress > span {
-  position: relative;
+  position: static;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   box-sizing: border-box;
   height: 100%;
   min-width: 42px;
-  padding: 0 7px;
+  padding: 0;
   border-radius: inherit;
-  background: #31c667;
+  background: var(--codex-rate-limit-fill);
 }
 
 .composer-codex-rate-limit-tooltip-window-progress > span > strong {
-  color: #fff;
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--codex-rate-limit-fill-text);
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
@@ -8758,11 +8770,12 @@ textarea:focus-visible {
 }
 
 .composer-codex-rate-limit-tooltip-window-progress.is-warning > span {
-  background: #eab308;
+  --codex-rate-limit-fill: #eab308;
+  --codex-rate-limit-fill-text: #422006;
 }
 
 .composer-codex-rate-limit-tooltip-window-progress.is-critical > span {
-  background: #dc2626;
+  --codex-rate-limit-fill: #dc2626;
 }
 
 .composer-codex-rate-limit-tooltip-actions {

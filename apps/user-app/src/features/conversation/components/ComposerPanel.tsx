@@ -4174,7 +4174,9 @@ function SessionStatsIndicators({
                       )}
                     </div>
                   ) : null}
-                  <div className="composer-codex-rate-limit-tooltip-windows">
+                  <div
+                    className={`composer-codex-rate-limit-tooltip-windows${rateLimitWindows.length === 1 ? " is-single-window" : ""}`}
+                  >
                     {rateLimitWindows.map((entry) => {
                       const remainingPercent = roundRateLimitPercent(entry.window.remainingPercent);
                       const windowStateClassName = getCodexRateLimitStateClassName(remainingPercent);
