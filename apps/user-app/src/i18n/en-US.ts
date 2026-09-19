@@ -250,6 +250,7 @@ export const enUS = {
     performanceCacheHitRate: "Cache hit rate",
     performanceModels: "Models used",
     performancePricedSessions: "Priced sessions",
+    performanceAverageTokensPerSession: "Average Tokens per session",
     performanceTrendTitle: "Usage trend",
     performanceEmpty: "There is no usage data to show for this period",
     performanceTrendAriaLabel: "Token and cost usage trend chart",

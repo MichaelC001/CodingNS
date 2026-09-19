@@ -246,6 +246,7 @@ export const zhCN = {
     performanceCacheHitRate: "缓存命中率",
     performanceModels: "使用模型",
     performancePricedSessions: "已核算会话",
+    performanceAverageTokensPerSession: "平均每会话 Token",
     performanceTrendTitle: "使用趋势",
     performanceEmpty: "当前周期还没有可展示的统计数据",
     performanceTrendAriaLabel: "Token 和费用使用趋势图",
