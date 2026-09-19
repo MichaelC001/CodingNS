@@ -509,7 +509,6 @@ function createService(overrides?: {
     webUiDir: null,
     webUiPort: 3000,
     databasePath: "/tmp/codingns-host-test.sqlite",
-    pluginRootDir: "/tmp/codingns-plugins",
     filePreviewTokenSecret: "test",
     gitCredentialSecret: "test",
     teableCredentialSecret: "test",
