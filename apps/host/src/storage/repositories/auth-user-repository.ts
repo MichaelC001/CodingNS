@@ -163,6 +163,8 @@ export class AuthUserRepository {
         totalTokens: 0
       },
       tokenUsageAvailable: false,
+      costUsd: 0,
+      costUsageAvailable: false,
       timeline: [] as AuthUserUsageBucket[],
       modelUsage: [] as AuthUserUsageItem[],
       cliProviderUsage: [] as AuthUserUsageItem[],
@@ -184,6 +186,72 @@ export class AuthUserRepository {
       }
     }
 
+    for (const row of this.listDetailedUsageRows(
+      `SELECT sb.user_id AS user_id, smu.model AS label,
+              COUNT(DISTINCT smu.session_id) AS count,
+              SUM(smu.input_tokens) AS input_tokens,
+              SUM(smu.output_tokens) AS output_tokens,
+              SUM(smu.input_tokens + smu.output_tokens) AS total_tokens,
+              SUM(smu.cost_usd) AS cost_usd
+       FROM session_model_usages smu
+       INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
+       WHERE sb.user_id IS NOT NULL AND TRIM(smu.model) <> ''
+       GROUP BY sb.user_id, smu.model`
+    )) {
+      const item = byUserId.get(row.userId);
+      if (!item) continue;
+      item.tokenTotals.inputTokens += row.inputTokens;
+      item.tokenTotals.outputTokens += row.outputTokens;
+      item.tokenTotals.totalTokens += row.totalTokens;
+      item.tokenUsageAvailable = true;
+      mergeUsageItem(item.modelUsage, row);
+    }
+
+    for (const row of this.listDetailedUsageRows(
+      `SELECT sb.user_id AS user_id, sb.provider AS label,
+              COUNT(DISTINCT smu.session_id) AS count,
+              SUM(smu.input_tokens) AS input_tokens,
+              SUM(smu.output_tokens) AS output_tokens,
+              SUM(smu.input_tokens + smu.output_tokens) AS total_tokens,
+              SUM(smu.cost_usd) AS cost_usd
+       FROM session_model_usages smu
+       INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
+       WHERE sb.user_id IS NOT NULL
+       GROUP BY sb.user_id, sb.provider`
+    )) {
+      mergeUsageItem(byUserId.get(row.userId)?.cliProviderUsage, row);
+    }
+
+    for (const row of this.listDetailedUsageRows(
+      `SELECT sb.user_id AS user_id, smu.provider AS label,
+              COUNT(DISTINCT smu.session_id) AS count,
+              SUM(smu.input_tokens) AS input_tokens,
+              SUM(smu.output_tokens) AS output_tokens,
+              SUM(smu.input_tokens + smu.output_tokens) AS total_tokens,
+              SUM(smu.cost_usd) AS cost_usd
+       FROM session_model_usages smu
+       INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
+       WHERE sb.user_id IS NOT NULL AND TRIM(smu.provider) <> ''
+       GROUP BY sb.user_id, smu.provider`
+    )) {
+      mergeUsageItem(byUserId.get(row.userId)?.modelProviderUsage, row);
+    }
+
+    for (const row of this.db
+      .prepare(
+        `SELECT sb.user_id AS user_id, SUM(scb.cost_usd) AS cost_usd
+         FROM session_cost_bills scb
+         INNER JOIN session_bindings sb ON sb.session_id = scb.session_id
+         WHERE sb.user_id IS NOT NULL GROUP BY sb.user_id`
+      )
+      .all() as Array<{ user_id: string; cost_usd: number | null }>) {
+      const item = byUserId.get(row.user_id);
+      if (item && row.cost_usd !== null) {
+        item.costUsd = row.cost_usd;
+        item.costUsageAvailable = true;
+      }
+    }
+
     for (const row of this.db
       .prepare(
         `SELECT user_id, ${bucketSql} AS bucket, COUNT(1) AS session_count
@@ -200,7 +268,8 @@ export class AuthUserRepository {
           sessionCount: row.session_count,
           inputTokens: 0,
           outputTokens: 0,
-          totalTokens: 0
+          totalTokens: 0,
+          costUsd: 0
         });
       }
     }
@@ -211,7 +280,7 @@ export class AuthUserRepository {
        WHERE user_id IS NOT NULL
        GROUP BY user_id, provider`
     )) {
-      byUserId.get(row.userId)?.cliProviderUsage.push(toUsageItem(row));
+      mergeCountUsageItem(byUserId.get(row.userId)?.cliProviderUsage, row);
     }
 
     for (const row of this.listGroupedUsageRows(
@@ -220,7 +289,7 @@ export class AuthUserRepository {
        WHERE user_id IS NOT NULL AND model IS NOT NULL AND TRIM(model) <> ''
        GROUP BY user_id, model`
     )) {
-      byUserId.get(row.userId)?.modelUsage.push(toUsageItem(row));
+      mergeCountUsageItem(byUserId.get(row.userId)?.modelUsage, row);
     }
 
     for (const row of this.listGroupedUsageRows(
@@ -230,7 +299,41 @@ export class AuthUserRepository {
        WHERE sb.user_id IS NOT NULL AND psm.model IS NOT NULL AND TRIM(psm.model) <> ''
        GROUP BY sb.user_id, psm.model`
     )) {
-      appendUsageItem(byUserId.get(row.userId)?.modelUsage, row);
+      mergeCountUsageItem(byUserId.get(row.userId)?.modelUsage, row);
+    }
+
+    for (const row of this.db
+      .prepare(
+        `SELECT sb.user_id AS user_id,
+                ${getUsageBucketSql(period, "sb.created_at")} AS bucket,
+                SUM(smu.input_tokens) AS input_tokens,
+                SUM(smu.output_tokens) AS output_tokens,
+                SUM(smu.input_tokens + smu.output_tokens) AS total_tokens
+         FROM session_model_usages smu
+         INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
+         WHERE sb.user_id IS NOT NULL GROUP BY sb.user_id, bucket`
+      )
+      .all() as Array<{ user_id: string; bucket: string | null; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null }>) {
+      const bucket = byUserId.get(row.user_id)?.timeline.find((value) => value.bucket === row.bucket);
+      if (bucket && row.bucket) {
+        bucket.inputTokens = row.input_tokens ?? 0;
+        bucket.outputTokens = row.output_tokens ?? 0;
+        bucket.totalTokens = row.total_tokens ?? 0;
+      }
+    }
+
+    for (const row of this.db
+      .prepare(
+        `SELECT sb.user_id AS user_id,
+                ${getUsageBucketSql(period, "sb.created_at")} AS bucket,
+                SUM(scb.cost_usd) AS cost_usd
+         FROM session_cost_bills scb
+         INNER JOIN session_bindings sb ON sb.session_id = scb.session_id
+         WHERE sb.user_id IS NOT NULL GROUP BY sb.user_id, bucket`
+      )
+      .all() as Array<{ user_id: string; bucket: string | null; cost_usd: number | null }>) {
+      const bucket = byUserId.get(row.user_id)?.timeline.find((value) => value.bucket === row.bucket);
+      if (bucket && row.bucket) bucket.costUsd = row.cost_usd ?? 0;
     }
 
     for (const item of users) {
@@ -241,7 +344,9 @@ export class AuthUserRepository {
 
     return {
       period,
-      tokenUsageAvailable: false,
+      tokenUsageAvailable: users.some((item) => item.tokenUsageAvailable),
+      costUsd: users.reduce((sum, item) => sum + item.costUsd, 0),
+      costUsageAvailable: users.some((item) => item.costUsageAvailable),
       users
     };
   }
@@ -254,6 +359,22 @@ export class AuthUserRepository {
         count: row.count
       }));
   }
+
+  private listDetailedUsageRows(sql: string): DetailedUsageRow[] {
+    return (this.db.prepare(sql).all() as Array<{
+      user_id: string; label: string | null; count: number;
+      input_tokens: number | null; output_tokens: number | null;
+      total_tokens: number | null; cost_usd: number | null;
+    }>).map((row) => ({
+      userId: row.user_id,
+      label: row.label?.trim() || "unknown",
+      count: row.count,
+      inputTokens: row.input_tokens ?? 0,
+      outputTokens: row.output_tokens ?? 0,
+      totalTokens: row.total_tokens ?? 0,
+      costUsd: row.cost_usd
+    }));
+  }
 }
 
 export type AuthUserUsagePeriod = "day" | "week" | "month";
@@ -261,6 +382,8 @@ export type AuthUserUsagePeriod = "day" | "week" | "month";
 export interface AuthUserUsageSnapshot {
   period: AuthUserUsagePeriod;
   tokenUsageAvailable: boolean;
+  costUsd: number;
+  costUsageAvailable: boolean;
   users: AuthUserUsageUserSnapshot[];
 }
 
@@ -289,6 +412,7 @@ export interface AuthUserUsageBucket {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  costUsd: number;
 }
 
 export interface AuthUserUsageItem {
@@ -297,6 +421,7 @@ export interface AuthUserUsageItem {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  costUsd: number | null;
 }
 
 interface GroupedUsageRow {
@@ -305,16 +430,23 @@ interface GroupedUsageRow {
   count: number;
 }
 
-function getUsageBucketSql(period: AuthUserUsagePeriod): string {
+interface DetailedUsageRow extends GroupedUsageRow {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number | null;
+}
+
+function getUsageBucketSql(period: AuthUserUsagePeriod, column = "created_at"): string {
   if (period === "week") {
-    return "strftime('%Y-W%W', created_at)";
+    return `strftime('%Y-W%W', ${column})`;
   }
 
   if (period === "month") {
-    return "substr(created_at, 1, 7)";
+    return `substr(${column}, 1, 7)`;
   }
 
-  return "substr(created_at, 1, 10)";
+  return `substr(${column}, 1, 10)`;
 }
 
 function toAuthUserUsageUser(user: AuthUser): AuthUserUsageUserSnapshot["user"] {
@@ -331,18 +463,33 @@ function toUsageItem(row: GroupedUsageRow): AuthUserUsageItem {
     count: row.count,
     inputTokens: 0,
     outputTokens: 0,
-    totalTokens: 0
+    totalTokens: 0,
+    costUsd: null
   };
 }
 
-function appendUsageItem(target: AuthUserUsageItem[] | undefined, row: GroupedUsageRow): void {
+function mergeUsageItem(target: AuthUserUsageItem[] | undefined, row: DetailedUsageRow): void {
+  if (!target) return;
+  const existing = target.find((item) => item.label === row.label);
+  if (existing) {
+    existing.count = Math.max(existing.count, row.count);
+    existing.inputTokens += row.inputTokens;
+    existing.outputTokens += row.outputTokens;
+    existing.totalTokens += row.totalTokens;
+    if (row.costUsd !== null) existing.costUsd = (existing.costUsd ?? 0) + row.costUsd;
+    return;
+  }
+  target.push({ label: row.label, count: row.count, inputTokens: row.inputTokens, outputTokens: row.outputTokens, totalTokens: row.totalTokens, costUsd: row.costUsd });
+}
+
+function mergeCountUsageItem(target: AuthUserUsageItem[] | undefined, row: GroupedUsageRow): void {
   if (!target) {
     return;
   }
 
   const existing = target.find((item) => item.label === row.label);
   if (existing) {
-    existing.count += row.count;
+    existing.count = Math.max(existing.count, row.count);
     return;
   }
 

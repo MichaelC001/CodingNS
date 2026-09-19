@@ -34,6 +34,8 @@ export interface DeleteManagedUserResultDto {
 export interface UserUsageSnapshotDto {
   period: UserUsagePeriod;
   tokenUsageAvailable: boolean;
+  costUsd: number;
+  costUsageAvailable: boolean;
   users: UserUsageUserSnapshotDto[];
 }
 
@@ -48,9 +50,14 @@ export interface UserUsageUserSnapshotDto {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
   };
   tokenUsageAvailable: boolean;
+  costUsd: number;
+  costUsageAvailable: boolean;
   timeline: UserUsageBucketDto[];
+  cliProviderTimeline: Record<string, UserUsageBucketDto[]>;
   modelUsage: UserUsageItemDto[];
   cliProviderUsage: UserUsageItemDto[];
   modelProviderUsage: UserUsageItemDto[];
@@ -62,6 +69,9 @@ export interface UserUsageBucketDto {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number;
 }
 
 export interface UserUsageItemDto {
@@ -70,6 +80,9 @@ export interface UserUsageItemDto {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number | null;
 }
 
 export function fetchManagedUsers() {

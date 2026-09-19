@@ -207,6 +207,22 @@ describe("auth user management", () => {
         timestamp
       );
 
+    hosted.services.database.db
+      .prepare(
+        `INSERT INTO session_model_usages (
+           session_id, provider, model, input_tokens, output_tokens,
+           reasoning_tokens, cache_read_tokens, cache_write_tokens, cost_usd, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run("session-alice", "openai", "gpt-5", 100, 20, 0, 0, 0, 0.012, timestamp);
+
+    hosted.services.database.db
+      .prepare(
+        `INSERT INTO session_cost_bills (session_id, cost_usd, pricing_json, updated_at)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run("session-alice", 0.012, JSON.stringify({ coverage: "complete", kind: "provider-native" }), timestamp);
+
     const usage = await hosted.app.inject({
       method: "GET",
       url: "/api/admin/users/usage?period=day",
@@ -218,31 +234,43 @@ describe("auth user management", () => {
     );
     expect(aliceUsage).toMatchObject({
       sessionCount: 1,
-      tokenUsageAvailable: false,
+      tokenUsageAvailable: true,
       tokenTotals: {
-        inputTokens: 0,
-        outputTokens: 0,
-        totalTokens: 0
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120
       },
       timeline: [
         {
           bucket: "2026-06-07",
           sessionCount: 1,
-          totalTokens: 0
+          totalTokens: 120
         }
       ],
       modelUsage: [
         {
           label: "gpt-5",
-          count: 1
+          count: 1,
+          totalTokens: 120,
+          costUsd: 0.012
         }
       ],
       cliProviderUsage: [
         {
           label: "codex",
-          count: 1
+          count: 1,
+          totalTokens: 120,
+          costUsd: 0.012
         }
-      ]
+      ],
+      modelProviderUsage: [{
+        label: "openai",
+        count: 1,
+        totalTokens: 120,
+        costUsd: 0.012
+      }],
+      costUsd: 0.012,
+      costUsageAvailable: true
     });
 
     const blockedDelete = await hosted.app.inject({

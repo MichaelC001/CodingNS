@@ -498,10 +498,14 @@ export function UserManagementPanel({ compact = false, mobile = false }: { compa
           <SummaryMetric label={t("settings.userManagementMetricTotalTokens")} value={formatNumber(item.tokenTotals.totalTokens)} />
           <SummaryMetric label={t("settings.userManagementMetricInputTokens")} value={formatNumber(item.tokenTotals.inputTokens)} />
           <SummaryMetric label={t("settings.userManagementMetricOutputTokens")} value={formatNumber(item.tokenTotals.outputTokens)} />
+          <SummaryMetric label={t("settings.userManagementMetricCostUsd")} value={item.costUsageAvailable ? formatUsd(item.costUsd) : t("settings.userManagementCostUnavailableShort")} />
         </div>
 
         {!item.tokenUsageAvailable ? (
           <p className="settings-user-token-note">{t("settings.userManagementTokenUnavailable")}</p>
+        ) : null}
+        {!item.costUsageAvailable ? (
+          <p className="settings-user-token-note">{t("settings.userManagementCostUnavailable")}</p>
         ) : null}
 
         <TokenChart userUsage={item} />
@@ -574,7 +578,13 @@ function UsageGroup({ title, items }: { title: string; items: UserUsageItemDto[]
         <div className="settings-user-usage-bars">
           {items.map((item) => (
             <div key={item.label} className="settings-user-usage-bar-row">
-              <span className="settings-user-usage-bar-label">{item.label}</span>
+              <span className="settings-user-usage-bar-label">
+                <span>{item.label}</span>
+                <small>{t("settings.userManagementUsageItemMeta", {
+                  tokens: formatNumber(item.totalTokens),
+                  cost: item.costUsd === null ? t("settings.userManagementCostUnavailableShort") : formatUsd(item.costUsd)
+                })}</small>
+              </span>
               <span className="settings-user-usage-bar-track" aria-hidden="true">
                 <span className="settings-user-usage-bar" style={{ width: `${Math.max(6, Math.round((item.count / maxCount) * 100))}%` }} />
               </span>
@@ -610,6 +620,14 @@ function formatDateTime(value: string): string {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value);
+}
+
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 6
+  }).format(value);
 }
 
 function resolveUserManagementError(error: unknown, fallbackKey: string): string {
