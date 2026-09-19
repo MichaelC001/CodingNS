@@ -51,6 +51,9 @@ switch (command) {
   case "opencli":
     await runOpenCliCommand(argv);
     break;
+  case "service":
+    await runServiceCommand(argv);
+    break;
   case "mcp":
     await runMcpCommand(argv);
     break;
@@ -1144,6 +1147,402 @@ async function runAssistantCommand(argv) {
   }
 }
 
+/**
+ * 本机服务管理。
+ *
+ * 真正的活都由同包的 host-install.mjs 干，这里只负责给一个顺手的入口：
+ * 它是一份零依赖脚本（要在 npm 包还没装好之前就能跑），所以没法把命令挂进
+ * codingns 主命令里；包装好之后由这里动态 import 转发过去。
+ */
+async function runServiceCommand(argv) {
+  const [action, ...rest] = argv;
+
+  if (!action || isHelpToken(action)) {
+    printServiceHelpTopic(buildServiceHelpTopic(rest[0]), 0);
+  }
+
+  if (rest.length > 0 && isHelpToken(rest[0])) {
+    printServiceHelpTopic(buildServiceHelpTopic(action), 0);
+  }
+
+  switch (action) {
+    case "status":
+      await runServiceStatus(rest);
+      return;
+    case "logs":
+      await runServiceLogs(rest);
+      return;
+    case "check":
+    case "start":
+    case "stop":
+    case "restart":
+    case "autostart":
+    case "install":
+    case "uninstall":
+      await forwardToHostInstaller(action, rest);
+      return;
+    default:
+      console.error(`[codingns] 不支持的 service 动作：${action}`);
+      printServiceHelpTopic("service", 1);
+  }
+}
+
+/** 把动作原样交给统一安装器，输出和退出码都不加工，避免两边行为不一致。 */
+async function forwardToHostInstaller(action, rest) {
+  const { runCli } = await import("../scripts/host-install.mjs");
+  const exitCode = await runCli([action, ...rest]);
+
+  process.exitCode = typeof exitCode === "number" ? exitCode : 0;
+}
+
+/**
+ * 安装器按行输出 JSON 事件。这里把 stdout 截下来解析，只取最后那条 result。
+ * 注意用完必须把 sink 还原，否则后续输出会继续被吞掉。
+ */
+async function readHostInstallerResult(args) {
+  const { runCli, setOutputSink } = await import("../scripts/host-install.mjs");
+  const chunks = [];
+
+  setOutputSink((text) => {
+    chunks.push(String(text));
+  });
+
+  try {
+    await runCli(args);
+  } finally {
+    setOutputSink(null);
+  }
+
+  const events = chunks
+    .join("")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter((event) => event !== null);
+
+  return {
+    result: events.find((event) => event.type === "result")?.data ?? null,
+    error: events.find((event) => event.type === "error") ?? null
+  };
+}
+
+async function runServiceStatus(argv) {
+  const options = parseArgs(argv, {
+    supportedOptions: ["data-dir"],
+    supportedFlags: ["json"]
+  });
+
+  if (options.errors.length > 0) {
+    for (const error of options.errors) {
+      console.error(`[codingns] ${error}`);
+    }
+    printServiceHelpTopic("service.status", 1);
+  }
+
+  const dataDir = resolveServiceDataDir(options.values["data-dir"]);
+  const { result, error } = await readHostInstallerResult(["status", "--data-dir", dataDir]);
+
+  if (!result) {
+    console.error(`[codingns] 读取服务状态失败${error?.message ? `：${error.message}` : ""}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (options.flags.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  const rows = [
+    ["状态", describeRunningState(result)],
+    ["端口", result.port ?? "未知"],
+    ["服务版本", result.packageVersion ?? "未知"],
+    ["数据目录", result.dataDir],
+    ["已登记安装", result.installed ? "是" : "否"],
+    ["开机自启", describeAutostart(result)]
+  ];
+
+  // 监督进程字段是安装器那边逐步补齐的，有就显示，没有就不占一行。
+  if (result.supervisorPid) {
+    rows.push(["监督进程", `运行中（pid ${result.supervisorPid}）`]);
+  }
+
+  const labelWidth = Math.max(...rows.map(([label]) => displayWidth(label)));
+
+  console.log(
+    rows
+      .map(([label, value]) => `${label}${" ".repeat(labelWidth - displayWidth(label) + 2)}${value}`)
+      .join("\n")
+  );
+
+  if (!result.installed) {
+    console.log("");
+    console.log("提示：这台机器没有统一安装器登记的安装记录，上面只是按登记信息推断的结果。");
+    console.log("      用 codingns start 手工拉起的服务不会被算进来，可以看进程或端口确认。");
+  }
+}
+
+/**
+ * Host 没在跑不代表没人管它：监督进程活着时会按退避策略把它拉回来。
+ * 这两种情况给人的结论完全不同，不能都写成一句“未运行”。
+ */
+function describeRunningState(result) {
+  if (result.running) {
+    return `运行中（pid ${result.pid}）`;
+  }
+
+  if (result.supervisorPid) {
+    return "Host 未运行，监督进程正在恢复";
+  }
+
+  return "未运行";
+}
+
+/**
+ * 终端里中日韩字符占两列。按字符串长度补空格会让标签看起来参差不齐，
+ * 所以这里按实际显示宽度算。
+ */
+function displayWidth(text) {
+  let width = 0;
+
+  for (const char of String(text)) {
+    const codePoint = char.codePointAt(0);
+
+    width += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+
+  return width;
+}
+
+function isWideCodePoint(codePoint) {
+  return (
+    (codePoint >= 0x1100 && codePoint <= 0x115f)
+    || (codePoint >= 0x2e80 && codePoint <= 0xa4cf)
+    || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
+    || (codePoint >= 0xf900 && codePoint <= 0xfaff)
+    || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
+    || (codePoint >= 0xff00 && codePoint <= 0xff60)
+    || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+  );
+}
+
+function describeAutostart(result) {
+  if (!result.autostartEnabled) {
+    return "未启用";
+  }
+
+  const kindLabel = {
+    launchd: "LaunchAgent",
+    systemd: "systemd user",
+    schtasks: "计划任务",
+    "startup-folder": "启动文件夹"
+  }[result.autostartKind] ?? result.autostartKind;
+
+  return `已启用（${kindLabel ?? "未知方式"}）`;
+}
+
+function resolveServiceDataDir(rawDataDir) {
+  return resolveDataDir(
+    readStringOption(rawDataDir, process.env.CODINGNS_DATA_DIR, "~/.codingns")
+  );
+}
+
+async function runServiceLogs(argv) {
+  const options = parseArgs(argv, {
+    supportedOptions: ["data-dir", "tail", "kind"],
+    supportedFlags: ["follow", "path"]
+  });
+
+  if (options.errors.length > 0) {
+    for (const error of options.errors) {
+      console.error(`[codingns] ${error}`);
+    }
+    printServiceHelpTopic("service.logs", 1);
+  }
+
+  const dataDir = resolveServiceDataDir(options.values["data-dir"]);
+  const { resolveHostServiceLogPath, resolveLogDirPath } = await import(
+    "../scripts/host-install.mjs"
+  );
+  const serviceLogPath = resolveHostServiceLogPath({ dataDir });
+  const logDir = resolveLogDirPath(dataDir);
+  const kind = readStringOption(options.values.kind) || "service";
+
+  if (!["service", "install"].includes(kind)) {
+    fail("--kind 只支持 service 或 install");
+  }
+
+  // 参数先校验完再看文件，否则日志还没生成时非法参数会被悄悄放过。
+  const tailCount = readTailLineCount(options.values.tail);
+
+  if (options.flags.path) {
+    console.log(kind === "service" ? serviceLogPath : logDir);
+    return;
+  }
+
+  if (kind === "service") {
+    await printServiceLog(serviceLogPath, { ...options, tailCount });
+    return;
+  }
+
+  printInstallLogList(logDir);
+}
+
+/** 服务自身输出只有一份，跟标准 tail 一样支持看末尾和持续跟踪。 */
+async function printServiceLog(filePath, options) {
+  if (!fs.existsSync(filePath)) {
+    console.log(`服务日志还没有生成：${filePath}`);
+    console.log("服务由开机自启拉起之后，stdout 和 stderr 都会写到这里。");
+    return;
+  }
+
+  for (const line of readTailLines(filePath, options.tailCount)) {
+    console.log(line);
+  }
+
+  if (!options.flags.follow) {
+    return;
+  }
+
+  console.log(`--- 正在跟踪 ${filePath}（Ctrl+C 退出）---`);
+
+  let offset = fs.statSync(filePath).size;
+
+  const timer = setInterval(() => {
+    let size = 0;
+
+    try {
+      size = fs.statSync(filePath).size;
+    } catch {
+      return;
+    }
+
+    // 日志被轮转或截断时从头接上，否则会一直卡在旧的偏移量上。
+    if (size < offset) {
+      offset = 0;
+    }
+
+    if (size === offset) {
+      return;
+    }
+
+    const length = size - offset;
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(filePath, "r");
+
+    try {
+      fs.readSync(fd, buffer, 0, length, offset);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    offset = size;
+    process.stdout.write(buffer.toString("utf8"));
+  }, 500);
+
+  await new Promise((resolve) => {
+    process.once("SIGINT", () => {
+      clearInterval(timer);
+      resolve();
+    });
+  });
+}
+
+function readTailLineCount(rawTail) {
+  if (rawTail === undefined || rawTail === true) {
+    return 200;
+  }
+
+  const parsed = Number.parseInt(String(rawTail), 10);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    fail("--tail 需要是正整数");
+  }
+
+  return parsed;
+}
+
+/** 只读文件尾部，避免为了看最后几行把几百兆的日志整个读进内存。 */
+function readTailLines(filePath, count) {
+  const maxBytes = 512 * 1024;
+  const size = fs.statSync(filePath).size;
+  const start = Math.max(0, size - maxBytes);
+  const length = size - start;
+  const buffer = Buffer.alloc(length);
+  const fd = fs.openSync(filePath, "r");
+
+  try {
+    fs.readSync(fd, buffer, 0, length, start);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const lines = buffer.toString("utf8").split("\n");
+
+  // 从中间截断时第一行多半是半截，直接丢掉。
+  if (start > 0) {
+    lines.shift();
+  }
+
+  // 日志以换行结尾，split 会多出一个空串；不剔掉它，最后一行会被挤出去。
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+
+  return lines.slice(-count);
+}
+
+function printInstallLogList(logDir) {
+  if (!fs.existsSync(logDir)) {
+    console.log(`还没有安装日志目录：${logDir}`);
+    return;
+  }
+
+  const entries = fs
+    .readdirSync(logDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".log"))
+    .map((entry) => {
+      const filePath = path.join(logDir, entry.name);
+      const stats = fs.statSync(filePath);
+
+      return { name: entry.name, size: stats.size, mtime: stats.mtime };
+    })
+    // 同一毫秒内落盘的两份日志 mtime 会相同，再按文件名倒序兜一层，
+    // 否则列表顺序取决于目录读取顺序，看着像是排错了。
+    .sort((left, right) => (right.mtime - left.mtime) || right.name.localeCompare(left.name));
+
+  if (entries.length === 0) {
+    console.log(`还没有安装日志：${logDir}`);
+    return;
+  }
+
+  console.log(`安装日志目录：${logDir}`);
+  console.log("");
+
+  for (const entry of entries) {
+    console.log(`  ${entry.mtime.toISOString()}  ${formatFileSize(entry.size).padStart(9)}  ${entry.name}`);
+  }
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 async function runMcpCommand(argv) {
   const [target, action, ...rest] = argv;
 
@@ -2163,6 +2562,7 @@ function printHelp(exitCode) {
 codingns 用法：
 
   codingns start [--host 0.0.0.0] [--port 3002] [--data-dir ~/.codingns] [--demo]
+  codingns service <status|logs|start|stop|restart|autostart|install|uninstall>
   codingns assistant <group> <action> [options]
   codingns mcp workspace-office serve [--auth-file <path> | --base-url <url> --token <token>]
   codingns provider-sessions <action> [options]
@@ -3326,6 +3726,93 @@ codingns provider-sessions 用法：
   CODINGNS_OPENCODE_DB_PATH   OpenCode sqlite 路径，可选
 `.trim();
   }
+}
+
+function getServiceHelpText(topic) {
+  switch (topic) {
+    case "service.status":
+      return `
+codingns service status
+
+用途：
+  查看本机服务装没装、跑没跑、端口和开机自启是什么状态。
+
+用法：
+  codingns service status [--data-dir ~/.codingns] [--json]
+
+说明：
+  - 默认输出给人看的几行摘要，加 --json 输出原始结构，方便脚本用。
+  - 状态来自统一安装器登记的信息。用 codingns start 手工拉起的服务不在登记里，
+    这种情况会明确提示，不会假装它不存在。
+`.trim();
+    case "service.logs":
+      return `
+codingns service logs
+
+用途：
+  看服务自身输出，或者列出历次安装、升级留下的日志。
+
+用法：
+  codingns service logs [--data-dir ~/.codingns] [--tail 200] [--follow]
+  codingns service logs --kind install [--data-dir ~/.codingns]
+  codingns service logs --path [--kind service|install]
+
+说明：
+  - 默认看服务日志 <数据目录>/runtime/logs/host-service.log，服务由开机自启拉起后
+    stdout 和 stderr 都写在这里。
+  - --follow 持续跟踪新内容，Ctrl+C 退出。
+  - --kind install 列出安装日志；安装失败时最该看的就是这一份。
+  - --path 只打印路径，方便直接丢给别的命令。
+`.trim();
+    default:
+      return `
+codingns service 用法：
+
+  codingns service status [--data-dir ~/.codingns] [--json]
+  codingns service logs [--tail 200] [--follow]
+  codingns service start | stop | restart [--data-dir ~/.codingns]
+  codingns service autostart --enable | --disable [--data-dir ~/.codingns]
+  codingns service install --port 3002 --data-dir ~/.codingns [--autostart]
+  codingns service uninstall [--data-dir ~/.codingns] [--purge]
+  codingns service check [--data-dir ~/.codingns]
+
+说明：
+
+  status      看服务状态：装没装、跑没跑、端口、开机自启
+  logs        看日志；--kind install 列安装日志，--follow 持续跟踪
+  start       启动服务，等到可访问为止
+  stop        停止服务
+  restart     先停再起
+  autostart   开关开机自启
+  install     完整安装服务包
+  uninstall   卸载；加 --purge 连数据目录一起删
+
+  --data-dir  数据目录，默认 ~/.codingns
+
+  这些动作就是统一安装器的同一套命令，只是省掉手拼脚本路径。
+  想直接调安装器本身，路径是 <包根>/scripts/host-install.mjs。
+`.trim();
+  }
+}
+
+function printServiceHelpTopic(topic, exitCode) {
+  const output = getServiceHelpText(topic);
+
+  if (exitCode === 0) {
+    console.log(output);
+  } else {
+    console.error(output);
+  }
+
+  process.exit(exitCode);
+}
+
+function buildServiceHelpTopic(action) {
+  if (!action || action === "--help" || action === "-h") {
+    return "service";
+  }
+
+  return `service.${action}`;
 }
 
 function getSkillsHelpText(topic) {
