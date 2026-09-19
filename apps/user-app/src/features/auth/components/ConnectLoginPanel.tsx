@@ -3,7 +3,8 @@ import type { ConnectLoginFlow, ConnectLoginTarget } from "../connect/use-connec
 import { CyberField } from "./CyberField";
 
 export interface ConnectLoginPanelProps {
-  target: ConnectLoginTarget;
+  /** 目标四级域名；为空表示还没选设备，先走设备列表。 */
+  target: ConnectLoginTarget | null;
   flow: ConnectLoginFlow;
 }
 
@@ -11,17 +12,72 @@ export interface ConnectLoginPanelProps {
  * CodingNS Connect 登录面板（spec001.9 W2.5）
  *
  * 两段式：先登录 Connect 账号，认证通过后才读取并登录目标 Host 账号。
+ * PC / 移动端没有预设目标时，中间多一步"从设备列表里选一台"。
  * 顺序不能颠倒，这里也不提供跳步的入口。
  */
 export function ConnectLoginPanel({ target, flow }: ConnectLoginPanelProps) {
+  const deviceHint = target ? (
+    <p className="cyber-connect-target" data-tone="info">
+      {t("auth.relayConnectDeviceHint", { domain: target.tunnelDomain })}
+    </p>
+  ) : null;
+
   if (flow.stage === "loading-accounts") {
     return (
       <div className="cyber-connect-panel">
-        <p className="cyber-connect-hint">{t("auth.connectLoginLoadingAccounts")}</p>
+        <p className="cyber-connect-hint">
+          {target ? t("auth.connectLoginLoadingAccounts") : t("auth.connectDeviceLoading")}
+        </p>
         <div className="cyber-connect-progress">
           <span className="cyber-spinner" aria-hidden="true" />
-          <span>{t("auth.relayConnectDeviceHint", { domain: target.tunnelDomain })}</span>
+          {target ? (
+            <span>{t("auth.relayConnectDeviceHint", { domain: target.tunnelDomain })}</span>
+          ) : null}
         </div>
+      </div>
+    );
+  }
+
+  if (flow.stage === "device-select") {
+    return (
+      <div className="cyber-connect-panel">
+        <p className="cyber-connect-hint">{t("auth.connectDeviceSelectDescription")}</p>
+
+        {flow.devices.length === 0 ? (
+          <div className="cyber-login-notice" data-variant="empty-devices">
+            <p className="cyber-login-notice-description">{t("auth.connectDeviceListEmpty")}</p>
+            <div className="cyber-login-notice-actions">
+              <button type="button" className="cyber-server-btn" onClick={flow.retry}>
+                <span className="cyber-server-icon" aria-hidden="true">⟳</span>
+                <span className="cyber-server-text">{t("auth.loginDirectRetryAction")}</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <ul className="cyber-device-list">
+            {flow.devices.map((device) => (
+              <li key={device.bindingId} className="cyber-device-item">
+                <button
+                  type="button"
+                  className="cyber-device-option"
+                  onClick={() => flow.selectDevice(device.bindingId)}
+                >
+                  <span className="cyber-device-domain">{device.tunnelDomain}</span>
+                  <span className="cyber-device-state" data-online={device.online ? "true" : "false"}>
+                    {device.online ? t("auth.connectDeviceOnline") : t("auth.connectDeviceOffline")}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {flow.errorMessage ? (
+          <div className="cyber-status" data-tone="error">
+            <span className="cyber-status-icon">⚠</span>
+            <span>{flow.errorMessage}</span>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -30,9 +86,7 @@ export function ConnectLoginPanel({ target, flow }: ConnectLoginPanelProps) {
     return (
       <form className="cyber-form" onSubmit={flow.submitConnectLogin}>
         <p className="cyber-connect-hint">{t("auth.relayConnectLoginDescription")}</p>
-        <p className="cyber-connect-target" data-tone="info">
-          {t("auth.relayConnectDeviceHint", { domain: target.tunnelDomain })}
-        </p>
+        {deviceHint}
 
         <CyberField
           id="connect-login-email"
@@ -97,9 +151,7 @@ export function ConnectLoginPanel({ target, flow }: ConnectLoginPanelProps) {
   return (
     <form className="cyber-form" onSubmit={flow.submitHostLogin}>
       <p className="cyber-connect-hint">{t("auth.relayHostLoginDescription")}</p>
-      <p className="cyber-connect-target" data-tone="info">
-        {t("auth.relayConnectDeviceHint", { domain: target.tunnelDomain })}
-      </p>
+      {deviceHint}
 
       <div className="cyber-field">
         <div className="cyber-field-border">

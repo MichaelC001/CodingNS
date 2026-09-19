@@ -17,7 +17,7 @@ export const enUS = {
     language: "Language"
   },
   auth: {
-    loginTitle: "Resume your coding session",
+    loginTitle: "Choose how to sign in",
     loginSubtitle: "INITIALIZING DEVELOPMENT ENVIRONMENT...",
     serverPreset: "Server Preset",
     serverCustomOption: "Use custom server",
@@ -90,16 +90,24 @@ export const enUS = {
     relayHostAccountsEmpty: "This Host has no available accounts. Create an account on the Host first.",
     loginMethodTabsLabel: "Login method",
     loginMethodDirect: "Direct login",
-    loginMethodConnect: "Sign in with CodingNS Connect",
+    loginMethodConnect: "CodingNS Connect",
+    loginMethodTipsLabel: "How to choose",
+    loginMethodTipsDirect:
+      "If you reach the CodingNS Host over LAN, VPN, your own reverse proxy, or a port mapping, choose Direct login.",
+    loginMethodTipsConnect:
+      "If you registered a relay service through CodingNS Connect, sign in with CodingNS Connect.",
     loginDirectBlockedTitle: "This address needs CodingNS Connect",
     loginDirectBlockedDescription:
       "The current target is the remote device {domain}. Direct login only works with a service on this computer or your local network. Use CodingNS Connect to reach it.",
     loginDirectBlockedAction: "Switch to CodingNS Connect",
-    loginConnectMissingTargetTitle: "No remote device selected yet",
-    loginConnectMissingTargetDescription:
-      "Enter the device's remote access address first, for example xxxx.channel.codingns.com, then come back to sign in.",
-    loginConnectMissingTargetAction: "Enter access address",
     connectLoginLoadingAccounts: "Reading accounts on this Host…",
+    connectDeviceLoading: "Reading devices under this account…",
+    connectDeviceSelectDescription: "Signed in. Pick a device to continue signing in to its Host account.",
+    connectDeviceListEmpty:
+      "No active devices under this account yet. Bind a Host to CodingNS Connect in its settings first.",
+    connectDeviceOnline: "Online",
+    connectDeviceOffline: "Offline",
+    connectDeviceSelectFailed: "Failed to switch device. Try again.",
     loginDirectProbing: "Checking for a CodingNS service on this computer…",
     loginDirectMissingTitle: "No local service found",
     loginDirectMissingDescription:

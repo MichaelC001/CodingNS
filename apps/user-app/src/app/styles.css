@@ -23244,6 +23244,60 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   font-weight: 600;
 }
 
+/* Card Header Info Tips */
+.cyber-card-header-wrap {
+  position: relative;
+}
+
+.cyber-card-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cyber-card-tip-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--cyber-text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.18s ease;
+}
+
+.cyber-card-tip-toggle:hover,
+.cyber-card-tip-toggle[aria-expanded="true"] {
+  color: var(--cyber-primary-light);
+}
+
+.cyber-card-tips {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--cyber-border-strong);
+  border-radius: 8px;
+  background: var(--cyber-bg-card-solid);
+  box-shadow: var(--cyber-shadow-card);
+}
+
+.cyber-card-tips p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--cyber-text-secondary);
+}
+
 /* Form */
 .cyber-form {
   display: flex;
@@ -23909,6 +23963,56 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .cyber-field .cyber-select option {
   background: var(--cyber-bg-card-solid);
   color: var(--cyber-text);
+}
+
+/* Connect 设备列表 */
+.cyber-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cyber-device-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--cyber-border-dim);
+  border-radius: 8px;
+  background: var(--cyber-bg-input);
+  color: var(--cyber-text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.cyber-device-option:hover {
+  border-color: var(--cyber-border-strong);
+  background: var(--cyber-bg-hover);
+}
+
+.cyber-device-domain {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cyber-device-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--cyber-text-muted);
+}
+
+.cyber-device-state[data-online="true"] {
+  color: var(--cyber-success);
 }
 
 /* ========================================

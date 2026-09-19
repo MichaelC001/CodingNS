@@ -10,6 +10,7 @@ import { ApiError } from "../../../shared/network/api-error";
 import { AuthPageShell } from "../components/AuthPageShell";
 import { ConnectLoginPanel } from "../components/ConnectLoginPanel";
 import { CyberField } from "../components/CyberField";
+import { LoginCardHeader } from "../components/LoginCardHeader";
 import { LoginMethodTabs } from "../components/LoginMethodTabs";
 import { useConnectLoginFlow } from "../connect/use-connect-login-flow";
 import type { LoginMethod } from "../login-method";
@@ -315,11 +316,7 @@ export function RelayConnectEntryPage() {
         <div className="cyber-corner corner-bl" />
         <div className="cyber-corner corner-br" />
 
-        <div className="cyber-card-header">
-          <div className="cyber-line" />
-          <span className="cyber-card-label">{t("auth.loginTitle").toUpperCase()}</span>
-          <div className="cyber-line" />
-        </div>
+        <LoginCardHeader label={t("auth.loginTitle").toUpperCase()} />
 
         <LoginMethodTabs activeMethod={loginMethod} onChange={setLoginMethod} />
 

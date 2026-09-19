@@ -1,4 +1,4 @@
-import type { RuntimeHostProfile } from "../../config/client-config-types";
+import type { RuntimeHostProfile, RuntimePlatform } from "../../config/client-config-types";
 import { inferRelayAccessConfig } from "../../config/relay-control-site-config";
 
 /**
@@ -23,7 +23,7 @@ export interface RemoteEntryLoginTarget {
   controlBaseUrl: string;
 }
 
-/** 目标是不是四级域名入口（或带 relay 配置的 Host）。 */
+/** 目标是不是四级域名入口。 */
 export function isRemoteEntryLoginTarget(input: LoginTargetInput): boolean {
   return resolveRemoteEntryLoginTarget(input) !== null;
 }
@@ -38,25 +38,30 @@ export function resolveDefaultLoginMethod(input: LoginTargetInput): LoginMethod 
   return isRemoteEntryLoginTarget(input) ? "connect" : "direct";
 }
 
-/** 取出四级域名入口的隧道域名和控制站地址，供 Connect 流程使用。 */
+/**
+ * 是否展示"两种登录方式"的选择。
+ *
+ * - PC / 移动端：始终给 Connect 入口，用户不需要知道远程域名，
+ *   登录 Connect 后直接从设备列表里选一台连。
+ * - Web（H5）：页面靠用户手输地址打开，只有当前目标本身就是四级域名入口时才给 Connect 选项。
+ */
+export function shouldOfferBothLoginMethods(
+  platform: RuntimePlatform,
+  input: LoginTargetInput
+): boolean {
+  return platform !== "web" || isRemoteEntryLoginTarget(input);
+}
+
+/**
+ * 取出四级域名入口的隧道域名和控制站地址，供 Connect 流程使用。
+ *
+ * 判据只有一条：当前连接目标地址本身就是四级域名入口。
+ * Host 上的 relay 配置（`relayTunnel`）只说明这台 Host 在 Connect 侧有绑定，
+ * 不代表当前连接方式走了 Connect——直连自己的 Host 时不该出现 Connect 登录选项。
+ */
 export function resolveRemoteEntryLoginTarget(
   input: LoginTargetInput
 ): RemoteEntryLoginTarget | null {
-  const host = input.host;
-  const relayTunnel = host?.relayTunnel;
-
-  if (relayTunnel?.enabled) {
-    const tunnelDomain = relayTunnel.tunnelDomain?.trim().toLowerCase();
-    const controlBaseUrl = relayTunnel.controlBaseUrl?.trim();
-
-    if (tunnelDomain && controlBaseUrl) {
-      return {
-        tunnelDomain,
-        controlBaseUrl
-      };
-    }
-  }
-
   const baseUrl = input.baseUrl?.trim();
 
   if (!baseUrl) {
@@ -65,10 +70,18 @@ export function resolveRemoteEntryLoginTarget(
 
   const inferred = inferRelayAccessConfig(baseUrl);
 
-  return inferred
-    ? {
-        tunnelDomain: inferred.tunnelDomain,
-        controlBaseUrl: inferred.controlBaseUrl
-      }
-    : null;
+  if (!inferred) {
+    return null;
+  }
+
+  const relayTunnel = input.host?.relayTunnel;
+  const controlBaseUrl =
+    relayTunnel?.enabled && relayTunnel.controlBaseUrl?.trim()
+      ? relayTunnel.controlBaseUrl.trim()
+      : inferred.controlBaseUrl;
+
+  return {
+    tunnelDomain: inferred.tunnelDomain,
+    controlBaseUrl
+  };
 }

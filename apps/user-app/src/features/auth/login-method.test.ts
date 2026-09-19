@@ -5,7 +5,8 @@ import {
   isDirectLoginTargetAllowed,
   isRemoteEntryLoginTarget,
   resolveDefaultLoginMethod,
-  resolveRemoteEntryLoginTarget
+  resolveRemoteEntryLoginTarget,
+  shouldOfferBothLoginMethods
 } from "./login-method";
 
 function createRelayHostProfile(overrides: Partial<RuntimeHostProfile> = {}): RuntimeHostProfile {
@@ -55,10 +56,17 @@ describe("login-method", () => {
     expect(resolveRemoteEntryLoginTarget(target)).toBeNull();
   });
 
-  it("带 relay 配置的 Host 也算远程入口", () => {
+  it("四级域名目标带 relay 配置时用配置里的控制站地址", () => {
     const target = {
       baseUrl: "https://demo.channel.codingns.com:1443",
-      host: createRelayHostProfile()
+      host: createRelayHostProfile({
+        relayTunnel: {
+          provider: "codingns_relay",
+          enabled: true,
+          tunnelDomain: "demo.channel.codingns.com",
+          controlBaseUrl: "https://channel.codingns.com:1443"
+        }
+      })
     };
 
     expect(isRemoteEntryLoginTarget(target)).toBe(true);
@@ -67,6 +75,21 @@ describe("login-method", () => {
       tunnelDomain: "demo.channel.codingns.com",
       controlBaseUrl: "https://channel.codingns.com:1443"
     });
+  });
+
+  it("直连地址就算这台 Host 在 Connect 侧有绑定，也不算远程入口", () => {
+    const target = {
+      baseUrl: "http://10.255.0.83:4174",
+      host: createRelayHostProfile({
+        baseUrl: "http://10.255.0.83:4174",
+        kind: "lan"
+      })
+    };
+
+    expect(isRemoteEntryLoginTarget(target)).toBe(false);
+    expect(isDirectLoginTargetAllowed(target)).toBe(true);
+    expect(resolveDefaultLoginMethod(target)).toBe("direct");
+    expect(resolveRemoteEntryLoginTarget(target)).toBeNull();
   });
 
   it("普通域名不会被误判成远程入口", () => {
@@ -79,5 +102,25 @@ describe("login-method", () => {
   it("空地址不会当成远程入口", () => {
     expect(isRemoteEntryLoginTarget({ baseUrl: "", host: null })).toBe(false);
     expect(isRemoteEntryLoginTarget({ baseUrl: null, host: null })).toBe(false);
+  });
+
+  it("PC 和移动端始终提供两种登录方式", () => {
+    const directTarget = { baseUrl: "http://127.0.0.1:3002", host: null };
+
+    expect(shouldOfferBothLoginMethods("desktop", directTarget)).toBe(true);
+    expect(shouldOfferBothLoginMethods("ios", directTarget)).toBe(true);
+    expect(shouldOfferBothLoginMethods("android", directTarget)).toBe(true);
+  });
+
+  it("Web 只在目标是四级域名入口时提供两种登录方式", () => {
+    expect(
+      shouldOfferBothLoginMethods("web", { baseUrl: "http://127.0.0.1:3002", host: null })
+    ).toBe(false);
+    expect(
+      shouldOfferBothLoginMethods("web", {
+        baseUrl: "https://demo.channel.codingns.com:1443",
+        host: null
+      })
+    ).toBe(true);
   });
 });

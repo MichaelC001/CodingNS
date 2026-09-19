@@ -37,7 +37,7 @@ export interface HostLoginAccount {
 /** 设备列表：控制站里的「绑定」就是设备，不新造概念。 */
 export async function loadControlDevices(
   controlBaseUrl: string,
-  tunnelDomain: string
+  tunnelDomain = ""
 ): Promise<ControlHostBinding[]> {
   return await listControlHostBindings(createEnvironment(controlBaseUrl, tunnelDomain));
 }

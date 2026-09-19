@@ -16,7 +16,7 @@ export const zhCN = {
     unknown: "未命名会话"
   },
   auth: {
-    loginTitle: "继续你的编码会话",
+    loginTitle: "请选择登录方式",
     loginSubtitle: "INITIALIZING DEVELOPMENT ENVIRONMENT...",
     serverPreset: "服务器列表",
     serverCustomOption: "使用自定义服务器",
@@ -86,16 +86,24 @@ export const zhCN = {
     relayHostAccountsEmpty: "这台 Host 没有可用账号，请先在 Host 上创建账号。",
     loginMethodTabsLabel: "登录方式",
     loginMethodDirect: "直接登录",
-    loginMethodConnect: "CodingNS Connect 登录",
+    loginMethodConnect: "CodingNS Connect",
+    loginMethodTipsLabel: "登录方式说明",
+    loginMethodTipsDirect:
+      "如果你是局域网直连、VPN 访问，或者自己反向代理、端口映射了 CodingNS Host，请选择「直接登录」。",
+    loginMethodTipsConnect:
+      "如果你通过 CodingNS Connect 服务注册了中转服务，请选择「CodingNS Connect」登录。",
     loginDirectBlockedTitle: "这个地址要走 CodingNS Connect 登录",
     loginDirectBlockedDescription:
       "当前连接目标是远程设备 {domain}。直接登录只能连本机或局域网里的服务，改用 CodingNS Connect 登录才能连过去。",
     loginDirectBlockedAction: "切换到 CodingNS Connect 登录",
-    loginConnectMissingTargetTitle: "还没有选择远程设备",
-    loginConnectMissingTargetDescription:
-      "先填好设备的远程访问地址，例如 xxxx.channel.codingns.com，再回来登录。",
-    loginConnectMissingTargetAction: "去填写访问地址",
     connectLoginLoadingAccounts: "正在读取这台 Host 的账号…",
+    connectDeviceLoading: "正在读取账号下的设备…",
+    connectDeviceSelectDescription: "登录成功。选择一台设备，继续登录它的 Host 账号。",
+    connectDeviceListEmpty:
+      "这个账号下还没有可用设备。先在这台 Host 的设置页里把它绑定到 CodingNS Connect。",
+    connectDeviceOnline: "在线",
+    connectDeviceOffline: "离线",
+    connectDeviceSelectFailed: "切换设备失败，请重试。",
     loginDirectProbing: "正在检查这台电脑上的 CodingNS 服务…",
     loginDirectMissingTitle: "没有检测到本机服务",
     loginDirectMissingDescription:

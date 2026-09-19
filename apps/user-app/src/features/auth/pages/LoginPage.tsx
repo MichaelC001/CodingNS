@@ -1,12 +1,12 @@
 import { Suspense, lazy, useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { canConfigureHostBaseUrl } from "../../../config/client-config-service";
-import { useClientConfigSelector } from "../../../config/client-config-store";
+import { useClientConfigSelector, clientConfigStore } from "../../../config/client-config-store";
 import { getActiveHost, getEffectiveActiveHostId } from "../../../config/client-config-types";
 import { hostSwitchCoordinator } from "../../../config/host-switch-coordinator";
 import { getVisibleDiscoveredHosts, localHostDiscoveryStore } from "../../../config/local-host-discovery-store";
-import { buildRelayAccessBaseUrl } from "../../../config/relay-entry";
+import { buildRelayAccessBaseUrl, buildRelayEntryConfigPatch } from "../../../config/relay-entry";
+import { getFixedRelayControlBaseUrl } from "../../../config/relay-control-site-config";
 import { serverConfigStore, useServerConfigSelector } from "../../../config/server-config";
 import { authGateway } from "../../../auth/auth-gateway";
 import { consumeAuthExpiredFlag } from "../../../network/auth-expired-flag";
@@ -16,12 +16,14 @@ import { ApiError } from "../../../shared/network/api-error";
 import { AuthPageShell } from "../components/AuthPageShell";
 import { ConnectLoginPanel } from "../components/ConnectLoginPanel";
 import { HostConnectionEmptyState } from "../components/HostConnectionEmptyState";
+import { LoginCardHeader } from "../components/LoginCardHeader";
 import { LoginMethodTabs } from "../components/LoginMethodTabs";
-import { useConnectLoginFlow } from "../connect/use-connect-login-flow";
+import { useConnectLoginFlow, type ConnectDeviceDiscovery } from "../connect/use-connect-login-flow";
 import {
   isDirectLoginTargetAllowed,
   resolveDefaultLoginMethod,
   resolveRemoteEntryLoginTarget,
+  shouldOfferBothLoginMethods,
   type LoginMethod
 } from "../login-method";
 import { useAuthSelector } from "../store/auth-store";
@@ -76,7 +78,6 @@ export function LoginPage() {
   const activeHost = useClientConfigSelector((state) => getActiveHost(state));
   const savedHosts = useClientConfigSelector((state) => state.hosts);
   const discoveredHosts = useClientConfigSelector((state) => state.discoveredHosts);
-  const canConfigureServerAddress = canConfigureHostBaseUrl(platform.platform);
   const localHostCandidate = useMemo(
     () =>
       platform.platform === "desktop"
@@ -123,9 +124,21 @@ export function LoginPage() {
     () => ({ baseUrl: persistedServerBaseUrl, host: activeHost }),
     [activeHost, persistedServerBaseUrl]
   );
-  const defaultLoginMethod = useMemo(() => resolveDefaultLoginMethod(loginTarget), [loginTarget]);
-  const activeLoginMethod = loginMethodOverride ?? defaultLoginMethod;
   const remoteEntryTarget = useMemo(() => resolveRemoteEntryLoginTarget(loginTarget), [loginTarget]);
+  // PC / 移动端始终提供两种登录方式，用户不需要知道远程域名；
+  // Web 只在当前目标本身就是四级域名入口时才出现 Connect 选项。
+  const showLoginMethodTabs = shouldOfferBothLoginMethods(platform.platform, loginTarget);
+  const defaultLoginMethod = useMemo<LoginMethod>(() => {
+    // 手机上默认的 127.0.0.1 没有意义，首次进入直接给 Connect 登录。
+    if (platform.isNativeMobile && !remoteEntryTarget) {
+      return "connect";
+    }
+
+    return resolveDefaultLoginMethod(loginTarget);
+  }, [loginTarget, platform.isNativeMobile, remoteEntryTarget]);
+  const activeLoginMethod: LoginMethod = showLoginMethodTabs
+    ? loginMethodOverride ?? defaultLoginMethod
+    : "direct";
   const connectHostBaseUrl = useMemo(
     () =>
       remoteEntryTarget
@@ -134,10 +147,30 @@ export function LoginPage() {
     [remoteEntryTarget]
   );
   const directLoginAllowed = isDirectLoginTargetAllowed(loginTarget);
+  const fixedControlBaseUrl = useMemo(() => getFixedRelayControlBaseUrl(), []);
+  const deviceDiscovery = useMemo<ConnectDeviceDiscovery | null>(() => {
+    if (platform.platform === "web" || remoteEntryTarget) {
+      return null;
+    }
+
+    return {
+      controlBaseUrl: fixedControlBaseUrl,
+      onSelectDevice: async (device) => {
+        await clientConfigStore.update(
+          buildRelayEntryConfigPatch(clientConfigStore.getState(), {
+            tunnelDomain: device.tunnelDomain,
+            controlBaseUrl: device.controlBaseUrl ?? fixedControlBaseUrl,
+            bindingId: device.bindingId
+          })
+        );
+      }
+    };
+  }, [fixedControlBaseUrl, platform.platform, remoteEntryTarget]);
 
   const connectFlow = useConnectLoginFlow({
     target: remoteEntryTarget,
     hostBaseUrl: connectHostBaseUrl,
+    deviceDiscovery,
     onHostLoginSuccess: async () => {
       const { userPreferenceStore } = await import("../../../preferences/user-preference-store");
       await userPreferenceStore.refreshForAuthenticatedUser();
@@ -413,18 +446,16 @@ export function LoginPage() {
                 {t("auth.loginDirectBlockedAction")}
               </span>
             </button>
-            {canConfigureServerAddress ? (
-              <button
-                type="button"
-                className="cyber-server-btn"
-                onClick={() => setShowServerModal(true)}
-              >
-                <span className="cyber-server-icon">⚙</span>
-                <span className="cyber-server-text">
-                  {t("auth.hostConnectionEmptyChangeAddressAction")}
-                </span>
-              </button>
-            ) : null}
+            <button
+              type="button"
+              className="cyber-server-btn"
+              onClick={() => setShowServerModal(true)}
+            >
+              <span className="cyber-server-icon">⚙</span>
+              <span className="cyber-server-text">
+                {t("auth.hostConnectionEmptyChangeAddressAction")}
+              </span>
+            </button>
           </div>
         </div>
       );
@@ -562,57 +593,28 @@ export function LoginPage() {
         </form>
 
         {/* Server Settings Button */}
-        {canConfigureServerAddress ? (
-          <div className="cyber-footer">
-            <div className="cyber-divider">
-              <span className="cyber-divider-line" />
-              <span className="cyber-divider-text">//</span>
-              <span className="cyber-divider-line" />
-            </div>
-            <button
-              className="cyber-server-btn"
-              onClick={() => setShowServerModal(true)}
-              type="button"
-            >
-              <span className="cyber-server-icon">⚙</span>
-              <span className="cyber-server-text">{t("auth.serverSettings")}</span>
-              <span className="cyber-server-current">{persistedServerBaseUrl}</span>
-            </button>
+        <div className="cyber-footer">
+          <div className="cyber-divider">
+            <span className="cyber-divider-line" />
+            <span className="cyber-divider-text">//</span>
+            <span className="cyber-divider-line" />
           </div>
-        ) : null}
+          <button
+            className="cyber-server-btn"
+            onClick={() => setShowServerModal(true)}
+            type="button"
+          >
+            <span className="cyber-server-icon">⚙</span>
+            <span className="cyber-server-text">{t("auth.serverSettings")}</span>
+            <span className="cyber-server-current">{persistedServerBaseUrl}</span>
+          </button>
+        </div>
       </>
     );
   }
 
   function renderConnectLoginPanel() {
-    if (remoteEntryTarget && connectHostBaseUrl) {
-      return <ConnectLoginPanel target={remoteEntryTarget} flow={connectFlow} />;
-    }
-
-    return (
-      <div className="cyber-login-notice" data-variant="missing-target">
-        <h2 className="cyber-login-notice-title">{t("auth.loginConnectMissingTargetTitle")}</h2>
-        <p className="cyber-login-notice-description">
-          {t("auth.loginConnectMissingTargetDescription")}
-        </p>
-        {canConfigureServerAddress ? (
-          <div className="cyber-login-notice-actions">
-            <button
-              type="button"
-              className="cyber-submit"
-              onClick={() => setShowServerModal(true)}
-            >
-              <span className="cyber-submit-glow" />
-              <span className="cyber-submit-border" />
-              <span className="cyber-submit-text">
-                <span className="cyber-submit-icon" aria-hidden="true">➤</span>
-                {t("auth.loginConnectMissingTargetAction")}
-              </span>
-            </button>
-          </div>
-        ) : null}
-      </div>
-    );
+    return <ConnectLoginPanel target={remoteEntryTarget} flow={connectFlow} />;
   }
 
   return (
@@ -625,24 +627,24 @@ export function LoginPage() {
         <div className="cyber-corner corner-bl" />
         <div className="cyber-corner corner-br" />
 
-        {/* Header line */}
-        <div className="cyber-card-header">
-          <div className="cyber-line" />
-          <span className="cyber-card-label">
-            {showHostConnectionEmptyState
+        <LoginCardHeader
+          label={
+            showHostConnectionEmptyState
               ? t("auth.hostConnectionEmptySectionLabel").toUpperCase()
-              : t("auth.loginTitle").toUpperCase()}
-          </span>
-          <div className="cyber-line" />
-        </div>
+              : t("auth.loginTitle").toUpperCase()
+          }
+          showMethodTips={showLoginMethodTabs}
+        />
 
-        <LoginMethodTabs activeMethod={activeLoginMethod} onChange={setLoginMethodOverride} />
+        {showLoginMethodTabs ? (
+          <LoginMethodTabs activeMethod={activeLoginMethod} onChange={setLoginMethodOverride} />
+        ) : null}
 
         {activeLoginMethod === "direct" ? renderDirectLoginPanel() : renderConnectLoginPanel()}
       </div>
 
       {/* Server Settings Modal */}
-      {canConfigureServerAddress && showServerModal ? (
+      {showServerModal ? (
         <Suspense fallback={null}>
           <ServerSettingsModal
             isOpen={showServerModal}

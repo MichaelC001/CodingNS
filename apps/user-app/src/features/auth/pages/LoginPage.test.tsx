@@ -114,7 +114,7 @@ describe("LoginPage", () => {
 
     expect(passwordInput.value).toBe("");
     expect(screen.queryByRole("checkbox", { name: t("auth.rememberPassword") })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: new RegExp(t("auth.serverSettings")) })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: new RegExp(t("auth.serverSettings")) })).toBeInTheDocument();
     expect(screen.getByText(`v${__APP_VERSION__}`)).toBeInTheDocument();
     expect(viewportMeta?.getAttribute("content")).toBe(
       "width=device-width, initial-scale=1.0, viewport-fit=cover"
@@ -188,6 +188,10 @@ describe("LoginPage", () => {
     });
 
     renderLoginPage();
+
+    // 移动端默认落在 CodingNS Connect 页签，切到直接登录后仍能打开服务器设置。
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: t("auth.loginMethodDirect") }));
 
     expect(
       await screen.findByRole("button", { name: new RegExp(t("auth.serverSettings")) })
@@ -462,6 +466,61 @@ describe("LoginPage", () => {
         captchaCode: "ABCD"
       }
     ]);
+  });
+
+  it("直连目标即使这台 Host 在 Connect 侧有绑定，也不显示登录方式页签", async () => {
+    mockNavigator({
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+      platform: "MacIntel"
+    });
+    delete window.__TAURI_INTERNALS__;
+    clientConfigStore.hydrate({
+      platform: "web",
+      hostBaseUrl: "http://10.255.0.83:4174",
+      releaseChannel: "stable",
+      autoReconnect: true,
+      autoCheckUpdate: false,
+      language: "zh-CN",
+      defaultPermissionMode: "default"
+    });
+    await clientConfigStore.update({
+      hosts: [
+        {
+          id: DEFAULT_HOST_PROFILE_ID,
+          name: "10.255.0.83:4174",
+          alias: "LAN",
+          tagColor: null,
+          baseUrl: "http://10.255.0.83:4174",
+          kind: "lan",
+          peerEnabled: false,
+          peerHostId: null,
+          createdAt: "2026-09-19T00:00:00.000Z",
+          updatedAt: "2026-09-19T00:00:00.000Z",
+          lastConnectedAt: null,
+          lastUserId: null,
+          lastUsername: null,
+          relayTunnel: {
+            provider: "codingns_relay",
+            enabled: true,
+            tunnelDomain: "test004.channel.jacksonz.cn",
+            controlBaseUrl: "https://channel.jacksonz.cn:1443",
+            bindingId: "binding_demo",
+            hostFingerprint: "SHA256:demo"
+          }
+        }
+      ],
+      activeHostId: DEFAULT_HOST_PROFILE_ID
+    });
+
+    renderLoginPage();
+
+    expect(await screen.findByLabelText(t("auth.username"))).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: t("auth.loginMethodDirect") })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: t("auth.loginMethodTipsLabel") })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(t("auth.loginDirectBlockedTitle"))).not.toBeInTheDocument();
   });
 });
 
