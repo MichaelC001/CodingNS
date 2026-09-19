@@ -35,6 +35,11 @@ RESULT_MESSAGES=()
 SELECTED_TARGETS=()
 OVERALL_EXIT_CODE=0
 LAST_VERIFY_MESSAGE=""
+ANDROID_TEST_KEYSTORE_PATH=""
+ANDROID_TEST_KEYSTORE_PASSWORD="codingns-test-password"
+ANDROID_TEST_KEY_ALIAS="codingns-test"
+ANDROID_TEST_KEY_PASSWORD="codingns-test-password"
+ANDROID_TEST_SIGNING_CERT_SHA256=""
 
 log_info() {
   echo -e "${BLUE}[INFO]${NC} $1"
@@ -232,13 +237,67 @@ record_result() {
   RESULT_MESSAGES+=("$3")
 }
 
+prepare_android_test_signing() {
+  local keytool=""
+  local fingerprint=""
+
+  # 调用方已经提供正式密钥时，测试脚本沿用它，不覆盖用户的签名配置。
+  if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" || -n "${ANDROID_KEYSTORE_PATH:-}" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/keytool" ]]; then
+    keytool="${JAVA_HOME}/bin/keytool"
+  else
+    keytool="$(command -v keytool 2>/dev/null || true)"
+  fi
+
+  if [[ -z "${keytool}" || ! -x "${keytool}" ]]; then
+    log_error "打包测试需要 keytool，无法创建临时 Android 测试密钥"
+    return 1
+  fi
+
+  ANDROID_TEST_KEYSTORE_PATH="${CURRENT_BACKUP_ROOT}/android-test-signing.jks"
+  "${keytool}" -genkeypair -v \
+    -keystore "${ANDROID_TEST_KEYSTORE_PATH}" \
+    -storetype JKS \
+    -keyalg RSA -keysize 2048 -validity 2 \
+    -alias "${ANDROID_TEST_KEY_ALIAS}" \
+    -storepass "${ANDROID_TEST_KEYSTORE_PASSWORD}" \
+    -keypass "${ANDROID_TEST_KEY_PASSWORD}" \
+    -dname "CN=CodingNS Android Test,OU=CI,O=CodingNS,L=Beijing,ST=Beijing,C=CN" \
+    >/dev/null
+
+  fingerprint="$("${keytool}" -J-Duser.language=en -J-Duser.country=US \
+    -list -v \
+    -keystore "${ANDROID_TEST_KEYSTORE_PATH}" \
+    -storepass "${ANDROID_TEST_KEYSTORE_PASSWORD}" \
+    -alias "${ANDROID_TEST_KEY_ALIAS}" \
+    2>/dev/null | awk -F': ' '/SHA256:/{print $2; exit}')"
+  ANDROID_TEST_SIGNING_CERT_SHA256="$(printf '%s' "${fingerprint}" | tr -d '[:space:]:-' | tr '[:lower:]' '[:upper:]')"
+
+  if [[ ! "${ANDROID_TEST_SIGNING_CERT_SHA256}" =~ ^[0-9A-F]{64}$ ]]; then
+    log_error "无法读取临时 Android 测试密钥的证书指纹"
+    return 1
+  fi
+
+  export ANDROID_KEYSTORE_PATH="${ANDROID_TEST_KEYSTORE_PATH}"
+  export ANDROID_KEYSTORE_PASSWORD="${ANDROID_TEST_KEYSTORE_PASSWORD}"
+  export ANDROID_KEY_ALIAS="${ANDROID_TEST_KEY_ALIAS}"
+  export ANDROID_KEY_PASSWORD="${ANDROID_TEST_KEY_PASSWORD}"
+  export ANDROID_SIGNING_CERT_SHA256="${ANDROID_TEST_SIGNING_CERT_SHA256}"
+  log_info "已准备临时 Android 测试签名密钥（仅用于打包测试）"
+}
+
 prepare_android_context() {
   register_move_backup "$REPO_DIR/apps/user-app/dist"
+  register_copy_backup "$REPO_DIR/apps/user-app/src-tauri/gen/android/app/src/main/assets/tauri.conf.json"
   register_move_backup "$REPO_DIR/apps/user-app/src-tauri/gen/android/build"
   register_move_backup "$REPO_DIR/apps/user-app/src-tauri/gen/android/app/build"
   register_move_backup "$REPO_DIR/apps/user-app/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libapp_lib.so"
   register_move_backup "$REPO_DIR/apps/user-app/src-tauri/target/aarch64-linux-android"
   register_move_backup "$REPO_DIR/apps/user-app/src-tauri/target/codingns-release.jks"
+  prepare_android_test_signing
 }
 
 prepare_ios_context() {

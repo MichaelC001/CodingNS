@@ -19,11 +19,16 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 USER_APP_DIR="$REPO_DIR/apps/user-app"
 TAURI_DIR="$USER_APP_DIR/src-tauri"
 ANDROID_DIR="$TAURI_DIR/gen/android"
-KEYSTORE_DIR="$TAURI_DIR/target"
+KEYSTORE_DIR="${ANDROID_KEYSTORE_DIR:-$TAURI_DIR/target}"
+KEYSTORE_PATH_OVERRIDE="${ANDROID_KEYSTORE_PATH:-}"
 KEYSTORE="$KEYSTORE_DIR/codingns-release.jks"
 KEY_PROPERTIES="$ANDROID_DIR/app/key.properties"
-KEY_ALIAS="codingns"
-KEYSTORE_PASS="codingns123"
+KEY_ALIAS="${ANDROID_KEY_ALIAS:-codingns}"
+KEYSTORE_PASS="${ANDROID_KEYSTORE_PASSWORD:-}"
+KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-}"
+EXPECTED_CERT_SHA256="${ANDROID_SIGNING_CERT_SHA256:-}"
+KEYSTORE_CERT_SHA256=""
+KEYSTORE_IS_TEMP=0
 
 # 颜色输出
 RED='\033[0;31m'
@@ -39,6 +44,31 @@ log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+
+is_ci() {
+    [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]
+}
+
+normalize_fingerprint() {
+    # 指纹可能带冒号、短横线或换行，统一成 64 位大写十六进制字符串。
+    printf '%s' "$1" | tr -d '[:space:]:-' | tr '[:lower:]' '[:upper:]'
+}
+
+configure_keystore_path() {
+    if [[ -n "$KEYSTORE_PATH_OVERRIDE" ]]; then
+        KEYSTORE="$KEYSTORE_PATH_OVERRIDE"
+        KEYSTORE_DIR="$(dirname "$KEYSTORE")"
+        return 0
+    fi
+
+    if is_ci || [[ -n "${ANDROID_KEYSTORE_BASE64:-}" ]]; then
+        # CI 和 base64 注入都使用临时目录，避免 release 密钥进入 Rust 缓存或构建产物。
+        local temp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        KEYSTORE_DIR="$temp_root/codingns-android-signing-$$"
+        KEYSTORE="$KEYSTORE_DIR/codingns-release.jks"
+        KEYSTORE_IS_TEMP=1
+    fi
+}
 
 # ============================================
 # 环境检测与配置
@@ -85,38 +115,160 @@ setup_env() {
 # ============================================
 # 签名密钥
 # ============================================
-ensure_keystore() {
-    if [[ -f "$KEYSTORE" ]]; then
-        log_success "签名密钥已存在: $KEYSTORE"
-        return 0
-    fi
+check_release_signing_inputs() {
+    configure_keystore_path
 
-    log_info "生成 release 签名密钥..."
+    if is_ci; then
+        local missing=()
+
+        [[ -n "${ANDROID_KEYSTORE_BASE64:-}" || -n "$KEYSTORE_PATH_OVERRIDE" ]] || missing+=("ANDROID_KEYSTORE_BASE64")
+        [[ -n "$KEYSTORE_PASS" ]] || missing+=("ANDROID_KEYSTORE_PASSWORD")
+        [[ -n "${ANDROID_KEY_ALIAS:-}" ]] || missing+=("ANDROID_KEY_ALIAS")
+        [[ -n "${ANDROID_KEY_PASSWORD:-}" ]] || missing+=("ANDROID_KEY_PASSWORD")
+        [[ -n "$EXPECTED_CERT_SHA256" ]] || missing+=("ANDROID_SIGNING_CERT_SHA256")
+
+        if [[ "${#missing[@]}" -gt 0 ]]; then
+            log_error "CI 缺少 Android release 签名配置: ${missing[*]}"
+            log_error "禁止在 CI 中自动生成临时密钥，请配置持久化 keystore 和证书指纹。"
+            return 1
+        fi
+    fi
+}
+
+decode_keystore_secret() {
+    local encoded="${ANDROID_KEYSTORE_BASE64:-}"
+    encoded="$(printf '%s' "$encoded" | tr -d '\r\n')"
+
     mkdir -p "$KEYSTORE_DIR"
 
-    "$JAVA_HOME/bin/keytool" -genkeypair -v \
-        -keystore "$KEYSTORE" \
-        -keyalg RSA -keysize 2048 -validity 10000 \
-        -alias "$KEY_ALIAS" \
-        -storepass "$KEYSTORE_PASS" \
-        -keypass "$KEYSTORE_PASS" \
-        -dname "CN=CodingNS,OU=Dev,O=CodingNS,L=Beijing,ST=Beijing,C=CN"
+    if printf '%s' "$encoded" | base64 --decode > "$KEYSTORE" 2>/dev/null; then
+        :
+    elif printf '%s' "$encoded" | base64 -D > "$KEYSTORE" 2>/dev/null; then
+        :
+    else
+        log_error "ANDROID_KEYSTORE_BASE64 不是有效的 base64 keystore"
+        return 1
+    fi
 
-    log_success "签名密钥已生成: $KEYSTORE"
+    if [[ ! -s "$KEYSTORE" ]]; then
+        log_error "解码后的 Android keystore 为空"
+        return 1
+    fi
+
+    chmod 600 "$KEYSTORE"
+}
+
+validate_keystore() {
+    local keytool="$JAVA_HOME/bin/keytool"
+    local fingerprint=""
+
+    if [[ ! -x "$keytool" ]]; then
+        log_error "未找到 keytool: $keytool"
+        return 1
+    fi
+
+    if ! "$keytool" -J-Duser.language=en -J-Duser.country=US \
+        -list -keystore "$KEYSTORE" -storepass "$KEYSTORE_PASS" -alias "$KEY_ALIAS" \
+        >/dev/null 2>&1; then
+        log_error "无法使用当前密码和别名打开 Android release keystore"
+        log_error "请检查 ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS 和 ANDROID_KEY_PASSWORD"
+        return 1
+    fi
+
+    fingerprint="$("$keytool" -J-Duser.language=en -J-Duser.country=US \
+        -list -v -keystore "$KEYSTORE" -storepass "$KEYSTORE_PASS" -alias "$KEY_ALIAS" \
+        2>/dev/null | awk -F': ' '/SHA256:/{print $2; exit}')"
+    KEYSTORE_CERT_SHA256="$(normalize_fingerprint "$fingerprint")"
+
+    if [[ ! "$KEYSTORE_CERT_SHA256" =~ ^[0-9A-F]{64}$ ]]; then
+        log_error "无法从 Android release keystore 读取 SHA-256 证书指纹"
+        return 1
+    fi
+
+    log_success "Android release 证书 SHA-256: $KEYSTORE_CERT_SHA256"
+
+    if [[ -n "$EXPECTED_CERT_SHA256" ]]; then
+        local expected="$(normalize_fingerprint "$EXPECTED_CERT_SHA256")"
+        if [[ "$expected" != "$KEYSTORE_CERT_SHA256" ]]; then
+            log_error "Android release keystore 指纹与预期不一致"
+            log_error "预期: $expected"
+            log_error "实际: $KEYSTORE_CERT_SHA256"
+            return 1
+        fi
+    fi
+}
+
+ensure_keystore() {
+    check_release_signing_inputs
+
+    if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" ]]; then
+        log_info "从 CI Secret 解码 Android release keystore..."
+        decode_keystore_secret
+    elif [[ -f "$KEYSTORE" ]]; then
+        if [[ -z "$KEYSTORE_PASS" ]]; then
+            # 保留已有本地开发密钥的兼容性；CI 永远不会走这个默认值。
+            KEYSTORE_PASS="codingns123"
+        fi
+        log_success "使用已有 Android release keystore: $KEYSTORE"
+    elif [[ "${ANDROID_GENERATE_KEYSTORE:-0}" == "1" ]]; then
+        if [[ -z "$KEYSTORE_PASS" ]]; then
+            log_error "生成 keystore 前必须设置 ANDROID_KEYSTORE_PASSWORD"
+            return 1
+        fi
+        if [[ -z "$KEY_PASSWORD" ]]; then
+            KEY_PASSWORD="$KEYSTORE_PASS"
+        fi
+
+        mkdir -p "$KEYSTORE_DIR"
+        log_info "按显式请求生成本地 release 签名密钥..."
+        "$JAVA_HOME/bin/keytool" -genkeypair -v \
+            -keystore "$KEYSTORE" \
+            -storetype JKS \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias "$KEY_ALIAS" \
+            -storepass "$KEYSTORE_PASS" \
+            -keypass "$KEY_PASSWORD" \
+            -dname "CN=CodingNS,OU=Dev,O=CodingNS,L=Beijing,ST=Beijing,C=CN"
+
+        log_success "本地 release 签名密钥已生成: $KEYSTORE"
+    else
+        log_error "未找到 Android release keystore: $KEYSTORE"
+        log_error "本地请提供已有密钥，或显式设置 ANDROID_GENERATE_KEYSTORE=1 后再生成。"
+        return 1
+    fi
+
+    if [[ -z "$KEY_PASSWORD" ]]; then
+        KEY_PASSWORD="$KEYSTORE_PASS"
+    fi
+
+    validate_keystore
 }
 
 # 写入 key.properties（构建前调用，构建后清理）
 write_key_properties() {
-    cat > "$KEY_PROPERTIES" << EOF
+    mkdir -p "$(dirname "$KEY_PROPERTIES")"
+    (
+        umask 077
+        cat > "$KEY_PROPERTIES" << EOF
 storeFile=$KEYSTORE
 storePassword=$KEYSTORE_PASS
 keyAlias=$KEY_ALIAS
-keyPassword=$KEYSTORE_PASS
+keyPassword=$KEY_PASSWORD
 EOF
+    )
 }
 
 clean_key_properties() {
     rm -f "$KEY_PROPERTIES"
+}
+
+clean_signing_files() {
+    clean_key_properties
+
+    if [[ "$KEYSTORE_IS_TEMP" -eq 1 && -f "$KEYSTORE" ]]; then
+        rm -f "$KEYSTORE"
+        rmdir "$KEYSTORE_DIR" 2>/dev/null || true
+    fi
 }
 
 # ============================================
@@ -146,6 +298,70 @@ install_deps() {
     log_success "依赖安装完成"
 }
 
+find_apksigner() {
+    local candidate=""
+
+    if [[ -n "${ANDROID_BUILD_TOOLS_VERSION:-}" && -x "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION/apksigner" ]]; then
+        printf '%s' "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION/apksigner"
+        return 0
+    fi
+
+    if [[ -d "$ANDROID_HOME/build-tools" ]]; then
+        candidate="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner 2>/dev/null | sort -V | tail -1)"
+    fi
+
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+        printf '%s' "$candidate"
+    fi
+}
+
+verify_release_apk_signature() {
+    local apk_path="$ANDROID_DIR/app/build/outputs/apk/universal/release/app-universal-release.apk"
+    local apksigner=""
+    local signer_output=""
+    local apk_cert_sha256=""
+
+    if [[ ! -f "$apk_path" ]]; then
+        log_error "未找到 Android release APK，无法校验签名: $apk_path"
+        return 1
+    fi
+
+    apksigner="$(find_apksigner)"
+    if [[ -z "$apksigner" ]]; then
+        if is_ci; then
+            log_error "CI 未找到 apksigner，无法确认 release APK 的签名"
+            return 1
+        fi
+        log_warn "本机未找到 apksigner，跳过 APK 签名复核"
+        return 0
+    fi
+
+    if ! signer_output="$("$apksigner" verify --print-certs "$apk_path" 2>&1)"; then
+        log_error "Android release APK 签名校验失败"
+        printf '%s\n' "$signer_output" >&2
+        return 1
+    fi
+
+    apk_cert_sha256="$(printf '%s\n' "$signer_output" | awk -F': ' '/certificate SHA-256 digest:/{print $2; exit}')"
+    apk_cert_sha256="$(normalize_fingerprint "$apk_cert_sha256")"
+
+    if [[ "$apk_cert_sha256" != "$KEYSTORE_CERT_SHA256" ]]; then
+        log_error "APK 签名证书与 release keystore 不一致"
+        log_error "keystore: $KEYSTORE_CERT_SHA256"
+        log_error "APK:      $apk_cert_sha256"
+        return 1
+    fi
+
+    if [[ -n "$EXPECTED_CERT_SHA256" && "$(normalize_fingerprint "$EXPECTED_CERT_SHA256")" != "$apk_cert_sha256" ]]; then
+        log_error "APK 签名证书与预期发布指纹不一致"
+        log_error "预期: $(normalize_fingerprint "$EXPECTED_CERT_SHA256")"
+        log_error "实际: $apk_cert_sha256"
+        return 1
+    fi
+
+    log_success "Android release APK 签名校验通过: $apk_cert_sha256"
+}
+
 # ============================================
 # 构建
 # ============================================
@@ -164,18 +380,20 @@ build_release() {
     log_info "构建 Android Release APK (arm64)"
     log_info "============================================"
 
+    trap clean_signing_files EXIT
     ensure_keystore
     write_key_properties
 
     cd "$USER_APP_DIR"
-    pnpm tauri android build -t aarch64 --apk || {
-        clean_key_properties
+    if ! pnpm tauri android build -t aarch64 --apk; then
         log_error "构建失败"
-        exit 1
-    }
+        return 1
+    fi
 
-    clean_key_properties
+    verify_release_apk_signature
     print_output "release"
+    clean_signing_files
+    trap - EXIT
 }
 
 # ============================================
@@ -220,8 +438,9 @@ print_usage() {
     echo "  $0 release      构建 release 版本（需签名密钥）"
     echo "  $0 help         显示帮助"
     echo ""
-    echo "签名密钥位置: $KEYSTORE"
-    echo "首次构建 release 会自动生成签名密钥"
+    echo "默认本地签名密钥位置: $KEYSTORE"
+    echo "CI 必须注入固定的 ANDROID_KEYSTORE_BASE64，不会自动生成临时密钥"
+    echo "本地首次生成请显式设置 ANDROID_GENERATE_KEYSTORE=1"
     echo ""
 }
 
@@ -242,6 +461,10 @@ main() {
             exit 1
             ;;
     esac
+
+    if [[ "$mode" == "release" ]]; then
+        check_release_signing_inputs
+    fi
 
     setup_env
     check_android_targets
