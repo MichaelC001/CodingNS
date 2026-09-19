@@ -108,6 +108,18 @@ function buildCodingnsPlan(files) {
     }
   }
 
+  // bin 下的命令没有同名测试文件（一个 CLI 入口对应好几个测试），
+  // 按名字推不出来，只能显式点名会拉起 CLI 的那几份。
+  if (relevant.some((file) => file.includes("/bin/"))) {
+    for (const testName of ["service-cli.test.mjs", "opencli-cli.test.mjs"]) {
+      const candidate = path.join(testsDir, testName);
+
+      if (fs.existsSync(candidate)) {
+        matchedTests.add(candidate);
+      }
+    }
+  }
+
   if (matchedTests.size === 0 && relevant.some((file) => file.includes("/scripts/"))) {
     const fallback = path.join(testsDir, "host-install.test.mjs");
 
