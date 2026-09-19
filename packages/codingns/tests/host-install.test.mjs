@@ -1523,3 +1523,56 @@ test("没有 Supervisor 时，start 走正常托管入口，不写恢复请求",
   assert.equal(spawned, 1, "没有监督进程时应该正常拉起一个");
   assert.equal(readControlRequest(dataDir), null, "没有在跑的 Supervisor 就不需要控制请求");
 });
+
+test("只有 Host 没有 Supervisor 时，start 会先接管再启动监督进程", async () => {
+  const dataDir = createTempDataDir();
+  const actions = [];
+
+  const { value: exitCode } = await captureOutput(() =>
+    runStart({ dataDir, port: "3002", healthTimeoutMs: 5_000 }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir: path.join(dataDir, "home"),
+      detectRunningHost: () => ({ pid: 4321, commandLine: "node codingns start" }),
+      detectRunningSupervisor: () => null,
+      isProcessAlive: () => true,
+      waitForProcessExit: () => true,
+      killProcess: (pid, signal) => actions.push(`kill:${signal}:${pid}`),
+      spawnDetachedHost: () => {
+        actions.push("spawn-supervisor");
+        return 9876;
+      },
+      httpProbe: async () => true,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+  assert.deepEqual(actions, ["kill:SIGTERM:4321", "spawn-supervisor"]);
+  assert.equal(readControlRequest(dataDir), null, "没有现存 Supervisor 时不应留下控制请求");
+});
+
+test("旧服务未确认退出时，start 不会拉起第二个 Supervisor", async () => {
+  const dataDir = createTempDataDir();
+  let spawned = 0;
+
+  const { value: exitCode } = await captureOutput(() =>
+    runStart({ dataDir, port: "3002", healthTimeoutMs: 1 }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir: path.join(dataDir, "home"),
+      detectRunningHost: () => null,
+      detectRunningSupervisor: () => ({ pid: 7777, commandLine: "node host-supervisor.mjs" }),
+      isProcessAlive: () => true,
+      waitForProcessExit: () => false,
+      killProcess: () => undefined,
+      spawnDetachedHost: () => {
+        spawned += 1;
+        return 9876;
+      },
+      httpProbe: async () => false,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+
+  assert.equal(exitCode, EXIT_FAILURE);
+  assert.equal(spawned, 0, "旧 Supervisor 未退出时不能启动替代进程");
+});
