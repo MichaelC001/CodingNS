@@ -154,18 +154,23 @@ export class AuthUserRepository {
 
   getUsageSnapshot(period: AuthUserUsagePeriod): AuthUserUsageSnapshot {
     const bucketSql = getUsageBucketSql(period);
+    const sessionWindowSql = getUsageWindowSql(period, "sb.created_at");
+    const bindingWindowSql = getUsageWindowSql(period, "created_at");
     const users = this.list().map((user) => ({
       user: toAuthUserUsageUser(user),
       sessionCount: 0,
       tokenTotals: {
         inputTokens: 0,
         outputTokens: 0,
-        totalTokens: 0
+        totalTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0
       },
       tokenUsageAvailable: false,
       costUsd: 0,
       costUsageAvailable: false,
       timeline: [] as AuthUserUsageBucket[],
+      cliProviderTimeline: {} as Record<string, AuthUserUsageBucket[]>,
       modelUsage: [] as AuthUserUsageItem[],
       cliProviderUsage: [] as AuthUserUsageItem[],
       modelProviderUsage: [] as AuthUserUsageItem[]
@@ -176,7 +181,7 @@ export class AuthUserRepository {
       .prepare(
         `SELECT user_id, COUNT(1) AS count
          FROM session_bindings
-         WHERE user_id IS NOT NULL
+         WHERE user_id IS NOT NULL AND ${bindingWindowSql}
          GROUP BY user_id`
       )
       .all() as Array<{ user_id: string; count: number }>) {
@@ -192,10 +197,12 @@ export class AuthUserRepository {
               SUM(smu.input_tokens) AS input_tokens,
               SUM(smu.output_tokens) AS output_tokens,
               SUM(smu.input_tokens + smu.output_tokens) AS total_tokens,
+              SUM(smu.cache_read_tokens) AS cache_read_tokens,
+              SUM(smu.cache_write_tokens) AS cache_write_tokens,
               SUM(smu.cost_usd) AS cost_usd
        FROM session_model_usages smu
        INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
-       WHERE sb.user_id IS NOT NULL AND TRIM(smu.model) <> ''
+       WHERE sb.user_id IS NOT NULL AND TRIM(smu.model) <> '' AND ${sessionWindowSql}
        GROUP BY sb.user_id, smu.model`
     )) {
       const item = byUserId.get(row.userId);
@@ -203,6 +210,8 @@ export class AuthUserRepository {
       item.tokenTotals.inputTokens += row.inputTokens;
       item.tokenTotals.outputTokens += row.outputTokens;
       item.tokenTotals.totalTokens += row.totalTokens;
+      item.tokenTotals.cacheReadTokens += row.cacheReadTokens;
+      item.tokenTotals.cacheWriteTokens += row.cacheWriteTokens;
       item.tokenUsageAvailable = true;
       mergeUsageItem(item.modelUsage, row);
     }
@@ -213,10 +222,12 @@ export class AuthUserRepository {
               SUM(smu.input_tokens) AS input_tokens,
               SUM(smu.output_tokens) AS output_tokens,
               SUM(smu.input_tokens + smu.output_tokens) AS total_tokens,
+              SUM(smu.cache_read_tokens) AS cache_read_tokens,
+              SUM(smu.cache_write_tokens) AS cache_write_tokens,
               SUM(smu.cost_usd) AS cost_usd
        FROM session_model_usages smu
        INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
-       WHERE sb.user_id IS NOT NULL
+       WHERE sb.user_id IS NOT NULL AND ${sessionWindowSql}
        GROUP BY sb.user_id, sb.provider`
     )) {
       mergeUsageItem(byUserId.get(row.userId)?.cliProviderUsage, row);
@@ -228,10 +239,12 @@ export class AuthUserRepository {
               SUM(smu.input_tokens) AS input_tokens,
               SUM(smu.output_tokens) AS output_tokens,
               SUM(smu.input_tokens + smu.output_tokens) AS total_tokens,
+              SUM(smu.cache_read_tokens) AS cache_read_tokens,
+              SUM(smu.cache_write_tokens) AS cache_write_tokens,
               SUM(smu.cost_usd) AS cost_usd
        FROM session_model_usages smu
        INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
-       WHERE sb.user_id IS NOT NULL AND TRIM(smu.provider) <> ''
+       WHERE sb.user_id IS NOT NULL AND TRIM(smu.provider) <> '' AND ${sessionWindowSql}
        GROUP BY sb.user_id, smu.provider`
     )) {
       mergeUsageItem(byUserId.get(row.userId)?.modelProviderUsage, row);
@@ -242,7 +255,7 @@ export class AuthUserRepository {
         `SELECT sb.user_id AS user_id, SUM(scb.cost_usd) AS cost_usd
          FROM session_cost_bills scb
          INNER JOIN session_bindings sb ON sb.session_id = scb.session_id
-         WHERE sb.user_id IS NOT NULL GROUP BY sb.user_id`
+         WHERE sb.user_id IS NOT NULL AND ${sessionWindowSql} GROUP BY sb.user_id`
       )
       .all() as Array<{ user_id: string; cost_usd: number | null }>) {
       const item = byUserId.get(row.user_id);
@@ -256,7 +269,7 @@ export class AuthUserRepository {
       .prepare(
         `SELECT user_id, ${bucketSql} AS bucket, COUNT(1) AS session_count
          FROM session_bindings
-         WHERE user_id IS NOT NULL
+         WHERE user_id IS NOT NULL AND ${bindingWindowSql}
          GROUP BY user_id, bucket
          ORDER BY bucket ASC`
       )
@@ -269,15 +282,73 @@ export class AuthUserRepository {
           inputTokens: 0,
           outputTokens: 0,
           totalTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           costUsd: 0
         });
       }
     }
 
+    for (const row of this.db
+      .prepare(
+        `SELECT user_id, provider, ${bucketSql} AS bucket, COUNT(1) AS session_count
+         FROM session_bindings
+         WHERE user_id IS NOT NULL AND ${bindingWindowSql}
+         GROUP BY user_id, provider, bucket
+         ORDER BY bucket ASC`
+      )
+      .all() as Array<{ user_id: string; provider: string; bucket: string | null; session_count: number }>) {
+      const item = byUserId.get(row.user_id);
+      if (!item || !row.bucket) continue;
+      const timeline = item.cliProviderTimeline[row.provider] ?? (item.cliProviderTimeline[row.provider] = []);
+      timeline.push({ bucket: row.bucket, sessionCount: row.session_count, inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 });
+    }
+
+    for (const row of this.db
+      .prepare(
+        `SELECT sb.user_id AS user_id, sb.provider AS provider,
+                ${getUsageBucketSql(period, "sb.created_at")} AS bucket,
+                SUM(smu.input_tokens) AS input_tokens,
+                SUM(smu.output_tokens) AS output_tokens,
+                SUM(smu.input_tokens + smu.output_tokens) AS total_tokens,
+                SUM(smu.cache_read_tokens) AS cache_read_tokens,
+                SUM(smu.cache_write_tokens) AS cache_write_tokens
+         FROM session_model_usages smu
+         INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
+         WHERE sb.user_id IS NOT NULL AND ${sessionWindowSql}
+         GROUP BY sb.user_id, sb.provider, bucket`
+      )
+      .all() as Array<{ user_id: string; provider: string; bucket: string | null; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null }>) {
+      const timeline = row.bucket ? byUserId.get(row.user_id)?.cliProviderTimeline[row.provider] : undefined;
+      const bucket = timeline?.find((value) => value.bucket === row.bucket);
+      if (!bucket) continue;
+      bucket.inputTokens = row.input_tokens ?? 0;
+      bucket.outputTokens = row.output_tokens ?? 0;
+      bucket.totalTokens = row.total_tokens ?? 0;
+      bucket.cacheReadTokens = row.cache_read_tokens ?? 0;
+      bucket.cacheWriteTokens = row.cache_write_tokens ?? 0;
+    }
+
+    for (const row of this.db
+      .prepare(
+        `SELECT sb.user_id AS user_id, sb.provider AS provider,
+                ${getUsageBucketSql(period, "sb.created_at")} AS bucket,
+                SUM(scb.cost_usd) AS cost_usd
+         FROM session_cost_bills scb
+         INNER JOIN session_bindings sb ON sb.session_id = scb.session_id
+         WHERE sb.user_id IS NOT NULL AND ${sessionWindowSql}
+         GROUP BY sb.user_id, sb.provider, bucket`
+      )
+      .all() as Array<{ user_id: string; provider: string; bucket: string | null; cost_usd: number | null }>) {
+      const timeline = row.bucket ? byUserId.get(row.user_id)?.cliProviderTimeline[row.provider] : undefined;
+      const bucket = timeline?.find((value) => value.bucket === row.bucket);
+      if (bucket) bucket.costUsd = row.cost_usd ?? 0;
+    }
+
     for (const row of this.listGroupedUsageRows(
       `SELECT user_id, provider AS label, COUNT(1) AS count
        FROM session_bindings
-       WHERE user_id IS NOT NULL
+       WHERE user_id IS NOT NULL AND ${bindingWindowSql}
        GROUP BY user_id, provider`
     )) {
       mergeCountUsageItem(byUserId.get(row.userId)?.cliProviderUsage, row);
@@ -286,7 +357,7 @@ export class AuthUserRepository {
     for (const row of this.listGroupedUsageRows(
       `SELECT user_id, model AS label, COUNT(1) AS count
        FROM butler_control_sessions
-       WHERE user_id IS NOT NULL AND model IS NOT NULL AND TRIM(model) <> ''
+       WHERE user_id IS NOT NULL AND model IS NOT NULL AND TRIM(model) <> '' AND ${bindingWindowSql}
        GROUP BY user_id, model`
     )) {
       mergeCountUsageItem(byUserId.get(row.userId)?.modelUsage, row);
@@ -296,7 +367,7 @@ export class AuthUserRepository {
       `SELECT sb.user_id AS user_id, psm.model AS label, COUNT(1) AS count
        FROM parallel_session_members psm
        INNER JOIN session_bindings sb ON sb.session_id = psm.session_id
-       WHERE sb.user_id IS NOT NULL AND psm.model IS NOT NULL AND TRIM(psm.model) <> ''
+       WHERE sb.user_id IS NOT NULL AND psm.model IS NOT NULL AND TRIM(psm.model) <> '' AND ${sessionWindowSql}
        GROUP BY sb.user_id, psm.model`
     )) {
       mergeCountUsageItem(byUserId.get(row.userId)?.modelUsage, row);
@@ -308,17 +379,21 @@ export class AuthUserRepository {
                 ${getUsageBucketSql(period, "sb.created_at")} AS bucket,
                 SUM(smu.input_tokens) AS input_tokens,
                 SUM(smu.output_tokens) AS output_tokens,
-                SUM(smu.input_tokens + smu.output_tokens) AS total_tokens
+                SUM(smu.input_tokens + smu.output_tokens) AS total_tokens,
+                SUM(smu.cache_read_tokens) AS cache_read_tokens,
+                SUM(smu.cache_write_tokens) AS cache_write_tokens
          FROM session_model_usages smu
          INNER JOIN session_bindings sb ON sb.session_id = smu.session_id
-         WHERE sb.user_id IS NOT NULL GROUP BY sb.user_id, bucket`
+         WHERE sb.user_id IS NOT NULL AND ${sessionWindowSql} GROUP BY sb.user_id, bucket`
       )
-      .all() as Array<{ user_id: string; bucket: string | null; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null }>) {
+      .all() as Array<{ user_id: string; bucket: string | null; input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null }>) {
       const bucket = byUserId.get(row.user_id)?.timeline.find((value) => value.bucket === row.bucket);
       if (bucket && row.bucket) {
         bucket.inputTokens = row.input_tokens ?? 0;
         bucket.outputTokens = row.output_tokens ?? 0;
         bucket.totalTokens = row.total_tokens ?? 0;
+        bucket.cacheReadTokens = row.cache_read_tokens ?? 0;
+        bucket.cacheWriteTokens = row.cache_write_tokens ?? 0;
       }
     }
 
@@ -329,7 +404,7 @@ export class AuthUserRepository {
                 SUM(scb.cost_usd) AS cost_usd
          FROM session_cost_bills scb
          INNER JOIN session_bindings sb ON sb.session_id = scb.session_id
-         WHERE sb.user_id IS NOT NULL GROUP BY sb.user_id, bucket`
+         WHERE sb.user_id IS NOT NULL AND ${sessionWindowSql} GROUP BY sb.user_id, bucket`
       )
       .all() as Array<{ user_id: string; bucket: string | null; cost_usd: number | null }>) {
       const bucket = byUserId.get(row.user_id)?.timeline.find((value) => value.bucket === row.bucket);
@@ -364,7 +439,7 @@ export class AuthUserRepository {
     return (this.db.prepare(sql).all() as Array<{
       user_id: string; label: string | null; count: number;
       input_tokens: number | null; output_tokens: number | null;
-      total_tokens: number | null; cost_usd: number | null;
+      total_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null; cost_usd: number | null;
     }>).map((row) => ({
       userId: row.user_id,
       label: row.label?.trim() || "unknown",
@@ -372,6 +447,8 @@ export class AuthUserRepository {
       inputTokens: row.input_tokens ?? 0,
       outputTokens: row.output_tokens ?? 0,
       totalTokens: row.total_tokens ?? 0,
+      cacheReadTokens: row.cache_read_tokens ?? 0,
+      cacheWriteTokens: row.cache_write_tokens ?? 0,
       costUsd: row.cost_usd
     }));
   }
@@ -398,9 +475,12 @@ export interface AuthUserUsageUserSnapshot {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
   };
   tokenUsageAvailable: boolean;
   timeline: AuthUserUsageBucket[];
+  cliProviderTimeline: Record<string, AuthUserUsageBucket[]>;
   modelUsage: AuthUserUsageItem[];
   cliProviderUsage: AuthUserUsageItem[];
   modelProviderUsage: AuthUserUsageItem[];
@@ -412,6 +492,8 @@ export interface AuthUserUsageBucket {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   costUsd: number;
 }
 
@@ -421,6 +503,8 @@ export interface AuthUserUsageItem {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   costUsd: number | null;
 }
 
@@ -434,19 +518,27 @@ interface DetailedUsageRow extends GroupedUsageRow {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   costUsd: number | null;
 }
 
 function getUsageBucketSql(period: AuthUserUsagePeriod, column = "created_at"): string {
   if (period === "week") {
-    return `strftime('%Y-W%W', ${column})`;
+    return `strftime('%Y-%m-%d', ${column})`;
   }
 
   if (period === "month") {
     return `substr(${column}, 1, 7)`;
   }
 
-  return `substr(${column}, 1, 10)`;
+  return `strftime('%Y-%m-%d %H:00', ${column})`;
+}
+
+function getUsageWindowSql(period: AuthUserUsagePeriod, column: string): string {
+  if (period === "week") return `datetime(${column}) >= datetime('now', '-6 days', 'start of day')`;
+  if (period === "month") return `datetime(${column}) >= datetime('now', 'start of month')`;
+  return `datetime(${column}) >= datetime('now', 'start of day') AND datetime(${column}) < datetime('now', 'start of day', '+1 day')`;
 }
 
 function toAuthUserUsageUser(user: AuthUser): AuthUserUsageUserSnapshot["user"] {
@@ -464,6 +556,8 @@ function toUsageItem(row: GroupedUsageRow): AuthUserUsageItem {
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     costUsd: null
   };
 }
@@ -476,10 +570,12 @@ function mergeUsageItem(target: AuthUserUsageItem[] | undefined, row: DetailedUs
     existing.inputTokens += row.inputTokens;
     existing.outputTokens += row.outputTokens;
     existing.totalTokens += row.totalTokens;
+    existing.cacheReadTokens += row.cacheReadTokens;
+    existing.cacheWriteTokens += row.cacheWriteTokens;
     if (row.costUsd !== null) existing.costUsd = (existing.costUsd ?? 0) + row.costUsd;
     return;
   }
-  target.push({ label: row.label, count: row.count, inputTokens: row.inputTokens, outputTokens: row.outputTokens, totalTokens: row.totalTokens, costUsd: row.costUsd });
+  target.push({ label: row.label, count: row.count, inputTokens: row.inputTokens, outputTokens: row.outputTokens, totalTokens: row.totalTokens, cacheReadTokens: row.cacheReadTokens, cacheWriteTokens: row.cacheWriteTokens, costUsd: row.costUsd });
 }
 
 function mergeCountUsageItem(target: AuthUserUsageItem[] | undefined, row: GroupedUsageRow): void {

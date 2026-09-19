@@ -143,7 +143,8 @@ describe("auth user management", () => {
       deletedUserId: tempId
     });
 
-    const timestamp = "2026-06-07T10:00:00.000Z";
+    const timestamp = new Date().toISOString();
+    const dayBucket = `${timestamp.slice(0, 13).replace("T", " ")}:00`;
     hosted.services.repositories.workspaceRepository.create({
       id: "workspace-alice",
       ownerUserId: aliceId,
@@ -242,7 +243,7 @@ describe("auth user management", () => {
       },
       timeline: [
         {
-          bucket: "2026-06-07",
+          bucket: dayBucket,
           sessionCount: 1,
           totalTokens: 120
         }
