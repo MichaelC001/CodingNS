@@ -586,15 +586,24 @@ bash install.sh
 
 统一安装器按系统选择原生自启：macOS 使用 LaunchAgent，Linux 使用 systemd user，Windows 使用计划任务。
 
+日常管理服务直接用 `codingns service`：
+
 ```bash
 npm install -g @jingyi0605/codingns
+codingns service status
+codingns service restart
+codingns service logs --follow
+codingns service autostart --disable
+```
+
+装服务本身还是走统一安装器：
+
+```bash
 HOST_INSTALLER="$(npm root -g)/@jingyi0605/codingns/scripts/host-install.mjs"
 node "$HOST_INSTALLER" install --port 3300 --data-dir ~/.codingns --autostart
-node "$HOST_INSTALLER" status --data-dir ~/.codingns
-node "$HOST_INSTALLER" restart --data-dir ~/.codingns
-node "$HOST_INSTALLER" stop --data-dir ~/.codingns
-node "$HOST_INSTALLER" autostart --disable --data-dir ~/.codingns
 ```
+
+`codingns service` 是安装器的快捷入口，两边行为一致；想直接调脚本本身时就用上面的 `HOST_INSTALLER`。
 
 #### 从源码开发
 

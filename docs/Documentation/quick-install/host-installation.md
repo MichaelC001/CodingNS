@@ -74,11 +74,28 @@ node "$HOST_INSTALLER" install --host 0.0.0.0 --port 3002 --data-dir ~/.codingns
 常用管理命令：
 
 ```bash
+codingns service status
+codingns service start
+codingns service stop
+codingns service restart
+codingns service autostart --disable
+```
+
+默认数据目录是 `~/.codingns`，换过数据目录时补上 `--data-dir <目录>`。
+
+想看服务日志：
+
+```bash
+codingns service logs                  # 看服务自身输出的末尾
+codingns service logs --follow         # 持续跟踪，Ctrl+C 退出
+codingns service logs --kind install   # 列出历次安装、升级留下的日志
+```
+
+`codingns service` 背后就是统一安装器，动作和退出码完全一致。包还没装好、或者想直接调脚本本身时，用安装器路径：
+
+```bash
+HOST_INSTALLER="$(npm root -g)/@jingyi0605/codingns/scripts/host-install.mjs"
 node "$HOST_INSTALLER" status --data-dir ~/.codingns
-node "$HOST_INSTALLER" start --data-dir ~/.codingns
-node "$HOST_INSTALLER" stop --data-dir ~/.codingns
-node "$HOST_INSTALLER" restart --data-dir ~/.codingns
-node "$HOST_INSTALLER" autostart --disable --data-dir ~/.codingns
 ```
 
 如果只想在当前终端临时运行，可以直接执行：
