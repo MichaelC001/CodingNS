@@ -75,7 +75,7 @@ The new methods are:
 
 This is not a merge of `CodingNSDesktop` into `CodingNSWorkspace`. It is a managed wrapper on top of `CodingNSWorkspace`:
 
-1. the HTML page or plugin only passes a workspace-relative path
+1. the HTML page only passes a workspace-relative path
 2. the Host validates that the path is a real file inside the current workspace
 3. the Host returns a validated absolute path
 4. the preview host page calls `CodingNSDesktop`
@@ -86,7 +86,7 @@ The benefit is straightforward: **business code only deals with workspace paths,
 
 ## Supported scenarios
 
-This interface is a good fit for static HTML pages or plugin frontends such as:
+This interface is a good fit for static HTML pages such as:
 
 - Markdown index pages
 - local knowledge-base search pages
@@ -557,16 +557,6 @@ Recommended flow:
 Files such as `.index.json` are only cache, not the primary data source.
 
 ---
-
-## Guidance for plugin authors
-
-If you are writing a CodingNS plugin frontend, the rule should stay the same:
-
-- use workspace-scoped interfaces first for workspace file operations
-- when you need desktop actions, still go through “relative path -> Host validation -> desktop shell”
-- do not clone your own absolute-path logic inside plugin code
-
-In other words, **what gets unified is the entry rule, not a single giant merged object.**
 
 ---
 

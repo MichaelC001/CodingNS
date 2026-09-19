@@ -10,7 +10,6 @@ This section is for people who:
 
 - build static HTML tools inside CodingNS
 - need static HTML preview pages to read and write current-workspace files
-- connect workspace file capabilities inside plugin frontends
 - need to understand the boundary between `CodingNSWorkspace` and `CodingNSDesktop`
 - will maintain the bridge layer later
 
@@ -41,18 +40,6 @@ This page explains:
 - what `CodingNSDesktop` is for
 - why the page side only passes workspace-relative paths
 - why opening or revealing a file still has to pass Host validation first
-
-### 3. You want the plugin frontend integration path
-
-Then continue here:
-
-- [Plugin Frontend Workspace File Bridge](/en/developer-guide/plugin-frontend-workspace-file-bridge)
-
-This page is more practical. It shows:
-
-- which cases should use `CodingNSWorkspace`
-- which cases should touch `CodingNSDesktop` directly
-- which bad patterns should not grow in plugin code
 
 ## What this section does not cover
 

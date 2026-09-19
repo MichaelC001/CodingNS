@@ -9,7 +9,6 @@
 适合这些人：
 
 - 在 CodingNS 里接静态 HTML 工具页的人
-- 在插件前端里接工作区文件能力的人
 - 需要搞清 `CodingNSWorkspace` 和 `CodingNSDesktop` 边界的人
 - 需要在静态 HTML 中读写当前 workspace 文件的人
 - 需要在静态 HTML 中打开客户端本地镜像文件的人
@@ -55,19 +54,6 @@
 - `CodingNSDesktop` 的直接调用接口
 - 预览 iframe 里的 `_cns_parent_origin` 中继规则
 - 客户端本地镜像根目录应该保存在客户端侧，不是 Host 配置
-
-### 4. 想在插件前端里落地接入
-
-再看：
-
-- [插件前端接入工作区文件桥](/developer-guide/plugin-frontend-workspace-file-bridge)
-
-这篇更偏实际接法，会直接说：
-
-- 什么场景该用 `CodingNSWorkspace`
-- 什么场景才直接碰 `CodingNSDesktop`
-- 客户端本地镜像资料库为什么不该走 Host workspace 包装
-- 哪些写法不允许继续长出来
 
 ## 这部分文档明确不讲什么
 

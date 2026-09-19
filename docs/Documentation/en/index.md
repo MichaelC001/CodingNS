@@ -36,7 +36,7 @@ features:
     details: "Go directly to workspaces, conversations, files, Git, terminal access, and settings."
     link: /en/user-guide/workspaces-and-sessions
   - title: "Developer integration"
-    details: "If you need static HTML tools, plugin frontend capabilities, or the workspace file bridge, start here."
+    details: "If you need static HTML tools or the workspace file bridge, start here."
     link: /en/developer-guide/
   - title: "Continue from another network"
     details: "Remote access, Tailscale, CodingNS Connect, and stability advice live here."
@@ -60,7 +60,7 @@ The biggest product changes in this release are not cosmetic:
 ## Quick Links
 
 - Want to judge whether CodingNS fits your workflow: open [Docs Map](/en/overview/docs-overview) and [Product Overview](/en/overview/product-overview)
-- Want static HTML tools, plugin frontend capabilities, or workspace file bridge guidance: open the [Developer Guide](/en/developer-guide/)
+- Want static HTML tools or workspace file bridge guidance: open the [Developer Guide](/en/developer-guide/)
 - Want to get it running today: start with [Choose an Install Path](/en/quick-install/installation-paths)
 - Already connected to a Host and want to understand the product flow: open the [User Guide](/en/user-guide/workspaces-and-sessions)
 - Want to keep working from another device or network: open [Remote Access](/en/remote-access/remote-access-overview)

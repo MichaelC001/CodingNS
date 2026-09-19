@@ -18,7 +18,7 @@
 | Host 已经装了，但客户端还没连上 | [连接客户端](/quick-install/client-connection) |
 | 第一次进去，不知道会看到什么 | [首次登录与开始使用](/quick-install/first-login) |
 | 已经连上了，但不知道页面之间怎么配合 | [工作区与会话](/user-guide/workspaces-and-sessions) |
-| 想接静态 HTML 工具页或插件前端能力 | [开发者手册总览](/developer-guide/) |
+| 想接静态 HTML 工具页或工作区文件能力 | [开发者手册总览](/developer-guide/) |
 | 想从外部网络或手机继续访问 | [远程访问概览](/remote-access/remote-access-overview) |
 | 想找链接、下载、群或反馈入口 | [社区入口](/community/community-overview) |
 
@@ -27,5 +27,5 @@
 1. 先用 [产品概览](/overview/product-overview) 判断它是不是你要的工作方式。
 2. 再按 [安装路径选择](/quick-install/installation-paths) 和 [安装 Host 服务](/quick-install/host-installation) 把环境跑起来。
 3. 接着去 [连接客户端](/quick-install/client-connection) 和 [首次登录与开始使用](/quick-install/first-login) 完成第一次进入。
-4. 如果你要接平台能力、静态 HTML 工具页或插件前端，再进 [开发者手册总览](/developer-guide/)。
+4. 如果你要接平台能力、静态 HTML 工具页或工作区文件能力，再进 [开发者手册总览](/developer-guide/)。
 5. 真正开始用以后，再按需要补 [对话工作台](/user-guide/conversation-workbench)、[文件、Git 与终端](/user-guide/files-git-and-terminal) 和 [远程访问概览](/remote-access/remote-access-overview)。
