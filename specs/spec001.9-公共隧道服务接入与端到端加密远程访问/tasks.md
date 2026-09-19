@@ -1005,6 +1005,36 @@
     - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
   - 已知的既有失败（与本阶段无关，改动前就存在）：`auth-store.test.ts` 中两个会话刷新次数用例、`shared/i18n/index.test.ts` 的 butler 文案用例、`app/App.test.tsx` 的五个聊天/设置用例。
 
+- [x] W2.5.5 修正"直连也被当成 Connect"的判定错误（2026-09-19）
+  - 状态：DONE
+  - 这一步到底做什么：把"要不要显示两种登录方式"的判据从"Host 有没有 relay 配置"改成"当前连接目标地址本身是不是四级域名入口"，并删掉 LoginPage 里已经不可达的 Connect 缺目标分支。
+  - 做完以后能看到什么结果：本机 / 局域网直连的用户只看到直接登录表单，不出现标签页和 Connect 选项；只有打开四级域名入口页、或把服务器地址填成四级域名的用户才看到两个标签页。
+  - 依赖什么：W2.5.2、W2.5.3。
+  - 主要改哪些文件：
+    - `apps/user-app/src/features/auth/login-method.ts`
+    - `apps/user-app/src/features/auth/pages/LoginPage.tsx`
+    - `apps/user-app/src/features/auth/components/LoginCardHeader.tsx`
+    - 相关测试与 i18n
+  - 这一步明确不做什么：不改 `client-runtime-manager` 的运行时同步（它写 `relayTunnel` 是对的，只是不能拿它当连接方式判据）。
+  - 怎么验证：单元测试覆盖"直连地址 + relay 配置仍然不是远程入口"；页面测试覆盖"直连目标不显示页签和说明按钮"。
+  - 验证结果：已完成。根因是登录成功后 `client-runtime-manager` 会把 Host 侧的 Connect 绑定同步进当前 Host 的 `relayTunnel`，原来的判据把这个字段当成了"当前走 Connect"。现在只看 `baseUrl`，直连用户不再被强制显示 Connect 选项。
+
+- [x] W2.5.6 PC / 移动端始终提供 Connect 入口，并补齐设备选择（2026-09-19）
+  - 状态：DONE
+  - 这一步到底做什么：区分平台——PC 和移动端始终显示两个标签页，用户不需要知道远程域名；Web 保持 W2.5.5 的判定。Connect 登录成功后如果还没有目标设备，先列出账号下的设备让用户选一台。
+  - 做完以后能看到什么结果：PC / 移动端用户直接输 Connect 邮箱密码，就能从设备列表里选自己的 Host 连过去；选完设备后照旧走 Host 账号登录。移动端首次进入默认落在 Connect 标签页。
+  - 依赖什么：W2.5.2、W2.5.5。
+  - 主要改哪些文件：
+    - `apps/user-app/src/features/auth/login-method.ts`（`shouldOfferBothLoginMethods`）
+    - `apps/user-app/src/features/auth/connect/use-connect-login-flow.ts`（设备选择阶段）
+    - `apps/user-app/src/features/auth/components/ConnectLoginPanel.tsx`（设备列表 UI）
+    - `apps/user-app/src/features/auth/pages/LoginPage.tsx`
+    - `apps/user-app/src/settings/control-client-actions.ts`（设备列表接口支持不带隧道域名）
+    - `apps/user-app/src/i18n/*`
+  - 这一步明确不做什么：不改控制站接口；不给 Web 端加设备列表（Web 的入口本身就是某台设备）。
+  - 怎么验证：单元测试覆盖"PC / 移动端始终两种方式、Web 按目标判定"；页面测试覆盖"PC 直连本机时也能选设备并完成 Host 登录"。
+  - 验证结果：已完成。设备列表用控制站已有的 `GET /api/v1/hosts`；选中设备后写成当前连接目标，后续流程复用原有隧道与 Host 登录。
+
 ---
 
 ## 阶段 W7：回归与验收
