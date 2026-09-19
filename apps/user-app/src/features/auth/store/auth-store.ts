@@ -8,7 +8,6 @@ import {
   type RuntimeHostProfile
 } from "../../../config/client-config-types";
 import { getHostRequestUrl } from "../../../config/env";
-import { hostLoginRouteHintStore } from "../../../config/host-login-route-hint-store";
 import { isPageUnloading } from "../../../shared/browser/page-unload-state";
 import { ApiError, type ApiErrorPayload } from "../../../shared/network/api-error";
 import { getAuthClientHeaders } from "./client-device";
@@ -121,20 +120,10 @@ class AuthStore {
 
   async loginForHost(host: RuntimeHostProfile, payload: LoginPayload, baseUrl?: string): Promise<AuthSession> {
     const { loginRequest } = await import("../api/auth-api");
-    const { resolveLoginBaseUrlWithDirectCandidates } = await import("./login-direct-candidate-resolver");
-    const requestedBaseUrl = baseUrl ?? host.baseUrl;
-    const loginBaseUrl = await resolveLoginBaseUrlWithDirectCandidates({
-      host,
-      requestedBaseUrl,
-      platform: clientConfigStore.getState().platform
-    });
-    const session = await loginRequest(payload, loginBaseUrl);
-
-    if (loginBaseUrl !== host.baseUrl) {
-      hostLoginRouteHintStore.remember(host.id, loginBaseUrl);
-    } else {
-      hostLoginRouteHintStore.forget(host.id);
-    }
+    // 登录请求只发往调用方指定的地址（默认 Host 自身地址）。
+    // 不在这里探测直连候选：四级域名入口必须先经过 CodingNS Connect 认证建立隧道，
+    // 拿到域名就回退直连等于绕过认证（spec001.9 需求 14）。
+    const session = await loginRequest(payload, baseUrl ?? host.baseUrl);
 
     this.persistSession(host, session);
 
@@ -242,7 +231,6 @@ class AuthStore {
     this.lastStoredSessionValidationKey = null;
 
     if (!currentHost) {
-      hostLoginRouteHintStore.clear();
       this.sessionMap = {};
       this.persistSessionMap();
       this.updateState({
@@ -252,8 +240,6 @@ class AuthStore {
       });
       return;
     }
-
-    hostLoginRouteHintStore.forget(currentHost.id);
 
     if (this.sessionMap[currentHost.id]) {
       const nextSessionMap = { ...this.sessionMap };
@@ -273,8 +259,6 @@ class AuthStore {
     if (!hostId) {
       return;
     }
-
-    hostLoginRouteHintStore.forget(hostId);
 
     if (!this.sessionMap[hostId]) {
       return;

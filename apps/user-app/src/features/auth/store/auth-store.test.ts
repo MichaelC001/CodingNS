@@ -377,7 +377,7 @@ describe("authStore", () => {
     });
   });
 
-  it("relay Host 登录前会先尝试 candidateEndpoints 里的直连地址，并把后续请求临时切到命中的直连入口", async () => {
+  it("relay Host 登录不会回退直连候选地址，直接提交到四级域名入口", async () => {
     const clientConfigStore = await setupClientConfig();
     const syncRuntimeConfigMock = vi.fn(async () => undefined);
     const loginRequestMock = vi.fn(async () => storedSession);
@@ -427,20 +427,11 @@ describe("authStore", () => {
       ]
     });
 
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = typeof input === "string" ? input : input.toString();
-
-      if (url === "http://192.168.50.8:3002/api/public/bootstrap-status") {
-        return new Response(JSON.stringify({ initialized: true }), {
-          status: 200,
-          headers: {
-            "Content-Type": "application/json"
-          }
-        });
-      }
-
-      throw new Error(`未处理的请求: ${url}`);
-    }));
+    // 登录阶段不允许探测直连候选：拿到四级域名就直连等于绕过 Connect 认证。
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`登录阶段不该发起探测请求: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     vi.doMock("../api/auth-api", () => ({
       loginRequest: loginRequestMock
@@ -450,7 +441,6 @@ describe("authStore", () => {
     }));
 
     const { authStore } = await import("./auth-store");
-    const { resolveHostTransportTarget } = await import("../../../network/host-transport-registry");
 
     await authStore.login({
       username: "admin",
@@ -462,12 +452,9 @@ describe("authStore", () => {
         username: "admin",
         password: "admin1234"
       },
-      "http://192.168.50.8:3002"
+      "https://demo.channel.codingns.com:1443"
     );
-
-    expect(resolveHostTransportTarget("https://demo.channel.codingns.com:1443").baseUrl).toBe(
-      "http://192.168.50.8:3002"
-    );
+    expect(fetchMock).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(syncRuntimeConfigMock).toHaveBeenCalledTimes(1);
     });

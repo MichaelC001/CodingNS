@@ -1,186 +1,332 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { authGateway } from "../../../auth/auth-gateway";
-import { buildRelayAccessBaseUrl, buildRelayEntryConfigPatch } from "../../../config/relay-entry";
 import { clientConfigStore } from "../../../config/client-config-store";
-import {
-  controlSessionStore,
-  isControlSessionExpired
-} from "../../../network/webrtc/control-site-client";
-import {
-  describeControlError,
-  loadHostLoginAccounts,
-  loginControlAccount,
-  type HostLoginAccount
-} from "../../../settings/control-client-actions";
+import { buildLocalHostProfile } from "../../../config/client-config-service";
+import { buildRelayAccessBaseUrl, buildRelayEntryConfigPatch } from "../../../config/relay-entry";
 import { t, useT } from "../../../shared/i18n";
 import { ApiError } from "../../../shared/network/api-error";
-
-type EntryStage = "initializing" | "connect-login" | "host-login" | "submitting";
+import { AuthPageShell } from "../components/AuthPageShell";
+import { ConnectLoginPanel } from "../components/ConnectLoginPanel";
+import { CyberField } from "../components/CyberField";
+import { LoginMethodTabs } from "../components/LoginMethodTabs";
+import { useConnectLoginFlow } from "../connect/use-connect-login-flow";
+import type { LoginMethod } from "../login-method";
+import {
+  probeLocalDirectHost,
+  type LocalDirectHostProbeResult
+} from "../store/local-direct-host-probe";
 
 export function RelayConnectEntryPage() {
   const navigate = useNavigate();
   const { tunnelDomain } = useParams<{ tunnelDomain: string }>();
   const [searchParams] = useSearchParams();
   const translate = useT();
-  const [stage, setStage] = useState<EntryStage>("initializing");
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [controlEmail, setControlEmail] = useState("");
-  const [controlPassword, setControlPassword] = useState("");
-  const [hostAccounts, setHostAccounts] = useState<HostLoginAccount[]>([]);
-  const [selectedUsername, setSelectedUsername] = useState("");
-  const [hostPassword, setHostPassword] = useState("");
 
   const controlBaseUrl = searchParams.get("controlBaseUrl")?.trim() ?? "";
   const bindingId = searchParams.get("bindingId");
   const hostFingerprint = searchParams.get("hostFingerprint");
   const returnTo = normalizeReturnTo(searchParams.get("returnTo"));
+
+  const [entryReady, setEntryReady] = useState(false);
+  const [entryError, setEntryError] = useState<string | null>(null);
+  const [loginMethod, setLoginMethod] = useState<LoginMethod>("connect");
+  const [localProbeStage, setLocalProbeStage] = useState<"idle" | "probing" | "ready">("idle");
+  const [localHostResult, setLocalHostResult] = useState<LocalDirectHostProbeResult | null>(null);
+  const [directUsername, setDirectUsername] = useState("admin");
+  const [directPassword, setDirectPassword] = useState("");
+  const [directSubmitting, setDirectSubmitting] = useState(false);
+  const [directError, setDirectError] = useState<string | null>(null);
+
+  const target = useMemo(
+    () =>
+      tunnelDomain && controlBaseUrl
+        ? { tunnelDomain, controlBaseUrl }
+        : null,
+    [controlBaseUrl, tunnelDomain]
+  );
   const hostBaseUrl = useMemo(
-    () => tunnelDomain && controlBaseUrl
-      ? buildRelayAccessBaseUrl(tunnelDomain, controlBaseUrl)
-      : "",
+    () =>
+      tunnelDomain && controlBaseUrl
+        ? buildRelayAccessBaseUrl(tunnelDomain, controlBaseUrl)
+        : null,
     [controlBaseUrl, tunnelDomain]
   );
 
+  const connectFlow = useConnectLoginFlow({
+    target,
+    hostBaseUrl,
+    onHostLoginSuccess: async () => {
+      const { userPreferenceStore } = await import("../../../preferences/user-preference-store");
+      await userPreferenceStore.refreshForAuthenticatedUser();
+      navigate(returnTo, { replace: true });
+    }
+  });
+
   useEffect(() => {
     if (!tunnelDomain || !controlBaseUrl) {
-      setErrorMessage(translate("auth.relayEntryInvalid"));
-      setStage("connect-login");
+      setEntryError(translate("auth.relayEntryInvalid"));
+      setEntryReady(true);
       return;
     }
 
     let cancelled = false;
-    void initializeRelayEntry({
-      tunnelDomain,
-      controlBaseUrl,
-      bindingId,
-      hostFingerprint
-    }).then(async () => {
-      if (cancelled) return;
-      const session = controlSessionStore.hydrate();
-      if (session && !isControlSessionExpired(session, Date.now())) {
-        await loadAccounts({ controlBaseUrl, tunnelDomain });
-        return;
-      }
-      setStage("connect-login");
-    }).catch(() => {
-      if (!cancelled) {
-        setStage("connect-login");
-        setErrorMessage(translate("auth.relayEntryInvalid"));
-      }
-    });
 
-    return () => { cancelled = true; };
-  }, [bindingId, controlBaseUrl, hostFingerprint, tunnelDomain]);
+    void clientConfigStore
+      .update(
+        buildRelayEntryConfigPatch(clientConfigStore.getState(), {
+          tunnelDomain,
+          controlBaseUrl,
+          bindingId,
+          hostFingerprint
+        })
+      )
+      .then(() => {
+        if (!cancelled) {
+          setEntryReady(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEntryReady(true);
+          setEntryError(translate("auth.relayEntryInvalid"));
+        }
+      });
 
-  async function handleControlLogin(event: React.FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    if (!tunnelDomain || !controlBaseUrl || stage === "submitting") return;
-    setStage("submitting");
-    setErrorMessage(null);
+    return () => {
+      cancelled = true;
+    };
+  }, [bindingId, controlBaseUrl, hostFingerprint, tunnelDomain, translate]);
 
-    try {
-      await loginControlAccount({ controlBaseUrl, tunnelDomain, email: controlEmail, password: controlPassword });
-      setControlPassword("");
-      await loadAccounts({ controlBaseUrl, tunnelDomain });
-    } catch (error) {
-      setStage("connect-login");
-      setErrorMessage(resolveEntryError(error, translate));
+  useEffect(() => {
+    if (!entryReady) {
+      return;
     }
+
+    void refreshLocalDirectHost();
+    // 只在入口初始化完成后探测一次本机服务。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entryReady]);
+
+  async function refreshLocalDirectHost(): Promise<void> {
+    setLocalProbeStage("probing");
+    setDirectError(null);
+
+    const result = await probeLocalDirectHost();
+
+    setLocalHostResult(result);
+    setLocalProbeStage("ready");
   }
 
-  async function handleHostLogin(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+  async function handleDirectLogin(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (!hostBaseUrl || !selectedUsername || stage === "submitting") return;
-    setStage("submitting");
-    setErrorMessage(null);
+
+    if (!localHostResult?.reachable || !localHostResult.baseUrl || directSubmitting) {
+      return;
+    }
+
+    const baseUrl = localHostResult.baseUrl;
+    setDirectSubmitting(true);
+    setDirectError(null);
 
     try {
-      await authGateway.login({ username: selectedUsername, password: hostPassword }, hostBaseUrl);
+      await clientConfigStore.update(
+        buildLocalHostProfile(clientConfigStore.getState(), { baseUrl })
+      );
+      await authGateway.login({ username: directUsername, password: directPassword }, baseUrl);
+      const { userPreferenceStore } = await import("../../../preferences/user-preference-store");
+      await userPreferenceStore.refreshForAuthenticatedUser();
       navigate(returnTo, { replace: true });
     } catch (error) {
-      setStage("host-login");
-      setErrorMessage(error instanceof ApiError ? error.message : t("auth.authUnavailable"));
+      setDirectError(error instanceof ApiError ? error.message : translate("auth.authUnavailable"));
+    } finally {
+      setDirectSubmitting(false);
     }
   }
 
-  if (stage === "initializing") {
-    return <RelayEntryShell><p className="status-text">{t("common.loading")}</p></RelayEntryShell>;
+  async function handleStartLocalHostBootstrap(): Promise<void> {
+    if (!localHostResult?.baseUrl) {
+      return;
+    }
+
+    await clientConfigStore.update(
+      buildLocalHostProfile(clientConfigStore.getState(), { baseUrl: localHostResult.baseUrl })
+    );
+    navigate("/bootstrap", { replace: true });
   }
 
-  if (stage === "connect-login" || (stage === "submitting" && hostAccounts.length === 0)) {
+  function renderDirectLoginPanel() {
+    if (localProbeStage !== "ready") {
+      return (
+        <div className="cyber-connect-panel">
+          <p className="cyber-connect-hint">{t("auth.loginDirectProbing")}</p>
+          <div className="cyber-connect-progress">
+            <span className="cyber-spinner" aria-hidden="true" />
+          </div>
+        </div>
+      );
+    }
+
+    if (!localHostResult?.reachable) {
+      return (
+        <div className="cyber-login-notice" data-variant="missing-local-host">
+          <h2 className="cyber-login-notice-title">{t("auth.loginDirectMissingTitle")}</h2>
+          <p className="cyber-login-notice-description">
+            {t("auth.loginDirectMissingDescription")}
+          </p>
+          <div className="cyber-login-notice-actions">
+            <button
+              type="button"
+              className="cyber-server-btn"
+              onClick={() => {
+                void refreshLocalDirectHost();
+              }}
+            >
+              <span className="cyber-server-icon" aria-hidden="true">⟳</span>
+              <span className="cyber-server-text">{t("auth.loginDirectRetryAction")}</span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (!localHostResult.initialized) {
+      return (
+        <div className="cyber-login-notice" data-variant="uninitialized-local-host">
+          <h2 className="cyber-login-notice-title">{t("auth.loginDirectUninitializedTitle")}</h2>
+          <p className="cyber-login-notice-description">
+            {t("auth.loginDirectUninitializedDescription", { baseUrl: localHostResult.baseUrl ?? "" })}
+          </p>
+          <div className="cyber-login-notice-actions">
+            <button
+              type="button"
+              className="cyber-submit"
+              onClick={() => {
+                void handleStartLocalHostBootstrap();
+              }}
+            >
+              <span className="cyber-submit-glow" />
+              <span className="cyber-submit-border" />
+              <span className="cyber-submit-text">
+                <span className="cyber-submit-icon" aria-hidden="true">➤</span>
+                {t("auth.loginDirectUninitializedAction")}
+              </span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
-      <RelayEntryShell>
-        <h1>{t("auth.relayConnectLoginTitle")}</h1>
-        <p className="status-text">{t("auth.relayConnectLoginDescription")}</p>
-        <p className="status-text" data-tone="info">{t("auth.relayConnectDeviceHint", { domain: tunnelDomain ?? "" })}</p>
-        <form className="auth-form" onSubmit={(event) => void handleControlLogin(event)}>
-          <div className="field-group">
-            <label htmlFor="relay-connect-email">{t("auth.relayConnectEmailLabel")}</label>
-            <input id="relay-connect-email" type="email" autoComplete="username" value={controlEmail} onChange={(event) => setControlEmail(event.target.value)} placeholder={t("auth.relayConnectEmailPlaceholder")} required />
+      <form
+        className="cyber-form"
+        onSubmit={(event) => {
+          void handleDirectLogin(event);
+        }}
+      >
+        <p className="cyber-connect-target" data-tone="info">
+          {t("auth.loginDirectDetected", { baseUrl: localHostResult.baseUrl ?? "" })}
+        </p>
+
+        <CyberField
+          id="direct-login-username"
+          label={t("auth.username")}
+          icon="❯"
+          inputProps={{
+            autoComplete: "username",
+            value: directUsername,
+            onChange: (event) => setDirectUsername(event.target.value)
+          }}
+        />
+
+        <CyberField
+          id="direct-login-password"
+          label={t("auth.password")}
+          icon="⚷"
+          inputProps={{
+            type: "password",
+            autoComplete: "current-password",
+            value: directPassword,
+            onChange: (event) => setDirectPassword(event.target.value)
+          }}
+        />
+
+        {directError ? (
+          <div className="cyber-status" data-tone="error">
+            <span className="cyber-status-icon">⚠</span>
+            <span>{directError}</span>
           </div>
-          <div className="field-group">
-            <label htmlFor="relay-connect-password">{t("auth.relayConnectPasswordLabel")}</label>
-            <input id="relay-connect-password" type="password" autoComplete="current-password" value={controlPassword} onChange={(event) => setControlPassword(event.target.value)} placeholder={t("auth.relayConnectPasswordPlaceholder")} required />
-          </div>
-          {errorMessage ? <p className="status-text" data-tone="error">{errorMessage}</p> : null}
-          <button type="submit" disabled={stage === "submitting"}>{stage === "submitting" ? t("auth.relayConnectLoggingIn") : t("auth.relayConnectLoginAction")}</button>
-        </form>
-      </RelayEntryShell>
+        ) : null}
+
+        <button
+          className={`cyber-submit ${directSubmitting ? "loading" : ""}`}
+          type="submit"
+          disabled={directSubmitting}
+        >
+          <span className="cyber-submit-glow" />
+          <span className="cyber-submit-border" />
+          <span className="cyber-submit-text">
+            {directSubmitting ? (
+              <>
+                <span className="cyber-spinner" aria-hidden="true" />
+                {t("auth.loginDirectSubmitting")}
+              </>
+            ) : (
+              <>
+                <span className="cyber-submit-icon" aria-hidden="true">➤</span>
+                {t("auth.loginDirectSubmit")}
+              </>
+            )}
+          </span>
+        </button>
+      </form>
     );
   }
 
-  return (
-    <RelayEntryShell>
-      <h1>{t("auth.relayHostLoginTitle")}</h1>
-      <p className="status-text">{t("auth.relayHostLoginDescription")}</p>
-      <form className="auth-form" onSubmit={(event) => void handleHostLogin(event)}>
-        <div className="field-group">
-          <label htmlFor="relay-host-account">{t("auth.relayHostAccountLabel")}</label>
-          <select id="relay-host-account" value={selectedUsername} onChange={(event) => setSelectedUsername(event.target.value)} required>
-            <option value="">{t("auth.relayHostAccountPlaceholder")}</option>
-            {hostAccounts.map((account) => <option key={account.userId} value={account.username}>{account.username}</option>)}
-          </select>
+  function renderConnectLoginPanel() {
+    if (!entryReady) {
+      return (
+        <div className="cyber-connect-panel">
+          <p className="cyber-connect-hint">{t("common.loading")}</p>
         </div>
-        <div className="field-group">
-          <label htmlFor="relay-host-password">{t("auth.relayHostPasswordLabel")}</label>
-          <input id="relay-host-password" type="password" autoComplete="current-password" value={hostPassword} onChange={(event) => setHostPassword(event.target.value)} placeholder={t("auth.relayHostPasswordPlaceholder")} required />
-        </div>
-        {errorMessage ? <p className="status-text" data-tone="error">{errorMessage}</p> : null}
-        <button type="submit" disabled={stage === "submitting" || hostAccounts.length === 0}>{stage === "submitting" ? t("auth.relayHostLoggingIn") : t("auth.relayHostLoginAction")}</button>
-      </form>
-    </RelayEntryShell>
-  );
-
-  async function loadAccounts(input: { controlBaseUrl: string; tunnelDomain: string }): Promise<void> {
-    setStage("initializing");
-    setErrorMessage(null);
-    try {
-      const accounts = await loadHostLoginAccounts(input);
-      if (accounts.length === 0) throw new Error("HOST_LOGIN_ACCOUNTS_EMPTY");
-      setHostAccounts(accounts);
-      setSelectedUsername(accounts[0]?.username ?? "");
-      setStage("host-login");
-    } catch (error) {
-      setStage("connect-login");
-      setErrorMessage(resolveEntryError(error, translate));
+      );
     }
+
+    if (!target || !hostBaseUrl) {
+      return (
+        <div className="cyber-login-notice" data-variant="invalid-entry">
+          <h2 className="cyber-login-notice-title">{t("auth.relayEntryInvalidTitle")}</h2>
+          <p className="cyber-login-notice-description">
+            {entryError ?? t("auth.relayEntryInvalid")}
+          </p>
+        </div>
+      );
+    }
+
+    return <ConnectLoginPanel target={target} flow={connectFlow} />;
   }
-}
 
-function RelayEntryShell({ children }: { children: ReactNode }) {
-  return <main className="page-center app-shell"><section className="auth-card surface-card">{children}</section></main>;
-}
+  return (
+    <AuthPageShell>
+      <div className="cyber-card">
+        <div className="cyber-corner corner-tl" />
+        <div className="cyber-corner corner-tr" />
+        <div className="cyber-corner corner-bl" />
+        <div className="cyber-corner corner-br" />
 
-async function initializeRelayEntry(input: { tunnelDomain: string; controlBaseUrl: string; bindingId: string | null; hostFingerprint: string | null }): Promise<void> {
-  await clientConfigStore.update(buildRelayEntryConfigPatch(clientConfigStore.getState(), input));
-}
+        <div className="cyber-card-header">
+          <div className="cyber-line" />
+          <span className="cyber-card-label">{t("auth.loginTitle").toUpperCase()}</span>
+          <div className="cyber-line" />
+        </div>
 
-function resolveEntryError(error: unknown, translate: (key: string, params?: Record<string, string | number | boolean | null | undefined>) => string): string {
-  if (error instanceof Error && error.message === "HOST_LOGIN_ACCOUNTS_EMPTY") return translate("auth.relayHostAccountsEmpty");
-  return translate(describeControlError(error).messageKey);
+        <LoginMethodTabs activeMethod={loginMethod} onChange={setLoginMethod} />
+
+        {loginMethod === "direct" ? renderDirectLoginPanel() : renderConnectLoginPanel()}
+      </div>
+    </AuthPageShell>
+  );
 }
 
 function normalizeReturnTo(value: string | null): string {

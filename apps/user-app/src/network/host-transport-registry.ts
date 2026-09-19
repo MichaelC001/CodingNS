@@ -1,6 +1,5 @@
 import { clientConfigStore } from "../config/client-config-store";
 import { getActiveHost, getRuntimeHostByBaseUrl } from "../config/client-config-types";
-import { hostLoginRouteHintStore } from "../config/host-login-route-hint-store";
 import { hostRuntimeStore } from "../config/host-runtime-store";
 import { inferRelayAccessConfig } from "../config/relay-control-site-config";
 import { directHostTransport } from "./direct-host-transport";
@@ -164,8 +163,7 @@ function resolveActiveHostBaseUrl(baseUrl: string): string {
   const runtimeState = hostRuntimeStore.getState();
 
   if (runtimeState.activeHostId !== activeHost.id || runtimeState.candidateProbePhase !== "ready") {
-    const loginRouteHint = hostLoginRouteHintStore.get(activeHost.id);
-    return loginRouteHint?.baseUrl ?? baseUrl;
+    return baseUrl;
   }
 
   const preferredEndpointId =
@@ -173,8 +171,7 @@ function resolveActiveHostBaseUrl(baseUrl: string): string {
     ?? runtimeState.preferredCandidateEndpointId;
 
   if (!preferredEndpointId) {
-    const loginRouteHint = hostLoginRouteHintStore.get(activeHost.id);
-    return loginRouteHint?.baseUrl ?? baseUrl;
+    return baseUrl;
   }
 
   const preferredEndpoint = runtimeState.candidateEndpoints.find(

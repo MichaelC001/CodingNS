@@ -947,6 +947,66 @@
 
 ---
 
+## 阶段 W2.5：登录入口双方式收口（2026-09-19）
+
+背景：桌面端 / 移动端把"服务器地址"填成四级域名后，登录页只有 Host 账号密码，而且登录时会先探测 Host 上报的直连候选地址，探到就直接登 Host——等于"知道四级域名就能连"，绕过了 Connect 认证。H5 远程入口页也只有 Connect 一条路，本机就有服务时也得绕一圈中继。
+
+- [x] W2.5.1 登录方式模型与直连边界收口
+  - 状态：DONE
+  - 这一步到底做什么：给客户端补一个"当前用哪种登录方式"的明确模型（直接登录 / CodingNS Connect），并把"四级域名目标不允许直连登录"写成硬规则；删掉登录阶段对四级域名目标的直连候选回退。
+  - 做完以后能看到什么结果：拿四级域名去调 Host 登录接口的路径不再存在；登录前不会再去探测候选直连地址；直接登录的目标只能是直连地址。
+  - 依赖什么：W2.4 的两层认证边界、现有 Host 登录接口。
+  - 主要改哪些文件：
+    - `apps/user-app/src/features/auth/store/login-direct-candidate-resolver.ts`（移除或改造）
+    - `apps/user-app/src/features/auth/store/auth-store.ts`
+    - `apps/user-app/src/features/auth/login-method.ts`（新增）
+    - 相关测试
+  - 这一步明确不做什么：不改 Host 侧登录校验；不动登录成功后的局域网自动直连（那属于业务链路，见 spec001.9.3）。
+  - 怎么验证：单元测试覆盖"四级域名目标不会走直连候选""直接登录目标校验拒绝四级域名"。
+  - 验证结果：已完成。已删除登录阶段的直连候选回退（`login-direct-candidate-resolver`、`host-login-route-hint-store`），新增 `login-method.ts` 提供登录方式模型与直接登录目标校验；`auth-store.test.ts` 里改为反向断言（relay 目标不发起探测请求）。
+
+- [x] W2.5.2 登录页标签页（桌面端 / 移动端）
+  - 状态：DONE
+  - 这一步到底做什么：把登录页改成两个标签页——「直接登录」只连直连 Host，「CodingNS Connect 登录」走 Connect 认证后再连四级域名。默认选中按当前目标自动决定。
+  - 做完以后能看到什么结果：填了四级域名的用户打开登录页，默认落在 Connect 标签页；直接登录标签页会说明这个目标不能直连；Connect 登录通过后才建立到四级域名的隧道、读取 Host 账号并完成 Host 登录。
+  - 依赖什么：W2.5.1。
+  - 主要改哪些文件：
+    - `apps/user-app/src/features/auth/pages/LoginPage.tsx`
+    - `apps/user-app/src/features/auth/components/*`（标签页与 Connect 面板）
+    - `apps/user-app/src/i18n/zh-CN.ts`、`apps/user-app/src/i18n/en-US.ts`
+  - 这一步明确不做什么：不改设置页的 Connect 面板；不在登录页硬编码显示文案。
+  - 怎么验证：页面测试覆盖默认选中、直接登录拒绝四级域名、Connect 两阶段流程。
+  - 验证结果：已完成。登录页拆成「直接登录 / CodingNS Connect 登录」两个页签，默认按当前目标自动选中；四级域名目标下直接登录页签只给说明和跳转入口；新增 `LoginPage.connect-tab.test.tsx` 覆盖默认选中、拦截和 Connect 两段登录。
+
+- [x] W2.5.3 远程入口落地页标签页（H5）
+  - 状态：DONE
+  - 这一步到底做什么：`/connect/<隧道域名>` 落地页也用同一套两个标签页：直接登录会探测本机 `127.0.0.1` 的 Host，能探到就直连登录；探不到就提示用 Connect 登录。
+  - 做完以后能看到什么结果：打开四级域名入口时，如果这台电脑上正好跑着 Host，可以直接登录，不用再走一遍中继；否则仍然走原来的 Connect 两阶段流程。
+  - 依赖什么：W2.5.1、W2.4。
+  - 主要改哪些文件：
+    - `apps/user-app/src/features/auth/pages/RelayConnectEntryPage.tsx`
+    - `apps/user-app/src/config/relay-entry.ts`（读取候选端点用于本机探测）
+    - `apps/user-app/src/network/host-probe.ts`
+  - 这一步明确不做什么：H5 不尝试直连局域网地址（浏览器会拦），只探本机；不改控制面的跳转逻辑。
+  - 怎么验证：页面测试覆盖两个标签页、本机探测成功/失败分支、Connect 流程回归。
+  - 验证结果：已完成。`/connect/<隧道域名>` 落地页与登录页共用同一套页签和 Connect 面板；直接登录会探测本机 `127.0.0.1:3002`，探到就直接登录并保存本机 Host，探不到给出重试和改用 Connect 的说明。页面测试覆盖两种分支。
+
+- [x] W2.5.4 文案、样式与回归
+  - 状态：DONE
+  - 这一步到底做什么：补齐中英文案和标签页样式，跑相关回归。
+  - 做完以后能看到什么结果：两种登录方式的说明文案普通用户能看懂，桌面端、移动端、H5 视觉一致。
+  - 依赖什么：W2.5.2、W2.5.3。
+  - 主要改哪些文件：`apps/user-app/src/i18n/*`、`apps/user-app/src/app/styles.css`、相关测试。
+  - 这一步明确不做什么：不发明新的按钮皮肤，沿用现有基线。
+  - 怎么验证：i18n 字典测试 + 相关页面测试 + TypeScript 检查。
+  - 验证结果：已完成。补齐中英文案；页签和提示块沿用现有 cyber 登录样式基线，没有新增按钮皮肤；登录页与四级域名入口页共用同一个外壳组件。
+  - 本轮最小必要验证：
+    - `pnpm --dir apps/user-app test src/features/auth src/network/host-transport-registry.test.ts src/features/setup src/settings/RelayTunnelPanel.test.tsx`
+    - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
+  - 已知的既有失败（与本阶段无关，改动前就存在）：`auth-store.test.ts` 中两个会话刷新次数用例、`shared/i18n/index.test.ts` 的 butler 文案用例、`app/App.test.tsx` 的五个聊天/设置用例。
+
+---
+
 ## 阶段 W7：回归与验收
 
 - [ ] W7.1 真实网络吞吐验收

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clientConfigStore } from "../../../config/client-config-store";
 import { controlSessionStore } from "../../../network/webrtc/control-site-client";
+import { userPreferenceStore } from "../../../preferences/user-preference-store";
 import { I18nProvider } from "../../../shared/i18n";
 
 const loginControlAccountMock = vi.fn();
@@ -97,5 +98,64 @@ describe("RelayConnectEntryPage", () => {
       "https://demo.channel.codingns.com:1443"
     );
     expect(await screen.findByText("workbench-page")).toBeInTheDocument();
+  });
+
+  it("直接登录标签页探测不到本机服务时给出提示和重新检测入口", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("连不上本机服务");
+    }));
+
+    renderEntry();
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "直接登录" }));
+
+    expect(await screen.findByText("没有检测到本机服务")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新检测" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("密码")).not.toBeInTheDocument();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("直接登录标签页探测到本机服务后直连登录并跳转", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+
+      if (url.endsWith("/api/public/bootstrap-status")) {
+        return new Response(JSON.stringify({ initialized: true }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        });
+      }
+
+      throw new Error(`未处理的请求: ${url}`);
+    }));
+    vi.spyOn(userPreferenceStore, "refreshForAuthenticatedUser").mockResolvedValue(
+      userPreferenceStore.getState()
+    );
+    hostLoginMock.mockResolvedValue({ accessToken: "host-token" });
+
+    renderEntry();
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "直接登录" }));
+
+    expect(await screen.findByText(/检测到本机服务/)).toBeInTheDocument();
+
+    const usernameInput = screen.getByLabelText("用户名");
+    await user.clear(usernameInput);
+    await user.type(usernameInput, "admin");
+    await user.type(screen.getByLabelText("密码"), "host-password");
+    await user.click(screen.getByRole("button", { name: "登录本机服务" }));
+
+    expect(hostLoginMock).toHaveBeenCalledWith(
+      { username: "admin", password: "host-password" },
+      "http://127.0.0.1:3002"
+    );
+    expect(await screen.findByText("workbench-page")).toBeInTheDocument();
+
+    vi.unstubAllGlobals();
   });
 });

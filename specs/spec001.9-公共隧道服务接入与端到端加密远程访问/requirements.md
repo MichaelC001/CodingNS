@@ -199,6 +199,18 @@
 4. WHEN 用户选择 Host 账号并提交密码 THEN System SHALL 继续调用原有 Host `/api/auth/login`，由 Host 本地权限决定是否登录成功
 5. WHEN 请求账号列表没有 relay session THEN System SHALL 返回 403，不能因为知道四级域名就读取本地账号
 
+### 需求 14：登录入口必须区分「直接登录」和「CodingNS Connect 登录」
+
+**用户故事：** 作为登录页上的用户，我希望自己选是直连手边这台 Host，还是通过 CodingNS Connect 访问远程设备，而不是"填了四级域名就能直接连"。
+
+#### 验收标准
+
+1. WHEN 用户打开登录页（桌面端、移动端，以及 H5 的四级域名入口）THEN System SHALL 用标签页提供「直接登录」和「CodingNS Connect 登录」两种方式
+2. WHEN 用户选择「直接登录」THEN System SHALL 只允许连接能直连到的 Host 地址；目标地址是四级域名入口时，不得提交 Host 登录请求
+3. WHEN 用户选择「CodingNS Connect 登录」THEN System SHALL 先完成 Connect 账号认证；认证通过后才允许建立到目标四级域名的连接
+4. WHEN 当前连接目标是四级域名入口 THEN System SHALL 默认选中 Connect 标签页，并在直接登录标签页说明这个目标不能直连
+5. WHEN 登录路径准备请求 Host 登录接口 THEN System SHALL 不对四级域名目标探测或回退到直连候选地址，避免绕过 Connect 认证
+
 ## 非功能需求
 
 ### 非功能需求 1：安全性

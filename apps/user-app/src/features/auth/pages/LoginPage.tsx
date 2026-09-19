@@ -3,19 +3,28 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { canConfigureHostBaseUrl } from "../../../config/client-config-service";
 import { useClientConfigSelector } from "../../../config/client-config-store";
-import { getEffectiveActiveHostId } from "../../../config/client-config-types";
+import { getActiveHost, getEffectiveActiveHostId } from "../../../config/client-config-types";
 import { hostSwitchCoordinator } from "../../../config/host-switch-coordinator";
 import { getVisibleDiscoveredHosts, localHostDiscoveryStore } from "../../../config/local-host-discovery-store";
+import { buildRelayAccessBaseUrl } from "../../../config/relay-entry";
 import { serverConfigStore, useServerConfigSelector } from "../../../config/server-config";
 import { authGateway } from "../../../auth/auth-gateway";
 import { consumeAuthExpiredFlag } from "../../../network/auth-expired-flag";
 import { usePlatform } from "../../../platform/platform-provider";
-import { LanguageSwitcher, t, useT } from "../../../shared/i18n";
+import { t, useT } from "../../../shared/i18n";
 import { ApiError } from "../../../shared/network/api-error";
-import { useTheme } from "../../../shared/theme";
-import { useAppVersion } from "../../../shared/version/app-version";
+import { AuthPageShell } from "../components/AuthPageShell";
+import { ConnectLoginPanel } from "../components/ConnectLoginPanel";
 import { HostConnectionEmptyState } from "../components/HostConnectionEmptyState";
-import { authStore, useAuthSelector } from "../store/auth-store";
+import { LoginMethodTabs } from "../components/LoginMethodTabs";
+import { useConnectLoginFlow } from "../connect/use-connect-login-flow";
+import {
+  isDirectLoginTargetAllowed,
+  resolveDefaultLoginMethod,
+  resolveRemoteEntryLoginTarget,
+  type LoginMethod
+} from "../login-method";
+import { useAuthSelector } from "../store/auth-store";
 import {
   clearRememberedLoginCredentials,
   persistRememberedLoginCredentials,
@@ -30,151 +39,6 @@ const ServerSettingsModal = lazy(async () => {
     default: module.ServerSettingsModal
   };
 });
-
-const DEFAULT_VIEWPORT_CONTENT = "width=device-width, initial-scale=1.0, viewport-fit=cover";
-const NATIVE_MOBILE_LOGIN_VIEWPORT_CONTENT =
-  "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover";
-
-// Animated background particles
-function ParticleField() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    let animationId: number;
-    const handleResize = () => {
-      resize();
-      createParticles();
-    };
-    let particles: Array<{
-      x: number;
-      y: number;
-      vx: number;
-      vy: number;
-      size: number;
-      opacity: number;
-    }> = [];
-
-    const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    };
-
-    const createParticles = () => {
-      particles = [];
-      const count = Math.min(50, Math.floor((canvas.width * canvas.height) / 25000));
-      for (let i = 0; i < count; i++) {
-        particles.push({
-          x: Math.random() * canvas.width,
-          y: Math.random() * canvas.height,
-          vx: (Math.random() - 0.5) * 0.5,
-          vy: (Math.random() - 0.5) * 0.5,
-          size: Math.random() * 2 + 1,
-          opacity: Math.random() * 0.5 + 0.2
-        });
-      }
-    };
-
-    const draw = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      // Draw particles
-      particles.forEach((p, i) => {
-        p.x += p.vx;
-        p.y += p.vy;
-
-        if (p.x < 0) p.x = canvas.width;
-        if (p.x > canvas.width) p.x = 0;
-        if (p.y < 0) p.y = canvas.height;
-        if (p.y > canvas.height) p.y = 0;
-
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(10, 132, 255, ${p.opacity})`;
-        ctx.fill();
-
-        // Draw connections
-        particles.slice(i + 1).forEach(p2 => {
-          const dx = p.x - p2.x;
-          const dy = p.y - p2.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < 150) {
-            ctx.beginPath();
-            ctx.moveTo(p.x, p.y);
-            ctx.lineTo(p2.x, p2.y);
-            ctx.strokeStyle = `rgba(10, 132, 255, ${0.1 * (1 - dist / 150)})`;
-            ctx.stroke();
-          }
-        });
-      });
-
-      animationId = requestAnimationFrame(draw);
-    };
-
-    resize();
-    createParticles();
-    draw();
-
-    window.addEventListener("resize", handleResize);
-
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      cancelAnimationFrame(animationId);
-    };
-  }, []);
-
-  return <canvas ref={canvasRef} className="particle-canvas" />;
-}
-
-// Glitch text effect
-function GlitchText({ text }: { text: string }) {
-  return (
-    <span className="glitch-text" data-text={text}>
-      {text}
-    </span>
-  );
-}
-
-// Typewriter effect for subtitle
-function TypewriterText({ text }: { text: string }) {
-  const [displayText, setDisplayText] = useState("");
-  const [showCursor, setShowCursor] = useState(true);
-
-  useEffect(() => {
-    let index = 0;
-    let cursorTimeoutId: number | null = null;
-    const interval = setInterval(() => {
-      if (index <= text.length) {
-        setDisplayText(text.slice(0, index));
-        index++;
-      } else {
-        clearInterval(interval);
-        // Hide cursor after typing complete
-        cursorTimeoutId = window.setTimeout(() => setShowCursor(false), 1000);
-      }
-    }, 50);
-
-    return () => {
-      clearInterval(interval);
-
-      if (cursorTimeoutId !== null) {
-        window.clearTimeout(cursorTimeoutId);
-      }
-    };
-  }, [text]);
-
-  return (
-    <span className="typewriter-text">
-      {displayText}
-      {showCursor && <span className="typewriter-cursor">_</span>}
-    </span>
-  );
-}
 
 type HostReachability = "unknown" | "reachable" | "unreachable";
 
@@ -208,8 +72,8 @@ export function LoginPage() {
   const t = useT();
   const [searchParams] = useSearchParams();
   const platform = usePlatform();
-  const appVersion = useAppVersion();
   const activeHostId = useClientConfigSelector((state) => getEffectiveActiveHostId(state));
+  const activeHost = useClientConfigSelector((state) => getActiveHost(state));
   const savedHosts = useClientConfigSelector((state) => state.hosts);
   const discoveredHosts = useClientConfigSelector((state) => state.discoveredHosts);
   const canConfigureServerAddress = canConfigureHostBaseUrl(platform.platform);
@@ -249,16 +113,37 @@ export function LoginPage() {
   const [showServerModal, setShowServerModal] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const [demoMode, setDemoMode] = useState(false);
+  const [loginMethodOverride, setLoginMethodOverride] = useState<LoginMethod | null>(null);
   const authSession = useAuthSelector((state) => state.session);
   const returnTo = useMemo(() => searchParams.get("returnTo") ?? "/", [searchParams]);
-  const { theme } = useTheme();
   const rememberedServerAppliedRef = useRef(false);
   const isNativeMobileLogin = platform.isNativeMobile;
 
-  // Map app theme to login page theme (light or dark)
-  const loginTheme = useMemo(() => {
-    return theme === "light" ? "light" : "dark";
-  }, [theme]);
+  const loginTarget = useMemo(
+    () => ({ baseUrl: persistedServerBaseUrl, host: activeHost }),
+    [activeHost, persistedServerBaseUrl]
+  );
+  const defaultLoginMethod = useMemo(() => resolveDefaultLoginMethod(loginTarget), [loginTarget]);
+  const activeLoginMethod = loginMethodOverride ?? defaultLoginMethod;
+  const remoteEntryTarget = useMemo(() => resolveRemoteEntryLoginTarget(loginTarget), [loginTarget]);
+  const connectHostBaseUrl = useMemo(
+    () =>
+      remoteEntryTarget
+        ? buildRelayAccessBaseUrl(remoteEntryTarget.tunnelDomain, remoteEntryTarget.controlBaseUrl)
+        : null,
+    [remoteEntryTarget]
+  );
+  const directLoginAllowed = isDirectLoginTargetAllowed(loginTarget);
+
+  const connectFlow = useConnectLoginFlow({
+    target: remoteEntryTarget,
+    hostBaseUrl: connectHostBaseUrl,
+    onHostLoginSuccess: async () => {
+      const { userPreferenceStore } = await import("../../../preferences/user-preference-store");
+      await userPreferenceStore.refreshForAuthenticatedUser();
+      navigate(returnTo, { replace: true });
+    }
+  });
 
   useEffect(() => {
     setUsername(rememberedLogin?.username ?? "admin");
@@ -267,30 +152,6 @@ export function LoginPage() {
     setCaptchaCode("");
     setRememberPassword(Boolean(rememberedLogin));
   }, [rememberedLogin]);
-
-  useEffect(() => {
-    if (typeof document === "undefined") {
-      return;
-    }
-
-    const viewportMeta = document.querySelector('meta[name="viewport"]');
-
-    if (!(viewportMeta instanceof HTMLMetaElement)) {
-      return;
-    }
-
-    const previousContent = viewportMeta.getAttribute("content") ?? DEFAULT_VIEWPORT_CONTENT;
-
-    if (isNativeMobileLogin) {
-      viewportMeta.setAttribute("content", NATIVE_MOBILE_LOGIN_VIEWPORT_CONTENT);
-    } else {
-      viewportMeta.setAttribute("content", DEFAULT_VIEWPORT_CONTENT);
-    }
-
-    return () => {
-      viewportMeta.setAttribute("content", previousContent);
-    };
-  }, [isNativeMobileLogin]);
 
   useEffect(() => {
     if (rememberedServerAppliedRef.current) {
@@ -361,6 +222,12 @@ export function LoginPage() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    // 直接登录不接受四级域名目标；就算界面被绕过，提交入口也要再拦一次。
+    if (!directLoginAllowed) {
+      setLoginMethodOverride("connect");
+      return;
+    }
 
     setLoading(true);
     setStatusText(null);
@@ -501,241 +368,277 @@ export function LoginPage() {
   const passwordInputId = "login-password";
   const captchaInputId = "login-captcha";
 
-  return (
-    <main
-      className="cyber-login-page"
-      data-theme={loginTheme}
-      data-native-mobile={isNativeMobileLogin ? "true" : "false"}
-    >
-      {/* Animated Background */}
-      <div className="cyber-bg">
-        <div className="cyber-grid" />
-        <div className="cyber-glow cyber-glow-1" />
-        <div className="cyber-glow cyber-glow-2" />
-        <ParticleField />
-      </div>
+  function renderDirectLoginPanel() {
+    if (showHostConnectionEmptyState) {
+      return (
+        <HostConnectionEmptyState
+          serverBaseUrl={probeServerBaseUrl}
+          localHost={localHostCandidate}
+          failureDetail={hostProbeFailureDetail}
+          connecting={connectingLocalHost}
+          retrying={retryingHostProbe}
+          onConnectLocalHost={() => {
+            void handleConnectLocalHost();
+          }}
+          onInstallLocalHost={handleInstallLocalHost}
+          onChangeServerAddress={() => {
+            setShowServerModal(true);
+          }}
+          onRetry={() => {
+            void handleRetryHostProbe();
+          }}
+        />
+      );
+    }
 
-      {/* Scanline overlay */}
-      <div className="scanlines" />
-
-      {/* Main Content */}
-      <div className="cyber-login-container">
-        <div className="cyber-login-toolbar">
-          <LanguageSwitcher variant="compact" />
-        </div>
-
-        <div className="cyber-login-content">
-          {/* Logo / Brand */}
-          <div className="cyber-brand">
-            <div className="cyber-logo">
-              <img src="/logo.png" alt="CodingNS" className="cyber-logo-svg" />
-            </div>
-            <h1 className="cyber-brand-title">
-              <GlitchText text="CodingNS" />
-            </h1>
-            <p className="cyber-brand-subtitle">
-              <TypewriterText text={t("auth.loginSubtitle")} />
-            </p>
-          </div>
-
-          {/* Login Card */}
-          <div className="cyber-card">
-            {/* Decorative corners */}
-            <div className="cyber-corner corner-tl" />
-            <div className="cyber-corner corner-tr" />
-            <div className="cyber-corner corner-bl" />
-            <div className="cyber-corner corner-br" />
-
-            {/* Header line */}
-            <div className="cyber-card-header">
-              <div className="cyber-line" />
-              <span className="cyber-card-label">
-                {showHostConnectionEmptyState
-                  ? t("auth.hostConnectionEmptySectionLabel").toUpperCase()
-                  : t("auth.loginTitle").toUpperCase()}
+    if (!directLoginAllowed) {
+      return (
+        <div className="cyber-login-notice" data-variant="blocked">
+          <h2 className="cyber-login-notice-title">{t("auth.loginDirectBlockedTitle")}</h2>
+          <p className="cyber-login-notice-description">
+            {t("auth.loginDirectBlockedDescription", {
+              domain: remoteEntryTarget?.tunnelDomain ?? persistedServerBaseUrl
+            })}
+          </p>
+          <div className="cyber-login-notice-actions">
+            <button
+              type="button"
+              className="cyber-submit"
+              onClick={() => setLoginMethodOverride("connect")}
+            >
+              <span className="cyber-submit-glow" />
+              <span className="cyber-submit-border" />
+              <span className="cyber-submit-text">
+                <span className="cyber-submit-icon" aria-hidden="true">➤</span>
+                {t("auth.loginDirectBlockedAction")}
               </span>
-              <div className="cyber-line" />
-            </div>
-
-            {showHostConnectionEmptyState ? (
-              <HostConnectionEmptyState
-                serverBaseUrl={probeServerBaseUrl}
-                localHost={localHostCandidate}
-                failureDetail={hostProbeFailureDetail}
-                connecting={connectingLocalHost}
-                retrying={retryingHostProbe}
-                onConnectLocalHost={() => {
-                  void handleConnectLocalHost();
-                }}
-                onInstallLocalHost={handleInstallLocalHost}
-                onChangeServerAddress={() => {
-                  setShowServerModal(true);
-                }}
-                onRetry={() => {
-                  void handleRetryHostProbe();
-                }}
-              />
-            ) : (
-              <>
-            {/* Demo Mode Banner */}
-            {demoMode ? (
-              <div className="cyber-demo-banner">
-                <span className="cyber-demo-icon">&#9888;</span>
-                <span>{t("auth.demoBanner")}</span>
-              </div>
-            ) : null}
-
-            <form className="cyber-form" onSubmit={handleSubmit}>
-              {/* Username Field */}
-              <div className={`cyber-field ${focusedField === "username" ? "focused" : ""}`}>
-                <div className="cyber-field-border">
-                  <div className="cyber-field-border-glow" />
-                </div>
-                <label className="cyber-field-label" htmlFor={usernameInputId}>
-                  <span className="cyber-field-icon">❯</span>
-                  {t("auth.username")}
-                </label>
-                <input
-                  id={usernameInputId}
-                  aria-label={t("auth.username")}
-                  className="cyber-input"
-                  value={username}
-                  onChange={(e) => handleUsernameChange(e.target.value)}
-                  onFocus={() => setFocusedField("username")}
-                  onBlur={() => setFocusedField(null)}
-                  autoComplete="username"
-                />
-              </div>
-
-              {/* Password Field */}
-              <div className={`cyber-field ${focusedField === "password" ? "focused" : ""}`}>
-                <div className="cyber-field-border">
-                  <div className="cyber-field-border-glow" />
-                </div>
-                <label className="cyber-field-label" htmlFor={passwordInputId}>
-                  <span className="cyber-field-icon">⚷</span>
-                  {t("auth.password")}
-                </label>
-                <input
-                  id={passwordInputId}
-                  aria-label={t("auth.password")}
-                  className="cyber-input"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onFocus={() => setFocusedField("password")}
-                  onBlur={() => setFocusedField(null)}
-                  autoComplete="current-password"
-                />
-              </div>
-
-              {captchaChallenge ? (
-                <div className="cyber-captcha-panel">
-                  <img
-                    alt={t("auth.captchaImageAlt")}
-                    className="cyber-captcha-image"
-                    draggable={false}
-                    src={captchaChallenge.imageDataUrl}
-                  />
-                  <p className="cyber-captcha-hint">{t("auth.captchaHint")}</p>
-
-                  <div className={`cyber-field ${focusedField === "captcha" ? "focused" : ""}`}>
-                    <div className="cyber-field-border">
-                      <div className="cyber-field-border-glow" />
-                    </div>
-                    <label className="cyber-field-label" htmlFor={captchaInputId}>
-                      <span className="cyber-field-icon">#</span>
-                      {t("auth.captcha")}
-                    </label>
-                    <input
-                      id={captchaInputId}
-                      aria-label={t("auth.captcha")}
-                      className="cyber-input"
-                      placeholder={t("auth.captchaPlaceholder")}
-                      value={captchaCode}
-                      onChange={(event) => setCaptchaCode(event.target.value)}
-                      onFocus={() => setFocusedField("captcha")}
-                      onBlur={() => setFocusedField(null)}
-                      autoComplete="one-time-code"
-                    />
-                  </div>
-                </div>
-              ) : null}
-
-              {rememberPasswordSupported ? (
-                <label className="cyber-remember-toggle">
-                  <input
-                    aria-label={t("auth.rememberPassword")}
-                    type="checkbox"
-                    checked={rememberPassword}
-                    onChange={(event) => setRememberPassword(event.target.checked)}
-                  />
-                  <span>{t("auth.rememberPassword")}</span>
-                </label>
-              ) : null}
-
-              {/* Status Message */}
-              {statusText ? (
-                <div className="cyber-status" data-tone="error">
-                  <span className="cyber-status-icon">⚠</span>
-                  <span>{statusText}</span>
-                </div>
-              ) : null}
-
-              {/* Submit Button */}
+            </button>
+            {canConfigureServerAddress ? (
               <button
-                className={`cyber-submit ${loading ? "loading" : ""}`}
-                type="submit"
-                disabled={loading}
+                type="button"
+                className="cyber-server-btn"
+                onClick={() => setShowServerModal(true)}
               >
-                <span className="cyber-submit-glow" />
-                <span className="cyber-submit-border" />
-                <span className="cyber-submit-text">
-                  {loading ? (
-                    <>
-                      <span className="cyber-spinner" />
-                      {t("common.loading")}
-                    </>
-                  ) : (
-                    <>
-                      <span className="cyber-submit-icon">➤</span>
-                      {t("auth.submitLogin")}
-                    </>
-                  )}
+                <span className="cyber-server-icon">⚙</span>
+                <span className="cyber-server-text">
+                  {t("auth.hostConnectionEmptyChangeAddressAction")}
                 </span>
               </button>
-            </form>
-
-            {/* Server Settings Button */}
-            {canConfigureServerAddress ? (
-              <div className="cyber-footer">
-                <div className="cyber-divider">
-                  <span className="cyber-divider-line" />
-                  <span className="cyber-divider-text">//</span>
-                  <span className="cyber-divider-line" />
-                </div>
-                <button
-                  className="cyber-server-btn"
-                  onClick={() => setShowServerModal(true)}
-                  type="button"
-                >
-                  <span className="cyber-server-icon">⚙</span>
-                  <span className="cyber-server-text">{t("auth.serverSettings")}</span>
-                  <span className="cyber-server-current">{persistedServerBaseUrl}</span>
-                </button>
-              </div>
             ) : null}
-              </>
-            )}
           </div>
         </div>
+      );
+    }
 
-        {/* Version / Credits */}
-        <div className="cyber-version">
-          <span className="cyber-version-text">v{appVersion}</span>
-          <span className="cyber-version-divider">|</span>
-          <span className="cyber-version-text">SYSTEM READY</span>
+    return (
+      <>
+        {/* Demo Mode Banner */}
+        {demoMode ? (
+          <div className="cyber-demo-banner">
+            <span className="cyber-demo-icon">&#9888;</span>
+            <span>{t("auth.demoBanner")}</span>
+          </div>
+        ) : null}
+
+        <form className="cyber-form" onSubmit={handleSubmit}>
+          {/* Username Field */}
+          <div className={`cyber-field ${focusedField === "username" ? "focused" : ""}`}>
+            <div className="cyber-field-border">
+              <div className="cyber-field-border-glow" />
+            </div>
+            <label className="cyber-field-label" htmlFor={usernameInputId}>
+              <span className="cyber-field-icon">❯</span>
+              {t("auth.username")}
+            </label>
+            <input
+              id={usernameInputId}
+              aria-label={t("auth.username")}
+              className="cyber-input"
+              value={username}
+              onChange={(e) => handleUsernameChange(e.target.value)}
+              onFocus={() => setFocusedField("username")}
+              onBlur={() => setFocusedField(null)}
+              autoComplete="username"
+            />
+          </div>
+
+          {/* Password Field */}
+          <div className={`cyber-field ${focusedField === "password" ? "focused" : ""}`}>
+            <div className="cyber-field-border">
+              <div className="cyber-field-border-glow" />
+            </div>
+            <label className="cyber-field-label" htmlFor={passwordInputId}>
+              <span className="cyber-field-icon">⚷</span>
+              {t("auth.password")}
+            </label>
+            <input
+              id={passwordInputId}
+              aria-label={t("auth.password")}
+              className="cyber-input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onFocus={() => setFocusedField("password")}
+              onBlur={() => setFocusedField(null)}
+              autoComplete="current-password"
+            />
+          </div>
+
+          {captchaChallenge ? (
+            <div className="cyber-captcha-panel">
+              <img
+                alt={t("auth.captchaImageAlt")}
+                className="cyber-captcha-image"
+                draggable={false}
+                src={captchaChallenge.imageDataUrl}
+              />
+              <p className="cyber-captcha-hint">{t("auth.captchaHint")}</p>
+
+              <div className={`cyber-field ${focusedField === "captcha" ? "focused" : ""}`}>
+                <div className="cyber-field-border">
+                  <div className="cyber-field-border-glow" />
+                </div>
+                <label className="cyber-field-label" htmlFor={captchaInputId}>
+                  <span className="cyber-field-icon">#</span>
+                  {t("auth.captcha")}
+                </label>
+                <input
+                  id={captchaInputId}
+                  aria-label={t("auth.captcha")}
+                  className="cyber-input"
+                  placeholder={t("auth.captchaPlaceholder")}
+                  value={captchaCode}
+                  onChange={(event) => setCaptchaCode(event.target.value)}
+                  onFocus={() => setFocusedField("captcha")}
+                  onBlur={() => setFocusedField(null)}
+                  autoComplete="one-time-code"
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {rememberPasswordSupported ? (
+            <label className="cyber-remember-toggle">
+              <input
+                aria-label={t("auth.rememberPassword")}
+                type="checkbox"
+                checked={rememberPassword}
+                onChange={(event) => setRememberPassword(event.target.checked)}
+              />
+              <span>{t("auth.rememberPassword")}</span>
+            </label>
+          ) : null}
+
+          {/* Status Message */}
+          {statusText ? (
+            <div className="cyber-status" data-tone="error">
+              <span className="cyber-status-icon">⚠</span>
+              <span>{statusText}</span>
+            </div>
+          ) : null}
+
+          {/* Submit Button */}
+          <button
+            className={`cyber-submit ${loading ? "loading" : ""}`}
+            type="submit"
+            disabled={loading}
+          >
+            <span className="cyber-submit-glow" />
+            <span className="cyber-submit-border" />
+            <span className="cyber-submit-text">
+              {loading ? (
+                <>
+                  <span className="cyber-spinner" aria-hidden="true" />
+                  {t("common.loading")}
+                </>
+              ) : (
+                <>
+                  <span className="cyber-submit-icon" aria-hidden="true">➤</span>
+                  {t("auth.submitLogin")}
+                </>
+              )}
+            </span>
+          </button>
+        </form>
+
+        {/* Server Settings Button */}
+        {canConfigureServerAddress ? (
+          <div className="cyber-footer">
+            <div className="cyber-divider">
+              <span className="cyber-divider-line" />
+              <span className="cyber-divider-text">//</span>
+              <span className="cyber-divider-line" />
+            </div>
+            <button
+              className="cyber-server-btn"
+              onClick={() => setShowServerModal(true)}
+              type="button"
+            >
+              <span className="cyber-server-icon">⚙</span>
+              <span className="cyber-server-text">{t("auth.serverSettings")}</span>
+              <span className="cyber-server-current">{persistedServerBaseUrl}</span>
+            </button>
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
+  function renderConnectLoginPanel() {
+    if (remoteEntryTarget && connectHostBaseUrl) {
+      return <ConnectLoginPanel target={remoteEntryTarget} flow={connectFlow} />;
+    }
+
+    return (
+      <div className="cyber-login-notice" data-variant="missing-target">
+        <h2 className="cyber-login-notice-title">{t("auth.loginConnectMissingTargetTitle")}</h2>
+        <p className="cyber-login-notice-description">
+          {t("auth.loginConnectMissingTargetDescription")}
+        </p>
+        {canConfigureServerAddress ? (
+          <div className="cyber-login-notice-actions">
+            <button
+              type="button"
+              className="cyber-submit"
+              onClick={() => setShowServerModal(true)}
+            >
+              <span className="cyber-submit-glow" />
+              <span className="cyber-submit-border" />
+              <span className="cyber-submit-text">
+                <span className="cyber-submit-icon" aria-hidden="true">➤</span>
+                {t("auth.loginConnectMissingTargetAction")}
+              </span>
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <AuthPageShell viewportMode={isNativeMobileLogin ? "native-mobile" : "default"}>
+      {/* Login Card */}
+      <div className="cyber-card">
+        {/* Decorative corners */}
+        <div className="cyber-corner corner-tl" />
+        <div className="cyber-corner corner-tr" />
+        <div className="cyber-corner corner-bl" />
+        <div className="cyber-corner corner-br" />
+
+        {/* Header line */}
+        <div className="cyber-card-header">
+          <div className="cyber-line" />
+          <span className="cyber-card-label">
+            {showHostConnectionEmptyState
+              ? t("auth.hostConnectionEmptySectionLabel").toUpperCase()
+              : t("auth.loginTitle").toUpperCase()}
+          </span>
+          <div className="cyber-line" />
         </div>
+
+        <LoginMethodTabs activeMethod={activeLoginMethod} onChange={setLoginMethodOverride} />
+
+        {activeLoginMethod === "direct" ? renderDirectLoginPanel() : renderConnectLoginPanel()}
       </div>
 
       {/* Server Settings Modal */}
@@ -748,6 +651,6 @@ export function LoginPage() {
           />
         </Suspense>
       ) : null}
-    </main>
+    </AuthPageShell>
   );
 }
