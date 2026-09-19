@@ -132,16 +132,11 @@ describe("DesktopUnifiedUpdatePanel", () => {
     expect(await screen.findByText(t("settings.updateBothReady"))).toBeInTheDocument();
     expect(screen.getAllByText("0.2.0").length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("button", { name: t("settings.serverInstallNow") }));
-
-    await waitFor(() => {
-      expect(callOrder).toContain("install_service_update");
-    });
-
-    await user.click(screen.getByRole("button", { name: t("settings.releaseInstallNow") }));
+    await user.click(screen.getByRole("button", { name: t("settings.updateInstallAll") }));
 
     await waitFor(() => {
       expect(callOrder).toContain("install_update");
+      expect(callOrder).toContain("install_service_update");
       expect(callOrder.indexOf("install_service_update")).toBeLessThan(callOrder.indexOf("install_update"));
     });
   });

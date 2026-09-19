@@ -149,6 +149,49 @@ export function DesktopUnifiedUpdatePanel() {
     }
   }
 
+  async function handleInstallAll() {
+    if (pendingRestartVersion || busy || (!canInstallService && !canInstallClient)) {
+      return;
+    }
+
+    setInstalling(true);
+    setStatusText(null);
+
+    try {
+      if (canInstallService && servicePackage?.packageName) {
+        setStatusText(t("settings.updateInstallingServerFirst"));
+        const startedTask = await installServiceUpdate(servicePackage.packageName);
+        setServiceTask(startedTask);
+        const finishedTask = await waitForServiceTask(startedTask);
+
+        if (finishedTask.status !== "succeeded") {
+          setServiceTask(finishedTask);
+          setStatusText(finishedTask.errorMessage ?? t("settings.serverInstallFailed"));
+          return;
+        }
+      }
+
+      if (canInstallClient && clientManifest) {
+        setStatusText(t("settings.updateInstallingClientNext"));
+        const result = await installDesktopUpdate();
+
+        if (!result.ok) {
+          setStatusText(result.detail ?? t("settings.releaseInstallFailed"));
+          return;
+        }
+
+        markDesktopRestartRequired(clientManifest.version);
+        setDownloadedVersion(null);
+      }
+
+      setStatusText(t("settings.updateInstallAllSucceeded"));
+    } catch (error) {
+      setStatusText(error instanceof Error ? error.message : t("settings.updateInstallAllFailed"));
+    } finally {
+      setInstalling(false);
+    }
+  }
+
   async function handleOpenReleasePage() {
     if (!clientManifest?.htmlUrl) {
       return;
@@ -228,6 +271,14 @@ export function DesktopUnifiedUpdatePanel() {
             onClick={handleCheckAll}
           >
             {checking ? t("settings.updateChecking") : t("settings.updateCheckAll")}
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={(!canInstallService && !canInstallClient) || busy || Boolean(pendingRestartVersion)}
+            onClick={handleInstallAll}
+          >
+            {installing ? t("common.loading") : t("settings.updateInstallAll")}
           </button>
           <button
             className="primary-button"
