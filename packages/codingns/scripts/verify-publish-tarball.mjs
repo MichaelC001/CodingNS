@@ -87,6 +87,16 @@ if (!tarEntries.has("package/node_modules/@codingns/relay-tunnel-wire/dist/index
   problems.push("发布包缺少 @codingns/relay-tunnel-wire/dist/index.js（Host 运行时真正加载的文件）");
 }
 
+// host-install.mjs 会 import 同目录的 host-supervisor.mjs 来读写主动停止标记；
+// 少打这一个文件，安装器直接 ERR_MODULE_NOT_FOUND，自启和托管全废。
+if (!tarEntries.has("package/scripts/host-install.mjs")) {
+  problems.push("发布包缺少 scripts/host-install.mjs");
+}
+
+if (!tarEntries.has("package/scripts/host-supervisor.mjs")) {
+  problems.push("发布包缺少 scripts/host-supervisor.mjs（安装器依赖它，缺了会直接起不来）");
+}
+
 for (const entry of tarEntries.keys()) {
   if (entry.startsWith("package/vendor/") || entry.startsWith("package/vendor-src/")) {
     problems.push(`发布包不应包含本地原生 vendor：${entry}`);

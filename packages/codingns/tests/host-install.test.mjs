@@ -8,6 +8,7 @@ import {
   EXIT_FAILURE,
   EXIT_OK,
   EXIT_USAGE,
+  STOP_REASONS,
   buildLaunchAgentPlist,
   buildSystemdUnit,
   buildWindowsLaunchCommandContent,
@@ -33,12 +34,18 @@ import {
   runInstall,
   runNpmCommand,
   runRestart,
+  runStart,
   runStop,
   runUninstall,
   setOutputSink,
   verifyInstalledPackage,
   writeInstallState
 } from "../scripts/host-install.mjs";
+import {
+  readControlRequest,
+  readStopState,
+  resolveStopStatePath
+} from "../scripts/host-supervisor.mjs";
 
 function createTempDataDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "codingns-host-install-"));
@@ -428,6 +435,8 @@ function createAutostartContext(overrides = {}) {
     dataDir: "/tmp/codingns-data",
     packageRoot: "/tmp/codingns-data/runtime/npm/lib/node_modules/@jingyi0605/codingns",
     cliEntryPath: "/tmp/codingns-data/runtime/npm/lib/node_modules/@jingyi0605/codingns/bin/codingns.mjs",
+    supervisorEntryPath:
+      "/tmp/codingns-data/runtime/npm/lib/node_modules/@jingyi0605/codingns/scripts/host-supervisor.mjs",
     nodeBinary: "/usr/local/bin/node",
     port: 3002,
     listenHost: "127.0.0.1",
@@ -437,16 +446,24 @@ function createAutostartContext(overrides = {}) {
   };
 }
 
-test("macOS 自启文件是 LaunchAgent plist，参数和日志路径都对得上", async () => {
+test("macOS 自启文件是 LaunchAgent plist，托管 Supervisor 而不是 Host", async () => {
   const plist = buildLaunchAgentPlist(createAutostartContext());
 
   assert.match(plist, /<key>Label<\/key>\n  <string>com\.codingns\.host<\/string>/);
   assert.match(plist, /<string>\/usr\/local\/bin\/node<\/string>/);
   assert.match(
     plist,
-    /<string>\/tmp\/codingns-data\/runtime\/npm\/lib\/node_modules\/@jingyi0605\/codingns\/bin\/codingns\.mjs<\/string>/
+    /<string>\/tmp\/codingns-data\/runtime\/npm\/lib\/node_modules\/@jingyi0605\/codingns\/scripts\/host-supervisor\.mjs<\/string>/,
+    "自启入口必须指向 Supervisor"
   );
   assert.match(plist, /<string>--port<\/string>\n    <string>3002<\/string>/);
+  // Supervisor 需要知道用哪个 node、拉哪个 CLI 入口去起 Host。
+  assert.match(plist, /<string>--node-binary<\/string>/);
+  assert.match(
+    plist,
+    /<string>\/tmp\/codingns-data\/runtime\/npm\/lib\/node_modules\/@jingyi0605\/codingns\/bin\/codingns\.mjs<\/string>/,
+    "Supervisor 要拿到 CLI 入口"
+  );
   assert.match(plist, /<key>RunAtLoad<\/key>\n  <true\/>/);
   assert.match(plist, /<string>\/tmp\/codingns-data\/runtime\/logs\/host-service\.log<\/string>/);
 });
@@ -473,8 +490,8 @@ test("Windows 启动包装用 0 号窗口模式拉起批处理，命令和重定
   assert.match(command, /^@echo off/, "批处理第一行要关回显");
   assert.match(
     command,
-    /"\/usr\/local\/bin\/node" "[^"]*codingns\.mjs" "start"/,
-    "批处理里要显式调用 node 跑 CLI"
+    /"\/usr\/local\/bin\/node" "[^"]*host-supervisor\.mjs"/,
+    "批处理里要显式调用 node 跑 Supervisor"
   );
   assert.match(command, />> "[^"]*host-service\.log" 2>&1/, "stdout 和 stderr 都要进服务日志");
 });
@@ -502,7 +519,7 @@ test("Windows 写自启文件时会把批处理和 VBS 一起写出来", async (
   }
 });
 
-test("Windows 上服务走包装启动，其它平台直接拉 node", async () => {
+test("Windows 上服务走包装启动，其它平台直接拉 node 跑 Supervisor", async () => {
   const context = createAutostartContext({ dataDir: "/tmp/codingns-data" });
   const windowsPlan = resolveHostLaunchPlan("win32", context);
   const darwinPlan = resolveHostLaunchPlan("darwin", context);
@@ -514,15 +531,18 @@ test("Windows 上服务走包装启动，其它平台直接拉 node", async () =
 
   assert.equal(darwinPlan.kind, "direct");
   assert.equal(darwinPlan.file, "/usr/local/bin/node");
-  assert.equal(darwinPlan.args[0], context.cliEntryPath);
-  assert.equal(darwinPlan.args[1], "start");
-  assert.deepEqual(darwinPlan.args.slice(2), [
+  assert.equal(darwinPlan.args[0], context.supervisorEntryPath, "直接启动的是 Supervisor");
+  assert.deepEqual(darwinPlan.args.slice(1), [
     "--data-dir",
     context.dataDir,
     "--port",
     String(context.port),
     "--host",
-    context.listenHost
+    context.listenHost,
+    "--node-binary",
+    context.nodeBinary,
+    "--cli-entry",
+    context.cliEntryPath
   ]);
 });
 
@@ -748,7 +768,7 @@ test("开了自启时，真正的启用动作排在健康检查之后", async ()
   assert.match(state.autostartPath, /com\.codingns\.host\.plist$/);
 });
 
-test("stop 会对运行中的服务进程发 SIGTERM", async () => {
+test("stop 会先写主动停止标记，再 SIGTERM 掉 Supervisor 和 Host", async () => {
   const dataDir = createTempDataDir();
   const kills = [];
 
@@ -757,6 +777,7 @@ test("stop 会对运行中的服务进程发 SIGTERM", async () => {
       platform: "darwin",
       homeDir: path.join(dataDir, "home"),
       detectRunningHost: () => ({ pid: 4242, commandLine: "node codingns start" }),
+      detectRunningSupervisor: () => ({ pid: 1111, commandLine: "node host-supervisor.mjs" }),
       isProcessAlive: () => true,
       waitForProcessExit: () => true,
       killProcess: (pid, signal) => {
@@ -767,8 +788,187 @@ test("stop 会对运行中的服务进程发 SIGTERM", async () => {
   );
 
   assert.equal(exitCode, EXIT_OK);
-  assert.deepEqual(kills, ["SIGTERM:4242"]);
-  assert.equal(readResultEvent(events).data.running, false);
+  // 先停 Supervisor（它会再拉起 Host），再停 Host 本体。
+  assert.deepEqual(kills, ["SIGTERM:1111", "SIGTERM:4242"]);
+
+  const result = readResultEvent(events).data;
+  assert.equal(result.running, false);
+  assert.equal(result.supervisorPid, 1111);
+  assert.equal(result.hostPid, 4242);
+
+  // 手动 stop 必须落标记，否则 Supervisor 会立刻把 Host 拉回来。
+  const stopState = readStopState(dataDir);
+  assert.equal(stopState.stopRequested, true);
+  assert.equal(stopState.reason, STOP_REASONS.manualStop);
+});
+
+test("start 会清掉主动停止标记", async () => {
+  const dataDir = createTempDataDir();
+
+  // 先 stop 一次，留下标记。
+  await captureOutput(() =>
+    runStop({ dataDir }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir: path.join(dataDir, "home"),
+      detectRunningHost: () => null,
+      detectRunningSupervisor: () => null,
+      isProcessAlive: () => false,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+  assert.equal(readStopState(dataDir).stopRequested, true);
+
+  const { value: exitCode } = await captureOutput(() =>
+    runStart({ dataDir, port: "3002", healthTimeoutMs: 1 }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir: path.join(dataDir, "home"),
+      detectRunningHost: () => null,
+      detectRunningSupervisor: () => null,
+      spawnDetachedHost: () => 1234,
+      httpProbe: async () => true,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+  assert.equal(readStopState(dataDir).stopRequested, false, "显式 start 必须清掉停止标记");
+});
+
+test("restart 结束时不会留下主动停止标记", async () => {
+  const dataDir = createTempDataDir();
+  const { deps } = createInstallDeps({ dataDir });
+
+  await captureOutput(() =>
+    runRestart({ dataDir, healthTimeoutMs: 5_000 }, createLoggerStub(), {
+      ...deps,
+      detectRunningHost: () => null,
+      detectRunningSupervisor: () => null,
+      httpProbe: async () => true
+    })
+  );
+
+  assert.equal(
+    readStopState(dataDir).stopRequested,
+    false,
+    "重启是显式操作，不能把服务永久停在停止状态"
+  );
+});
+
+test("uninstall 会落 uninstall 标记，避免 Supervisor 把服务拉回来", async () => {
+  const dataDir = createTempDataDir();
+  const { deps } = createInstallDeps({ dataDir });
+
+  await captureOutput(() =>
+    runUninstall({ dataDir }, createLoggerStub(), {
+      ...deps,
+      detectRunningHost: () => null,
+      detectRunningSupervisor: () => null,
+      isProcessAlive: () => false
+    })
+  );
+
+  const stopState = readStopState(dataDir);
+  assert.equal(stopState.stopRequested, true);
+  assert.equal(stopState.reason, STOP_REASONS.uninstall);
+  assert.ok(fs.existsSync(resolveStopStatePath(dataDir)), "标记文件要留在数据目录里");
+});
+
+test("autostart --disable 会落标记，--enable 会清标记", async () => {
+  const dataDir = createTempDataDir();
+  const homeDir = path.join(dataDir, "home");
+
+  await captureOutput(() =>
+    runAutostart({ dataDir, disable: true, port: "3002" }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+  assert.equal(readStopState(dataDir).stopRequested, true);
+
+  await captureOutput(() =>
+    runAutostart({ dataDir, enable: true, port: "3002" }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+  assert.equal(readStopState(dataDir).stopRequested, false, "重新启用自启代表用户要它跑起来");
+});
+
+test("安装过程中的临时停止带过期时间，升级崩了也不会永久卡死", async () => {
+  const dataDir = createTempDataDir();
+  const { deps } = createInstallDeps({
+    dataDir,
+    detectRunningHost: () => ({ pid: 4321, commandLine: "node codingns start" }),
+    isProcessAlive: () => true,
+    waitForProcessExit: () => true
+  });
+
+  // 让 npm 安装直接失败，模拟“停在升级中途”的最坏情况。
+  const { value: exitCode } = await captureOutput(() =>
+    runInstall({ dataDir, port: "3002" }, createLoggerStub(), {
+      ...deps,
+      runNpmCommand: () => ({ status: 1, stdout: "", stderr: "network down" })
+    })
+  );
+
+  assert.equal(exitCode, EXIT_FAILURE);
+
+  const stopState = readStopState(dataDir);
+  assert.equal(stopState.stopRequested, true);
+  assert.equal(stopState.reason, STOP_REASONS.upgrade);
+  assert.ok(stopState.expiresAt, "升级临时停止必须带过期时间");
+  assert.ok(Date.parse(stopState.expiresAt) > Date.now());
+});
+
+test("Windows 计划任务指向 Supervisor 而不是 Host", async () => {
+  const dataDir = createTempDataDir();
+  const calls = [];
+
+  const { value: exitCode } = await captureOutput(() =>
+    runAutostart({ dataDir, enable: true, port: "3002" }, createLoggerStub(), {
+      platform: "win32",
+      runShellCommand: (file, args) => {
+        calls.push([file, ...args].join(" "));
+        return { status: 0, stdout: "", stderr: "" };
+      }
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+
+  const createCall = calls.find((call) => call.startsWith("schtasks /Create"));
+  assert.ok(createCall, "应该创建计划任务");
+  assert.match(createCall, /\/XML .*codingns-host-task\.xml/);
+
+  // 计划任务 XML 的动作必须拉起 Supervisor 包装，而不是直接跑 Host。
+  const taskXml = fs.readFileSync(
+    path.join(dataDir, "runtime", "autostart", "codingns-host-task.xml"),
+    "utf16le"
+  );
+  assert.match(taskXml, /wscript\.exe/);
+  assert.match(taskXml, /codingns-host-launcher\.vbs/);
+
+  // 启动包装里的命令必须拉起 Supervisor。
+  const context = {
+    dataDir,
+    packageRoot: path.join(dataDir, "runtime", "npm", "lib", "node_modules", "@jingyi0605", "codingns"),
+    cliEntryPath: path.join(dataDir, "runtime", "npm", "lib", "node_modules", "@jingyi0605", "codingns", "bin", "codingns.mjs"),
+    supervisorEntryPath: path.join(dataDir, "runtime", "npm", "lib", "node_modules", "@jingyi0605", "codingns", "scripts", "host-supervisor.mjs"),
+    nodeBinary: "/usr/local/bin/node",
+    port: 3002,
+    listenHost: "127.0.0.1",
+    logFilePath: path.join(dataDir, "runtime", "logs", "host-service.log"),
+    launcherDirectory: path.join(dataDir, "runtime", "autostart")
+  };
+  const commandContent = fs.readFileSync(
+    path.join(context.launcherDirectory, "codingns-host-launcher.cmd"),
+    "utf8"
+  );
+
+  assert.match(commandContent, /host-supervisor\.mjs/);
+  assert.ok(!/"start"/.test(commandContent), "包装不该直接跑 codingns start");
 });
 
 test("uninstall 会清掉包和自启，--purge 时连数据目录一起删", async () => {
@@ -838,7 +1038,7 @@ test("完整往返：install 之后 check / status / restart / uninstall 都能�
   assert.equal(fs.existsSync(path.join(dataDir, "runtime", "npm")), false);
 });
 
-test("Windows 启用自启会创建登录计划任务", async () => {
+test("Windows 优先用 XML 注册计划任务，带失败自动重启", async () => {
   const dataDir = createTempDataDir();
   const calls = [];
 
@@ -853,9 +1053,60 @@ test("Windows 启用自启会创建登录计划任务", async () => {
   );
 
   assert.equal(exitCode, EXIT_OK);
-  assert.match(calls[0], /^schtasks \/Create \/TN CodingNS Host /);
-  assert.match(calls[0], /\/SC ONLOGON/);
-  assert.match(calls[0], /wscript\.exe ".*codingns-host-launcher\.vbs"/);
+  assert.equal(calls.length, 1, "XML 成功时不该再退回 ONLOGON");
+  assert.match(calls[0], /^schtasks \/Create \/TN CodingNS Host \/XML /);
+  assert.match(calls[0], /codingns-host-task\.xml/);
+
+  // XML 内容必须带 RestartOnFailure，否则 Supervisor 崩了没人拉起来。
+  const xmlPath = path.join(dataDir, "runtime", "autostart", "codingns-host-task.xml");
+  assert.ok(fs.existsSync(xmlPath), "要写出计划任务 XML");
+  // XML 按 UTF-16LE + BOM 写，读取要用同一编码，否则会得到乱码。
+  const xml = fs.readFileSync(xmlPath, "utf16le");
+
+  assert.match(xml, /<RestartOnFailure>/);
+  assert.match(xml, /<Interval>PT1M<\/Interval>/);
+  assert.match(xml, /<Count>999<\/Count>/);
+  assert.match(xml, /<LogonTrigger>/);
+  assert.match(xml, /<RunLevel>LeastPrivilege<\/RunLevel>/, "保持用户级，不要求管理员");
+  assert.match(xml, /<Command>wscript\.exe<\/Command>/);
+  assert.match(xml, /codingns-host-launcher\.vbs/, "动作要拉起 Supervisor 包装");
+  assert.ok(!/<Command>node<\/Command>/.test(xml), "不该直接跑 node");
+});
+
+test("XML 计划任务建不起来时退回 ONLOGON，再不行才退启动文件夹", async () => {
+  const dataDir = createTempDataDir();
+  const calls = [];
+
+  const { value: exitCode, events } = await captureOutput(() =>
+    runAutostart({ dataDir, enable: true, port: "3002" }, createLoggerStub(), {
+      platform: "win32",
+      runShellCommand: (file, args) => {
+        const command = [file, ...args].join(" ");
+        calls.push(command);
+
+        // XML 失败，ONLOGON 成功。
+        return command.includes("/XML")
+          ? { status: 1, stdout: "", stderr: "XML 解析失败" }
+          : { status: 0, stdout: "", stderr: "" };
+      }
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+  assert.equal(calls.length, 2, "应该先试 XML，再退回 ONLOGON");
+  assert.match(calls[0], /\/XML/);
+  assert.match(calls[1], /\/SC ONLOGON/);
+  assert.match(calls[1], /wscript\.exe ".*codingns-host-launcher\.vbs"/);
+
+  const logs = events.filter((event) => event.type === "log").map((event) => event.message);
+  assert.ok(
+    logs.some((line) => line.includes("改用登录时启动")),
+    "退回 ONLOGON 时要提示用户能力差异"
+  );
+  assert.ok(
+    logs.some((line) => line.includes("不会自动重启")),
+    "退回 ONLOGON 时要明确说明这一层没有运行中自愈"
+  );
 });
 
 test("npm 的输出会一边跑一边转成日志事件", async () => {
@@ -1185,4 +1436,90 @@ test("关闭自启时把计划任务和启动文件夹里的脚本一起清掉",
       process.env.APPDATA = previousAppData;
     }
   }
+});
+
+test("已有 Supervisor 时，start 会写恢复请求而不是干等健康检查", async () => {
+  const dataDir = createTempDataDir();
+
+  const { value: exitCode, events } = await captureOutput(() =>
+    runStart({ dataDir, port: "3002", healthTimeoutMs: 5_000 }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir: path.join(dataDir, "home"),
+      detectRunningHost: () => null,
+      detectRunningSupervisor: () => ({ pid: 6666, commandLine: "node host-supervisor.mjs" }),
+      spawnDetachedHost: () => 1234,
+      httpProbe: async () => true,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+
+  // 关键：光清停止标记不够，必须留下控制请求让在跑的 Supervisor 解除熔断。
+  const controlRequest = readControlRequest(dataDir);
+  assert.ok(controlRequest, "start 必须写恢复请求");
+  assert.equal(controlRequest.action, "resume");
+
+  const logs = events.filter((event) => event.type === "log").map((event) => event.message);
+  assert.ok(logs.some((line) => line.includes("已通知监督进程解除熔断")));
+});
+
+test("监督进程不响应恢复请求时，start 会强制重启它", async () => {
+  const dataDir = createTempDataDir();
+  const orders = [];
+
+  const { value: exitCode, events } = await captureOutput(() =>
+    runStart({ dataDir, port: "3002", healthTimeoutMs: 1 }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir: path.join(dataDir, "home"),
+      detectRunningHost: () => null,
+      detectRunningSupervisor: () => ({ pid: 7777, commandLine: "node host-supervisor.mjs" }),
+      isProcessAlive: () => true,
+      waitForProcessExit: () => true,
+      killProcess: (pid, signal) => {
+        orders.push(`kill:${signal}:${pid}`);
+      },
+      spawnDetachedHost: () => {
+        orders.push("spawn");
+        return 1234;
+      },
+      // 健康检查永远失败：模拟监督进程假死。
+      httpProbe: async () => false,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+
+  assert.equal(exitCode, EXIT_FAILURE);
+  assert.ok(
+    orders.some((entry) => entry.startsWith("kill:SIGTERM:7777")),
+    "必须先停掉没响应的监督进程"
+  );
+  assert.ok(orders.includes("spawn"), "然后必须重新拉起一个新的监督进程");
+
+  const logs = events.filter((event) => event.type === "log").map((event) => event.message);
+  assert.ok(logs.some((line) => line.includes("改为重启监督进程")));
+});
+
+test("没有 Supervisor 时，start 走正常托管入口，不写恢复请求", async () => {
+  const dataDir = createTempDataDir();
+  let spawned = 0;
+
+  const { value: exitCode } = await captureOutput(() =>
+    runStart({ dataDir, port: "3002", healthTimeoutMs: 5_000 }, createLoggerStub(), {
+      platform: "darwin",
+      homeDir: path.join(dataDir, "home"),
+      detectRunningHost: () => null,
+      detectRunningSupervisor: () => null,
+      spawnDetachedHost: () => {
+        spawned += 1;
+        return 4321;
+      },
+      httpProbe: async () => true,
+      runShellCommand: () => ({ status: 0, stdout: "", stderr: "" })
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+  assert.equal(spawned, 1, "没有监督进程时应该正常拉起一个");
+  assert.equal(readControlRequest(dataDir), null, "没有在跑的 Supervisor 就不需要控制请求");
 });

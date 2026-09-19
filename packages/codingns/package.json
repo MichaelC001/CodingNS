@@ -14,6 +14,7 @@
     "scripts/codex-runtime-layout.mjs",
     "scripts/postinstall.mjs",
     "scripts/host-install.mjs",
+    "scripts/host-supervisor.mjs",
     "node_modules/@codingns/session-sync-core",
     "node_modules/@codingns/relay-tunnel-wire"
   ],

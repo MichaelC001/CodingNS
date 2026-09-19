@@ -50,6 +50,9 @@ fs.writeFileSync(
 const context = {
   dataDir,
   nodeBinary: process.execPath,
+  // 包装现在拉起的是 Supervisor，所以这里用同一个假服务脚本充当 Supervisor 入口；
+  // 本脚本验证的是 VBS → cmd → node 这条链路能不能跑通，不关心被拉起的是谁。
+  supervisorEntryPath: fakeServicePath,
   cliEntryPath: fakeServicePath,
   port: 3999,
   listenHost: "127.0.0.1",

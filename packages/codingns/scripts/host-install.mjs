@@ -13,6 +13,17 @@ import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import {
+  STOP_REASONS,
+  TRANSIENT_STOP_TTL_MS,
+  clearStopState,
+  readStopState,
+  resolveControlStatePath,
+  resolveSupervisorPidPath,
+  writeControlRequest,
+  writeStopState
+} from "./host-supervisor.mjs";
+
 const EXIT_OK = 0;
 const EXIT_FAILURE = 1;
 const EXIT_USAGE = 2;
@@ -24,6 +35,15 @@ const DEFAULT_PORT = 3002;
 const DEFAULT_LISTEN_HOST = "127.0.0.1";
 const DEFAULT_PACKAGE_NAME = "@jingyi0605/codingns";
 const WINDOWS_LAUNCH_COMMAND_NAME = "codingns-host-launcher.cmd";
+/**
+ * 计划任务 XML 文件名。
+ *
+ * 只有 XML 形式能配置“失败后自动重启”，`schtasks /Create /SC ONLOGON` 只能保证登录时启动。
+ * Supervisor 自己崩掉后，登录计划任务不会把它拉回来，这一层缺口靠 XML 补。
+ */
+const WINDOWS_SCHEDULED_TASK_XML_NAME = "codingns-host-task.xml";
+/** 独立监督进程脚本名；macOS/Windows 的自启入口都指向它，而不是直接指向 Host。 */
+const SUPERVISOR_SCRIPT_NAME = "host-supervisor.mjs";
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 const MIRROR_REGISTRY = "https://registry.npmmirror.com";
 const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -273,6 +293,86 @@ function listUnixHostProcesses() {
         : null;
     })
     .filter((entry) => entry !== null);
+}
+
+/** 找独立的 Supervisor 进程：命令行里带 host-supervisor.mjs，而不是 `codingns start`。 */
+function listUnixSupervisorProcesses() {
+  const result = spawnSync("ps", ["-A", "-o", "pid=,command="], {
+    encoding: "utf8"
+  });
+
+  if (result.status !== 0 || !result.stdout) {
+    return [];
+  }
+
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes(SUPERVISOR_SCRIPT_NAME))
+    .map((line) => {
+      const [rawPid, ...commandParts] = line.split(/\s+/);
+      const pid = Number.parseInt(rawPid, 10);
+
+      return Number.isFinite(pid)
+        ? { pid, commandLine: commandParts.join(" ") }
+        : null;
+    })
+    .filter((entry) => entry !== null);
+}
+
+function listWindowsSupervisorProcesses() {
+  const script = [
+    "Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\"",
+    "| Select-Object ProcessId, CommandLine",
+    "| ConvertTo-Json -Compress"
+  ].join(" ");
+
+  const result = spawnSync(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8", windowsHide: true }
+  );
+
+  if (result.status !== 0 || !result.stdout) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(result.stdout);
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+
+    return entries
+      .map((entry) => {
+        const commandLine = typeof entry?.CommandLine === "string" ? entry.CommandLine : "";
+        const pid = Number(entry?.ProcessId);
+
+        if (!commandLine.includes(SUPERVISOR_SCRIPT_NAME)) {
+          return null;
+        }
+
+        return Number.isFinite(pid) ? { pid, commandLine } : null;
+      })
+      .filter((entry) => entry !== null);
+  } catch {
+    return [];
+  }
+}
+
+function listSupervisorProcesses() {
+  return process.platform === "win32"
+    ? listWindowsSupervisorProcesses()
+    : listUnixSupervisorProcesses();
+}
+
+/** 找到属于这个数据目录的 Supervisor；找不到就返回 null。 */
+export function detectRunningSupervisor(dataDir) {
+  const normalizedDataDir = resolveDataDir(dataDir).replace(/\\/g, "/");
+
+  return (
+    listSupervisorProcesses().find((entry) =>
+      entry.commandLine.replace(/\\/g, "/").includes(normalizedDataDir)
+    ) ?? null
+  );
 }
 
 function listWindowsHostProcesses() {
@@ -601,9 +701,31 @@ function assertSafeToRemove(targetPath) {
   return resolved;
 }
 
+/**
+ * 自启/托管的入口参数。
+ *
+ * 入口是独立的 Supervisor，不是 Host 本身：Host 事件循环假死时只有独立进程才能救它。
+ * Supervisor 再按 `--cli-entry` 去拉 `codingns start`。
+ */
 function buildAutostartArguments(context) {
   return [
-    normalizeNodePath(context.cliEntryPath),
+    normalizeNodePath(context.supervisorEntryPath),
+    "--data-dir",
+    normalizeNodePath(context.dataDir),
+    "--port",
+    String(context.port),
+    "--host",
+    context.listenHost,
+    "--node-binary",
+    normalizeNodePath(context.nodeBinary),
+    "--cli-entry",
+    normalizeNodePath(context.cliEntryPath)
+  ];
+}
+
+/** `codingns start` 的参数，不含 node 和脚本路径本身。Host 子进程由 Supervisor 拉起。 */
+function buildHostStartArguments(context) {
+  return [
     "start",
     "--data-dir",
     normalizeNodePath(context.dataDir),
@@ -612,11 +734,6 @@ function buildAutostartArguments(context) {
     "--host",
     context.listenHost
   ];
-}
-
-/** `codingns start` 的参数，不含 node 和脚本路径本身。 */
-function buildHostStartArguments(context) {
-  return buildAutostartArguments(context).slice(1);
 }
 
 export function buildLaunchAgentPlist(context) {
@@ -718,9 +835,111 @@ export function buildWindowsLauncherVbs(context) {
   ].join("\r\n");
 }
 
-/** 启动包装文件的位置。和自启用的是同一份脚本，避免两处写法漂移。 */
+/** Windows 启动包装文件的位置。和自启用的是同一份脚本，避免两处写法漂移。 */
 export function resolveWindowsLauncherPath(context) {
   return resolveAutostartPaths("win32", context).filePath;
+}
+
+export function resolveWindowsScheduledTaskXmlPath(context) {
+  return path.join(context.launcherDirectory, WINDOWS_SCHEDULED_TASK_XML_NAME);
+}
+
+/**
+ * 生成计划任务 XML。
+ *
+ * 和 `schtasks /Create /SC ONLOGON` 的区别只有一点，但很关键：
+ * `RestartOnFailure` 让任务计划程序在进程异常退出后自动把它拉回来。
+ * 没有这一段，Windows 上 Supervisor 崩了就没人管 Host 了。
+ *
+ * 保持用户级边界：`LeastPrivilege` + 当前用户登录触发，不要求管理员权限。
+ */
+export function buildWindowsScheduledTaskXml(context) {
+  const launcherPath = resolveWindowsLauncherPath(context);
+  const argumentsText = `"${launcherPath}"`;
+
+  return [
+    '<?xml version="1.0" encoding="UTF-16"?>',
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+    "  <RegistrationInfo>",
+    "    <Description>CodingNS Host 监督进程（Supervisor）</Description>",
+    "  </RegistrationInfo>",
+    "  <Triggers>",
+    "    <LogonTrigger>",
+    "      <Enabled>true</Enabled>",
+    "    </LogonTrigger>",
+    "  </Triggers>",
+    "  <Principals>",
+    "    <Principal id=\"Author\">",
+    "      <LogonType>InteractiveToken</LogonType>",
+    "      <RunLevel>LeastPrivilege</RunLevel>",
+    "    </Principal>",
+    "  </Principals>",
+    "  <Settings>",
+    "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+    "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+    "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+    "    <AllowHardTerminate>true</AllowHardTerminate>",
+    "    <StartWhenAvailable>true</StartWhenAvailable>",
+    "    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>",
+    "    <IdleSettings>",
+    "      <StopOnIdleEnd>false</StopOnIdleEnd>",
+    "      <RestartOnIdle>false</RestartOnIdle>",
+    "    </IdleSettings>",
+    "    <AllowStartOnDemand>true</AllowStartOnDemand>",
+    "    <Enabled>true</Enabled>",
+    "    <Hidden>false</Hidden>",
+    "    <RunOnlyIfIdle>false</RunOnlyIfIdle>",
+    "    <WakeToRun>false</WakeToRun>",
+    "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+    "    <Priority>7</Priority>",
+    "    <RestartOnFailure>",
+    "      <Interval>PT1M</Interval>",
+    "      <Count>999</Count>",
+    "    </RestartOnFailure>",
+    "  </Settings>",
+    "  <Actions Context=\"Author\">",
+    "    <Exec>",
+    "      <Command>wscript.exe</Command>",
+    `      <Arguments>${escapeXml(argumentsText)}</Arguments>`,
+    "    </Exec>",
+    "  </Actions>",
+    "</Task>",
+    ""
+  ].join("\r\n");
+}
+
+/**
+ * 用 XML 注册计划任务。
+ *
+ * XML 文件按 UTF-16LE + BOM 写：`schtasks /Create /XML` 对编码敏感，
+ * 用 UTF-8 会在部分系统上解析失败。
+ */
+export function activateWindowsScheduledTaskFromXml(context, logger, options = {}) {
+  const runShell = options.runShellCommand ?? runShellCommand;
+  const xmlPath = resolveWindowsScheduledTaskXmlPath(context);
+
+  try {
+    fs.mkdirSync(path.dirname(xmlPath), { recursive: true });
+    fs.writeFileSync(xmlPath, `\uFEFF${buildWindowsScheduledTaskXml(context)}`, "utf16le");
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+
+  const result = runShell(
+    "schtasks",
+    ["/Create", "/TN", AUTOSTART_WINDOWS_TASK_NAME, "/XML", xmlPath, "/F"],
+    logger
+  );
+
+  if (result.status === 0) {
+    logger.log("已用 XML 注册计划任务（Supervisor 崩溃后会自动重启）", { xmlPath });
+    return { ok: true, detail: null };
+  }
+
+  return {
+    ok: false,
+    detail: truncateText(result.stderr || result.stdout || `schtasks 退出码 ${result.status}`)
+  };
 }
 
 export function ensureWindowsHostLauncher(context, logger) {
@@ -738,12 +957,17 @@ export function ensureWindowsHostLauncher(context, logger) {
   return launcherPath;
 }
 
-/** 直接拉 node：其它平台的正常路径，也是 Windows 上包装起不来时的兜底。 */
+/**
+ * 直接拉 node 跑 Supervisor：其它平台的正常路径，也是 Windows 上包装起不来时的兜底。
+ *
+ * 注意这里拉的是 Supervisor 而不是 Host：Host 由 Supervisor 持有，
+ * 这样安装器退出后仍然有人负责健康检查和重启。
+ */
 export function resolveDirectHostLaunchPlan(context) {
   return {
     kind: "direct",
     file: normalizeNodePath(context.nodeBinary),
-    args: [normalizeNodePath(context.cliEntryPath), ...buildHostStartArguments(context)]
+    args: buildAutostartArguments(context)
   };
 }
 
@@ -790,6 +1014,7 @@ export function resolveAutostartContext(options = {}) {
     installPrefix: prefix,
     packageRoot,
     cliEntryPath: path.join(packageRoot, "bin", "codingns.mjs"),
+    supervisorEntryPath: path.join(packageRoot, "scripts", SUPERVISOR_SCRIPT_NAME),
     nodeBinary: state?.nodeBinary ?? process.execPath,
     port: state?.port ?? parsePort(options.port),
     listenHost: state?.listenHost ?? (typeof options.host === "string" && options.host.trim() ? options.host.trim() : DEFAULT_LISTEN_HOST),
@@ -924,6 +1149,19 @@ function activateAutostart(platform, context, logger, options = {}) {
   }
 
   if (kind === "schtasks") {
+    // 先用 XML 注册：只有 XML 能表达“进程失败后自动重启”，
+    // 这才是 Windows 上 Supervisor 崩溃后能自愈的关键。
+    const xmlAttempt = activateWindowsScheduledTaskFromXml(context, logger, options);
+
+    if (xmlAttempt.ok) {
+      return { ok: true, kind: "schtasks", path: filePath, detail: null };
+    }
+
+    logger.log("XML 计划任务没建起来，退回命令行方式", xmlAttempt.detail);
+    // 这条降级对用户是可见的能力差异（失去运行中自愈），要进事件流，不能只写日志文件。
+    emitLog("计划任务没建成带自动重启的形式，改用登录时启动。");
+
+    // 退回原来的 ONLOGON 计划任务：仍能保证登录时启动，只是没有运行中自愈。
     const result = runShell(
       "schtasks",
       [
@@ -942,6 +1180,8 @@ function activateAutostart(platform, context, logger, options = {}) {
     );
 
     if (result.status === 0) {
+      logger.log("已用 ONLOGON 计划任务启动 Supervisor（无运行中自动重启）");
+      emitLog("已启用开机自启（Supervisor 运行中崩溃时不会自动重启）。");
       return { ok: true, kind: "schtasks", path: filePath, detail: null };
     }
 
@@ -1036,9 +1276,17 @@ export function runAutostart(options, logger, deps = {}) {
 
   if (disable) {
     emitStep("disable-autostart", "running", "移除开机自启");
+    // 明确禁用自启动也要落标记：否则 Supervisor 仍可能在当前会话里把 Host 拉回来，
+    // 用户看到的“关了自启服务还在跑”就是从这里来的。
+    writeStopState(context.dataDir, { reason: STOP_REASONS.autostartDisabled });
     const result = deactivateAutostart(platform, context, logger, autostartOptions);
     emitStep("disable-autostart", result.ok ? "done" : "failed");
-    emitResult({ autostartEnabled: false, autostartKind: null, autostartPath: null });
+    emitResult({
+      autostartEnabled: false,
+      autostartKind: null,
+      autostartPath: null,
+      stopReason: STOP_REASONS.autostartDisabled
+    });
     return result.ok ? EXIT_OK : EXIT_FAILURE;
   }
 
@@ -1054,6 +1302,9 @@ export function runAutostart(options, logger, deps = {}) {
     });
     return EXIT_OK;
   }
+
+  // 重新启用自启代表用户要它跑起来：先清掉“主动停止”标记，否则开机后 Supervisor 不会拉起 Host。
+  clearStopState(context.dataDir);
 
   emitStep("activate-autostart", "running", "启用开机自启");
   const activation = activateAutostart(platform, context, logger, autostartOptions);
@@ -1075,50 +1326,88 @@ export function runAutostart(options, logger, deps = {}) {
   return EXIT_OK;
 }
 
+/**
+ * 停止本机服务：先写“主动停止”标记，再停 Supervisor，最后停 Host。
+ *
+ * 顺序很重要：
+ * 1. 先写标记——否则 Supervisor 看到 Host 退出会立刻把它拉回来；
+ * 2. 再停托管入口（launchd/systemd）——否则系统会按 KeepAlive/Restart 把 Supervisor 再拉起来；
+ * 3. 最后 SIGTERM/SIGKILL 收掉 Supervisor 和 Host 进程。
+ */
 function stopRunningHost(context, options, logger, deps = {}) {
   const platform = deps.platform ?? process.platform;
   const shell = deps.runShellCommand ?? runShellCommand;
   const detect = deps.detectRunningHost ?? detectRunningHost;
+  const detectSupervisor = deps.detectRunningSupervisor ?? detectRunningSupervisor;
   const isAlive = deps.isProcessAlive ?? isProcessAlive;
   const waitForExit = deps.waitForProcessExit ?? waitForProcessExit;
   const kill = deps.killProcess ?? ((pid, signal) => process.kill(pid, signal));
   const autostart = resolveAutostartPaths(platform, context, deps);
-  const running = detect(context.dataDir, { port: context.port });
+  const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
+  const reason = options.stopReason ?? STOP_REASONS.manualStop;
+  const expiresAt = options.stopExpiresAt ?? null;
 
+  // 1) 先落标记，保证任何一步之后 Supervisor 都不会再自动拉起 Host。
+  try {
+    writeStopState(context.dataDir, { reason, expiresAt });
+  } catch (error) {
+    logger.log("写入主动停止标记失败", error instanceof Error ? error.message : String(error));
+  }
+
+  // 2) 停托管入口：不先停单元的话，systemd/launchd 会把刚 SIGTERM 的进程再拉起来。
   if (fs.existsSync(autostart.filePath)) {
-    // systemd 会按 Restart 策略把被 SIGTERM 的进程再拉起来，必须先停单元。
     if (autostart.kind === "systemd") {
       shell("systemctl", ["--user", "stop", "codingns-host.service"], logger);
     } else if (autostart.kind === "launchd") {
-      shell("launchctl", ["kill", "SIGTERM", `gui/${process.getuid?.() ?? 0}/${AUTOSTART_LABEL}`], logger);
+      // bootout 会卸载 job；只 kill 的话 KeepAlive 会立刻重启它。
+      shell("launchctl", ["bootout", `gui/${process.getuid?.() ?? 0}`, autostart.filePath], logger);
     }
   }
 
-  if (!running || !isAlive(running.pid)) {
-    return { stopped: false, pid: null };
-  }
+  const supervisor = detectSupervisor(context.dataDir);
+  const host = detect(context.dataDir, { port: context.port });
+  const targets = [supervisor, host].filter((target) => target && isAlive(target.pid));
+  const stoppedPids = [];
+  let allStopped = true;
 
-  try {
-    kill(running.pid, "SIGTERM");
-  } catch {
-    return { stopped: false, pid: running.pid };
-  }
-
-  const exited = waitForExit(running.pid, options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS);
-
-  if (!exited) {
+  for (const target of targets) {
     try {
-      kill(running.pid, "SIGKILL");
+      kill(target.pid, "SIGTERM");
     } catch {
-      return { stopped: false, pid: running.pid };
+      allStopped = false;
+      continue;
     }
 
-    waitForExit(running.pid, 3_000);
+    let exited = waitForExit(target.pid, stopTimeoutMs);
+
+    if (!exited) {
+      try {
+        kill(target.pid, "SIGKILL");
+      } catch {
+        allStopped = false;
+        continue;
+      }
+
+      exited = waitForExit(target.pid, 3_000);
+    }
+
+    if (!exited) {
+      allStopped = false;
+      logger.log("服务进程未确认退出", { pid: target.pid });
+      continue;
+    }
+
+    stoppedPids.push(target.pid);
+    logger.log("已停止服务进程", { pid: target.pid });
   }
 
-  logger.log("已停止服务进程", { pid: running.pid });
-
-  return { stopped: true, pid: running.pid };
+  return {
+    stopped: targets.length > 0 && allStopped,
+    pid: host?.pid ?? supervisor?.pid ?? null,
+    supervisorPid: supervisor?.pid ?? null,
+    hostPid: host?.pid ?? null,
+    reason
+  };
 }
 
 /**
@@ -1136,12 +1425,19 @@ function isDirectoryLockedError(text) {
  */
 function stopPreviousHost(context, options, logger, deps = {}) {
   const stop = deps.stopRunningHost ?? stopRunningHost;
+  // 升级过程中的停止是临时的：带过期时间，即使本次升级中途崩了，
+  // 过期后 Supervisor 也会自己恢复托管，不会永久卡在“停止”状态。
+  const upgradeStopOptions = {
+    ...options,
+    stopReason: STOP_REASONS.upgrade,
+    stopExpiresAt: new Date(Date.now() + TRANSIENT_STOP_TTL_MS[STOP_REASONS.upgrade]).toISOString()
+  };
 
   try {
-    const result = stop(context, options, logger, deps);
+    const result = stop(context, upgradeStopOptions, logger, deps);
 
     if (result?.stopped) {
-      logger.log("安装前已停止旧服务", { pid: result.pid });
+      logger.log("安装前已停止旧服务", { pid: result.pid, reason: STOP_REASONS.upgrade });
     }
 
     return result ?? { stopped: false, pid: null };
@@ -1169,34 +1465,126 @@ function buildNpmInstallArgs(prefix, packageSpec, registry) {
   ];
 }
 
+/**
+ * 通过系统托管入口（launchd / systemd / 直接 spawn）把 Supervisor 拉起来。
+ * `runStart` 和“监督进程无响应时的强制重启”共用这一段，避免两处写法漂移。
+ */
+function startServiceThroughHosting(context, platform, logger, deps) {
+  emitStep("start-service", "running", "启动服务");
+
+  const autostart = resolveAutostartPaths(platform, context, deps);
+  const canUseAutostart = platform !== "win32" && fs.existsSync(autostart.filePath);
+  const shell = deps.runShellCommand ?? runShellCommand;
+
+  if (canUseAutostart && autostart.kind === "launchd") {
+    // stop 走的是 bootout（卸载 job），所以 start 必须先把 job 装回去再拉起；
+    // 只 kickstart 的话，job 已经被卸载时这一步会直接失败。
+    // 已经加载时 bootout 会失败，这里刻意忽略，紧接着再 bootstrap 覆盖。
+    const domain = `gui/${process.getuid?.() ?? 0}`;
+    shell("launchctl", ["bootout", domain, autostart.filePath], logger);
+    shell("launchctl", ["bootstrap", domain, autostart.filePath], logger);
+    shell("launchctl", ["kickstart", "-k", `${domain}/${AUTOSTART_LABEL}`], logger);
+  } else if (canUseAutostart) {
+    shell("systemctl", ["--user", "start", "codingns-host.service"], logger);
+  } else {
+    const spawnHost = deps.spawnDetachedHost ?? spawnDetachedHost;
+    spawnHost(context, logger, platform);
+  }
+
+  emitStep("start-service", "done");
+}
+
 export async function runStart(options, logger, deps = {}) {
   const context = resolveAutostartContext(options);
   const platform = deps.platform ?? process.platform;
   const detect = deps.detectRunningHost ?? detectRunningHost;
+  const detectSupervisor = deps.detectRunningSupervisor ?? detectRunningSupervisor;
+
+  // 显式 start 是人工恢复入口：先清掉主动停止标记，再让在跑的 Supervisor 解除熔断。
+  clearStopState(context.dataDir);
+  logger.log("已清理主动停止标记", { dataDir: context.dataDir });
+
   const existing = detect(context.dataDir, { port: context.port });
+  const existingSupervisor = detectSupervisor(context.dataDir);
 
-  if (existing) {
-    emitLog(`服务已经在跑（pid ${existing.pid}）。`);
-  } else {
-    emitStep("start-service", "running", "启动服务");
+  if (existingSupervisor) {
+    emitLog(`监督进程已经在跑（pid ${existingSupervisor.pid}），等待服务就绪。`);
+    // 关键：只要已经有 Supervisor 在管这个数据目录，就要给它发恢复请求。
+    // 只清停止标记是不够的——熔断状态在 Supervisor 内存里，不通知它就会一直返回
+    // circuit_open，用户看到的是“start 了但服务永远起不来”。
+    const resume = requestSupervisorResume(context, logger);
 
-    const autostart = resolveAutostartPaths(platform, context, deps);
-    const canUseAutostart = platform !== "win32" && fs.existsSync(autostart.filePath);
-    const shell = deps.runShellCommand ?? runShellCommand;
+    if (resume.ok) {
+      emitLog("已通知监督进程解除熔断并重新拉起服务。");
+    }
+  } else if (existing) {
+    // 只有 Host、没有 Supervisor 时，不能留下一个无人监管的服务，也不能写一个
+    // 以后会误触发重启的陈旧控制请求。先停掉旧 Host，再交给新的 Supervisor 托管。
+    emitLog(`发现未受监督的服务进程（pid ${existing.pid}），准备重新纳入监督。`);
+    const stopped = stopRunningHost(
+      context,
+      {
+        ...options,
+        stopReason: STOP_REASONS.upgrade,
+        stopExpiresAt: new Date(Date.now() + TRANSIENT_STOP_TTL_MS[STOP_REASONS.upgrade]).toISOString()
+      },
+      logger,
+      deps
+    );
 
-    if (canUseAutostart && autostart.kind === "launchd") {
-      shell("launchctl", ["kickstart", "-k", `gui/${process.getuid?.() ?? 0}/${AUTOSTART_LABEL}`], logger);
-    } else if (canUseAutostart) {
-      shell("systemctl", ["--user", "start", "codingns-host.service"], logger);
-    } else {
-      const spawnHost = deps.spawnDetachedHost ?? spawnDetachedHost;
-      spawnHost(context, logger, platform);
+    if (!stopped.stopped) {
+      emitError(
+        "SERVICE_STOP_TIMEOUT",
+        "已有服务进程未能确认退出",
+        `无法安全接管现有进程（pid ${existing.pid}）。`,
+        logger.logPath
+      );
+      return EXIT_FAILURE;
     }
 
-    emitStep("start-service", "done");
+    clearStopState(context.dataDir);
+    startServiceThroughHosting(context, platform, logger, deps);
+  } else {
+    startServiceThroughHosting(context, platform, logger, deps);
   }
 
-  const healthy = await waitForHostHealth(context, options, logger, deps);
+  let healthy = await waitForHostHealth(context, options, logger, deps);
+
+  // 在跑的 Supervisor 可能已经假死，连控制请求都处理不了。
+  // 这时显式换一个新的 Supervisor，保证 `codingns start` 一定能恢复。
+  if (!healthy && (existing || existingSupervisor)) {
+    emitLog("监督进程没有响应恢复请求，改为重启监督进程。");
+    logger.log("监督进程恢复请求超时，执行强制重启", { pid: existingSupervisor?.pid ?? null });
+
+    const restartStopOptions = {
+      ...options,
+      // 先落一个临时停止标记，避免换进程的过程中被系统托管入口又拉起来。
+      stopReason: STOP_REASONS.upgrade,
+      stopExpiresAt: new Date(Date.now() + TRANSIENT_STOP_TTL_MS[STOP_REASONS.upgrade]).toISOString()
+    };
+
+    let stopped;
+
+    try {
+      stopped = stopRunningHost(context, restartStopOptions, logger, deps);
+    } catch (error) {
+      logger.log("强制重启前停止旧服务失败", error instanceof Error ? error.message : String(error));
+    }
+
+    if (!stopped?.stopped) {
+      emitError(
+        "SERVICE_STOP_TIMEOUT",
+        "旧服务进程未能确认退出",
+        "为避免启动第二个 Host，本次不会继续拉起替代 Supervisor。",
+        logger.logPath
+      );
+      return EXIT_FAILURE;
+    }
+
+    clearStopState(context.dataDir);
+    startServiceThroughHosting(context, platform, logger, deps);
+    healthy = await waitForHostHealth(context, options, logger, deps);
+  }
 
   if (!healthy) {
     emitError(
@@ -1213,13 +1601,35 @@ export async function runStart(options, logger, deps = {}) {
   return EXIT_OK;
 }
 
+/** 给正在跑的 Supervisor 写一个“解除熔断并重新拉起”的控制请求。 */
+function requestSupervisorResume(context, logger) {
+  try {
+    const payload = writeControlRequest(context.dataDir, { action: "resume" });
+    logger.log("已写入 Supervisor 恢复请求", {
+      requestedAt: payload.requestedAt,
+      path: resolveControlStatePath(context.dataDir)
+    });
+
+    return { ok: true, payload };
+  } catch (error) {
+    logger.log("写入 Supervisor 恢复请求失败", error instanceof Error ? error.message : String(error));
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export function runStop(options, logger, deps = {}) {
   const context = resolveAutostartContext(options);
 
   emitStep("stop-service", "running", "停止服务");
   const result = stopRunningHost(context, options, logger, deps);
   emitStep("stop-service", "done");
-  emitResult({ running: false, stoppedPid: result.pid });
+  emitResult({
+    running: false,
+    stoppedPid: result.pid,
+    supervisorPid: result.supervisorPid ?? null,
+    hostPid: result.hostPid ?? null,
+    stopReason: STOP_REASONS.manualStop
+  });
 
   return EXIT_OK;
 }
@@ -1228,7 +1638,14 @@ export async function runRestart(options, logger, deps = {}) {
   const context = resolveAutostartContext(options);
 
   emitStep("stop-service", "running", "停止服务");
-  stopRunningHost(context, options, logger, deps);
+  // 重启属于用户显式操作：写 manual_stop 只是为了让停的过程不被 Supervisor 打断，
+  // 紧接着的 runStart 会清掉它，所以不会留下“永久停止”。
+  stopRunningHost(
+    context,
+    { ...options, stopReason: STOP_REASONS.manualStop },
+    logger,
+    deps
+  );
   emitStep("stop-service", "done");
 
   await delay(500);
@@ -1243,7 +1660,14 @@ export function runUninstall(options, logger, deps = {}) {
   const prefix = context.installPrefix;
 
   emitStep("stop-service", "running", "停止服务");
-  stopRunningHost(context, options, logger, deps);
+  // 卸载必须先落 uninstall 标记：否则 Supervisor（或 launchd/KeepAlive）会在包被删掉后
+  // 继续尝试拉起 Host，留下一个永远失败的循环。
+  stopRunningHost(
+    context,
+    { ...options, stopReason: STOP_REASONS.uninstall },
+    logger,
+    deps
+  );
   emitStep("stop-service", "done");
 
   emitStep("remove-autostart", "running", "移除开机自启");
@@ -1715,6 +2139,7 @@ export async function runInstall(options, logger, deps = {}) {
     dataDir,
     packageRoot,
     cliEntryPath: verification.cliEntryPath,
+    supervisorEntryPath: path.join(packageRoot, "scripts", SUPERVISOR_SCRIPT_NAME),
     nodeBinary: process.execPath,
     port,
     listenHost,
@@ -1730,6 +2155,11 @@ export async function runInstall(options, logger, deps = {}) {
     autostart = { enabled: false, kind: prepared.kind, path: prepared.filePath };
     emitStep("configure-autostart", "done");
   }
+
+  // 升级前为了换包写的临时停止标记，到这里必须清掉：
+  // 否则新版本装好了，Supervisor 却因为标记还在而不肯拉起 Host。
+  clearStopState(dataDir);
+  logger.log("已清理升级临时停止标记", { dataDir });
 
   const healthy = await startHostAndWaitHealthy(installContext, options, logger, deps, platform);
 
@@ -1797,15 +2227,18 @@ export async function runInstall(options, logger, deps = {}) {
   return EXIT_OK;
 }
 
-function buildStatusPayload(dataDir) {
+export function buildStatusPayload(dataDir) {
   const state = readInstallState(dataDir);
   const runningProcess = detectRunningHost(dataDir, state);
+  const supervisorProcess = detectRunningSupervisor(dataDir);
 
   return {
     dataDir,
     installed: state !== null,
     running: runningProcess !== null,
     pid: runningProcess?.pid ?? null,
+    // Host 没在跑不代表没人管它：监督进程活着时会按退避策略把它拉回来。
+    supervisorPid: supervisorProcess?.pid ?? null,
     port: typeof state?.port === "number" ? state.port : null,
     packageVersion: typeof state?.packageVersion === "string" ? state.packageVersion : null,
     autostartEnabled: state?.autostartEnabled === true,
@@ -1971,5 +2404,7 @@ export {
   EXIT_PERMISSION,
   EXIT_USAGE,
   KNOWN_ACTIONS,
-  STATE_SCHEMA_VERSION
+  STATE_SCHEMA_VERSION,
+  STOP_REASONS,
+  SUPERVISOR_SCRIPT_NAME
 };
