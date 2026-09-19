@@ -124,6 +124,7 @@ export class OpenCodeBaseUrlResolver {
   private readonly managedServerLastUsedAtByWorkspaceKey = new Map<string, number>();
   private readonly managedServerInflightByWorkspaceKey = new Map<string, Promise<string>>();
   private readonly managedServerRetryBlockedUntilByWorkspaceKey = new Map<string, number>();
+  private orphanReclaimInflight: Promise<OpenCodeOrphanReclaimSummary> | null = null;
   private disposed = false;
 
   constructor(options: OpenCodeBaseUrlResolverOptions = {}) {
@@ -195,6 +196,7 @@ export class OpenCodeBaseUrlResolver {
     const cachedAt = this.cachedAtByWorkspaceKey.get(scopeKey) ?? 0;
 
     if (!input.refresh && cachedBaseUrl && this.now() - cachedAt < this.cacheTtlMs) {
+      this.noteManagedServerActivityForBaseUrl(cachedBaseUrl, scopeKey);
       return cachedBaseUrl;
     }
 
@@ -227,15 +229,34 @@ export class OpenCodeBaseUrlResolver {
       return emptyOrphanReclaimSummary();
     }
 
-    if (this.cachedOrphanReclaimSummary && this.lastOrphanReclaimPid === process.pid) {
+    const elapsedSinceLastReclaim = this.now() - this.lastOrphanReclaimAtMs;
+
+    if (
+      this.cachedOrphanReclaimSummary
+      && this.lastOrphanReclaimPid === process.pid
+      && elapsedSinceLastReclaim >= 0
+      && elapsedSinceLastReclaim < this.orphanReclaimIntervalMs
+    ) {
       return this.cachedOrphanReclaimSummary;
     }
 
-    const summary = await this.reclaimOrphanedServersInternal();
-    this.cachedOrphanReclaimSummary = summary;
-    this.lastOrphanReclaimAtMs = this.now();
-    this.lastOrphanReclaimPid = process.pid;
-    return summary;
+    if (this.orphanReclaimInflight) {
+      return this.orphanReclaimInflight;
+    }
+
+    const task = this.reclaimOrphanedServersInternal().then((summary) => {
+      this.cachedOrphanReclaimSummary = summary;
+      this.lastOrphanReclaimAtMs = this.now();
+      this.lastOrphanReclaimPid = process.pid;
+      return summary;
+    });
+    const wrappedTask = task.finally(() => {
+      if (this.orphanReclaimInflight === wrappedTask) {
+        this.orphanReclaimInflight = null;
+      }
+    });
+    this.orphanReclaimInflight = wrappedTask;
+    return wrappedTask;
   }
 
   private async reclaimOrphanedServersInternal(): Promise<OpenCodeOrphanReclaimSummary> {
@@ -325,6 +346,7 @@ export class OpenCodeBaseUrlResolver {
     for (const candidate of candidates) {
       if (await this.probeBaseUrl(candidate)) {
         available.push(candidate);
+        this.noteManagedServerActivityForBaseUrl(candidate);
       }
     }
 
@@ -342,6 +364,31 @@ export class OpenCodeBaseUrlResolver {
     this.noteManagedServerActivity(workspaceKey);
     this.clearManagedServerIdleTimer(workspaceKey);
     return leaseId;
+  }
+
+  /**
+   * 只在给定地址确实属于该作用域的托管 serve 时申请租约。
+   * 外部 OpenCode 地址不能写入托管租约表，否则它稍后被误认为本地实例时
+   * 会一直无法进入空闲回收。
+   */
+  acquireManagedServerLeaseForBaseUrl(
+    baseUrl: string,
+    workspacePath: string,
+    runtimeHomeDir?: string | null
+  ): string | null {
+    this.ensureNotDisposed();
+    const workspaceKey = normalizeResolverScopeKey(workspacePath, runtimeHomeDir ?? null);
+    const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+
+    if (
+      !normalizedBaseUrl
+      || normalizeBaseUrl(this.managedServerBaseUrlByWorkspaceKey.get(workspaceKey) ?? null)
+        !== normalizedBaseUrl
+    ) {
+      return null;
+    }
+
+    return this.acquireManagedServerLease(workspacePath, runtimeHomeDir);
   }
 
   releaseManagedServerLease(
@@ -384,9 +431,7 @@ export class OpenCodeBaseUrlResolver {
       if (await this.probeBaseUrl(candidate)) {
         this.cachedBaseUrlByWorkspaceKey.set(workspaceKey, candidate);
         this.cachedAtByWorkspaceKey.set(workspaceKey, this.now());
-        if (candidate === this.managedServerBaseUrlByWorkspaceKey.get(workspaceKey)) {
-          this.noteManagedServerActivity(workspaceKey);
-        }
+        this.noteManagedServerActivityForBaseUrl(candidate, workspaceKey);
         return candidate;
       }
     }
@@ -406,7 +451,7 @@ export class OpenCodeBaseUrlResolver {
         this.managedServerBaseUrlByWorkspaceKey.set(managedWorkspaceKey, managedCandidate);
         this.cachedBaseUrlByWorkspaceKey.set(workspaceKey, managedCandidate);
         this.cachedAtByWorkspaceKey.set(workspaceKey, this.now());
-        this.noteManagedServerActivity(managedWorkspaceKey);
+        this.noteManagedServerActivityForBaseUrl(managedCandidate, managedWorkspaceKey);
         return managedCandidate;
       }
 
@@ -742,6 +787,43 @@ export class OpenCodeBaseUrlResolver {
 
     if (this.getManagedServerLeaseCount(workspaceKey) === 0) {
       this.scheduleManagedServerIdleDisposal(workspaceKey);
+    }
+  }
+
+  /**
+   * 根据实际请求命中的地址刷新托管实例活动时间。
+   *
+   * resolver 的缓存作用域和托管进程登记作用域不总是相同：没有显式
+   * workspacePath 时，缓存可能落在空 key，而托管进程登记使用 process.cwd()。
+   * 因此这里不能只拿调用方的 scopeKey 查表，必须按托管地址反查。
+   */
+  private noteManagedServerActivityForBaseUrl(
+    baseUrl: string,
+    preferredWorkspaceKey?: string
+  ): void {
+    const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+
+    if (!normalizedBaseUrl) {
+      return;
+    }
+
+    const matchedWorkspaceKeys = new Set<string>();
+    const preferredBaseUrl = preferredWorkspaceKey
+      ? normalizeBaseUrl(this.managedServerBaseUrlByWorkspaceKey.get(preferredWorkspaceKey) ?? null)
+      : null;
+
+    if (preferredWorkspaceKey && preferredBaseUrl === normalizedBaseUrl) {
+      matchedWorkspaceKeys.add(preferredWorkspaceKey);
+    }
+
+    for (const [workspaceKey, managedBaseUrl] of this.managedServerBaseUrlByWorkspaceKey) {
+      if (normalizeBaseUrl(managedBaseUrl) === normalizedBaseUrl) {
+        matchedWorkspaceKeys.add(workspaceKey);
+      }
+    }
+
+    for (const workspaceKey of matchedWorkspaceKeys) {
+      this.noteManagedServerActivity(workspaceKey);
     }
   }
 

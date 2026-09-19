@@ -251,10 +251,18 @@ const CLAUDE_PRE_TOOL_USE_TIMEOUT_MS = 90_000;
 const CLAUDE_PLAN_APPROVAL_TIMEOUT_MS = 600_000;
 const OPENCODE_RECONNECT_DELAY_MS = 1_500;
 
+interface OpenCodeWatcherLease {
+  workspacePath: string;
+  runtimeHomeDir: string | null;
+  leaseId: string;
+}
+
 export class SessionPermissionRequestService {
   private readonly requestsById = new Map<string, SessionPermissionRequestInternalRecord>();
   private readonly requestIdsBySessionId = new Map<string, string[]>();
   private readonly opencodeWatcherAbortControllers = new Map<string, AbortController>();
+  private readonly opencodeWatcherLeasesByBaseUrl =
+    new Map<string, Map<string, OpenCodeWatcherLease>>();
   private readonly claudeAllowedScopeKeysBySessionId = new Map<string, Set<string>>();
 
   constructor(
@@ -278,10 +286,12 @@ export class SessionPermissionRequestService {
   ) {}
 
   async dispose(): Promise<void> {
-    for (const controller of this.opencodeWatcherAbortControllers.values()) {
+    for (const [baseUrl, controller] of this.opencodeWatcherAbortControllers) {
       controller.abort();
+      this.releaseOpenCodeWatcherLeases(baseUrl);
     }
     this.opencodeWatcherAbortControllers.clear();
+    this.opencodeWatcherLeasesByBaseUrl.clear();
 
     for (const request of this.requestsById.values()) {
       if (request.source.kind === "claude-pre-tool-use" && request.source.timer) {
@@ -1423,7 +1433,8 @@ export class SessionPermissionRequestService {
 
   private async startOpenCodeWatchers(session: SessionListItem): Promise<void> {
     const workspacePath = this.workspaceService.getWorkspaceOrThrow(session.workspaceId).path;
-    const baseUrls = await this.resolveOpenCodeBaseUrls(false, workspacePath);
+    const runtimeHomeDir = this.getOpenCodeRuntimeHomeDir(session.sessionId);
+    const baseUrls = await this.resolveOpenCodeBaseUrls(false, workspacePath, runtimeHomeDir);
 
     logPermissionDebug("opencode_permission.watchers.ensure", {
       sessionId: session.sessionId,
@@ -1433,18 +1444,133 @@ export class SessionPermissionRequestService {
     });
 
     for (const baseUrl of baseUrls) {
-      if (this.opencodeWatcherAbortControllers.has(baseUrl)) {
+      const leaseKey = buildOpenCodeWatcherLeaseKey(workspacePath, runtimeHomeDir);
+      const existingLeases = this.opencodeWatcherLeasesByBaseUrl.get(baseUrl);
+
+      if (existingLeases?.has(leaseKey)) {
+        continue;
+      }
+
+      const lease = this.acquireOpenCodeWatcherLease(baseUrl, workspacePath, runtimeHomeDir);
+      const existingController = this.opencodeWatcherAbortControllers.get(baseUrl);
+
+      if (existingController) {
+        if (lease) {
+          this.addOpenCodeWatcherLease(baseUrl, leaseKey, lease);
+        }
         continue;
       }
 
       const controller = new AbortController();
       this.opencodeWatcherAbortControllers.set(baseUrl, controller);
+      if (lease) {
+        this.addOpenCodeWatcherLease(baseUrl, leaseKey, lease);
+      }
       void this.consumeOpenCodeEvents(baseUrl, workspacePath, controller.signal)
         .finally(() => {
           if (this.opencodeWatcherAbortControllers.get(baseUrl) === controller) {
             this.opencodeWatcherAbortControllers.delete(baseUrl);
+            this.releaseOpenCodeWatcherLeases(baseUrl);
           }
         });
+    }
+  }
+
+  private getOpenCodeRuntimeHomeDir(sessionId: string): string | null {
+    try {
+      const runtimeHomeDir = this.sessionBindingRepository.findBySessionId(sessionId)?.runtimeHomeDir;
+      return runtimeHomeDir?.trim() || null;
+    } catch {
+      // 绑定尚未落库或读取失败时，继续按工作区默认作用域解析地址。
+      return null;
+    }
+  }
+
+  private acquireOpenCodeWatcherLease(
+    baseUrl: string,
+    workspacePath: string,
+    runtimeHomeDir: string | null
+  ): OpenCodeWatcherLease | null {
+    const resolver = this.config.opencodeBaseUrlResolver;
+
+    if (!resolver) {
+      return null;
+    }
+
+    try {
+      const acquireManagedServerLeaseForBaseUrl =
+        resolver.acquireManagedServerLeaseForBaseUrl?.bind(resolver);
+      const leaseId = acquireManagedServerLeaseForBaseUrl
+        ? acquireManagedServerLeaseForBaseUrl(
+            baseUrl,
+            workspacePath,
+            runtimeHomeDir || undefined
+          )
+        : runtimeHomeDir
+          ? resolver.acquireManagedServerLease(workspacePath, runtimeHomeDir)
+          : resolver.acquireManagedServerLease(workspacePath);
+
+      if (!leaseId) {
+        return null;
+      }
+
+      return {
+        workspacePath,
+        runtimeHomeDir,
+        leaseId
+      };
+    } catch (error) {
+      logPermissionDebug("opencode_permission.watch.lease_failed", {
+        baseUrl,
+        workspacePath,
+        detail: error instanceof Error ? error.message : "unknown"
+      });
+      return null;
+    }
+  }
+
+  private addOpenCodeWatcherLease(
+    baseUrl: string,
+    leaseKey: string,
+    lease: OpenCodeWatcherLease
+  ): void {
+    const leases = this.opencodeWatcherLeasesByBaseUrl.get(baseUrl) ?? new Map<string, OpenCodeWatcherLease>();
+    leases.set(leaseKey, lease);
+    this.opencodeWatcherLeasesByBaseUrl.set(baseUrl, leases);
+  }
+
+  private releaseOpenCodeWatcherLeases(baseUrl: string): void {
+    const leases = this.opencodeWatcherLeasesByBaseUrl.get(baseUrl);
+    this.opencodeWatcherLeasesByBaseUrl.delete(baseUrl);
+
+    if (!leases) {
+      return;
+    }
+
+    const resolver = this.config.opencodeBaseUrlResolver;
+
+    if (!resolver) {
+      return;
+    }
+
+    for (const lease of leases.values()) {
+      try {
+        if (lease.runtimeHomeDir) {
+          resolver.releaseManagedServerLease(
+            lease.workspacePath,
+            lease.leaseId,
+            lease.runtimeHomeDir
+          );
+        } else {
+          resolver.releaseManagedServerLease(lease.workspacePath, lease.leaseId);
+        }
+      } catch (error) {
+        logPermissionDebug("opencode_permission.watch.lease_release_failed", {
+          baseUrl,
+          workspacePath: lease.workspacePath,
+          detail: error instanceof Error ? error.message : "unknown"
+        });
+      }
     }
   }
 
@@ -1649,9 +1775,11 @@ export class SessionPermissionRequestService {
 
   private async refreshOpenCodePermissionRequests(session: SessionListItem): Promise<void> {
     const workspacePath = this.workspaceService.getWorkspaceOrThrow(session.workspaceId).path;
+    const runtimeHomeDir = this.getOpenCodeRuntimeHomeDir(session.sessionId);
     const permissions = await this.fetchOpenCodePermissions(
       session.providerSessionId,
-      workspacePath
+      workspacePath,
+      runtimeHomeDir
     );
     logPermissionDebug("opencode_permission.refresh", {
       sessionId: session.sessionId,
@@ -1725,9 +1853,10 @@ export class SessionPermissionRequestService {
 
   private async fetchOpenCodePermissions(
     providerSessionId: string,
-    workspacePath: string
+    workspacePath: string,
+    runtimeHomeDir: string | null
   ): Promise<OpenCodePermissionFetchResult[]> {
-    const baseUrls = await this.resolveOpenCodeBaseUrls(false, workspacePath);
+    const baseUrls = await this.resolveOpenCodeBaseUrls(false, workspacePath, runtimeHomeDir);
     const results: OpenCodePermissionFetchResult[] = [];
     const seenPermissionIds = new Set<string>();
 
@@ -1950,12 +2079,14 @@ export class SessionPermissionRequestService {
 
   private async resolveOpenCodeBaseUrl(
     refresh: boolean,
-    workspacePath?: string | null
+    workspacePath?: string | null,
+    runtimeHomeDir?: string | null
   ): Promise<string> {
     const resolved = this.config.opencodeBaseUrlResolver
       ? await this.config.opencodeBaseUrlResolver.resolve({
           refresh,
-          workspacePath
+          workspacePath,
+          ...(runtimeHomeDir ? { runtimeHomeDir } : {})
         })
       : this.config.opencodeBaseUrl;
     const normalized = resolved?.trim() ?? "";
@@ -1969,14 +2100,16 @@ export class SessionPermissionRequestService {
 
   private async resolveOpenCodeBaseUrls(
     refresh: boolean,
-    workspacePath?: string | null
+    workspacePath?: string | null,
+    runtimeHomeDir?: string | null
   ): Promise<string[]> {
     const resolver = this.config.opencodeBaseUrlResolver;
 
     if (resolver) {
       const reachable = await resolver.listReachableBaseUrls({
         refresh,
-        workspacePath
+        workspacePath,
+        ...(runtimeHomeDir ? { runtimeHomeDir } : {})
       });
 
       if (reachable.length > 0) {
@@ -1984,7 +2117,7 @@ export class SessionPermissionRequestService {
       }
     }
 
-    return [await this.resolveOpenCodeBaseUrl(refresh, workspacePath)];
+    return [await this.resolveOpenCodeBaseUrl(refresh, workspacePath, runtimeHomeDir)];
   }
 
   private addClaudeAllowedScopeKey(request: SessionPermissionRequestInternalRecord): void {
@@ -4038,6 +4171,13 @@ function unwrapOpenCodeEventPayload(rawEvent: Record<string, unknown>): Record<s
   const nestedEvent = toRecord(properties?.event);
 
   return nestedEvent ?? rawEvent;
+}
+
+function buildOpenCodeWatcherLeaseKey(
+  workspacePath: string,
+  runtimeHomeDir: string | null
+): string {
+  return `${workspacePath.trim()}\u0000${runtimeHomeDir?.trim() ?? ""}`;
 }
 
 async function waitForDelay(delayMs: number, signal: AbortSignal): Promise<void> {

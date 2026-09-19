@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   resolveClaudePreToolUseHookMatchers
 } from "@codingns/session-sync-core/runtime/claude-runtime";
@@ -13,7 +13,8 @@ import {
   normalizeCodexServerRequest,
   normalizeOpenCodePermissionRequest,
   resolveClaudeBlockingRequestTimeoutMs,
-  resolveClaudeSafeShellAutoApprovalReason
+  resolveClaudeSafeShellAutoApprovalReason,
+  SessionPermissionRequestService
 } from "../../src/modules/sessions/session-permission-request-service.js";
 
 describe("session-permission-request-service normalizers", () => {
@@ -492,5 +493,68 @@ describe("session-permission-request-service normalizers", () => {
     expect(resolveClaudeSafeShellAutoApprovalReason("find . -delete")).toBeNull();
     expect(resolveClaudeSafeShellAutoApprovalReason("git branch -D feature/foo")).toBeNull();
     expect(resolveClaudeSafeShellAutoApprovalReason("pwd && ls")).toBeNull();
+  });
+
+  it("OpenCode 权限 watcher 会按工作区持有并释放托管服务租约", async () => {
+    const originalFetch = globalThis.fetch;
+    const acquireManagedServerLease = vi.fn(() => "watch-lease-1");
+    const acquireManagedServerLeaseForBaseUrl = vi.fn(() => "watch-lease-1");
+    const releaseManagedServerLease = vi.fn();
+    const listReachableBaseUrls = vi.fn(async (input) => {
+      expect(input).toMatchObject({
+        workspacePath: "/tmp/workspace",
+        runtimeHomeDir: "/tmp/runtime/opencode"
+      });
+      return ["http://127.0.0.1:4316"];
+    });
+
+    globalThis.fetch = vi.fn(async () => ({
+      body: null
+    }));
+
+    const service = new SessionPermissionRequestService(
+      {} as any,
+      {
+        findBySessionId: vi.fn(() => ({ runtimeHomeDir: "/tmp/runtime/opencode" }))
+      } as any,
+      {} as any,
+      {
+        getWorkspaceOrThrow: vi.fn(() => ({ path: "/tmp/workspace" }))
+      } as any,
+      {
+        opencodeBaseUrl: "",
+        opencodeBaseUrlResolver: {
+          listReachableBaseUrls,
+          acquireManagedServerLease,
+          acquireManagedServerLeaseForBaseUrl,
+          releaseManagedServerLease
+        }
+      } as any,
+      vi.fn()
+    );
+
+    try {
+      await (service as any).startOpenCodeWatchers({
+        sessionId: "session-opencode-1",
+        workspaceId: "workspace-1",
+        providerSessionId: "provider-session-1"
+      });
+
+      expect(acquireManagedServerLeaseForBaseUrl).toHaveBeenCalledWith(
+        "http://127.0.0.1:4316",
+        "/tmp/workspace",
+        "/tmp/runtime/opencode"
+      );
+
+      await service.dispose();
+
+      expect(releaseManagedServerLease).toHaveBeenCalledWith(
+        "/tmp/workspace",
+        "watch-lease-1",
+        "/tmp/runtime/opencode"
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

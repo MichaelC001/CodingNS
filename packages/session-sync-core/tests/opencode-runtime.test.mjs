@@ -200,10 +200,12 @@ test("OpenCodeRuntimeAdapter 运行期间会持有托管 server 租约，并在�
   const originalFetch = globalThis.fetch;
   const acquired = [];
   const released = [];
+  const order = [];
 
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const method = init.method ?? "GET";
+    order.push(`fetch:${method}:${url}`);
 
     if (url.startsWith("http://127.0.0.1:41827/session?") && method === "POST") {
       return jsonResponse({ id: "ses_runtime_lease" });
@@ -244,6 +246,7 @@ test("OpenCodeRuntimeAdapter 运行期间会持有托管 server 租约，并在�
     baseUrl: "http://127.0.0.1:41827",
     requestTimeoutMs: 1_000,
     acquireManagedServerLease(workspacePath, runtimeHomeDir) {
+      order.push("acquire");
       acquired.push({ workspacePath, runtimeHomeDir });
       return "lease-1";
     },
@@ -280,6 +283,7 @@ test("OpenCodeRuntimeAdapter 运行期间会持有托管 server 租约，并在�
     workspacePath: "/Users/jackson/Code/CodingNS",
     runtimeHomeDir: "/tmp/workspace-session-runtime/opencode"
   }]);
+  assert.equal(order[0], "acquire");
   assert.deepEqual(released, []);
 
   await launch.completed;
@@ -288,6 +292,65 @@ test("OpenCodeRuntimeAdapter 运行期间会持有托管 server 租约，并在�
     {
       workspacePath: "/Users/jackson/Code/CodingNS",
       leaseId: "lease-1",
+      runtimeHomeDir: "/tmp/workspace-session-runtime/opencode"
+    }
+  ]);
+});
+
+test("OpenCodeRuntimeAdapter 创建会话失败时会释放预先申请的租约", async (context) => {
+  const originalFetch = globalThis.fetch;
+  const released = [];
+
+  globalThis.fetch = async () => {
+    throw new Error("create failed");
+  };
+
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const adapter = new OpenCodeRuntimeAdapter({
+    baseUrl: "http://127.0.0.1:41827",
+    acquireManagedServerLease() {
+      return "lease-create-failure";
+    },
+    releaseManagedServerLease(workspacePath, leaseId, runtimeHomeDir) {
+      released.push({ workspacePath, leaseId, runtimeHomeDir });
+    }
+  });
+
+  await assert.rejects(
+    () => adapter.startSession(
+      {
+        sessionId: "local-session-create-failure",
+        workspaceId: "workspace-1",
+        workspacePath: "/Users/jackson/Code/CodingNS",
+        provider: "opencode",
+        providerSessionId: null,
+        rawStoreRef: null,
+        runtimeHomeDir: "/tmp/workspace-session-runtime/opencode",
+        options: {
+          content: "创建失败时也要释放租约",
+          clientRequestId: null,
+          model: null,
+          reasoningLevel: null,
+          permissionMode: null,
+          providerPrompt: null,
+          attachments: []
+        }
+      },
+      {
+        updateSessionBinding() {},
+        async emit() {}
+      }
+    ),
+    /create failed/
+  );
+
+  assert.deepEqual(released, [
+    {
+      workspacePath: "/Users/jackson/Code/CodingNS",
+      leaseId: "lease-create-failure",
       runtimeHomeDir: "/tmp/workspace-session-runtime/opencode"
     }
   ]);

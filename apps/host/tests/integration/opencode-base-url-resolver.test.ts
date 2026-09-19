@@ -56,6 +56,88 @@ describe("OpenCodeBaseUrlResolver", () => {
     expect(inspectListeningSockets).toHaveBeenCalledTimes(2);
   });
 
+  it("缓存命中和可达探测都会刷新托管 serve 的活动时间", async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+
+    try {
+      const stdoutHandlers: Array<(chunk: string) => void> = [];
+      const child = {
+        pid: 4315,
+        killed: false,
+        stdout: {
+          on: (event: string, handler: (chunk: string) => void) => {
+            if (event === "data") {
+              stdoutHandlers.push(handler);
+            }
+          },
+          off: vi.fn()
+        },
+        stderr: {
+          on: vi.fn(),
+          off: vi.fn()
+        },
+        once: vi.fn(),
+        off: vi.fn(),
+        kill: vi.fn(() => {
+          child.killed = true;
+        })
+      };
+      const spawn = vi.fn(() => {
+        queueMicrotask(() => {
+          for (const handler of stdoutHandlers) {
+            handler("opencode server listening on http://127.0.0.1:4315\n");
+          }
+        });
+
+        return child;
+      });
+
+      vi.doMock("node:child_process", () => ({
+        spawn
+      }));
+
+      const disposeManagedServerInstance = vi.fn(async () => {
+        child.killed = true;
+      });
+      const { OpenCodeBaseUrlResolver: Resolver } = await import(
+        "../../src/config/opencode-base-url-resolver.js"
+      );
+      const resolver = new Resolver({
+        commandPath: "/opt/homebrew/bin/opencode",
+        inspectProcessList: () => "",
+        inspectListeningSockets: () => [],
+        inspectProcessCwd: () => null,
+        probeBaseUrl: async (baseUrl) => baseUrl === "http://127.0.0.1:4315",
+        disposeManagedServerInstance,
+        cacheTtlMs: 1_000,
+        managedServerIdleTimeoutMs: 100,
+        managedServerDisposeGraceMs: 0
+      });
+      const workspacePath = "/Users/jackson/Code/CodingNS";
+
+      await expect(resolver.resolve({ workspacePath })).resolves.toBe("http://127.0.0.1:4315");
+
+      await vi.advanceTimersByTimeAsync(80);
+      await expect(resolver.resolve({ workspacePath })).resolves.toBe("http://127.0.0.1:4315");
+
+      await vi.advanceTimersByTimeAsync(80);
+      expect(disposeManagedServerInstance).not.toHaveBeenCalled();
+
+      await expect(resolver.listReachableBaseUrls({ workspacePath })).resolves.toEqual([
+        "http://127.0.0.1:4315"
+      ]);
+
+      await vi.advanceTimersByTimeAsync(80);
+      expect(disposeManagedServerInstance).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(101);
+      expect(disposeManagedServerInstance).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refresh 会在旧地址失效后切换到新的 serve 端口", async () => {
     let processList = "100 /opt/homebrew/bin/.opencode serve --print-logs";
     let healthyUrl = "http://127.0.0.1:4098";
@@ -914,11 +996,18 @@ describe("OpenCodeBaseUrlResolver", () => {
       managedServerDisposeGraceMs: 0
     });
 
+    const leaseId = resolver.acquireManagedServerLease("/Users/jackson/Code/CodingNS");
     await expect(
       resolver.resolve({ workspacePath: "/Users/jackson/Code/CodingNS" })
     ).resolves.toBe("http://127.0.0.1:4314");
 
-    const leaseId = resolver.acquireManagedServerLease("/Users/jackson/Code/CodingNS");
+    expect(
+      resolver.acquireManagedServerLeaseForBaseUrl(
+        "http://127.0.0.1:4999",
+        "/Users/jackson/Code/CodingNS"
+      )
+    ).toBeNull();
+
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(disposeManagedServerInstance).not.toHaveBeenCalled();
@@ -978,7 +1067,8 @@ describe("OpenCodeBaseUrlResolver", () => {
     });
   });
 
-  it("回收结果会缓存，避免托管失败时反复扫进程表", async () => {
+  it("回收结果只在节流间隔内缓存，间隔到期后会重新扫描", async () => {
+    let now = 0;
     const inspectProcessList = vi.fn(
       () => "9001 opencode serve --hostname 127.0.0.1 --port 0 --print-logs"
     );
@@ -987,19 +1077,23 @@ describe("OpenCodeBaseUrlResolver", () => {
       commandPath: "/opt/homebrew/bin/opencode",
       inspectProcessList,
       inspectProcessStats: () => ({ ppid: 1, elapsedSeconds: 3_600, activeConnectionCount: 0 }),
-      terminateProcess
+      terminateProcess,
+      now: () => now,
+      orphanReclaimIntervalMs: 100
     });
 
     await resolver.reclaimOrphanedServers();
+    now = 50;
     await resolver.reclaimOrphanedServers();
 
     expect(inspectProcessList).toHaveBeenCalledTimes(1);
     expect(terminateProcess).toHaveBeenCalledTimes(1);
 
-    // 同一实例内重复调用直接返回上次结果，不再扫进程表
+    now = 101;
     const again = await resolver.reclaimOrphanedServers();
     expect(again.reclaimedPids).toEqual([9001]);
-    expect(inspectProcessList).toHaveBeenCalledTimes(1);
+    expect(inspectProcessList).toHaveBeenCalledTimes(2);
+    expect(terminateProcess).toHaveBeenCalledTimes(2);
   });
 
   it("关闭孤儿回收时不会扫描进程表", async () => {

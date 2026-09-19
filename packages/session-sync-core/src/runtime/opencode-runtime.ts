@@ -103,19 +103,42 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     request: ProviderRuntimeRunRequest,
     sink: ProviderRuntimeEventSink
   ): Promise<ProviderRuntimeLaunchResult> {
-    const providerSessionId = await this.createSession(
-      request.workspacePath,
-      request.runtimeHomeDir ?? null,
-      request.options.permissionMode
-    );
-    const rawStoreRef = buildSessionRawStoreRef(providerSessionId);
+    const managedServerLeaseId =
+      this.options.acquireManagedServerLease?.(
+        request.workspacePath,
+        request.runtimeHomeDir ?? null
+      )?.trim() || null;
 
-    sink.updateSessionBinding({
-      providerSessionId,
-      rawStoreRef
-    });
+    try {
+      const providerSessionId = await this.createSession(
+        request.workspacePath,
+        request.runtimeHomeDir ?? null,
+        request.options.permissionMode
+      );
+      const rawStoreRef = buildSessionRawStoreRef(providerSessionId);
 
-    return this.createLaunchResult(request, sink, providerSessionId, rawStoreRef);
+      sink.updateSessionBinding({
+        providerSessionId,
+        rawStoreRef
+      });
+
+      return this.createLaunchResult(
+        request,
+        sink,
+        providerSessionId,
+        rawStoreRef,
+        managedServerLeaseId
+      );
+    } catch (error) {
+      if (managedServerLeaseId) {
+        this.options.releaseManagedServerLease?.(
+          request.workspacePath,
+          managedServerLeaseId,
+          request.runtimeHomeDir ?? null
+        );
+      }
+      throw error;
+    }
   }
 
   async continueSession(
@@ -140,15 +163,18 @@ export class OpenCodeRuntimeAdapter implements ProviderRuntimeAdapter {
     request: ProviderRuntimeRunRequest,
     sink: ProviderRuntimeEventSink,
     providerSessionId: string,
-    rawStoreRef: string
+    rawStoreRef: string,
+    existingManagedServerLeaseId?: string | null
   ): ProviderRuntimeLaunchResult {
     const abortController = new AbortController();
     const runStartedAtMs = Date.now();
     const managedServerLeaseId =
-      this.options.acquireManagedServerLease?.(
-        request.workspacePath,
-        request.runtimeHomeDir ?? null
-      )?.trim() || null;
+      existingManagedServerLeaseId === undefined
+        ? this.options.acquireManagedServerLease?.(
+            request.workspacePath,
+            request.runtimeHomeDir ?? null
+          )?.trim() || null
+        : existingManagedServerLeaseId;
     const completed = this.runSession(
       request,
       {
