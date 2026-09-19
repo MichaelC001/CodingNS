@@ -4,47 +4,18 @@ import { describe, expect, it } from "vitest";
 import { t } from "../../../shared/i18n";
 import {
   butlerApiMock,
+  butlerRuntimeCallsMock,
   createState,
   renderWorkbenchWithState,
   useButlerRuntimeStoreMock
 } from "./AffairsWorkbenchView.test-support";
 
-describe("AffairsWorkbenchView bootstrap guard", () => {
-  it("事务模式未初始化时切到自动化分区会被强制拉回对话初始化页", async () => {
-    butlerApiMock.listAssistantAutomations.mockResolvedValue({ payload: { items: [] } });
-    butlerApiMock.listRecentAssistantAutomationRuns.mockResolvedValue({ payload: { items: [] } });
-    useButlerRuntimeStoreMock.mockImplementation((_store, selector) => selector({
-      initialized: false,
-      loading: false,
-      profile: null,
-      activeProvider: "codex",
-      controlSession: null,
-      capabilities: null,
-      messages: [],
-      historyState: "idle",
-      loadingOlderMessages: false,
-      hasOlderMessages: false,
-      runtimeHasActiveRun: false,
-      runtimeCanInterrupt: false,
-      contextUsage: null,
-      permissionRequests: [],
-      sending: false
-    }));
-    renderWorkbenchWithState({
-      ...createState(),
-      primarySection: "workbench",
-      selectedNodeId: "workbench:overview"
-    });
-
-    expect(await screen.findByRole("tab", { name: t("shell.affairsConversationNav") })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getAllByText(t("shell.affairsInitRouteGuardHint")).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: t("shell.affairsInitSubmit") })).toBeInTheDocument();
-    expect(screen.queryByText(t("shell.affairsHostUnavailableTitle"))).not.toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: t("shell.affairsLibraryNav") })).not.toBeDisabled();
-    expect(screen.getByRole("tab", { name: t("shell.affairsWorkbenchNav") })).not.toBeDisabled();
-  });
-
-  it("事务模式未初始化时刷新到文档页会直接回到初始化页", async () => {
+/**
+ * 助手服务（Butler）已经整体下线：工作台加载不再依赖助手初始化状态，
+ * 也不再在挂载时发起任何助手服务请求。这里锁定这些约束，避免以后回退。
+ */
+describe("AffairsWorkbenchView 与助手服务解耦", () => {
+  it("助手运行时没有初始化时，工作台直接显示文档内容", async () => {
     useButlerRuntimeStoreMock.mockImplementation((_store, selector) => selector({
       initialized: false,
       loading: false,
@@ -65,12 +36,12 @@ describe("AffairsWorkbenchView bootstrap guard", () => {
 
     renderWorkbenchWithState(createState());
 
-    expect((await screen.findAllByText(t("shell.affairsInitRouteGuardHint"))).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: t("shell.affairsInitSubmit") })).toBeInTheDocument();
-    expect(screen.queryByText("Exchange 分层通讯簿.txt")).not.toBeInTheDocument();
+    expect(await screen.findByText("Exchange 分层通讯簿.txt")).toBeInTheDocument();
+    expect(screen.queryByText(t("shell.affairsInitRouteGuardHint"))).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("shell.affairsInitSubmit") })).not.toBeInTheDocument();
   });
 
-  it("事务服务连不上时文档主区也不会被不可用页接管", async () => {
+  it("助手服务连不上时不会把文档主区换成不可用页", async () => {
     useButlerRuntimeStoreMock.mockImplementation((_store, selector) => selector({
       initialized: false,
       loading: false,
@@ -96,10 +67,9 @@ describe("AffairsWorkbenchView bootstrap guard", () => {
     expect(await screen.findByText("Exchange 分层通讯簿.txt")).toBeInTheDocument();
     expect(screen.queryByText(t("shell.affairsHostUnavailableTitle"))).not.toBeInTheDocument();
     expect(screen.queryByText(t("shell.affairsInitRouteGuardHint"))).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: t("shell.affairsInitSubmit") })).not.toBeInTheDocument();
   });
 
-  it("事务服务返回无效响应时文档主区也不会被不可用页接管", async () => {
+  it("助手服务返回无效响应时也不会阻塞工作台", async () => {
     useButlerRuntimeStoreMock.mockImplementation((_store, selector) => selector({
       initialized: false,
       loading: false,
@@ -123,62 +93,24 @@ describe("AffairsWorkbenchView bootstrap guard", () => {
     renderWorkbenchWithState(createState());
 
     expect(await screen.findByText("Exchange 分层通讯簿.txt")).toBeInTheDocument();
-    expect(screen.queryByText(t("shell.affairsHostUnavailableTitle"))).not.toBeInTheDocument();
-    expect(screen.queryByText(t("shell.affairsInitRouteGuardHint"))).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: t("shell.affairsInitSubmit") })).not.toBeInTheDocument();
+    expect(screen.queryByText(t("shell.affairsConnectionCheckingTitle"))).not.toBeInTheDocument();
+    expect(screen.queryByText(t("shell.affairsHostUnavailableErrorTitle"))).not.toBeInTheDocument();
   });
 
-  it("事务服务连接检查中时文档主区仍然直接显示文档内容", async () => {
-    useButlerRuntimeStoreMock.mockImplementation((_store, selector) => selector({
-      initialized: false,
-      loading: true,
-      bootstrapErrorCode: null,
-      error: null,
-      profile: null,
-      activeProvider: "codex",
-      controlSession: null,
-      capabilities: null,
-      messages: [],
-      historyState: "idle",
-      loadingOlderMessages: false,
-      hasOlderMessages: false,
-      runtimeHasActiveRun: false,
-      runtimeCanInterrupt: false,
-      contextUsage: null,
-      permissionRequests: [],
-      sending: false
-    }));
-
+  it("工作台加载过程中不会发起任何助手服务请求", async () => {
     renderWorkbenchWithState(createState());
 
     expect(await screen.findByText("Exchange 分层通讯簿.txt")).toBeInTheDocument();
-    expect(screen.queryByText(t("shell.affairsConnectionCheckingTitle"))).not.toBeInTheDocument();
-    expect(screen.queryByText(t("shell.affairsConnectionCheckingAuxiliaryEmpty"))).not.toBeInTheDocument();
-    expect(screen.queryByText(t("shell.affairsInitRouteGuardHint"))).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: t("shell.affairsInitSubmit") })).not.toBeInTheDocument();
+    expect(butlerApiMock.listButlerInboxItems).not.toHaveBeenCalled();
+    expect(butlerApiMock.listButlerFollowUpTasks).not.toHaveBeenCalled();
+    expect(butlerApiMock.listAssistantAutomations).not.toHaveBeenCalled();
+    expect(butlerApiMock.listRecentAssistantAutomationRuns).not.toHaveBeenCalled();
+    expect(butlerApiMock.listButlerControlSessions).not.toHaveBeenCalled();
+    expect(butlerApiMock.listButlerProjects).not.toHaveBeenCalled();
+    expect(butlerRuntimeCallsMock.initialize).not.toHaveBeenCalled();
   });
 
-  it("文档库视图正常显示时，右侧辅助面板不会再显示事务连接检查占位", async () => {
-    useButlerRuntimeStoreMock.mockImplementation((_store, selector) => selector({
-      initialized: false,
-      loading: true,
-      bootstrapErrorCode: null,
-      error: null,
-      profile: null,
-      activeProvider: "codex",
-      controlSession: null,
-      capabilities: null,
-      messages: [],
-      historyState: "idle",
-      loadingOlderMessages: false,
-      hasOlderMessages: false,
-      runtimeHasActiveRun: false,
-      runtimeCanInterrupt: false,
-      contextUsage: null,
-      permissionRequests: [],
-      sending: false
-    }));
-
+  it("右侧辅助面板不再提供助手标签", async () => {
     renderWorkbenchWithState({
       ...createState(),
       primarySection: "library",
@@ -187,7 +119,19 @@ describe("AffairsWorkbenchView bootstrap guard", () => {
     });
 
     expect(await screen.findByText("Exchange 分层通讯簿.txt")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: t("shell.affairsAssistantTitle") })).not.toBeInTheDocument();
     expect(screen.queryByText(t("shell.affairsConnectionCheckingAuxiliaryEmpty"))).not.toBeInTheDocument();
-    expect(screen.queryByText(t("shell.affairsConnectionCheckingDescription"))).not.toBeInTheDocument();
+  });
+
+  it("偏好里停留在助手标签页时会降级到详情面板", async () => {
+    renderWorkbenchWithState({
+      ...createState(),
+      primarySection: "library",
+      auxiliaryTab: "assistant",
+      selectedNodeId: "library:folder:root"
+    });
+
+    expect(await screen.findByText("Exchange 分层通讯簿.txt")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: t("shell.affairsAssistantTitle") })).not.toBeInTheDocument();
   });
 });

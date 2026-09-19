@@ -52,25 +52,10 @@ import type {
   AssistantAutomationTaskDto,
   ButlerControlSessionDto,
   ButlerManagedSessionDto,
-  ButlerProfilePayload,
   ButlerFollowUpTaskDto,
   ButlerInboxItemDto
 } from "../../butler/api/butler-api";
-import {
-  listAssistantAutomations,
-  listButlerControlSessions,
-  listButlerFollowUpTasks,
-  listButlerInboxItems,
-  listRecentAssistantAutomationRuns,
-  resumeButlerProjectSession
-} from "../../butler/api/butler-api";
 import { ButlerAnchoredPopover } from "../../butler/components/ButlerAnchoredPopover";
-import {
-  ButlerInitForm,
-  type ButlerInitFormState,
-  type ButlerReportPriorityPresetId,
-  DEFAULT_BUTLER_INIT_FORM_STATE
-} from "../../butler/components/ButlerInitForm";
 import { ButlerRuntimeStore, useButlerRuntimeStore } from "../../butler/runtime/butler-runtime-store";
 import type {
   AffairsDocumentTagDetailsDto,
@@ -710,11 +695,9 @@ interface AffairsWorkbenchContextValue {
   workspaceName: string | null;
   navigationGroups: WorkspaceSessionGroup[];
   agentWorkspaceId: string | null;
-  agentProjectId: string | null;
   agentWorkspacePath: string | null;
   state: AffairsViewState;
   activeSection: AffairsPrimarySection;
-  initGuard: AffairsInitGuardSnapshot;
   loading: boolean;
   error: string | null;
   libraryLoading: boolean;
@@ -746,9 +729,6 @@ interface AffairsWorkbenchContextValue {
   auxiliaryTab: AffairsAuxiliaryTab;
   toolbarExpanded: boolean;
   detailViewerCollapsed: boolean;
-  initializeButlerProfile: (payload: ButlerProfilePayload) => Promise<void>;
-  updateButlerProfile: (payload: ButlerProfilePayload) => Promise<void>;
-  reloadButlerProfile: () => Promise<void>;
   openLibraryViewer: (record: DocumentRecord) => void;
   selectSection: (section: AffairsPrimarySection) => void;
   openInitializedSection: (section: AffairsPrimarySection) => void;
@@ -817,7 +797,6 @@ interface AffairsWorkbenchContextValue {
     session: SessionSummaryDto;
     bootstrapMessages: HistoryMessageDto[];
   }) => void;
-  butlerStore: ButlerRuntimeStore;
   archiveConversationSession: (input: { kind: AffairsConversationKind; session: SessionSummaryDto }) => Promise<void>;
   unarchiveConversationSession: (input: { kind: AffairsConversationKind; session: SessionSummaryDto }) => Promise<void>;
   toggleConversationSessionFavorite: (input: { kind: AffairsConversationKind; session: SessionSummaryDto }) => Promise<void>;
@@ -1424,6 +1403,64 @@ const AFFAIRS_ASSISTANT_PROVIDER_IDS: ProviderId[] = ["codex", "claude-code"];
 const EMPTY_AFFAIRS_WORKSPACE_SESSIONS: SessionSummaryDto[] = [];
 const affairsLightweightRuntimeMemory = new Map<string, AffairsLightweightRuntimeSnapshot>();
 
+function AffairsConversationState({ workspaceId }: { workspaceId: string }) {
+  const {
+    selectedConversationDraft,
+    selectedConversationSession,
+    conversationRuntimeSeed,
+    agentWorkspaceId
+  } = useAffairsWorkbenchInternal();
+
+  if (selectedConversationSession?.kind === "lightweight") {
+    return (
+      <AffairsLightweightConversationLiveState
+        sessionId={selectedConversationSession.sessionId}
+        runtimeSeed={
+          conversationRuntimeSeed?.kind === "lightweight"
+          && conversationRuntimeSeed.session.sessionId === selectedConversationSession.sessionId
+            ? conversationRuntimeSeed
+            : null
+        }
+      />
+    );
+  }
+
+  if (selectedConversationSession?.kind === "agent") {
+    if (!agentWorkspaceId) {
+      return <AffairsConversationEmptyState />;
+    }
+    return (
+      <AffairsAgentConversationState
+        workspaceId={agentWorkspaceId}
+        sessionId={selectedConversationSession.sessionId}
+      />
+    );
+  }
+
+  if (selectedConversationDraft?.kind === "lightweight") {
+    return (
+      <AffairsLightweightConversationDraftState
+        workspaceId={workspaceId}
+        draft={selectedConversationDraft}
+      />
+    );
+  }
+
+  if (selectedConversationDraft?.kind === "agent") {
+    if (!agentWorkspaceId) {
+      return <AffairsConversationEmptyState />;
+    }
+    return (
+      <AffairsAgentConversationState
+        workspaceId={agentWorkspaceId}
+        draft={selectedConversationDraft}
+      />
+    );
+  }
+
+  return <AffairsConversationEmptyState />;
+}
+
 function useAffairsTemporarySessionAnchors(
   workspaceId: string | null | undefined,
   parentSessionId: string | null | undefined,
@@ -1569,7 +1606,6 @@ export function AffairsWorkbenchProvider({
     () => readCachedAffairsLightweightConversationSessions(workspaceId) ?? [],
     [workspaceId]
   );
-  const [agentProjectId, setAgentProjectId] = useState<string | null>(null);
   const [snapshotAgentProjectWorkspaceId, setSnapshotAgentProjectWorkspaceId] = useState<string | null>(null);
   const [lightweightConversationSessions, setLightweightConversationSessions] = useState<SessionSummaryDto[]>(
     initialLightweightConversationSessions
@@ -1653,24 +1689,6 @@ export function AffairsWorkbenchProvider({
     () => matchedAgentWorkspaceId ?? snapshotAgentProjectWorkspaceId,
     [matchedAgentWorkspaceId, snapshotAgentProjectWorkspaceId]
   );
-  const butlerStore = useMemo(
-    () => new ButlerRuntimeStore(agentWorkspaceId),
-    [agentWorkspaceId]
-  );
-  const butlerInitLoading = useButlerRuntimeStore(butlerStore, (value) => value.loading);
-  const butlerInitialized = useButlerRuntimeStore(butlerStore, (value) => value.initialized);
-  const affairsSetupCompleted = useButlerRuntimeStore(
-    butlerStore,
-    (value) => value.affairsSetupCompleted ?? value.initialized
-  );
-  const butlerBootstrapErrorCode = useButlerRuntimeStore(
-    butlerStore,
-    (value) => value.bootstrapErrorCode
-  );
-  const butlerInitError = useButlerRuntimeStore(butlerStore, (value) => value.error);
-  const butlerProfile = useButlerRuntimeStore(butlerStore, (value) => value.profile);
-  const butlerActiveProvider = useButlerRuntimeStore(butlerStore, (value) => value.activeProvider);
-
   useEffect(() => {
     if (
       !affairsLibraryCapability.requested
@@ -1699,27 +1717,9 @@ export function AffairsWorkbenchProvider({
     onStateChange,
     state
   ]);
-  const butlerControlSession = useButlerRuntimeStore(butlerStore, (value) => value.controlSession);
   const { showToast } = useToast();
-  const butlerHostUnavailable =
-    butlerBootstrapErrorCode === "NETWORK_ERROR"
-    || butlerBootstrapErrorCode === "INVALID_RESPONSE";
   const indexStatus = librarySnapshot?.status ?? null;
   const currentDirectoryStatus = libraryDocumentPage?.directoryStatus ?? null;
-  const initGuard = useMemo<AffairsInitGuardSnapshot>(() => ({
-    loading: butlerInitLoading,
-    initialized: affairsSetupCompleted,
-    butlerInitialized,
-    unavailable: !butlerInitLoading && butlerHostUnavailable,
-    errorMessage: butlerInitError,
-    profile: butlerProfile
-      ? {
-          displayName: butlerProfile.displayName,
-          providerId: butlerProfile.providerId,
-          personaTone: butlerProfile.persona.tone
-        }
-      : null
-  }), [affairsSetupCompleted, butlerHostUnavailable, butlerInitError, butlerInitLoading, butlerInitialized, butlerProfile]);
   const ensureAffairsRoute = useCallback(() => {
     // 事务内容已经并入代码视图，这里只保留旧调用点，不再主动跳转到 /affairs。
     void forceRoute;
@@ -1733,23 +1733,12 @@ export function AffairsWorkbenchProvider({
   const effectiveAuxiliaryTab = resolveAffairsDisplayedAuxiliaryTab(activeSection, state.auxiliaryTab);
 
   useEffect(() => {
-    if (typeof butlerStore.initialize === "function") {
-      void butlerStore.initialize();
-    }
-  }, [butlerStore]);
-
-  useEffect(() => () => {
-    butlerStore.dispose();
-  }, [butlerStore]);
-
-  useEffect(() => {
     setLastObjectAssistantContext(null);
   }, [workspaceId]);
 
   useEffect(() => {
     lightweightConversationSessionCacheScopeRef.current = null;
     setLightweightConversationSessions(initialLightweightConversationSessions);
-    setAgentProjectId(null);
     setSnapshotAgentProjectWorkspaceId(null);
     setAgentConversationSessions([]);
     setAgentConversationSessionsReady(false);
@@ -1933,7 +1922,6 @@ export function AffairsWorkbenchProvider({
       if (requestId !== agentConversationReloadRequestIdRef.current) {
         return;
       }
-      setAgentProjectId(response.item.projectId);
       setSnapshotAgentProjectWorkspaceId(response.item.projectWorkspaceId);
       setAgentConversationSessions((current) => mergeSnapshotBackedAgentConversationSessions(
         current,
@@ -2498,80 +2486,6 @@ export function AffairsWorkbenchProvider({
     workspaceId
   ]);
 
-  useEffect(() => {
-    let disposed = false;
-
-    setTodoLoading(true);
-    setTodoError(null);
-    void Promise.all([listButlerInboxItems({ workspaceId }), listButlerFollowUpTasks()])
-      .then(([inboxResponse, followUpResponse]) => {
-        if (disposed) {
-          return;
-        }
-        setInboxItems(inboxResponse.items.filter((item) => item.workspaceId === workspaceId));
-        setFollowUpTasks(followUpResponse.items.filter((item) => item.workspaceId === workspaceId));
-        setTodoLoading(false);
-      })
-      .catch((requestError) => {
-        if (disposed) {
-          return;
-        }
-        setTodoError(requestError instanceof Error ? requestError.message : t("shell.navigationLoadFailed"));
-        setTodoLoading(false);
-      });
-
-    return () => {
-      disposed = true;
-    };
-  }, [workspaceId]);
-
-  useEffect(() => {
-    let disposed = false;
-
-    if (!butlerInitialized) {
-      setAutomations([]);
-      setAutomationRuns([]);
-      setAutomationLoading(false);
-      setAutomationError(null);
-      return () => {
-        disposed = true;
-      };
-    }
-
-    setAutomationLoading(true);
-    setAutomationError(null);
-    void Promise.all([listAssistantAutomations({ limit: 200 }), listRecentAssistantAutomationRuns({ limit: 200 })])
-      .then(([automationResponse, automationRunResponse]) => {
-        if (disposed) {
-          return;
-        }
-        setAutomations(
-          automationResponse.payload.items.filter((item) => {
-            const targetSessionId = item.actionConfig.targetSessionId?.trim() ?? "";
-            const controlSessionId = item.controlSession?.sessionId?.trim() ?? "";
-            return (
-              workspaceSessionIdSet.size === 0
-              || workspaceSessionIdSet.has(targetSessionId)
-              || workspaceSessionIdSet.has(controlSessionId)
-            );
-          })
-        );
-        setAutomationRuns(automationRunResponse.payload.items);
-        setAutomationLoading(false);
-      })
-      .catch((requestError) => {
-        if (disposed) {
-          return;
-        }
-        setAutomationError(requestError instanceof Error ? requestError.message : t("shell.navigationLoadFailed"));
-        setAutomationLoading(false);
-      });
-
-    return () => {
-      disposed = true;
-    };
-  }, [butlerInitialized, workspaceId, workspaceSessionIdSignature]);
-
   const libraryDocumentItems = libraryDocumentPage?.items ?? [];
   const documentRecords = useMemo(
     () => buildDocumentRecordsFromSnapshot(libraryDocumentItems, binding?.rootDir ?? null),
@@ -3112,13 +3026,7 @@ export function AffairsWorkbenchProvider({
         ].filter(Boolean).join(" · "),
         tone: "conversation"
       }));
-      const currentAgentSession = isAffairsControlSessionMatchWorkspaceId(butlerControlSession, agentWorkspaceId)
-        ? (butlerControlSession?.session ?? null)
-        : null;
-      const safeAgentConversationSessions = Array.isArray(agentConversationSessions) ? agentConversationSessions : [];
-      const agentItems = currentAgentSession
-        ? [currentAgentSession, ...safeAgentConversationSessions.filter((session) => session.sessionId !== currentAgentSession.sessionId)]
-        : safeAgentConversationSessions;
+      const agentItems = Array.isArray(agentConversationSessions) ? agentConversationSessions : [];
       const agentNodes = agentItems.map<AffairsSidebarNode>((session) => ({
         id: buildAffairsConversationSessionNodeId("agent", session.sessionId),
         label: session.title,
@@ -3180,7 +3088,6 @@ export function AffairsWorkbenchProvider({
     activeSection,
     agentWorkspaceId,
     automationRecords,
-    butlerControlSession,
     documentRecords.length,
     favoriteEntries,
     folderRecords,
@@ -3617,11 +3524,9 @@ export function AffairsWorkbenchProvider({
     workspaceName,
     navigationGroups,
     agentWorkspaceId,
-    agentProjectId,
     agentWorkspacePath,
     state,
     activeSection,
-    initGuard,
     loading,
     error,
     libraryLoading,
@@ -3843,15 +3748,6 @@ export function AffairsWorkbenchProvider({
         toolbarExpanded: !state.toolbarExpanded
       });
     },
-    initializeButlerProfile: async (payload) => {
-      await butlerStore.initializeProfile(payload);
-    },
-    updateButlerProfile: async (payload) => {
-      await butlerStore.updateProfile(payload);
-    },
-    reloadButlerProfile: async () => {
-      await butlerStore.initialize();
-    },
     openLibraryViewer: (record) => {
       setViewerState({
         filePath: record.filePath,
@@ -4053,25 +3949,9 @@ export function AffairsWorkbenchProvider({
         kind: "agent",
         provider
       });
-      if (!butlerStore.getState().initialized && typeof butlerStore.initialize === "function") {
-        await butlerStore.initialize();
-      }
-      const currentState = butlerStore.getState();
-      const activeProvider = isAffairsAssistantProvider(currentState.activeProvider)
-        ? currentState.activeProvider
-        : null;
-      const controlSessionId = currentState.controlSession?.session.sessionId?.trim() ?? "";
-      const hasMessages = Array.isArray(currentState.messages) && currentState.messages.length > 0;
-
-      if (activeProvider !== provider) {
-        await butlerStore.switchProvider(provider);
-      } else if (controlSessionId || hasMessages) {
-        await butlerStore.startFreshSession();
-      }
     },
     rememberConversationDraft,
     rememberConversationSession,
-    butlerStore,
     archiveConversationSession: async (input) => {
       const nextSession = input.kind === "lightweight"
         ? await updateAffairsLightweightSessionArchiveState(workspaceId, input.session.sessionId, true)
@@ -4300,9 +4180,6 @@ ${AFFAIRS_STANDALONE_SESSION_EXPORT_OVERRIDES}`;
     automationRuns,
     binding,
     globalLibraryBinding,
-    butlerActiveProvider,
-    butlerControlSession,
-    butlerStore,
     libraryConfig,
     documentRecords,
     error,
@@ -4324,7 +4201,6 @@ ${AFFAIRS_STANDALONE_SESSION_EXPORT_OVERRIDES}`;
     loadMoreLibraryDocuments,
     loading,
     managedTags,
-    initGuard,
     onStateChange,
     onConversationDraftSelected,
     onRefreshNavigation,
@@ -5546,8 +5422,6 @@ export function AffairsSidebarPanel() {
     agentConversationSessionsReady,
     agentConversationSessionsLoading,
     binding,
-    butlerStore,
-    initGuard,
     lightweightConversationSessions,
     lightweightConversationSessionsLoading,
     markConversationSessionSeen,
@@ -5576,7 +5450,6 @@ export function AffairsSidebarPanel() {
     openConversationDeleteModal,
     exportConversationSession
   } = useAffairsWorkbenchInternal();
-  const butlerControlSession = useButlerRuntimeStore(butlerStore, (value) => value.controlSession);
   const platform = usePlatform();
   const [archiveModalOpen, setArchiveModalOpen] = useState(false);
   const { showToast } = useToast();
@@ -5588,57 +5461,9 @@ export function AffairsSidebarPanel() {
       <AffairsShortcutAppsRail />
     </div>
   );
-  if (initGuard.loading && !initGuard.initialized) {
-    return renderWithShortcutRail(
-      <section className="workbench-section-block affairs-sidebar-block">
-        <div className="affairs-sidebar-block-header">
-          <div>
-            <h2>{t("shell.affairsConnectionCheckingTitle")}</h2>
-            <p>{t("shell.affairsConnectionCheckingDescription")}</p>
-          </div>
-        </div>
-        <div className="affairs-sidebar-empty">{t("shell.affairsConnectionCheckingSidebarEmpty")}</div>
-      </section>
-    );
-  }
-
-  if (initGuard.unavailable && !initGuard.initialized) {
-    return renderWithShortcutRail(
-      <section className="workbench-section-block affairs-sidebar-block">
-        <div className="affairs-sidebar-block-header">
-          <div>
-            <h2>{t("shell.affairsHostUnavailableTitle")}</h2>
-            <p>{t("shell.affairsHostUnavailableDescription")}</p>
-          </div>
-        </div>
-        <div className="affairs-sidebar-empty">{t("shell.affairsHostUnavailableSidebarEmpty")}</div>
-      </section>
-    );
-  }
-
-  if (!initGuard.initialized) {
-    return renderWithShortcutRail(
-      <section className="workbench-section-block affairs-sidebar-block">
-        <div className="affairs-sidebar-block-header">
-          <div>
-            <h2>{t("shell.affairsInitPill")}</h2>
-            <p>{t("shell.affairsInitRouteGuardHint")}</p>
-          </div>
-        </div>
-        <div className="affairs-sidebar-empty">{t("shell.affairsInitRouteGuardSidebarEmpty")}</div>
-      </section>
-    );
-  }
 
   if (activeSection === "conversation") {
-    const currentAgentSession = isAffairsControlSessionMatchWorkspaceId(butlerControlSession, agentWorkspaceId)
-      ? (butlerControlSession?.session ?? null)
-      : null;
-    const agentItems =
-      currentAgentSession
-      && agentConversationSessions.every((session) => session.sessionId !== currentAgentSession.sessionId)
-        ? [currentAgentSession, ...agentConversationSessions]
-        : agentConversationSessions;
+    const agentItems = agentConversationSessions;
     const allConversationListItems: AffairsConversationListItem[] = [
       ...filterVisibleLightweightConversationSessions(lightweightConversationSessions).map((session) => ({
         id: buildAffairsConversationSessionNodeId("lightweight", session.sessionId),
@@ -8240,12 +8065,16 @@ function AffairsAgentConversationState(input: {
   const {
     activateConversationSession,
     assistantContext,
-    butlerStore,
+    agentWorkspaceId,
     reloadAgentConversationSessions,
-    agentProjectId,
     agentConversationSessionsReady,
     agentConversationSessions
   } = useAffairsWorkbenchInternal();
+  // 助手服务已下线：这里保留本地 store 只为渲染历史会话骨架，不再发起任何助手服务请求。
+  const butlerStore = useMemo(
+    () => new ButlerRuntimeStore(agentWorkspaceId),
+    [agentWorkspaceId]
+  );
   const initialized = useButlerRuntimeStore(butlerStore, (value) => value.initialized);
   const loading = useButlerRuntimeStore(butlerStore, (value) => value.loading);
   const profile = useButlerRuntimeStore(butlerStore, (value) => value.profile);
@@ -8323,73 +8152,16 @@ function AffairsAgentConversationState(input: {
       return;
     }
 
-    if (!currentAgentConversationSession || currentAgentConversationSession.isArchived) {
-      restoredHistorySessionIdRef.current = requestedSessionId;
-      if (restoringSessionId === requestedSessionId) {
-        setRestoringSessionId(null);
-      }
-      return;
+    restoredHistorySessionIdRef.current = requestedSessionId;
+    if (restoringSessionId === requestedSessionId) {
+      setRestoringSessionId(null);
     }
-
-    const butlerSessionId = extractButlerManagedSessionIdFromRawStoreRef(currentAgentConversationSession?.rawStoreRef ?? null);
-    if (!agentProjectId || !butlerSessionId) {
-      return;
-    }
-
-    let cancelled = false;
-    setRestoringSessionId(requestedSessionId);
-
-    void (async () => {
-      try {
-        const resumed = await resumeButlerProjectSession(agentProjectId, butlerSessionId);
-        if (cancelled) {
-          return;
-        }
-        const controlSessions = await listButlerControlSessions();
-        if (cancelled) {
-          return;
-        }
-        const matchedControlSession = controlSessions.items.find(
-          (item) => item.session.sessionId === resumed.resumed.session.sessionId
-        ) ?? null;
-        restoredHistorySessionIdRef.current = requestedSessionId;
-        await butlerStore.openControlSession(matchedControlSession?.id ?? "");
-        activateConversationSession({
-          kind: "agent",
-          session: convertButlerManagedSessionToAffairsSessionSummary(
-            resumed.resumed.session,
-            currentAgentConversationSession?.workspaceId ?? input.workspaceId
-          ),
-          bootstrapMessages: []
-        });
-      } catch {
-        if (cancelled) {
-          return;
-        }
-        restoredHistorySessionIdRef.current = requestedSessionId;
-      } finally {
-        if (!cancelled) {
-          setRestoringSessionId(null);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
   }, [
-    activateConversationSession,
-    agentProjectId,
     agentConversationSessionsReady,
-    butlerStore,
-    currentAgentConversationSession?.isArchived,
-    currentAgentConversationSession?.rawStoreRef,
-    currentAgentConversationSession?.workspaceId,
-    scopedControlSession?.session.sessionId,
     input.draft,
     input.sessionId,
-    input.workspaceId,
-    restoringSessionId
+    restoringSessionId,
+    scopedControlSession?.session.sessionId
   ]);
 
   return (
@@ -8739,279 +8511,9 @@ function AffairsHostUnavailableState({
   );
 }
 
-function resolveAffairsInitAvatar(input: {
-  displayName: string;
-  providerId: "codex" | "claude-code";
-  tone: "direct" | "steady" | "friendly";
-}): string {
-  const pool =
-    input.tone === "friendly"
-      ? ["🐼", "🦊", "🐶", "🌼"]
-      : input.tone === "steady"
-        ? ["🐢", "🪨", "🌲", "🧭"]
-        : input.providerId === "claude-code"
-          ? ["🦉", "📚", "🔍", "🧪"]
-          : ["🧠", "🤖", "🛠️", "⚡"];
-  const seed = `${input.displayName.trim()}:${input.providerId}:${input.tone}`;
-  if (!seed) {
-    return pool[0]!;
-  }
-  const total = Array.from(seed).reduce((sum, char) => sum + (char.codePointAt(0) ?? 0), 0);
-  return pool[total % pool.length]!;
-}
-
-const AFFAIRS_INIT_REPORT_PRIORITY_VALUES: Record<ButlerReportPriorityPresetId, string[]> = {
-  "risk-first": ["risk", "blocker", "verification"],
-  "blocker-first": ["blocker", "risk", "verification"],
-  "verification-first": ["verification", "risk", "blocker"],
-  "progress-first": ["progress", "risk", "blocker"]
-};
-
-function AffairsConversationState({ workspaceId }: { workspaceId: string }) {
-  const {
-    selectedConversationDraft,
-    selectedConversationSession,
-    conversationRuntimeSeed,
-    agentWorkspaceId
-  } = useAffairsWorkbenchInternal();
-
-  if (selectedConversationSession?.kind === "lightweight") {
-    return (
-      <AffairsLightweightConversationLiveState
-        sessionId={selectedConversationSession.sessionId}
-        runtimeSeed={
-          conversationRuntimeSeed?.kind === "lightweight"
-          && conversationRuntimeSeed.session.sessionId === selectedConversationSession.sessionId
-            ? conversationRuntimeSeed
-            : null
-        }
-      />
-    );
-  }
-
-  if (selectedConversationSession?.kind === "agent") {
-    if (!agentWorkspaceId) {
-      return <AffairsConversationEmptyState />;
-    }
-    return (
-      <AffairsAgentConversationState
-        workspaceId={agentWorkspaceId}
-        sessionId={selectedConversationSession.sessionId}
-      />
-    );
-  }
-
-  if (selectedConversationDraft?.kind === "lightweight") {
-    return (
-      <AffairsLightweightConversationDraftState
-        workspaceId={workspaceId}
-        draft={selectedConversationDraft}
-      />
-    );
-  }
-
-  if (selectedConversationDraft?.kind === "agent") {
-    if (!agentWorkspaceId) {
-      return <AffairsConversationEmptyState />;
-    }
-    return (
-      <AffairsAgentConversationState
-        workspaceId={agentWorkspaceId}
-        draft={selectedConversationDraft}
-      />
-    );
-  }
-
-  return <AffairsConversationEmptyState />;
-}
-
-function AffairsInitGate({ workspaceId }: { workspaceId: string }) {
-  const {
-    initGuard,
-    initializeButlerProfile,
-    updateButlerProfile,
-    reloadButlerProfile
-  } = useAffairsWorkbenchInternal();
-  const loading = initGuard.loading;
-  const unavailable = initGuard.unavailable;
-  const butlerInitialized = initGuard.butlerInitialized;
-  const profile = initGuard.profile;
-  const [initForm, setInitForm] = useState<ButlerInitFormState>(DEFAULT_BUTLER_INIT_FORM_STATE);
-  const [initializing, setInitializing] = useState(false);
-  const [retrying, setRetrying] = useState(false);
-  const [libraryInit, setLibraryInit] = useState({
-    enabled: true,
-    rootDir: ""
-  });
-  const { showToast } = useToast();
-  const butlerDisplayName =
-    profile?.displayName?.trim() || initForm.displayName.trim() || t("shell.butlerEntry");
-  const butlerAvatar = useMemo(
-    () =>
-      resolveAffairsInitAvatar({
-        displayName: butlerDisplayName,
-        providerId: profile?.providerId ?? initForm.providerId,
-        tone: profile?.personaTone ?? initForm.personaTone
-      }),
-    [
-      butlerDisplayName,
-      initForm.personaTone,
-      initForm.providerId,
-      profile?.personaTone,
-      profile?.providerId
-    ]
-  );
-
-  useEffect(() => {
-    void getGlobalAffairsLibraryBinding()
-      .then((binding) => {
-        setLibraryInit({
-          enabled: binding?.enabled ?? true,
-          rootDir: binding?.rootDir ?? ""
-        });
-      })
-      .catch(() => undefined);
-  }, [workspaceId]);
-
-  useEffect(() => {
-    if (!profile) {
-      return;
-    }
-    setInitForm((current) => ({
-      ...current,
-      displayName: current.displayName.trim() ? current.displayName : profile.displayName,
-      providerId: profile.providerId,
-      personaTone: profile.personaTone
-    }));
-  }, [profile]);
-
-  if (loading && !initializing) {
-    return (
-      <main className="workbench-page butler-page-shell butler-init-shell affairs-conversation-page-shell">
-        <AffairsConnectionCheckingState />
-      </main>
-    );
-  }
-
-  if (unavailable) {
-    return (
-      <main className="workbench-page butler-page-shell butler-init-shell affairs-conversation-page-shell">
-        <AffairsHostUnavailableState
-          errorMessage={initGuard.errorMessage}
-          retrying={retrying}
-          onRetry={async () => {
-            setRetrying(true);
-            try {
-              await reloadButlerProfile();
-            } finally {
-              setRetrying(false);
-            }
-          }}
-        />
-      </main>
-    );
-  }
-
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const displayName = initForm.displayName.trim() || profile?.displayName?.trim() || "";
-
-    if (!displayName) {
-      showToast({
-        title: t("shell.butlerInitNameRequired"),
-        tone: "warning"
-      });
-      return;
-    }
-
-    if (libraryInit.enabled && !libraryInit.rootDir.trim()) {
-      showToast({
-        title: t("shell.affairsInitLibraryPathRequired"),
-        tone: "warning"
-      });
-      return;
-    }
-
-    const payload: ButlerProfilePayload = {
-      displayName,
-      providerId: initForm.providerId,
-      agentsMode: initForm.agentsMode,
-      persona: {
-        tone: initForm.personaTone,
-        language: initForm.personaLanguage,
-        summaryStyle: initForm.personaSummaryStyle
-      },
-      focus: {
-        projectIds: [],
-        riskPreference: initForm.focusRiskPreference,
-        reportPriority: AFFAIRS_INIT_REPORT_PRIORITY_VALUES[initForm.reportPriorityPreset],
-        summaryDebounceSeconds: 300
-      }
-    };
-
-    setInitializing(true);
-
-    try {
-      if (butlerInitialized) {
-        await updateButlerProfile(payload);
-      } else {
-        await initializeButlerProfile(payload);
-      }
-      if (libraryInit.rootDir.trim()) {
-        await saveGlobalAffairsLibraryBinding({ rootDir: libraryInit.rootDir.trim() });
-        await setGlobalAffairsLibraryEnabled({ enabled: libraryInit.enabled });
-      }
-      await reloadButlerProfile();
-      showToast({
-        title: t("shell.affairsInitSuccess"),
-        tone: "success"
-      });
-    } catch (error) {
-      showToast({
-        title: t("shell.affairsInitFailed"),
-        description: error instanceof Error ? error.message : undefined,
-        tone: "error"
-      });
-    } finally {
-      setInitializing(false);
-    }
-  }
-
-  return (
-    <main className="workbench-page butler-page-shell butler-init-shell affairs-conversation-page-shell">
-      <section className="affairs-init-panel">
-        <header className="affairs-init-panel-header">
-          <div>
-            <span className="affairs-inline-pill">{t("shell.affairsInitPill")}</span>
-            <h2>{t("shell.butlerInitTitle")}</h2>
-            <p>{t("shell.affairsInitRouteGuardHint")}</p>
-          </div>
-        </header>
-        <ButlerInitForm
-          form={initForm}
-          onChange={setInitForm}
-          submitting={loading || initializing}
-          submitLabel={
-            loading || initializing ? t("shell.butlerInitSubmitting") : t("shell.affairsInitSubmit")
-          }
-          previewName={butlerDisplayName}
-          previewAvatar={butlerAvatar}
-          previewRuleLabel={t("shell.affairsInitPreviewRuleLabel")}
-          affairsLibrary={{
-            value: libraryInit,
-            onChange: setLibraryInit
-          }}
-          onSubmit={handleSubmit}
-        />
-      </section>
-    </main>
-  );
-}
-
 export function AffairsWorkbenchView({ workspaceId }: AffairsWorkbenchViewProps) {
   const {
     activeSection,
-    initGuard,
     binding,
     documentRecords,
     favoriteEntries,
@@ -10144,10 +9646,6 @@ export function AffairsWorkbenchView({ workspaceId }: AffairsWorkbenchViewProps)
     return createPortal(content, document.body);
   };
 
-  if (!initGuard.initialized) {
-    return <AffairsInitGate workspaceId={workspaceId} />;
-  }
-
   if (activeSection === "conversation") {
     return <AffairsConversationState workspaceId={workspaceId} />;
   }
@@ -10700,19 +10198,16 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
     activateConversationSession,
     agentConversationSessions,
     agentConversationSessionsLoading,
-    agentProjectId,
     agentWorkspaceId,
     binding,
     assistantContext,
     auxiliaryTab,
     automationRuns,
-    butlerStore,
     documentTagDetails,
     detailViewerCollapsed,
     filteredDocuments,
     filteredTodoRecords,
     folderRecords,
-    initGuard,
     indexStatus,
     libraryConfig,
     lightweightConversationSessions,
@@ -10730,16 +10225,8 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
     tagRecords,
     selectedTagPaths
   } = useAffairsWorkbenchInternal();
-  const butlerControlSession = useButlerRuntimeStore(butlerStore, (value) => value.controlSession);
   const [viewerReady, setViewerReady] = useState(false);
-  const initGuardActive = !initGuard.initialized;
-  const assistantHistoryButtonRef = useRef<HTMLButtonElement | null>(null);
-  const assistantHistoryPopoverRef = useRef<HTMLDivElement | null>(null);
-  const [assistantHistoryOpen, setAssistantHistoryOpen] = useState(false);
   const showDetailTab = activeSection === "library";
-  const assistantBridgeContext = activeSection === "workbench"
-    ? assistantContext
-    : (binding ? assistantContext : null);
 
   const selectedAutomationRuns = useMemo(() => {
     if (selectedObject.section !== "automation" || !selectedObject.record) {
@@ -10768,24 +10255,13 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
       : null,
     [documentRecord, libraryConfig?.mirrorRoot]
   );
-  const currentAgentSession = useMemo(
-    () => isAffairsControlSessionMatchWorkspaceId(butlerControlSession, agentWorkspaceId)
-      ? (butlerControlSession?.session ?? null)
-      : null,
-    [agentWorkspaceId, butlerControlSession]
-  );
   const assistantHistoryItems = useMemo(() => {
     const lightweightItems = filterVisibleLightweightConversationSessions(lightweightConversationSessions).map((session) => ({
       id: buildAffairsConversationSessionNodeId("lightweight", session.sessionId),
       kind: "lightweight" as const,
       session
     }));
-    const agentItems =
-      currentAgentSession
-      && agentConversationSessions.every((session) => session.sessionId !== currentAgentSession.sessionId)
-        ? [currentAgentSession, ...agentConversationSessions]
-        : agentConversationSessions;
-    const normalizedAgentItems = agentItems.map((session) => ({
+    const normalizedAgentItems = agentConversationSessions.map((session) => ({
         id: buildAffairsConversationSessionNodeId("agent", session.sessionId),
         kind: "agent" as const,
         session
@@ -10797,7 +10273,7 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
       }
       return resolveConversationSessionSortTime(right.session) - resolveConversationSessionSortTime(left.session);
     }).filter((item) => item.session.isArchived !== true);
-  }, [agentConversationSessions, currentAgentSession, lightweightConversationSessions]);
+  }, [agentConversationSessions, lightweightConversationSessions]);
   const assistantHistoryLoading = lightweightConversationSessionsLoading || agentConversationSessionsLoading;
   const { showToast } = useToast();
   const [documentSummaryExpanded, setDocumentSummaryExpanded] = useState(false);
@@ -10822,158 +10298,6 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
   useEffect(() => {
     setDocumentSummaryExpanded(false);
   }, [selectedObject]);
-
-  useEffect(() => {
-    if (auxiliaryTab !== "assistant") {
-      setAssistantHistoryOpen(false);
-    }
-  }, [auxiliaryTab]);
-
-  useEffect(() => {
-    if (!assistantHistoryOpen) {
-      return;
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Node)) {
-        return;
-      }
-      if (
-        assistantHistoryButtonRef.current?.contains(event.target)
-        || assistantHistoryPopoverRef.current?.contains(event.target)
-      ) {
-        return;
-      }
-      setAssistantHistoryOpen(false);
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setAssistantHistoryOpen(false);
-      }
-    };
-
-    window.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [assistantHistoryOpen]);
-
-  const handleOpenAssistantHistory = useCallback(() => {
-    setAssistantHistoryOpen((current) => !current);
-    void reloadLightweightConversationSessions().catch(() => undefined);
-    void reloadAgentConversationSessions().catch(() => undefined);
-  }, [reloadAgentConversationSessions, reloadLightweightConversationSessions]);
-
-  const handleOpenAssistantSession = useCallback(async (item: AffairsConversationListItem) => {
-    if (item.kind === "lightweight") {
-      markConversationSessionSeen(item.kind, item.session.sessionId);
-      setAssistantHistoryOpen(false);
-
-      try {
-        const response = await getAffairsLightweightSessionMessages(workspaceId, item.session.sessionId);
-        activateConversationSession({
-          kind: "lightweight",
-          session: item.session,
-          bootstrapMessages: response.messages
-        });
-      } catch (error) {
-        showToast({
-          title: getErrorMessage(error, t("shell.affairsConversationLoadFailed")),
-          tone: "error"
-        });
-      }
-      return;
-    }
-
-    markConversationSessionSeen(item.kind, item.session.sessionId);
-    setAssistantHistoryOpen(false);
-
-    const currentControlSession = butlerStore.getState().controlSession;
-    if (currentControlSession?.session.sessionId === item.session.sessionId) {
-      rememberConversationSession({
-        kind: "agent",
-        session: currentControlSession.session,
-        bootstrapMessages: []
-      });
-      return;
-    }
-
-    try {
-      const controlSessions = await listButlerControlSessions();
-      let matchedControlSession = controlSessions.items.find(
-        (controlSessionItem) => controlSessionItem.session.sessionId === item.session.sessionId
-      ) ?? null;
-
-      if (!matchedControlSession) {
-        const butlerSessionId = extractButlerManagedSessionIdFromRawStoreRef(item.session.rawStoreRef ?? null);
-
-        if (!agentProjectId || !butlerSessionId) {
-          throw new Error(t("shell.butlerLoadFailed"));
-        }
-
-        const resumed = await resumeButlerProjectSession(agentProjectId, butlerSessionId);
-        const refreshedControlSessions = await listButlerControlSessions();
-        matchedControlSession = refreshedControlSessions.items.find(
-          (controlSessionItem) => controlSessionItem.session.sessionId === resumed.resumed.session.sessionId
-        ) ?? null;
-      }
-
-      if (!matchedControlSession) {
-        throw new Error(t("shell.butlerLoadFailed"));
-      }
-
-      await butlerStore.openControlSession(matchedControlSession.id);
-      rememberConversationSession({
-        kind: "agent",
-        session: matchedControlSession.session,
-        bootstrapMessages: []
-      });
-    } catch (error) {
-      showToast({
-        title: getErrorMessage(error, t("shell.butlerLoadFailed")),
-        tone: "error"
-      });
-    }
-  }, [
-    activateConversationSession,
-    agentProjectId,
-    butlerStore,
-    markConversationSessionSeen,
-    rememberConversationSession,
-    showToast,
-    workspaceId
-  ]);
-
-  if (initGuard.loading && !initGuard.initialized) {
-    return (
-      <section className="workbench-section-block affairs-sidebar-block affairs-auxiliary-block">
-        <div className="affairs-sidebar-block-header">
-          <div>
-            <h2>{t("shell.affairsConnectionCheckingTitle")}</h2>
-            <p>{t("shell.affairsConnectionCheckingDescription")}</p>
-          </div>
-        </div>
-        <div className="affairs-stage-empty">{t("shell.affairsConnectionCheckingAuxiliaryEmpty")}</div>
-      </section>
-    );
-  }
-
-  if (initGuard.unavailable && !initGuard.initialized) {
-    return (
-      <section className="workbench-section-block affairs-sidebar-block affairs-auxiliary-block">
-        <div className="affairs-sidebar-block-header">
-          <div>
-            <h2>{t("shell.affairsHostUnavailableTitle")}</h2>
-            <p>{t("shell.affairsHostUnavailableDescription")}</p>
-          </div>
-        </div>
-        <div className="affairs-stage-empty">{t("shell.affairsHostUnavailableAuxiliaryEmpty")}</div>
-      </section>
-    );
-  }
 
   return (
     <div className="affairs-auxiliary-shell">
@@ -11001,100 +10325,6 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
               {t("shell.affairsDetailTitle")}
             </button>
           ) : null}
-          <button
-            type="button"
-            role="tab"
-            aria-selected={auxiliaryTab === "assistant"}
-            className={auxiliaryTab === "assistant" ? "workbench-info-tab active" : "workbench-info-tab"}
-            onClick={() => selectAuxiliaryTab("assistant")}
-          >
-            {t("shell.affairsAssistantTitle")}
-          </button>
-        </div>
-        <div className="affairs-auxiliary-header-tools">
-          <div
-            className="affairs-auxiliary-header-actions"
-            data-visible={auxiliaryTab === "assistant" ? "true" : "false"}
-            aria-hidden={auxiliaryTab === "assistant" ? undefined : "true"}
-          >
-            {auxiliaryTab === "assistant" ? (
-              <>
-                <button
-                  ref={assistantHistoryButtonRef}
-                  type="button"
-                  className="workbench-nav-toolbar-button"
-                  aria-label={t("shell.butlerHistoryAction")}
-                  title={t("shell.butlerHistoryAction")}
-                  aria-haspopup="dialog"
-                  aria-expanded={assistantHistoryOpen}
-                  onClick={handleOpenAssistantHistory}
-                >
-                  <AffairsAssistantHistoryIcon />
-                </button>
-                <ButlerAnchoredPopover
-                  open={assistantHistoryOpen && assistantHistoryButtonRef.current !== null}
-                  className="affairs-assistant-history-popover"
-                  anchorRef={assistantHistoryButtonRef}
-                  popoverRef={assistantHistoryPopoverRef}
-                  role="dialog"
-                  labelledBy="affairs-assistant-history-title"
-                  maxWidth={420}
-                  gap={8}
-                >
-                  <div className="affairs-assistant-history-popover-card">
-                    <div className="affairs-assistant-history-popover-header">
-                      <strong id="affairs-assistant-history-title">{t("shell.affairsConversationSidebarTitle")}</strong>
-                      <span>{assistantHistoryItems.length}</span>
-                    </div>
-                    {assistantHistoryLoading && assistantHistoryItems.length === 0 ? (
-                      <div className="affairs-assistant-history-empty">{t("common.loading")}</div>
-                    ) : assistantHistoryItems.length === 0 ? (
-                      <div className="affairs-assistant-history-empty">{t("shell.affairsConversationCreateHint")}</div>
-                    ) : (
-                      <div className="affairs-assistant-history-list" role="list">
-                        {assistantHistoryItems.map((item) => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            role="listitem"
-                            className="affairs-assistant-history-item"
-                            data-active={state.selectedNodeId === item.id ? "true" : undefined}
-                            onClick={() => handleOpenAssistantSession(item)}
-                          >
-                            <div className="affairs-assistant-history-item-main">
-                              <div className="affairs-assistant-history-item-title-row">
-                                <span className="affairs-assistant-history-item-title" title={item.session.title}>
-                                  {item.session.title}
-                                </span>
-                                {item.session.isFavorite ? (
-                                  <span className="affairs-assistant-history-item-favorite" aria-hidden="true">★</span>
-                                ) : null}
-                              </div>
-                              <div className="affairs-assistant-history-item-meta">
-                                {[resolveAffairsConversationKindLabel(item.kind), buildAffairsConversationMeta(item.session)].filter(Boolean).join(" · ")}
-                              </div>
-                            </div>
-                            <span className={`session-provider-badge ${item.session.provider}`}>
-                              {formatAffairsConversationProviderBadge(item.session.provider)}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </ButlerAnchoredPopover>
-                <button
-                  type="button"
-                  className="workbench-nav-toolbar-button"
-                  aria-label={t("shell.butlerNewSessionAction")}
-                  title={t("shell.butlerNewSessionAction")}
-                  onClick={() => openConversationCreateModal({ mode: "agent-only" })}
-                >
-                  <AffairsConversationPlusIcon />
-                </button>
-              </>
-            ) : null}
-          </div>
         </div>
       </div>
 
@@ -11103,11 +10333,7 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
         data-scrollbar-autohide="true"
         data-affairs-auxiliary-tab={auxiliaryTab}
       >
-        {initGuardActive ? (
-          auxiliaryTab === "assistant"
-            ? <UniversalAssistantBridge workspaceId={workspaceId} context={null} />
-            : <div className="affairs-stage-empty">{t("shell.affairsInitRouteGuardAuxiliaryEmpty")}</div>
-        ) : auxiliaryTab === "detail" ? (
+        {auxiliaryTab === "detail" ? (
           selectedObject.section === "library" ? (
             !binding ? (
               <div className="affairs-stage-empty">{t("shell.affairsDetailEmpty")}</div>
@@ -11329,7 +10555,7 @@ export function AffairsAuxiliaryPanel({ workspaceId, onToggleCollapse }: Affairs
             <div className="affairs-stage-empty">{t("shell.affairsAutomationEmpty")}</div>
           )
         ) : (
-          <UniversalAssistantBridge workspaceId={workspaceId} context={assistantBridgeContext} />
+          null
         )}
       </div>
     </div>
@@ -14571,256 +13797,6 @@ function AffairsLibraryDeleteConfirmModal({
   );
 }
 
-function UniversalAssistantBridge({
-  workspaceId,
-  context
-}: {
-  workspaceId: string;
-  context: AffairsObjectContext | null;
-}) {
-  const {
-    butlerStore: store,
-    agentWorkspacePath,
-    rememberConversationSession,
-    reloadAgentConversationSessions
-  } = useAffairsWorkbenchInternal();
-  const initialized = useButlerRuntimeStore(store, (value) => value.initialized);
-  const loading = useButlerRuntimeStore(store, (value) => value.loading);
-  const profile = useButlerRuntimeStore(store, (value) => value.profile);
-  const activeProvider = useButlerRuntimeStore(store, (value) => value.activeProvider);
-  const controlSession = useButlerRuntimeStore(store, (value) => value.controlSession);
-  const capabilities = useButlerRuntimeStore(store, (value) => value.capabilities);
-  const messages = useButlerRuntimeStore(store, (value) => value.messages);
-  const historyState = useButlerRuntimeStore(store, (value) => value.historyState);
-  const loadingOlderMessages = useButlerRuntimeStore(store, (value) => value.loadingOlderMessages);
-  const hasOlderMessages = useButlerRuntimeStore(store, (value) => value.hasOlderMessages);
-  const runtimeHasActiveRun = useButlerRuntimeStore(store, (value) => value.runtimeHasActiveRun);
-  const runtimeCanInterrupt = useButlerRuntimeStore(store, (value) => value.runtimeCanInterrupt);
-  const contextUsage = useButlerRuntimeStore(store, (value) => value.contextUsage);
-  const permissionRequests = useButlerRuntimeStore(store, (value) => value.permissionRequests);
-  const sending = useButlerRuntimeStore(store, (value) => value.sending);
-  const [replyingPermissionRequestId, setReplyingPermissionRequestId] = useState<string | null>(null);
-
-  const placeholder = context
-    ? t("shell.affairsAssistantPlaceholder", { title: context.title ?? t("common.unknown") })
-    : t("shell.affairsAssistantPlaceholderEmpty");
-  const fallbackProvider = isAffairsAssistantProvider(activeProvider)
-    ? activeProvider
-    : (isAffairsAssistantProvider(profile?.providerId) ? profile.providerId : "codex");
-  const fallbackCapabilities = useMemo(
-    () => createAffairsAgentFallbackCapabilities(fallbackProvider),
-    [fallbackProvider]
-  );
-  const hasStartedConversation = Boolean(controlSession?.session?.sessionId?.trim()) || messages.length > 0;
-  const contextVisual = useMemo(
-    () => resolveAffairsAssistantContextVisual(context),
-    [context]
-  );
-  const compactDocumentContext = context?.objectType === "document";
-
-  return (
-    <section className="affairs-assistant-panel">
-      {context ? (
-        <section className="workbench-section-block affairs-detail-block affairs-assistant-context-block">
-          <div
-            className={compactDocumentContext ? "affairs-assistant-context-card compact" : "affairs-assistant-context-card"}
-            data-object-type={context.objectType}
-          >
-            <div className="affairs-assistant-context-icon" data-tone={contextVisual.tone}>
-              {contextVisual.badge ? <span>{contextVisual.badge}</span> : renderAffairsAssistantContextIcon(contextVisual.iconKind)}
-            </div>
-            <div className="affairs-assistant-context-copy">
-              {compactDocumentContext ? (
-                <h3>{context.title}</h3>
-              ) : (
-                <>
-                  <div className="affairs-assistant-context-topline">
-                    <span className="affairs-inline-pill subtle">{contextVisual.label}</span>
-                  </div>
-                  <h3>{context.title}</h3>
-                  <p>{context.sourceRef || context.summary || t("shell.affairsAssistantContextFallback")}</p>
-                  {context.summary && context.summary !== context.sourceRef ? (
-                    <span className="affairs-assistant-context-summary">{context.summary}</span>
-                  ) : null}
-                </>
-              )}
-            </div>
-          </div>
-        </section>
-      ) : !hasStartedConversation ? (
-        <section className="workbench-section-block affairs-detail-block affairs-assistant-context-block">
-          <div className="affairs-assistant-context-card empty" data-object-type="empty">
-            <div className="affairs-assistant-context-icon" data-tone="neutral">
-              <AffairsAssistantSparkIcon />
-            </div>
-            <div className="affairs-assistant-context-copy">
-              <div className="affairs-assistant-context-topline">
-                <span className="affairs-inline-pill subtle">{t("shell.affairsAssistantTitle")}</span>
-              </div>
-              <h3>{t("shell.affairsAssistantTitle")}</h3>
-              <p>{t("shell.affairsAssistantPlaceholderEmpty")}</p>
-            </div>
-          </div>
-        </section>
-      ) : null}
-      <PermissionRequestList
-        requests={permissionRequests}
-        replyingRequestId={replyingPermissionRequestId}
-        onReply={async (requestId, payload) => {
-          setReplyingPermissionRequestId(requestId);
-          try {
-            await store.replyPermissionRequest(requestId, payload);
-          } finally {
-            setReplyingPermissionRequestId(null);
-          }
-        }}
-      />
-      <div className="affairs-assistant-timeline">
-        <MessageTimeline
-          sessionId={controlSession?.session?.sessionId}
-          items={buildConversationTimelineSourceItems({ messages })}
-          historyState={historyState}
-          loadingOlderMessages={loadingOlderMessages}
-          hasOlderMessages={hasOlderMessages}
-          provider={activeProvider}
-          onLoadOlderMessages={() => {
-            void store.loadOlderMessages();
-          }}
-          onRetryMessage={(clientRequestId) => {
-            void store.retryMessage(clientRequestId);
-          }}
-        />
-      </div>
-      <div className="affairs-assistant-composer">
-        <ComposerPanel
-          capabilities={capabilities ?? fallbackCapabilities}
-          draftStorageId={`affairs-assistant:${workspaceId}:${context?.objectId ?? "empty"}`}
-          placeholder={placeholder}
-          hasActiveRun={Boolean(runtimeHasActiveRun) || sending}
-          canInterrupt={runtimeCanInterrupt ?? false}
-          contextUsage={contextUsage}
-          isSubmitting={sending || loading || !initialized}
-          isRunning={Boolean(runtimeHasActiveRun) || sending}
-          onInterrupt={async () => {
-            await store.interrupt();
-          }}
-          onSend={async (content, options) => {
-            if (!initialized && typeof store.initialize === "function") {
-              await store.initialize();
-            }
-            const targetProvider = isAffairsAssistantProvider(store.getState().activeProvider)
-              ? store.getState().activeProvider
-              : fallbackProvider;
-            if (targetProvider && store.getState().activeProvider !== targetProvider) {
-              await store.switchProvider(targetProvider);
-            }
-            const normalizedAgentWorkspacePath = agentWorkspacePath?.trim() ?? "";
-            if (normalizedAgentWorkspacePath && store.getState().profile?.workspacePath !== normalizedAgentWorkspacePath) {
-              await store.updateProfile({
-                workspacePath: normalizedAgentWorkspacePath
-              });
-            }
-            await store.sendMessage(`${buildAffairsAssistantPrefix(context)}${content}`, {
-              model: options?.model ?? null,
-              reasoningLevel: options?.reasoningLevel ?? null,
-              permissionMode: null
-            });
-            await reloadAgentConversationSessions();
-            const nextSession = store.getState().controlSession?.session ?? null;
-            if (nextSession) {
-              rememberConversationSession({
-                kind: "agent",
-                session: nextSession,
-                bootstrapMessages: []
-              });
-            }
-          }}
-        />
-      </div>
-    </section>
-  );
-}
-
-function AffairsAssistantSparkIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 3.5 14 9l5.5 2-5.5 2L12 18.5 10 13 4.5 11 10 9 12 3.5Z" />
-    </svg>
-  );
-}
-
-function resolveAffairsAssistantContextVisual(context: AffairsObjectContext | null): {
-  badge: string | null;
-  iconKind: "spark" | "todo" | "automation";
-  label: string;
-  tone: string;
-} {
-  if (!context) {
-    return {
-      badge: null,
-      iconKind: "spark",
-      label: t("shell.affairsAssistantTitle"),
-      tone: "neutral"
-    };
-  }
-
-  if (context.objectType === "document") {
-    const visual = resolveAffairsDocumentVisual(context.sourceRef ?? context.title ?? "");
-    return {
-      badge: visual.badge,
-      iconKind: "spark",
-      label: t("shell.affairsObjectTypeDocument"),
-      tone: visual.tone
-    };
-  }
-
-  if (context.objectType === "todo") {
-    return {
-      badge: null,
-      iconKind: "todo",
-      label: t("shell.affairsTodoNav"),
-      tone: "green"
-    };
-  }
-
-  if (context.objectType === "workbench") {
-    return {
-      badge: null,
-      iconKind: "todo",
-      label: t("shell.affairsWorkbenchNav"),
-      tone: "blue"
-    };
-  }
-
-  if (context.objectType === "automation") {
-    return {
-      badge: null,
-      iconKind: "automation",
-      label: t("shell.affairsAutomationNav"),
-      tone: "purple"
-    };
-  }
-
-  return {
-    badge: null,
-    iconKind: "spark",
-    label: t("shell.affairsAssistantTitle"),
-    tone: "neutral"
-  };
-}
-
-function renderAffairsAssistantContextIcon(kind: "spark" | "todo" | "automation") {
-  switch (kind) {
-    case "todo":
-      return <AffairsTodoIcon />;
-    case "automation":
-      return <AffairsAutomationIcon />;
-    case "spark":
-    default:
-      return <AffairsAssistantSparkIcon />;
-  }
-}
-
 export function AffairsLibraryIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
@@ -14882,16 +13858,6 @@ function AffairsSidebarCollapseIcon() {
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <line x1="9" y1="4" x2="9" y2="20" />
       <polyline points="11 9 14 12 11 15" />
-    </svg>
-  );
-}
-
-function AffairsAssistantHistoryIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
-      <path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3" strokeLinecap="round" />
-      <path d="M4.5 5.5v4h4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M12 8.25v4.25l2.75 1.75" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -18356,17 +17322,10 @@ function buildAffairsAssistantPrefix(context: AffairsObjectContext | null) {
 }
 
 function resolveAffairsDisplayedAuxiliaryTab(
-  section: AffairsPrimarySection,
-  tab: AffairsAuxiliaryTab | null | undefined
+  _section: AffairsPrimarySection,
+  _tab: AffairsAuxiliaryTab | null | undefined
 ): AffairsAuxiliaryTab {
-  if (section === "workbench") {
-    return "assistant";
-  }
-
-  if (tab === "assistant") {
-    return "assistant";
-  }
-
+  // 助手服务已下线：右侧栏只保留对象详情，旧偏好里的助手标签页统一降级到详情。
   return "detail";
 }
 
