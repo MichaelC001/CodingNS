@@ -1368,11 +1368,11 @@ describe("AffairsWorkbenchView", () => {
 
     fileContextApiMock.getFilePreview.mockReset();
     fileContextApiMock.saveFileContent.mockReset();
-    fileContextApiMock.getFilePreview.mockResolvedValue({
-      workspaceId: "workspace-1",
-      path: "tools/report/index.html",
+    fileContextApiMock.getFilePreview.mockImplementation(async (workspaceId: string, filePath: string) => ({
+      workspaceId,
+      path: filePath,
       supported: true,
-      kind: "html",
+      kind: filePath.endsWith(".html") || filePath.endsWith(".htm") ? "html" : "text",
       reason: null,
       content: "<html><body><h1>报表</h1></body></html>",
       version: "workspace-preview-v1",
@@ -1388,7 +1388,7 @@ describe("AffairsWorkbenchView", () => {
         canZoom: false,
         canPaginate: false
       }
-    });
+    }));
     fileContextApiMock.getFilePreviewLink.mockReset();
     fileContextApiMock.getFilePreviewLink.mockResolvedValue({
       previewPath: "/preview/files/token/tools/report/index.html",
@@ -7529,103 +7529,51 @@ describe("AffairsWorkbenchView", () => {
     expect(videoCard.querySelector(".affairs-document-sheet")).toHaveClass("tone-violet");
   });
 
-  it("添加 HTML 块时会按所选来源工作区走校验和预览链路", async () => {
+  it("添加 HTML 块时从已添加的项目工作区里选文件和校验", async () => {
     const openMock = vi.fn();
     vi.stubGlobal("open", openMock);
-    const boundLibraryBinding = {
-      ...baseLibrarySnapshot().binding,
-      workspaceId: "workspace-2",
-      rootDir: "/Users/jackson/SynologyDrive"
-    };
-    conversationApiMock.getAffairsLibrarySnapshot.mockResolvedValue(createLibrarySnapshot({
-      binding: boundLibraryBinding,
-      folders: [
-        {
-          path: "Obsidian",
-          name: "Obsidian",
-          parentPath: null,
-          depth: 0,
-          directDocumentCount: 0,
-          documentCount: 1,
-          createdAt: "2026-06-04T09:00:00.000Z",
-          updatedAt: "2026-06-04T09:30:00.000Z"
+    const projectWorkgroups: WorkspaceSessionGroup[] = [
+      {
+        workspace: {
+          id: "workspace-2",
+          name: "会员系统项目",
+          path: "/Users/jackson/WorkFile/会员系统",
+          repoRoot: "/Users/jackson/WorkFile/会员系统"
         },
-        {
-          path: "Obsidian/Tools",
-          name: "Tools",
-          parentPath: "Obsidian",
-          depth: 1,
-          directDocumentCount: 1,
-          documentCount: 1,
-          createdAt: "2026-06-04T09:00:00.000Z",
-          updatedAt: "2026-06-04T09:30:00.000Z"
-        }
-      ]
-    }));
-    conversationApiMock.getGlobalAffairsLibraryBinding.mockResolvedValue(boundLibraryBinding);
-    conversationApiMock.listAffairsLibraryFiles.mockImplementation(async (_workspaceId: string, query?: { path?: string | null }) => {
-      const selectedPath = query?.path?.trim() ?? "";
-      if (!selectedPath) {
-        return {
-          items: [
-            {
-              path: "Obsidian",
-              name: "Obsidian",
-              kind: "directory",
-              size: null,
-              updatedAt: "2026-06-04T09:30:00.000Z"
-            }
-          ]
-        };
+        sessions: [],
+        childWorktrees: []
       }
-      if (selectedPath === "Obsidian") {
+    ];
+    let libraryFileListCallCount = 0;
+    conversationApiMock.listAffairsLibraryFiles.mockImplementation(async () => {
+      libraryFileListCallCount += 1;
+      return {
+        items: [
+          {
+            path: "会员管理.html",
+            name: "会员管理.html",
+            kind: "file",
+            size: 4096,
+            updatedAt: "2026-06-04T09:30:00.000Z"
+          }
+        ]
+      };
+    });
+    fileContextApiMock.getFileTree.mockImplementation(async (_workspaceId: string, filePath?: string) => {
+      if (!filePath) {
         return {
           items: [
             {
-              path: "Obsidian/Tools",
-              name: "Tools",
-              kind: "directory",
-              size: null,
-              updatedAt: "2026-06-04T09:30:00.000Z"
-            }
-          ]
-        };
-      }
-      if (selectedPath === "Obsidian/Tools") {
-        return {
-          items: [
-            {
-              path: "Obsidian/Tools/会员管理.html",
               name: "会员管理.html",
+              path: "会员管理.html",
               kind: "file",
               size: 4096,
-              updatedAt: "2026-06-04T09:30:00.000Z"
+              updatedAt: null
             }
           ]
         };
       }
       return { items: [] };
-    });
-    conversationApiMock.getAffairsLibraryPreview.mockResolvedValue({
-      workspaceId: "workspace-2",
-      path: "Obsidian/Tools/会员管理.html",
-      supported: true,
-      kind: "html",
-      reason: null,
-      content: "<html><body><h1>会员管理</h1></body></html>",
-      version: "preview-1",
-      size: 4096,
-      updatedAt: "2026-06-04T09:30:00.000Z",
-      previewPath: "/preview/affairs-files/mock/Obsidian/Tools/%E4%BC%9A%E5%91%98%E7%AE%A1%E7%90%86.html",
-      previewUrl: "http://127.0.0.1:3002/preview/affairs-files/mock/Obsidian/Tools/%E4%BC%9A%E5%91%98%E7%AE%A1%E7%90%86.html",
-      onlyOffice: null,
-      capabilities: {
-        canEdit: true,
-        canRefresh: true,
-        canResize: true,
-        canZoom: false,
-        canPaginate: false
-      }
     });
 
     const dashboardState = createDefaultAffairsDashboardState("workspace-1", "2026-06-04T09:30:00.000Z");
@@ -7637,76 +7585,68 @@ describe("AffairsWorkbenchView", () => {
       primarySection: "workbench",
       selectedNodeId: "workbench:overview",
       auxiliaryTab: "detail"
-    }, navigationGroupsWithBoundLibraryWorkspace);
+    }, projectWorkgroups);
 
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsWorkbenchAddWidgetAction") }));
     await userEvent.click(screen.getByRole("button", { name: t("shell.affairsWorkbenchWidgetTypeHtml") }));
-    const currentLibraryOption = screen.getByRole("option", { name: t("shell.affairsWorkbenchHtmlSourceWorkspaceCurrentLibraryOption") });
-    expect(currentLibraryOption).toBeInTheDocument();
-    expect(currentLibraryOption).toHaveValue("__affairs_current_library__");
-    expect(screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField"))).toHaveValue("__affairs_current_library__");
-    expect(screen.getByText("当前文档库路径：/Users/jackson/SynologyDrive。下面的文件列表直接来自这份全局文档库配置。")).toBeInTheDocument();
+
+    const sourceSelect = screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField"));
+    expect(within(sourceSelect).queryByRole("option", { name: "当前文档库" })).toBeNull();
+    await userEvent.selectOptions(sourceSelect, "workspace-2");
+    expect(sourceSelect).toHaveValue("workspace-2");
+
     await userEvent.click(screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceSelectField")));
-    await userEvent.click(await screen.findByRole("button", { name: "Obsidian" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Tools" }));
-    await userEvent.click(await screen.findByRole("button", { name: "会员管理.html" }));
-    await userEvent.click(screen.getByRole("button", { name: t("shell.affairsShortcutRailSourcePickerConfirmAction") }));
+    const pickerDialog = await screen.findByRole("dialog", { name: t("shell.affairsShortcutRailSourcePickerTitle") });
+    await userEvent.click(within(pickerDialog).getByRole("button", { name: "会员管理.html" }));
+    await userEvent.click(within(pickerDialog).getByRole("button", { name: t("shell.affairsShortcutRailSourcePickerConfirmAction") }));
     await userEvent.click(screen.getByRole("button", { name: t("shell.affairsWorkbenchConfirmAddWidgetAction") }));
+    conversationApiMock.getAffairsLibraryPreviewWithOptions.mockClear();
 
     await waitFor(() => {
-      expect(conversationApiMock.getAffairsLibraryPreview).toHaveBeenCalledWith("workspace-2", "Obsidian/Tools/会员管理.html");
+      expect(fileContextApiMock.getFilePreview).toHaveBeenCalledWith("workspace-2", "会员管理.html");
     });
-    expect(document.querySelector(".affairs-dashboard-html-meta")).toBeNull();
-    expect(screen.queryByText("Obsidian/Tools/会员管理.html")).not.toBeInTheDocument();
+    expect(conversationApiMock.getAffairsLibraryPreview).not.toHaveBeenCalled();
+    expect(libraryFileListCallCount).toBe(0);
+    expect(fileContextApiMock.getFileTree).toHaveBeenCalledWith("workspace-2", undefined);
 
     const openHtmlButton = screen.getByRole("button", { name: t("shell.affairsWorkbenchOpenHtmlAction") });
     expect(openHtmlButton.closest(".affairs-dashboard-widget-header")).not.toBeNull();
-    conversationApiMock.getAffairsLibraryPreview.mockClear();
     await userEvent.click(openHtmlButton);
     await waitFor(() => {
       expect(openMock).toHaveBeenCalledWith(
-        expect.stringContaining("/preview/affairs-files/mock/Obsidian/Tools/%E4%BC%9A%E5%91%98%E7%AE%A1%E7%90%86.html"),
+        expect.stringContaining("/preview/files/token/tools/report/index.html"),
         "_blank",
         "noopener,noreferrer"
       );
     });
-    expect(conversationApiMock.getAffairsLibraryPreview).toHaveBeenCalledWith("workspace-2", "Obsidian/Tools/会员管理.html");
-
-    const htmlFrame = await screen.findByTestId("file-viewer-html-preview") as HTMLIFrameElement;
-    expect(htmlFrame).not.toBeNull();
-    expect(htmlFrame?.src).toContain("/preview/affairs-files/mock/Obsidian/Tools/%E4%BC%9A%E5%91%98%E7%AE%A1%E7%90%86.html");
-    expect(htmlFrame?.src).toContain("_preview=0");
-    expect(htmlFrame?.src).toContain("_cns_parent_origin=");
-    const frameShell = htmlFrame.closest(".file-viewer-html-frame-shell");
-    expect(frameShell).not.toBeNull();
-    expect(frameShell?.closest(".affairs-dashboard-widget-body > .file-viewer-inline-panel")).not.toBeNull();
-    expect(document.querySelector(".file-viewer-inline-panel")).not.toBeNull();
-    expect(document.querySelector(".affairs-dashboard-html-frame")).toBeNull();
-    await waitFor(() => {
-      expect(htmlPreviewBridgeMock.createHtmlPreviewWorkspaceBridge).toHaveBeenCalledWith(expect.objectContaining({
-        iframe: htmlFrame,
-        workspaceId: "workspace-2"
-      }));
-    });
-    expect(fileContextApiMock.getFilePreview).not.toHaveBeenCalled();
-    expect(conversationApiMock.getAffairsLibraryPreviewWithOptions).toHaveBeenCalledWith("workspace-2", "Obsidian/Tools/会员管理.html", expect.objectContaining({
-      officeDisplayMode: "default"
-    }));
-    expect(conversationApiMock.listAffairsLibraryFiles).toHaveBeenCalledWith("workspace-2", expect.objectContaining({
-      path: "Obsidian/Tools"
-    }));
+    expect(fileContextApiMock.getFilePreviewLink).toHaveBeenCalledWith("workspace-2", "会员管理.html");
   });
 
-  it("当前文档库来源选项直接读取全局 rootDir，不再映射成某个工作区名", async () => {
-    const libraryBindingWithoutWorkspace = {
+  it("工作台来源下拉只列出已添加的项目工作区", async () => {
+    const projectWorkgroups: WorkspaceSessionGroup[] = [
+      {
+        workspace: {
+          id: "workspace-2",
+          name: "会员系统项目",
+          path: "/Users/jackson/WorkFile/会员系统",
+          repoRoot: "/Users/jackson/WorkFile/会员系统"
+        },
+        sessions: [],
+        childWorktrees: []
+      }
+    ];
+    conversationApiMock.getAffairsLibrarySnapshot.mockResolvedValue(createLibrarySnapshot({
+      binding: {
+        ...baseLibrarySnapshot().binding,
+        workspaceId: "workspace-2",
+        rootDir: "/Users/jackson/SynologyDrive"
+      }
+    }));
+    conversationApiMock.getGlobalAffairsLibraryBinding.mockResolvedValue({
       ...baseLibrarySnapshot().binding,
       workspaceId: "workspace-2",
       rootDir: "/Users/jackson/SynologyDrive"
-    };
-    conversationApiMock.getAffairsLibrarySnapshot.mockResolvedValue(createLibrarySnapshot({
-      binding: libraryBindingWithoutWorkspace
-    }));
-    conversationApiMock.getGlobalAffairsLibraryBinding.mockResolvedValue(libraryBindingWithoutWorkspace);
+    });
 
     const dashboardState = createDefaultAffairsDashboardState("workspace-1", "2026-06-04T09:30:00.000Z");
     dashboardState.layoutLocked = false;
@@ -7717,27 +7657,31 @@ describe("AffairsWorkbenchView", () => {
       primarySection: "workbench",
       selectedNodeId: "workbench:overview",
       auxiliaryTab: "detail"
-    }, navigationGroupsWithBoundLibraryWorkspace);
+    }, projectWorkgroups);
 
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsWorkbenchAddWidgetAction") }));
     await userEvent.click(screen.getByRole("button", { name: t("shell.affairsWorkbenchWidgetTypeHtml") }));
 
-    expect(screen.getByRole("option", {
-      name: t("shell.affairsWorkbenchHtmlSourceWorkspaceCurrentLibraryOption")
-    })).toHaveValue("__affairs_current_library__");
-    expect(screen.queryByRole("option", { name: /Jackson-Obsi/ })).not.toBeInTheDocument();
+    const sourceSelect = screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField"));
+    const optionLabels = within(sourceSelect).getAllByRole("option").map((option) => option.textContent ?? "");
+    expect(optionLabels).toContain("会员系统项目");
+    expect(optionLabels).not.toContain("当前文档库");
+    expect(optionLabels.some((label) => label.includes("/Users/jackson/SynologyDrive"))).toBe(false);
   });
 
-  it("添加快捷应用时默认选中当前文档库来源", async () => {
-    const boundLibraryBinding = {
+  it("添加快捷应用时默认选中当前工作区，且不再按文档库绑定挑来源", async () => {
+    conversationApiMock.getAffairsLibrarySnapshot.mockResolvedValue(createLibrarySnapshot({
+      binding: {
+        ...baseLibrarySnapshot().binding,
+        workspaceId: "workspace-2",
+        rootDir: "/Users/jackson/SynologyDrive"
+      }
+    }));
+    conversationApiMock.getGlobalAffairsLibraryBinding.mockResolvedValue({
       ...baseLibrarySnapshot().binding,
       workspaceId: "workspace-2",
       rootDir: "/Users/jackson/SynologyDrive"
-    };
-    conversationApiMock.getAffairsLibrarySnapshot.mockResolvedValue(createLibrarySnapshot({
-      binding: boundLibraryBinding
-    }));
-    conversationApiMock.getGlobalAffairsLibraryBinding.mockResolvedValue(boundLibraryBinding);
+    });
 
     renderWorkbenchWithCustomNavigationGroups(createState(), navigationGroupsWithBoundLibraryWorkspace);
 
@@ -7745,82 +7689,77 @@ describe("AffairsWorkbenchView", () => {
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsShortcutRailEditAction") }));
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsShortcutRailAddAction") }));
 
-    expect(screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField"))).toHaveValue("__affairs_current_library__");
+    const sourceSelect = screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField"));
+    expect(sourceSelect).toHaveValue("workspace-1");
+    expect(within(sourceSelect).queryByRole("option", { name: "当前文档库" })).toBeNull();
   });
 
-  it("添加快捷应用时可以选择隐藏的工作区作为来源", async () => {
-    conversationApiMock.listWorkspaces.mockResolvedValue({
-      items: [
-        navigationGroups[0].workspace,
-        {
-          id: "workspace-hidden",
-          name: "隐藏项目",
-          path: "/Users/jackson/WorkFile/隐藏项目",
-          repoRoot: "/Users/jackson/WorkFile/隐藏项目",
-          hidden: true
-        }
-      ]
-    });
+  it("隐藏的工作区不会出现在快捷应用来源里", async () => {
+    const visibleWorkgroup: WorkspaceSessionGroup = {
+      workspace: {
+        id: "workspace-1",
+        name: "在办项目",
+        path: "/Users/jackson/WorkFile/在办项目",
+        repoRoot: "/Users/jackson/WorkFile/在办项目"
+      },
+      sessions: [],
+      childWorktrees: []
+    };
 
-    renderWorkbenchWithCustomNavigationGroups(createState(), [navigationGroups[0]]);
+    renderWorkbenchWithCustomNavigationGroups(createState(), [visibleWorkgroup]);
 
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsShortcutRailExpandAction") }));
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsShortcutRailEditAction") }));
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsShortcutRailAddAction") }));
 
-    await waitFor(() => {
-      expect(screen.getByRole("option", { name: "隐藏项目" })).toBeInTheDocument();
-    });
-
-    await userEvent.selectOptions(
-      screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField")),
-      "workspace-hidden"
-    );
-
-    expect(screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField"))).toHaveValue("workspace-hidden");
+    const sourceSelect = screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField"));
+    const optionLabels = within(sourceSelect).getAllByRole("option").map((option) => option.textContent ?? "");
+    expect(optionLabels).toEqual(["在办项目"]);
   });
 
-  it("当前文档库文件选择器会按真实目录列出非 HTML 文件", async () => {
-    const boundLibraryBinding = {
-      ...baseLibrarySnapshot().binding,
-      workspaceId: "workspace-2",
-      rootDir: "/Users/jackson/SynologyDrive"
-    };
-    conversationApiMock.getAffairsLibrarySnapshot.mockResolvedValue(createLibrarySnapshot({
-      binding: boundLibraryBinding
-    }));
-    conversationApiMock.getGlobalAffairsLibraryBinding.mockResolvedValue(boundLibraryBinding);
-    conversationApiMock.listAffairsLibraryFiles.mockImplementation(async (_workspaceId: string, query?: { path?: string | null }) => {
-      const selectedPath = query?.path?.trim() ?? "";
-      if (!selectedPath) {
+  it("快捷应用文件选择器读取项目工作区目录，非 HTML 文件也能看到", async () => {
+    const projectWorkgroups: WorkspaceSessionGroup[] = [
+      {
+        workspace: {
+          id: "workspace-2",
+          name: "会员系统项目",
+          path: "/Users/jackson/WorkFile/会员系统",
+          repoRoot: "/Users/jackson/WorkFile/会员系统"
+        },
+        sessions: [],
+        childWorktrees: []
+      }
+    ];
+    fileContextApiMock.getFileTree.mockImplementation(async (_workspaceId: string, filePath?: string) => {
+      if (!filePath) {
         return {
           items: [
             {
-              path: "Apps",
               name: "Apps",
+              path: "Apps",
               kind: "directory",
               size: null,
-              updatedAt: "2026-06-04T10:00:00.000Z"
+              updatedAt: null
             }
           ]
         };
       }
-      if (selectedPath === "Apps") {
+      if (filePath === "Apps") {
         return {
           items: [
             {
-              path: "Apps/logo.png",
               name: "logo.png",
+              path: "Apps/logo.png",
               kind: "file",
               size: 2048,
-              updatedAt: "2026-06-04T10:00:00.000Z"
+              updatedAt: null
             },
             {
-              path: "Apps/index.html",
               name: "index.html",
+              path: "Apps/index.html",
               kind: "file",
               size: 1024,
-              updatedAt: "2026-06-04T10:00:00.000Z"
+              updatedAt: null
             }
           ]
         };
@@ -7828,19 +7767,19 @@ describe("AffairsWorkbenchView", () => {
       return { items: [] };
     });
 
-    renderWorkbenchWithCustomNavigationGroups(createState(), navigationGroupsWithBoundLibraryWorkspace);
+    renderWorkbenchWithCustomNavigationGroups(createState(), projectWorkgroups);
 
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsShortcutRailExpandAction") }));
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsShortcutRailEditAction") }));
     await userEvent.click(await screen.findByRole("button", { name: t("shell.affairsShortcutRailAddAction") }));
+    await userEvent.selectOptions(screen.getByLabelText(t("shell.affairsWorkbenchHtmlSourceWorkspaceField")), "workspace-2");
     await userEvent.click(screen.getByLabelText(t("shell.affairsShortcutRailSourceSelectField")));
     await userEvent.click(await screen.findByRole("button", { name: "Apps" }));
 
     expect(await screen.findByRole("button", { name: "logo.png" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "index.html" })).toBeInTheDocument();
-    expect(conversationApiMock.listAffairsLibraryFiles).toHaveBeenCalledWith("workspace-2", expect.objectContaining({
-      path: "Apps"
-    }));
+    expect(fileContextApiMock.getFileTree).toHaveBeenCalledWith("workspace-2", "Apps");
+    expect(conversationApiMock.listAffairsLibraryFiles).not.toHaveBeenCalled();
   });
 
   it("打开快捷应用时会继承快捷应用自己的来源工作区权限", async () => {
