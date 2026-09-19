@@ -5,6 +5,7 @@ import type {
   DashboardHtmlWidgetVariant,
   DashboardTabState,
   DashboardWidgetLayout,
+  DashboardWidgetSourceKind,
   DashboardWidgetSourceRef,
   DashboardWidgetState,
   DashboardWidgetType,
@@ -252,20 +253,23 @@ function normalizeDashboardWidgetState(
   }
 
   const sourceRef = isRecord(rawWidget.sourceRef)
-    ? {
-        kind: rawWidget.sourceRef.kind === "html_shortcut"
-          ? "html_shortcut" as const
-          : rawWidget.sourceRef.kind === "affairs_library_html"
-            ? "affairs_library_html" as const
-            : "plugin_runtime" as const,
-        workspaceId: typeof rawWidget.sourceRef.workspaceId === "string" && rawWidget.sourceRef.workspaceId.trim()
-          ? rawWidget.sourceRef.workspaceId.trim()
-          : undefined,
-        sourceId: typeof rawWidget.sourceRef.sourceId === "string" ? rawWidget.sourceRef.sourceId.trim() : "",
-        entryId: typeof rawWidget.sourceRef.entryId === "string" && rawWidget.sourceRef.entryId.trim()
-          ? rawWidget.sourceRef.entryId.trim()
-          : undefined
-      }
+    ? (() => {
+        const kind = rawWidget.sourceRef.kind;
+        if (kind !== "html_shortcut" && kind !== "affairs_library_html") {
+          return undefined;
+        }
+
+        return {
+          kind: kind as DashboardWidgetSourceKind,
+          workspaceId: typeof rawWidget.sourceRef.workspaceId === "string" && rawWidget.sourceRef.workspaceId.trim()
+            ? rawWidget.sourceRef.workspaceId.trim()
+            : undefined,
+          sourceId: typeof rawWidget.sourceRef.sourceId === "string" ? rawWidget.sourceRef.sourceId.trim() : "",
+          entryId: typeof rawWidget.sourceRef.entryId === "string" && rawWidget.sourceRef.entryId.trim()
+            ? rawWidget.sourceRef.entryId.trim()
+            : undefined
+        };
+      })()
     : undefined;
 
   if (normalizedType.type === "html" && !sourceRef?.sourceId) {

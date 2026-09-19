@@ -8,7 +8,7 @@ import { resolveMobileToolBackHref } from "../components/mobile-workbench-shell-
  * 移动端返回层级。
  *
  * 规则固定为：会话消息页 → 会话列表 → 工作区首页 → 退出程序。
- * 其余一级页面（工作区详情、工具、终端、插件、设置等）先回工作区首页。
+ * 其余一级页面（工作区详情、工具、终端、设置等）先回工作区首页。
  * 这里不看浏览历史，只看当前地址，避免返回键在历史页面里乱跳。
  */
 export const MOBILE_WORKSPACE_HOME_PATH = "/workspaces";

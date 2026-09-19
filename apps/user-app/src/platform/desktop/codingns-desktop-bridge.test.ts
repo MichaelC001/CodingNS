@@ -55,7 +55,7 @@ describe("CodingNSDesktop bridge", () => {
     expect(window.CodingNSDesktop?.runtime.isAvailable()).toBe(false);
   });
 
-  it("iframe 环境不会给插件 frame 挂桌面桥", () => {
+  it("iframe 环境不会挂桌面桥", () => {
     delete window.__TAURI_INTERNALS__;
     const fakeTop = {} as Window;
     Object.defineProperty(window, "top", {
