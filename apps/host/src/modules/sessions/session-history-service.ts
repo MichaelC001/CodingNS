@@ -5644,8 +5644,16 @@ export class SessionHistoryService {
       return;
     }
 
-    const nextTitle = (
-      await this.providerDiscoveryHelperClient.readSessionTitle({
+    // DSH 的会话历史由 Host 持有的 sidecar 提供，不能交给文件型 discovery helper。
+    // helper 没有 Harness 适配器，追加消息后的标题同步会因此抛出 PROVIDER_NOT_SUPPORTED，
+    // 而事件回调链路无法把这个拒绝安全地返回给 HTTP 请求，最终会触发 Host 致命处理。
+    const readTitle = binding.provider === "deepseek-harness"
+      ? this.sessionSyncService.readSessionTitle(
+        binding.provider,
+        binding.providerSessionId,
+        binding.rawStoreRef
+      )
+      : this.providerDiscoveryHelperClient.readSessionTitle({
         config: this.providerSessionDiscoveryConfig,
         provider: binding.provider,
         providerSessionId: binding.providerSessionId,
@@ -5655,9 +5663,9 @@ export class SessionHistoryService {
           return "";
         }
 
-      throw error;
-    })
-    ).trim();
+        throw error;
+      });
+    const nextTitle = (await readTitle).trim();
 
     const resolvedTitle = resolvePersistedSessionTitle(
       binding.provider,

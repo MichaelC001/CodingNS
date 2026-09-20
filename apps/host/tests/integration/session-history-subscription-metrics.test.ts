@@ -41,6 +41,52 @@ afterEach(() => {
 });
 
 describe("session history 订阅统计", () => {
+  it("DSH 追加消息时通过 Host 适配器同步标题，不触发 helper 的 provider 不支持错误", async () => {
+    const harness = createHarness(createTaskManager(), {
+      providerId: "deepseek-harness"
+    });
+    seedWorkspace(harness);
+    seedSession(harness, {
+      sessionId: "session-dsh",
+      provider: "deepseek-harness",
+      providerSessionId: "dsh-provider-session",
+      rawStoreRef: "harness://dsh-provider-session",
+      title: ""
+    });
+
+    const delivered: string[] = [];
+    const subscription = await harness.service.subscribeSession(
+      "session-dsh",
+      "cursor-1",
+      20,
+      (envelope) => {
+        delivered.push(envelope.type);
+      }
+    );
+
+    harness.emitProviderEvent({
+      messages: [{
+        messageId: "dsh-message-1",
+        provider: "deepseek-harness",
+        providerSessionId: "dsh-provider-session",
+        role: "assistant",
+        kind: "text",
+        content: "DSH 回复",
+        timestamp: "2026-09-19T00:00:01.000Z"
+      }],
+      cursor: "cursor-2"
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(delivered).toContain("session.delta");
+    expect(harness.fakeAdapter.readSessionTitle).toHaveBeenCalledWith(
+      "dsh-provider-session",
+      "harness://dsh-provider-session"
+    );
+
+    subscription.close();
+  });
+
   it("generic provider 建立订阅后不再叠加 Host 兜底轮询", async () => {
     const harness = createHarness();
     const readHistory = vi.spyOn(harness.fakeAdapter, "readSessionHistory");
@@ -273,7 +319,7 @@ const HISTORY_FALLBACK_INTERVAL_MS = 5_000;
 
 function createHarness(
   taskManager: TaskManager = createTaskManager(),
-  options: { subscribeThrows?: boolean } = {}
+  options: { subscribeThrows?: boolean; providerId?: string } = {}
 ) {
   const rootDir = mkdtempSync(join(tmpdir(), "codingns-session-history-metrics-"));
   tempDirs.push(rootDir);
@@ -310,7 +356,7 @@ function createHarness(
   const sessionIndexRepository = new SessionIndexRepository(database.db);
   const sessionStatusSnapshotRepository = new SessionStatusSnapshotRepository(database.db);
 
-  const fakeProviderId = "fake-stream";
+  const fakeProviderId = options.providerId ?? "fake-stream";
   let emitProviderEvent: (event: {
     messages: Array<Record<string, unknown>>;
     cursor: string | null;
@@ -326,6 +372,7 @@ function createHarness(
       nextCursor: null,
       total: 0
     })),
+    readSessionTitle: vi.fn(async () => "DSH 会话标题"),
     subscribeSession: vi.fn((
       _providerSessionId: string,
       _rawStoreRef: string,
@@ -421,6 +468,7 @@ function seedSession(
     provider: string;
     providerSessionId: string;
     rawStoreRef: string;
+    title?: string;
   }
 ): void {
   const db = harness.database.db;
@@ -475,7 +523,7 @@ function seedSession(
     null,
     0,
     null,
-    "统计会话",
+    input.title ?? "统计会话",
     1,
     0,
     "2026-09-19T00:00:00.000Z",
