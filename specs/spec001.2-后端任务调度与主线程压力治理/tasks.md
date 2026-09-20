@@ -318,38 +318,47 @@
 
 ## 阶段 6：第二轮性能治理
 
-- [ ] 6.1 进程统计和诊断可信度
-  - 状态：IN_PROGRESS
+- [x] 6.1 进程统计和诊断可信度
+  - 状态：DONE
   - 这一做到底做什么：补齐 3009 端口内外进程的 CPU、RSS、可执行文件摘要、启动时间、stale 和 rootPresent 可信度。
   - 做完以后能看到什么结果：进程快照能解释“看到了什么、依据是什么、什么时候可能不可信”，并且结果有数量和命令行上限。
   - 依赖什么：现有进程统计服务。
   - 主要改哪些文件：`apps/host/src/modules/system/host-process-inventory-service.ts` 及对应测试。
   - 这一步先不做什么：不杀进程、不启动常驻扫描、不降低 768 MiB 阈值。
   - 怎么验证：进程统计定向测试和 `git diff --check`。
+  - 验证结果：已补齐 pid/ppid/state/cpuPercent/rss/elapsed、可执行文件摘要、startedAt/sampledAt/stale；`rootPresent` 现在返回 present/absent/unknown、判断依据和不可信原因。进程按 pid 去重、限制数量和命令行长度，摘要失败只记录原因。25 项进程统计测试通过。
+  - 回写时间：2026-09-20
 
-- [ ] 6.2 Provider 历史缓存统一预算
-  - 状态：IN_PROGRESS
+- [x] 6.2 Provider 历史缓存统一预算
+  - 状态：DONE
   - 这一做到底做什么：用统一加权 LRU 限制 provider 历史缓存的条目数、真实字节数和单条目大小。
   - 做完以后能看到什么结果：多 provider 并发读取仍不突破总预算，超大或失败结果不会进入缓存，淘汰可观测。
   - 依赖什么：现有 provider 惰性读取和增量读取。
   - 主要改哪些文件：`packages/session-sync-core/src/providers/*`、通用缓存模块及测试。
   - 这一步先不做什么：不做全量历史预加载，不通过频繁重启 helper 规避预算。
   - 怎么验证：provider 缓存定向测试和 session-sync-core 构建。
+  - 验证结果：新增统一 `WeightedLruCache` 和 provider 总预算，Gemini、Command Code、Codex、Claude 历史缓存均接入真实字节预算；覆盖 LRU、UTF-8、超大旁路、失败值、高水位和多 provider 总预算，缓存测试 5/5 通过，session-sync-core 构建通过。
+  - 回写时间：2026-09-20
 
-- [ ] 6.3 有界 SQLite 命令队列
-  - 状态：IN_PROGRESS
+- [x] 6.3 有界 SQLite 命令队列
+  - 状态：DONE
   - 这一做到底做什么：把写入队列变成有硬上限、类型化、可观测的命令队列。
   - 做完以后能看到什么结果：队列满时 critical 返回 backpressure，latest_wins/append_batch/best_effort 行为固定，pending count/bytes 和等待分位数可读。
   - 依赖什么：现有 better-sqlite3 写入封装。
   - 主要改哪些文件：`apps/host/src/storage/sqlite/write-queue.ts`、`write-serializer.ts` 及测试。
   - 这一步先不做什么：不使用 node:sqlite，不用同步等待，不改 auth_users 索引。
   - 怎么验证：SQLite 写队列定向测试、`pnpm check:sqlite-runtime`。
+  - 验证结果：写队列已改为有界类型化命令队列，支持 critical/latest_wins/append_batch/best_effort、pending count/bytes、关闭 drain、批处理和 p50/p95/p99。SQLite 队列/诊断 25 项通过，SQLite runtime 检查通过。
+  - 回写时间：2026-09-20
 
 - [ ] 6.4 SQLite Writer 和 readiness 重构
-  - 状态：TODO
+  - 状态：IN_REVIEW
   - 这一做到底做什么：让 writer 在 Host 请求路径之外处理写事务，让 `/readyz` 只读内存快照。
   - 做完以后能看到什么结果：锁竞争时 readiness 仍快速返回，短暂 writer 降级不会触发 Host 重启，崩溃和 retiring 有明确收尾。
   - 依赖什么：6.3 队列接口稳定。
   - 主要改哪些文件：`apps/host/src/modules/health/health-service.ts`、supervisor/writer 协议及测试。
   - 这一步先不做什么：不一次性迁移所有同步写路径；无法迁移的边界要记录。
   - 怎么验证：health/readiness/helper lifecycle 定向测试，Host TypeScript 检查，搜索请求路径残留同步 SQLite。
+  - 验证结果：新增真实 `sqlite-writer-process`/`sqlite-writer-client`，生产 `create-server.ts` 已注入独立 helper，heartbeat、事务成功/失败、retiring、drain 和崩溃收尾均走协议桥；helper 内复用 `SqliteWriteQueue`。`/readyz` 只读内存快照。会话状态、状态快照、会话索引和工作区导航状态写入已在生产启动时接入 writer/共享有界队列。writer 协议 5 项、health/readiness 5 项、观测测试 6 项、Host tsc、SQLite runtime 检查通过。
+  - 剩余风险：认证、工作区配置、部分会话索引和业务 CRUD 仍保留同步 repository 写入，因为这些接口当前依赖同步返回值或事务边界，尚未完成逐条异步化；测试环境保留兼容构造，避免测试数据库使用 `:memory:` 时跨进程失效。writer helper 已支持最多 3 次指数退避重启，但超过上限后仍需由 supervisor/liveness 负责最终处置。
+  - 回写时间：2026-09-20
