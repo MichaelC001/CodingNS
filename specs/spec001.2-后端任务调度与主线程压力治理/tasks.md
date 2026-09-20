@@ -362,3 +362,13 @@
   - 验证结果：新增真实 `sqlite-writer-process`/`sqlite-writer-client`，生产 `create-server.ts` 已注入独立 helper，heartbeat、事务成功/失败、retiring、drain 和崩溃收尾均走协议桥；helper 内复用 `SqliteWriteQueue`。`/readyz` 只读内存快照。会话状态、状态快照、会话索引和工作区导航状态写入已在生产启动时接入 writer/共享有界队列。writer 协议 5 项、health/readiness 5 项、观测测试 6 项、Host tsc、SQLite runtime 检查通过。
   - 剩余风险：认证、工作区配置、部分会话索引和业务 CRUD 仍保留同步 repository 写入，因为这些接口当前依赖同步返回值或事务边界，尚未完成逐条异步化；测试环境保留兼容构造，避免测试数据库使用 `:memory:` 时跨进程失效。writer helper 已支持最多 3 次指数退避重启，但超过上限后仍需由 supervisor/liveness 负责最终处置。
   - 回写时间：2026-09-20
+
+- [ ] 6.5 关键写路径异步迁移（分步）
+  - 状态：IN_PROGRESS
+  - 这一做到底做什么：把认证用户和工作区 HTTP 写入改成等待独立 Writer 确认，同时保留后台清理和测试所需的同步兼容入口。
+  - 做完以后能看到什么结果：用户创建、编辑、删除、工作区导入、克隆登记和移除返回时，数据已经由 Writer 提交；唯一性和权限检查仍在 Host 只读完成，数据库写入不再阻塞 Host 事件循环。
+  - 依赖什么：6.4 的 Writer client、critical write 和 transaction 协议。
+  - 主要改哪些文件：`apps/host/src/modules/auth/*`、`apps/host/src/modules/workspace/*`、相关 repository、HTTP 测试。
+  - 这一步先不做什么：不把用户状态停用、级联删除和所有业务 CRUD 一次性改成异步；这些需要 transaction 命令和读后写一致性策略。
+  - 怎么验证：认证用户管理、工作区导入/克隆/移除、Writer 协议、Host TypeScript 和 SQLite runtime 检查。
+  - 当前进展：认证用户创建/更新/删除、用户停用（用户、token、设备会话同一 critical transaction）、工作区导入/克隆登记/移除已接入 critical writer；复杂业务级联事务和读后写 flush 待下一步。
