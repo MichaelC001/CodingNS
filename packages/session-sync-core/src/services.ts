@@ -41,6 +41,14 @@ export type {
 export class SessionSyncService {
   constructor(private readonly registry: ProviderRegistry) {}
 
+  observeProviderCacheStats(): Array<{ provider: string; stats: unknown }> {
+    return this.registry.list().flatMap((provider) =>
+      typeof provider.getHistoryCacheStats === "function"
+        ? [{ provider: String(provider.providerId), stats: provider.getHistoryCacheStats() }]
+        : []
+    );
+  }
+
   async discoverWorkspaceSessions(
     workspacePath: string,
     options?: DetectSessionsOptions

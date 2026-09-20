@@ -560,6 +560,8 @@ export interface ProviderAdapter {
     workspacePath: string
   ): Promise<ProviderCapabilities>;
   getSessionCapabilities(providerSessionId: string): Promise<ProviderCapabilities>;
+  /** 只读缓存诊断；未实现的 provider 不应伪造统计。 */
+  getHistoryCacheStats?(): unknown;
 }
 
 export interface ProviderFileDescriptor {

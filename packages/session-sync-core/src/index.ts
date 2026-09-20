@@ -35,6 +35,7 @@ export * from "./providers/grok.js";
 export * from "./providers/grok-capabilities.js";
 export * from "./providers/grok-session-store.js";
 export * from "./providers/command-code.js";
+export * from "./providers/provider-history-cache.js";
 export * from "./providers/pi-capabilities.js";
 export * from "./providers/pi.js";
 export * from "./providers/grok-message-mapper.js";

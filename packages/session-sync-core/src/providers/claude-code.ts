@@ -68,6 +68,10 @@ import {
   CLAUDE_CODE_SESSION_STORE_PROFILE,
   type ClaudeSessionStoreProfile
 } from "./claude-session-store.js";
+import {
+  PROVIDER_CACHE_LIMITS,
+  WeightedLruCache
+} from "./provider-history-cache.js";
 
 interface ClaudeCodeAdapterOptions {
   homeDir: string;
@@ -138,11 +142,23 @@ export const CLAUDE_COMPAT_MODEL_OPTIONS: ProviderModelOption[] = [
 
 export class ClaudeCodeAdapter implements ProviderAdapter {
   readonly providerId: ProviderId;
-  private readonly historyCache = new Map<string, ClaudeHistoryCacheEntry>();
+  private readonly historyCache = new WeightedLruCache<string, ClaudeHistoryCacheEntry>({
+    maxEntries: HISTORY_CACHE_LIMIT,
+    maxBytes: PROVIDER_CACHE_LIMITS.sessionCacheBytes,
+    maxEntryBytes: PROVIDER_CACHE_LIMITS.sessionCacheBytes,
+    dimensions: (_key, value) => ({
+      provider: this.providerId,
+      session: value.providerSessionId
+    })
+  });
   private readonly sessionSummaryCache = new Map<string, ClaudeSessionSummaryCacheEntry>();
 
   constructor(private readonly options: ClaudeCodeAdapterOptions) {
     this.providerId = options.providerId ?? "claude-code";
+  }
+
+  getHistoryCacheStats() {
+    return this.historyCache.stats();
   }
 
   async detectSessions(
@@ -1123,18 +1139,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   }
 
   private touchHistoryCache(filePath: string, entry: ClaudeHistoryCacheEntry): void {
-    this.historyCache.delete(filePath);
     this.historyCache.set(filePath, entry);
-
-    while (this.historyCache.size > HISTORY_CACHE_LIMIT) {
-      const oldestKey = this.historyCache.keys().next().value;
-
-      if (!oldestKey) {
-        break;
-      }
-
-      this.historyCache.delete(oldestKey);
-    }
   }
 
   private touchSessionSummaryCache(filePath: string, entry: ClaudeSessionSummaryCacheEntry): void {

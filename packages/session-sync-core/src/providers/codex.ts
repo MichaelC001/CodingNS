@@ -84,6 +84,10 @@ import {
 import { buildCodexResumeHistoryFromRawStore } from "../codex-resume-history.js";
 import { buildApplyPatchFromCodexCommandLikeValue } from "../patch-builder.js";
 import { loadDatabaseSync, type DatabaseSyncType } from "../sqlite/node-sqlite.js";
+import {
+  PROVIDER_CACHE_LIMITS,
+  WeightedLruCache
+} from "./provider-history-cache.js";
 
 interface CodexAdapterOptions {
   homeDir: string;
@@ -269,7 +273,15 @@ const KNOWN_CODEX_CONTEXT_WINDOWS = new Map<string, number>([
 
 export class CodexAdapter implements ProviderAdapter {
   readonly providerId: ProviderId = "codex";
-  private readonly historyCache = new Map<string, CodexHistoryCacheEntry>();
+  private readonly historyCache = new WeightedLruCache<string, CodexHistoryCacheEntry>({
+    maxEntries: HISTORY_CACHE_LIMIT,
+    maxBytes: PROVIDER_CACHE_LIMITS.sessionCacheBytes,
+    maxEntryBytes: PROVIDER_CACHE_LIMITS.sessionCacheBytes,
+    dimensions: (_key, value) => ({
+      provider: this.providerId,
+      session: value.providerSessionId
+    })
+  });
   private readonly sessionSummaryCache = new Map<string, CodexSessionSummaryCacheEntry>();
   private readonly spawnRelationScanCache = new Map<string, CodexSpawnRelationScanCacheEntry>();
   private threadMetadataIndexCache: CodexThreadMetadataIndexCacheEntry | null = null;
@@ -2430,18 +2442,7 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   private touchHistoryCache(filePath: string, entry: CodexHistoryCacheEntry): void {
-    this.historyCache.delete(filePath);
     this.historyCache.set(filePath, entry);
-
-    while (this.historyCache.size > HISTORY_CACHE_LIMIT) {
-      const oldestKey = this.historyCache.keys().next().value;
-
-      if (!oldestKey) {
-        break;
-      }
-
-      this.historyCache.delete(oldestKey);
-    }
   }
 
   private async buildForkResultFromTransport(input: {
