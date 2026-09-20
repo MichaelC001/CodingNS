@@ -107,7 +107,7 @@ export interface VerifiedUsageLine {
   unavailableReason?: ProviderSessionCostUnavailableReason;
 }
 
-/** 将已核验调用按 provider/model 聚合，未知价格仍保留 token 用量但不填费用。 */
+/** 将可计价调用按 provider/model 聚合，未知价格仍保留 token 用量但不填费用。 */
 export function buildProviderSessionModelUsages(
   lines: readonly VerifiedUsageLine[],
   priceBook?: ProviderPriceBook
@@ -116,7 +116,7 @@ export function buildProviderSessionModelUsages(
 
   for (const line of lines) {
     const model = line.model.trim();
-    if (!line.completed || !model || !line.timestamp) {
+    if (!line.completed && !hasUsageSnapshot(line)) {
       continue;
     }
 
@@ -168,7 +168,7 @@ export function buildProviderSessionModelUsages(
   return [...usages.values()];
 }
 
-/** 保留每条已完成调用的时间，供 Host 按消息时间统计。 */
+/** 保留每条可计价调用的时间，供 Host 按消息时间统计。 */
 export function buildProviderSessionUsageEvents(
   lines: readonly VerifiedUsageLine[],
   priceBook?: ProviderSessionPriceBook,
@@ -178,7 +178,7 @@ export function buildProviderSessionUsageEvents(
   return lines.flatMap((line) => {
     const model = line.model.trim();
     const timestamp = line.timestamp.trim();
-    if (!line.completed || !model || !timestamp) return [];
+    if (!line.completed && !hasUsageSnapshot(line)) return [];
     const entry = resolvedPriceBook ? findPriceBookEntry(resolvedPriceBook, line.provider, model) : null;
     const isBillable = !billing || timestamp >= billing.billingStartedAt;
     const costUsd = isBillable && entry ? calculateUsageLineCost(line, entry) : null;
@@ -302,9 +302,9 @@ export function addCatalogCostMetric(
       break;
     }
 
-    if (!line.completed || !line.model.trim() || !line.timestamp) {
-      // 关键取舍：正在进行的 turn、被截断的日志都会留下未封口用量。
-      // 这类行不能连累已经核验完成的轮次，否则用户会看到“一分钱都不显示”。
+    if (!line.completed && !hasUsageSnapshot(line)) {
+      // 缺少模型、时间戳或输入/输出 Token 的行无法安全计价，不能连累已经
+      // 核验完成的轮次；有完整快照的未封口轮次按当前实际值计价。
       unpricedLineCount += 1;
       continue;
     }
@@ -736,4 +736,14 @@ function isDirectPricingProfile(value: string): boolean {
 
 function nonNegativeInteger(value: number): number | null {
   return Number.isInteger(value) && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** 当前累计快照具备精确计价所需的最小字段。轮次可以仍在运行。 */
+function hasUsageSnapshot(line: Pick<VerifiedUsageLine, "model" | "timestamp" | "inputTokens" | "outputTokens">): boolean {
+  return Boolean(
+    line.model.trim()
+    && line.timestamp.trim()
+    && nonNegativeInteger(line.inputTokens) !== null
+    && nonNegativeInteger(line.outputTokens) !== null
+  );
 }

@@ -4363,8 +4363,7 @@ function buildCodexUsageLines(
   const baselineTotal = baseline?.total ?? {};
 
   // 只有尾部窗口时，窗口开头可能正好落在某个 turn 中间，最早几条 token_count
-  // 既没有 turn_context 归属，也可能缺时间戳。这类快照不能反过来让整场会话
-  // 变成“算不出费用”，改为按窗口内累计快照估算。
+  // 没有 turn_context 归属。这类数据无法证明属于哪个模型，不能拿最近模型硬算。
   const hasUnattributableSnapshot = active.some(
     (snapshot) => !snapshot.turnId || !snapshot.timestamp
   );
@@ -4372,13 +4371,27 @@ function buildCodexUsageLines(
   // 并发 turn 之间不能可靠拆分累计快照。此时退化为“计费起点到最新快照”
   // 的会话总量，并用最近快照的模型价格估算。总 Token 差值仍然只计算一次，
   // 不会因为多个 turn 重复累加；不确定的只是模型归因，因此必须打上估算标记。
-  if (hasConcurrentTurns || hasUnattributableSnapshot) {
+  if (hasConcurrentTurns) {
     return buildCodexEstimatedUsageLine(
       providerSessionId,
       hasUnattributableSnapshot ? active[0]?.total ?? baselineTotal : baselineTotal,
       active,
       turnModels
     );
+  }
+
+  if (hasUnattributableSnapshot) {
+    const latest = active.at(-1);
+    return [{
+      key: `${providerSessionId}:unattributable-usage:${latest?.timestamp ?? ""}`,
+      provider: "codex",
+      model: "",
+      inputTokens: 0,
+      outputTokens: 0,
+      completed: false,
+      timestamp: latest?.timestamp ?? "",
+      unavailableReason: "usage-incomplete"
+    }];
   }
 
   const lines: VerifiedUsageLine[] = [];
@@ -4398,6 +4411,14 @@ function buildCodexUsageLines(
     const inputTokens = currentDelta.input_tokens;
     const outputTokens = currentDelta.output_tokens;
 
+    const hasUsage = Boolean(
+      model
+      && currentTimestamp
+      && inputTokens !== undefined
+      && outputTokens !== undefined
+    );
+    const completed = Boolean(hasUsage && completedTurns.has(currentTurnId));
+
     lines.push({
       key: `${providerSessionId}:${currentTurnId}:${currentIndex}`,
       turnKey: currentTurnId,
@@ -4409,14 +4430,10 @@ function buildCodexUsageLines(
       cacheReadTokens: currentDelta.cached_input_tokens ?? 0,
       cacheWriteTokens: currentDelta.cache_write_tokens ?? 0,
       inputIncludesCacheRead: true,
-      completed: Boolean(
-        model
-        && currentTimestamp
-        && inputTokens !== undefined
-        && outputTokens !== undefined
-        && completedTurns.has(currentTurnId)
-      ),
-      timestamp: currentTimestamp
+      completed,
+      timestamp: currentTimestamp,
+      // Codex 的累计快照在轮次结束前也能给出截至当前时刻的实际用量；
+      // 未收到终态只代表后续还可能增长，不代表当前快照需要打折或估算。
     });
     currentIndex += 1;
     currentTurnId = "";
