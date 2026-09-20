@@ -50,6 +50,15 @@ export const DEEPSEEK_HARNESS_PROTOCOL_VERSION = "1";
 /** Harness 0.1.2 的 Remote Gateway 协议没有 host.describe 握手，使用独立协议标识。 */
 export const DEEPSEEK_HARNESS_REMOTE_PROTOCOL_VERSION = "remote-v1";
 
+/**
+ * 思考内容只用于辅助查看，不能让异常复读把整个会话拖成几十 MB。
+ * 正式回复不做这个限制，避免截断用户真正需要的输出。
+ */
+const MAX_DEEPSEEK_HARNESS_THINKING_CHARS = 8 * 1024;
+const MAX_DEEPSEEK_HARNESS_DUPLICATE_CONTENT_CHARS = 64 * 1024;
+const DEEPSEEK_HARNESS_THINKING_TRUNCATION_MARKER = "\n\n[思考内容过长，已截断]\n";
+const DEEPSEEK_HARNESS_DUPLICATE_CONTENT_TRUNCATION_MARKER = "\n\n[重复内容过长，已截断]\n";
+
 export const DEEPSEEK_HARNESS_CAPABILITIES = [
   "host.describe",
   "session.list",
@@ -883,7 +892,9 @@ export function mapHarnessEntries(providerSessionId: string, rawStoreRef: string
   if (entry.type === "assistant/chunk") return [];
 
   if (entry.type === "assistant/message") {
-    const parts = extractHarnessAssistantMessageParts(entry.data.message ?? entry.data.content);
+    const parts = normalizeHarnessAssistantMessageParts(
+      extractHarnessAssistantMessageParts(entry.data.message ?? entry.data.content)
+    );
 
     if (hasHarnessAssistantMessageBlocks(entry.data)) {
       const track = resolveHarnessAssistantTrack(entry.data, entry.sequence);
@@ -1198,7 +1209,7 @@ function mapHarnessAssistantChunk(
     });
     const delta = ensureText(chunk.text);
     if (!delta) return [];
-    block.content += delta;
+    block.content = appendHarnessThinkingContent(block.content, delta, block.kind);
     return [createHarnessAssistantPartMessage({
       providerSessionId,
       rawStoreRef,
@@ -1223,7 +1234,9 @@ function mapHarnessAssistantChunk(
       sequence: entry.sequence
     });
     const content = extractTextBlocks(completedBlock.text ?? completedBlock.content);
-    if (content) block.content = content;
+    if (content) {
+      block.content = truncateHarnessThinkingContent(content, block.kind);
+    }
     if (!block.content) return [];
     return [createHarnessAssistantPartMessage({
       providerSessionId,
@@ -1266,6 +1279,54 @@ function extractHarnessAssistantMessageParts(value: unknown): Array<{ partIndex:
   });
 }
 
+/**
+ * 某些 DSH 版本会把同一份正文同时写进 reasoning 和 text。
+ * 这种事件只保留一份，并优先保留用户可见的正文，避免一条异常输出被渲染两次。
+ */
+function normalizeHarnessAssistantMessageParts(
+  parts: Array<{ partIndex: number; kind: HarnessAssistantPartKind; content: string }>
+): Array<{ partIndex: number; kind: HarnessAssistantPartKind; content: string }> {
+  const normalized: Array<{ partIndex: number; kind: HarnessAssistantPartKind; content: string }> = [];
+  let hasDuplicateContent = false;
+
+  for (const part of parts) {
+    const duplicateIndex = normalized.findIndex((item) => item.content === part.content);
+
+    if (duplicateIndex < 0) {
+      normalized.push(part);
+      continue;
+    }
+
+    hasDuplicateContent = true;
+    const existing = normalized[duplicateIndex];
+
+    if (existing.kind === "thinking" && part.kind === "text") {
+      normalized[duplicateIndex] = part;
+    }
+  }
+
+  if (!hasDuplicateContent) {
+    return normalized;
+  }
+
+  return normalized.map((part) => ({
+    ...part,
+    content: truncateDuplicatedHarnessContent(part.content)
+  }));
+}
+
+function truncateDuplicatedHarnessContent(content: string): string {
+  if (content.length <= MAX_DEEPSEEK_HARNESS_DUPLICATE_CONTENT_CHARS) {
+    return content;
+  }
+
+  const availableChars = Math.max(
+    0,
+    MAX_DEEPSEEK_HARNESS_DUPLICATE_CONTENT_CHARS - DEEPSEEK_HARNESS_DUPLICATE_CONTENT_TRUNCATION_MARKER.length
+  );
+  return `${content.slice(0, availableChars)}${DEEPSEEK_HARNESS_DUPLICATE_CONTENT_TRUNCATION_MARKER}`;
+}
+
 function createHarnessAssistantPartMessage(input: {
   providerSessionId: string;
   rawStoreRef: string;
@@ -1283,12 +1344,35 @@ function createHarnessAssistantPartMessage(input: {
     providerSessionId: input.providerSessionId,
     role: "assistant",
     kind: input.kind,
-    content: input.content,
+    content: truncateHarnessThinkingContent(input.content, input.kind),
     toolCall: null,
     timestamp: input.timestamp,
     sequence: input.sequence,
     rawRef: buildHarnessAssistantPartRawRef(input.rawStoreRef, input.track, input.kind, input.partIndex)
   };
+}
+
+function appendHarnessThinkingContent(
+  current: string,
+  delta: string,
+  kind: HarnessAssistantPartKind
+): string {
+  return truncateHarnessThinkingContent(`${current}${delta}`, kind);
+}
+
+function truncateHarnessThinkingContent(
+  content: string,
+  kind: HarnessAssistantPartKind
+): string {
+  if (kind !== "thinking" || content.length <= MAX_DEEPSEEK_HARNESS_THINKING_CHARS) {
+    return content;
+  }
+
+  const availableChars = Math.max(
+    0,
+    MAX_DEEPSEEK_HARNESS_THINKING_CHARS - DEEPSEEK_HARNESS_THINKING_TRUNCATION_MARKER.length
+  );
+  return `${content.slice(0, availableChars)}${DEEPSEEK_HARNESS_THINKING_TRUNCATION_MARKER}`;
 }
 
 function readHarnessEntry(input: unknown, fallbackSequence: number): HarnessEntry {

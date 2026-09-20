@@ -747,6 +747,56 @@ describe("DeepSeekHarnessAdapter", () => {
     expect(messages[0]?.messageId).not.toBe(messages[1]?.messageId);
   });
 
+  it("限制异常过长的思考消息，避免 DSH 复读内容拖垮会话页面", () => {
+    const messages = mapHarnessEntries("h1", "harness://v/h1", {
+      event: {
+        type: "assistant/message",
+        seq: 526,
+        data: {
+          turn: 1,
+          step: 79,
+          message: {
+            content: [
+              { type: "reasoning", text: "重复确认。".repeat(20_000) },
+              { type: "text", text: "已完成。" }
+            ]
+          }
+        }
+      }
+    }, 0);
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]?.kind).toBe("thinking");
+    expect(messages[0]?.content.length).toBeLessThanOrEqual(8 * 1024);
+    expect(messages[0]?.content).toContain("思考内容过长，已截断");
+    expect(messages[1]).toMatchObject({ kind: "text", content: "已完成。" });
+  });
+
+  it("同一条 DSH 事件的 reasoning 和正文相同，只保留正文一份", () => {
+    const duplicated = "我实际执行。\n好的。\n现在。\n".repeat(20_000);
+    const messages = mapHarnessEntries("h1", "harness://v/h1", {
+      event: {
+        type: "assistant/message",
+        seq: 527,
+        data: {
+          turn: 1,
+          step: 80,
+          message: {
+            content: [
+              { type: "reasoning", text: duplicated },
+              { type: "text", text: duplicated }
+            ]
+          }
+        }
+      }
+    }, 0);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ kind: "text" });
+    expect(messages[0]?.content.length).toBeLessThanOrEqual(64 * 1024);
+    expect(messages[0]?.content).toContain("重复内容过长，已截断");
+  });
+
   it("直接转发 Harness history 尾页的原生统计 projection", async () => {
     const adapter = new DeepSeekHarnessAdapter({
       transport: {
