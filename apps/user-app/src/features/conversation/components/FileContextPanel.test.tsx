@@ -114,6 +114,9 @@ const platformMock = vi.hoisted(() => ({
   isWeb: true,
   isMobile: false,
   isNativeMobile: false,
+  haptics: {
+    trigger: vi.fn()
+  },
   viewportClass: "expanded",
   ui: {
     osFamily: "unknown",
@@ -2656,6 +2659,33 @@ describe("FileContextPanel", () => {
         t("conversation.filePanelDelete")
       ])
     );
+  });
+
+  it("iPad 文件行长按会弹出操作菜单并触发触觉反馈", async () => {
+    platformMock.platform = "ios";
+    platformMock.isDesktop = false;
+    platformMock.isWeb = false;
+    platformMock.isMobile = true;
+    platformMock.isNativeMobile = true;
+    platformMock.viewportClass = "compact";
+    fileApiMock.getFileTree.mockResolvedValue({ items: [...rootItemsMock] });
+
+    renderPanel(null, "workspace-1", { hideHeading: true });
+
+    const fileButton = (await screen.findByText("config.json")).closest("button");
+    expect(fileButton).not.toBeNull();
+
+    fireEvent.pointerDown(fileButton!, {
+      pointerType: "touch",
+      button: 0,
+      clientX: 48,
+      clientY: 96
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 520));
+    fireEvent.pointerUp(fileButton!, { pointerType: "touch", button: 0 });
+
+    expect(platformMock.haptics.trigger).toHaveBeenCalledWith("gesture");
+    expect(screen.getByRole("menu", { name: t("conversation.filePanelActionsMenu") })).toBeInTheDocument();
   });
 
   it("桌面端右键添加到 Git 排除会调用对应接口", async () => {

@@ -1,9 +1,18 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 import { createPortal } from "react-dom";
 
 import { useLocalUiPreferenceSelector } from "../../../preferences/local-ui-preference-store";
 import { readViewSnapshot, writeViewSnapshot } from "../../../shared/cache/view-snapshot-cache";
 import { logPerfDebug } from "../../../shared/debug/perf-debug";
+import { useHaptics } from "../../../shared/haptics";
 import { t } from "../../../shared/i18n";
 import { ApiError } from "../../../shared/network/api-error";
 import { useToast } from "../../../shared/toast";
@@ -154,6 +163,8 @@ const FILE_TREE_SNAPSHOT_TIMEOUT_MS = 1600;
 const FILE_TREE_HTTP_FALLBACK_DELAY_MS = 220;
 const SIDEBAR_TREE_ROOT_PADDING_PX = 20;
 const SIDEBAR_TREE_DEPTH_STEP_PX = 16;
+const FILE_TREE_LONG_PRESS_DELAY_MS = 480;
+const FILE_TREE_LONG_PRESS_MOVE_THRESHOLD_PX = 10;
 
 function readCurrentFileViewerModalBounds() {
   if (typeof document === "undefined") {
@@ -255,6 +266,9 @@ export function FileContextPanel({
   const copyPathMenuRef = useRef<HTMLDivElement | null>(null);
   const mobileActionMenuRef = useRef<HTMLDivElement | null>(null);
   const webContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const fileLongPressTimerRef = useRef<number | null>(null);
+  const fileLongPressPointRef = useRef<{ x: number; y: number } | null>(null);
+  const fileLongPressSuppressClickRef = useRef(false);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const handledExternalRevealRequestIdRef = useRef<number | null>(null);
   const viewerDiffRequestIdRef = useRef(0);
@@ -275,9 +289,19 @@ export function FileContextPanel({
     || null;
   const { showToast } = useToast();
   const platform = usePlatform();
+  const haptics = useHaptics();
   const showSystemFiles = useLocalUiPreferenceSelector((state) => state.showSystemFiles);
   const hasSessionContext = Boolean(sessionId?.trim());
   const shouldUseMobileActionMenu = hideHeading && platform.isMobile;
+
+  useEffect(() => {
+    return () => {
+      if (fileLongPressTimerRef.current !== null) {
+        window.clearTimeout(fileLongPressTimerRef.current);
+      }
+    };
+  }, []);
+
   const getScopedRequestOptions = () =>
     currentTargetHostId
       ? {
@@ -2249,15 +2273,10 @@ export function FileContextPanel({
     ];
   }
 
-  async function handleWorkspaceItemContextMenu(
-    event: React.MouseEvent<HTMLButtonElement>,
-    item: FileNodeDto
+  async function openWorkspaceItemContextMenu(
+    item: FileNodeDto,
+    anchorPoint: { x: number; y: number }
   ) {
-    if (platform.isMobile) {
-      return;
-    }
-
-    event.preventDefault();
     const target = createSelectionTarget(item.path, item.kind);
     const effectiveSelection = selectedTargetPathSet.has(target.path)
       ? actionableSelectedTargets
@@ -2276,15 +2295,72 @@ export function FileContextPanel({
       return;
     }
 
-    if (platform.isWeb) {
-      setCopyPathMenuOpen(false);
-      setMobileActionMenuOpen(false);
-      setWebContextMenu({
-        positionX: event.clientX,
-        positionY: event.clientY,
-        items: menuItems
-      });
+    setCopyPathMenuOpen(false);
+    setMobileActionMenuOpen(false);
+    setWebContextMenu({
+      positionX: anchorPoint.x,
+      positionY: anchorPoint.y,
+      items: menuItems
+    });
+  }
+
+  async function handleWorkspaceItemContextMenu(
+    event: React.MouseEvent<HTMLButtonElement>,
+    item: FileNodeDto
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    await openWorkspaceItemContextMenu(item, {
+      x: event.clientX,
+      y: event.clientY
+    });
+  }
+
+  function clearFileLongPressTimer() {
+    if (fileLongPressTimerRef.current !== null) {
+      window.clearTimeout(fileLongPressTimerRef.current);
+      fileLongPressTimerRef.current = null;
     }
+    fileLongPressPointRef.current = null;
+  }
+
+  function handleFileLongPressStart(event: ReactPointerEvent<HTMLButtonElement>, item: FileNodeDto) {
+    if (!(platform.isNativeMobile || platform.isMobile) || event.pointerType === "mouse") {
+      return;
+    }
+
+    clearFileLongPressTimer();
+    const point = { x: event.clientX, y: event.clientY };
+    fileLongPressPointRef.current = point;
+    fileLongPressTimerRef.current = window.setTimeout(() => {
+      fileLongPressTimerRef.current = null;
+      fileLongPressPointRef.current = null;
+      fileLongPressSuppressClickRef.current = true;
+      void haptics.trigger("gesture");
+      void openWorkspaceItemContextMenu(item, point);
+    }, FILE_TREE_LONG_PRESS_DELAY_MS);
+  }
+
+  function handleFileLongPressMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const point = fileLongPressPointRef.current;
+    if (!point) {
+      return;
+    }
+
+    if (Math.hypot(event.clientX - point.x, event.clientY - point.y) > FILE_TREE_LONG_PRESS_MOVE_THRESHOLD_PX) {
+      clearFileLongPressTimer();
+    }
+  }
+
+  function consumeFileLongPressClick(event: React.MouseEvent<HTMLButtonElement>) {
+    if (!fileLongPressSuppressClickRef.current) {
+      return false;
+    }
+
+    fileLongPressSuppressClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
   }
 
   useEffect(() => {
@@ -2373,6 +2449,10 @@ export function FileContextPanel({
                   paddingInlineStart: `${SIDEBAR_TREE_ROOT_PADDING_PX + depth * SIDEBAR_TREE_DEPTH_STEP_PX}px`
                 }}
                 onClick={(event) => {
+                  if (consumeFileLongPressClick(event)) {
+                    return;
+                  }
+
                   if (isDirectory) {
                     if (event.shiftKey || isToggleSelectionEvent(event)) {
                       resetRecentFileActivation();
@@ -2391,6 +2471,11 @@ export function FileContextPanel({
                 onContextMenu={(event) => {
                   void handleWorkspaceItemContextMenu(event, item);
                 }}
+                onPointerDown={(event) => handleFileLongPressStart(event, item)}
+                onPointerMove={handleFileLongPressMove}
+                onPointerUp={clearFileLongPressTimer}
+                onPointerCancel={clearFileLongPressTimer}
+                onPointerLeave={clearFileLongPressTimer}
               >
                 <span className={`file-tree-chevron${isDirectory ? "" : " is-hidden"}`} aria-hidden="true">
                   {isExpanded ? "v" : ">"}
@@ -2453,11 +2538,20 @@ export function FileContextPanel({
                 data-selected={isSelected}
                 data-kind={item.kind}
                 onClick={(event) => {
+                  if (consumeFileLongPressClick(event)) {
+                    return;
+                  }
+
                   void handleSearchResultClick(item, event);
                 }}
                 onContextMenu={(event) => {
                   void handleWorkspaceItemContextMenu(event, item);
                 }}
+                onPointerDown={(event) => handleFileLongPressStart(event, item)}
+                onPointerMove={handleFileLongPressMove}
+                onPointerUp={clearFileLongPressTimer}
+                onPointerCancel={clearFileLongPressTimer}
+                onPointerLeave={clearFileLongPressTimer}
               >
                 <span className="file-tree-chevron is-hidden" aria-hidden="true">&gt;</span>
                 {!isDirectory ? (
