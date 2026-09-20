@@ -31,6 +31,18 @@ export class WorkspaceRepository {
     return this.markRemoved(id, removedAt, updatedAt);
   }
 
+  async restoreAsync(id: string, input: { name?: string; ownerUserId?: string | null; repoRoot?: string | null; updatedAt: string }): Promise<Workspace | null> {
+    if (this.writer) {
+      await this.writer.write(
+        `UPDATE workspaces SET name = COALESCE(?, name), owner_user_id = COALESCE(?, owner_user_id), repo_root = COALESCE(?, repo_root), updated_at = ?, removed_at = NULL WHERE id = ?`,
+        [input.name?.trim() || null, input.ownerUserId ?? null, input.repoRoot ?? null, input.updatedAt, id],
+        { priority: "critical" }
+      );
+      return this.findById(id);
+    }
+    return this.restore(id, input);
+  }
+
   create(record: WorkspaceCreateInput): Workspace {
     const sortOrder = record.sortOrder ?? this.getNextSortOrder();
 
