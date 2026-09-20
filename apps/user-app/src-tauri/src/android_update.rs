@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 #[cfg(target_os = "android")]
+use base64::Engine;
+
+#[cfg(target_os = "android")]
 use tauri::Manager;
 
 #[cfg(target_os = "android")]
@@ -56,6 +59,56 @@ pub struct AndroidUpdateInstallResult {
   status: String,
   detail: Option<String>,
   downloaded_file_path: Option<String>
+}
+
+/// 把前端收到的文件写入 Android 公共 Downloads 目录。
+///
+/// Android 10 及以上通过 MediaStore 写入，避免 WebView 的 `<a download>`
+/// 只触发点击但没有真正落盘的问题。
+#[cfg(target_os = "android")]
+pub fn save_file_to_downloads(
+  file_name: String,
+  content_base64: String,
+  mime_type: String
+) -> Result<String, String> {
+  let file_name = sanitize_download_file_name(&file_name)?;
+  let bytes = base64::engine::general_purpose::STANDARD
+    .decode(content_base64.trim())
+    .map_err(|error| format!("解码下载文件失败: {error}"))?;
+  let mime_type = if mime_type.trim().is_empty() {
+    "application/octet-stream"
+  } else {
+    mime_type.trim()
+  };
+
+  with_android_env(|env, activity| {
+    write_to_media_store(env, activity, &file_name, &bytes, mime_type)
+  })
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn save_file_to_downloads(
+  _file_name: String,
+  _content_base64: String,
+  _mime_type: String
+) -> Result<String, String> {
+  Err("当前不是 Android 原生运行环境。".to_string())
+}
+
+#[cfg(target_os = "android")]
+fn sanitize_download_file_name(file_name: &str) -> Result<String, String> {
+  let trimmed = file_name.trim();
+  let candidate = std::path::Path::new(trimmed)
+    .file_name()
+    .and_then(|value| value.to_str())
+    .unwrap_or("")
+    .trim();
+
+  if candidate.is_empty() || candidate == "." || candidate == ".." {
+    return Err("下载文件名无效。".to_string());
+  }
+
+  Ok(candidate.to_string())
 }
 
 pub fn get_runtime_info(app: &AppHandle) -> Result<AndroidRuntimeInfo, String> {
@@ -179,6 +232,197 @@ where
   };
 
   handler(&mut env, &activity)
+}
+
+#[cfg(target_os = "android")]
+fn write_to_media_store<'local>(
+  env: &mut JNIEnv<'local>,
+  activity: &JObject<'local>,
+  file_name: &str,
+  bytes: &[u8],
+  mime_type: &str
+) -> Result<String, String> {
+  let sdk_int = env
+    .get_static_field("android/os/Build$VERSION", "SDK_INT", "I")
+    .and_then(|value| value.i())
+    .map_err(|error| format!("读取 Android SDK 版本失败: {error}"))?;
+
+  if sdk_int < 29 {
+    return Err("当前 Android 版本不支持公共 Downloads 保存。".to_string());
+  }
+
+  let resolver = env
+    .call_method(
+      activity,
+      "getContentResolver",
+      "()Landroid/content/ContentResolver;",
+      &[]
+    )
+    .and_then(|value| value.l())
+    .map_err(|error| format!("获取 Android 文件保存服务失败: {error}"))?;
+  let downloads_uri = env
+    .get_static_field(
+      "android/provider/MediaStore$Downloads",
+      "EXTERNAL_CONTENT_URI",
+      "Landroid/net/Uri;"
+    )
+    .and_then(|value| value.l())
+    .map_err(|error| format!("获取 Android Downloads 目录失败: {error}"))?;
+  let values = env
+    .new_object("android/content/ContentValues", "()V", &[])
+    .map_err(|error| format!("创建 Android 文件元数据失败: {error}"))?;
+
+  put_content_value(env, &values, "_display_name", file_name)?;
+  put_content_value(env, &values, "mime_type", mime_type)?;
+  put_content_value(env, &values, "relative_path", "Download/")?;
+  put_content_value_int(env, &values, "is_pending", 1)?;
+
+  let content_uri = env
+    .call_method(
+      &resolver,
+      "insert",
+      "(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;",
+      &[JValue::Object(&downloads_uri), JValue::Object(&values)]
+    )
+    .and_then(|value| value.l())
+    .map_err(|error| format!("创建 Android 下载文件失败: {error}"))?;
+
+  if content_uri.is_null() {
+    return Err("Android 没有返回可写入的下载文件。".to_string());
+  }
+
+  let write_result = (|| {
+    let output_stream = env
+      .call_method(
+        &resolver,
+        "openOutputStream",
+        "(Landroid/net/Uri;)Ljava/io/OutputStream;",
+        &[JValue::Object(&content_uri)]
+      )
+      .and_then(|value| value.l())
+      .map_err(|error| format!("打开 Android 下载文件失败: {error}"))?;
+
+    if output_stream.is_null() {
+      return Err("Android 下载文件不可写。".to_string());
+    }
+
+    let java_bytes = env
+      .byte_array_from_slice(bytes)
+      .map_err(|error| format!("准备 Android 下载内容失败: {error}"))?;
+    env
+      .call_method(
+        &output_stream,
+        "write",
+        "([B)V",
+        &[JValue::Object(&JObject::from(java_bytes))]
+      )
+      .map_err(|error| format!("写入 Android 下载文件失败: {error}"))?;
+    env
+      .call_method(&output_stream, "close", "()V", &[])
+      .map_err(|error| format!("关闭 Android 下载文件失败: {error}"))?;
+
+    let completed_values = env
+      .new_object("android/content/ContentValues", "()V", &[])
+      .map_err(|error| format!("更新 Android 下载状态失败: {error}"))?;
+    put_content_value_int(env, &completed_values, "is_pending", 0)?;
+    let null_object = JObject::null();
+    let updated_rows = env
+      .call_method(
+        &resolver,
+        "update",
+        "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
+        &[
+          JValue::Object(&content_uri),
+          JValue::Object(&completed_values),
+          JValue::Object(&null_object),
+          JValue::Object(&null_object)
+        ]
+      )
+      .and_then(|value| value.i())
+      .map_err(|error| format!("完成 Android 下载文件保存失败: {error}"))?;
+    if updated_rows <= 0 {
+      return Err("Android 下载文件状态未能更新为已完成。".to_string());
+    }
+
+    let uri_string = env
+      .call_method(&content_uri, "toString", "()Ljava/lang/String;", &[])
+      .and_then(|value| value.l())
+      .map_err(|error| format!("读取 Android 下载文件地址失败: {error}"))?;
+    read_java_string(env, &uri_string)
+  })();
+
+  if write_result.is_err() {
+    let null_object = JObject::null();
+    let _ = env.call_method(
+      &resolver,
+      "delete",
+      "(Landroid/net/Uri;Ljava/lang/String;[Ljava/lang/String;)I",
+      &[
+        JValue::Object(&content_uri),
+        JValue::Object(&null_object),
+        JValue::Object(&null_object)
+      ]
+    );
+  }
+
+  write_result
+}
+
+#[cfg(target_os = "android")]
+fn put_content_value<'local>(
+  env: &mut JNIEnv<'local>,
+  values: &JObject<'local>,
+  key: &str,
+  value: &str
+) -> Result<(), String> {
+  let key_java = env
+    .new_string(key)
+    .map_err(|error| format!("创建 Android 文件字段失败: {error}"))?;
+  let value_java = env
+    .new_string(value)
+    .map_err(|error| format!("创建 Android 文件值失败: {error}"))?;
+  let key_object = JObject::from(key_java);
+  let value_object = JObject::from(value_java);
+
+  env
+    .call_method(
+      values,
+      "put",
+      "(Ljava/lang/String;Ljava/lang/String;)V",
+      &[JValue::Object(&key_object), JValue::Object(&value_object)]
+    )
+    .map_err(|error| format!("写入 Android 文件元数据失败: {error}"))?;
+  Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn put_content_value_int<'local>(
+  env: &mut JNIEnv<'local>,
+  values: &JObject<'local>,
+  key: &str,
+  value: i32
+) -> Result<(), String> {
+  let key_java = env
+    .new_string(key)
+    .map_err(|error| format!("创建 Android 整数字段失败: {error}"))?;
+  let key_object = JObject::from(key_java);
+  let value_object = env
+    .new_object(
+      "java/lang/Integer",
+      "(I)V",
+      &[JValue::Int(value)]
+    )
+    .map_err(|error| format!("创建 Android 整数值失败: {error}"))?;
+
+  env
+    .call_method(
+      values,
+      "put",
+      "(Ljava/lang/String;Ljava/lang/Integer;)V",
+      &[JValue::Object(&key_object), JValue::Object(&value_object)]
+    )
+    .map_err(|error| format!("写入 Android 整数元数据失败: {error}"))?;
+  Ok(())
 }
 
 #[cfg(target_os = "android")]

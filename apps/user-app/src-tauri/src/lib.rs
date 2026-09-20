@@ -1,4 +1,4 @@
-#[cfg(target_os = "android")]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod android_update;
 mod config;
 
@@ -83,6 +83,15 @@ fn install_android_update(
   manifest: android_update::AndroidUpdateManifest
 ) -> android_update::AndroidUpdateInstallResult {
   android_update::install_update(&app, manifest)
+}
+
+#[tauri::command]
+fn save_file_to_downloads(
+  file_name: String,
+  content_base64: String,
+  mime_type: String
+) -> Result<String, String> {
+  android_update::save_file_to_downloads(file_name, content_base64, mime_type)
 }
 
 #[tauri::command]
@@ -423,6 +432,7 @@ pub fn run() {
           get_runtime_info,
           get_android_runtime_info,
           install_android_update,
+          save_file_to_downloads,
           copy_text,
           exit_app,
           set_window_state,
@@ -435,6 +445,7 @@ pub fn run() {
           read_desktop_config,
           write_desktop_config,
           get_runtime_info,
+          save_file_to_downloads,
           copy_text,
           exit_app,
           set_window_state,
