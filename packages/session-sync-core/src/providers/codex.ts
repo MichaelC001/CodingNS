@@ -988,7 +988,7 @@ export class CodexAdapter implements ProviderAdapter {
         messages: page.messages,
         cursor: page.cursor
       });
-    }, 300);
+    }, 5_000);
 
     return {
       close() {

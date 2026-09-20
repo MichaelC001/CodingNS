@@ -276,9 +276,13 @@ export class GeminiAdapter implements ProviderAdapter {
     let currentCursor = cursor;
     let lastSeenSignature = "";
     let closed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delayMs = 1_000;
 
-    const timer = setInterval(() => {
+    const poll = (): void => {
+      timer = setTimeout(() => {
       if (closed || !sessionRef.providerSessionId) {
+        if (!closed) poll();
         return;
       }
 
@@ -292,16 +296,22 @@ export class GeminiAdapter implements ProviderAdapter {
           limit
         );
       } catch {
+        delayMs = 5_000;
+        poll();
         return;
       }
 
       if (page.messages.length === 0) {
+        delayMs = 5_000;
+        poll();
         return;
       }
 
       const signature = `${page.messages.at(-1)?.messageId ?? ""}:${page.cursor ?? ""}`;
 
       if (signature === lastSeenSignature) {
+        delayMs = 5_000;
+        poll();
         return;
       }
 
@@ -312,12 +322,17 @@ export class GeminiAdapter implements ProviderAdapter {
         messages: page.messages,
         cursor: page.cursor
       });
-    }, 700);
+      delayMs = 1_000;
+      poll();
+      }, delayMs);
+    };
+
+    poll();
 
     return {
       close() {
         closed = true;
-        clearInterval(timer);
+        if (timer) clearTimeout(timer);
       }
     };
   }

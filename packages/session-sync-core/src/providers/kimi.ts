@@ -93,7 +93,6 @@ interface KimiDiscoveryJsonlDiagnostics {
   missingFileCount: number;
 }
 
-const SUBSCRIBE_POLL_INTERVAL_MS = 800;
 const KIMI_SESSION_SUMMARY_CACHE_LIMIT = 512;
 const KIMI_REASONING_EFFORTS = ["off", "low", "medium", "high", "xhigh", "max"];
 
@@ -321,38 +320,59 @@ export class KimiAdapter implements ProviderAdapter {
   ): ProviderSubscription {
     let currentCursor = cursor;
     let lastRevision = this.readSessionRevision(providerSessionId, rawStoreRef);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delayMs = 1_000;
+    let closed = false;
 
-    const timer = setInterval(async () => {
-      const nextRevision = this.readSessionRevision(providerSessionId, rawStoreRef);
+    const poll = (): void => {
+      if (closed) return;
+      timer = setTimeout(async () => {
+        if (closed) return;
 
-      if (!nextRevision || !lastRevision || nextRevision <= lastRevision) {
-        return;
-      }
+        try {
+          const nextRevision = this.readSessionRevision(providerSessionId, rawStoreRef);
 
-      lastRevision = nextRevision;
+          if (!nextRevision || !lastRevision || nextRevision <= lastRevision) {
+            delayMs = 5_000;
+            return;
+          }
 
-      const page = await this.readSessionHistory(
-        providerSessionId,
-        rawStoreRef,
-        currentCursor,
-        limit,
-        "forward"
-      );
+          lastRevision = nextRevision;
+          const page = await this.readSessionHistory(
+            providerSessionId,
+            rawStoreRef,
+            currentCursor,
+            limit,
+            "forward"
+          );
 
-      if (page.messages.length === 0) {
-        return;
-      }
+          if (page.messages.length === 0) {
+            delayMs = 5_000;
+            return;
+          }
 
-      currentCursor = page.cursor;
-      await onEvent({
-        messages: page.messages,
-        cursor: page.cursor
-      });
-    }, SUBSCRIBE_POLL_INTERVAL_MS);
+          if (closed) return;
+          currentCursor = page.cursor;
+          await onEvent({
+            messages: page.messages,
+            cursor: page.cursor
+          });
+          delayMs = 1_000;
+        } catch {
+          // 单次文件读取或订阅回调失败不能让递归 timer 永久停摆。
+          delayMs = 5_000;
+        } finally {
+          if (!closed) poll();
+        }
+      }, delayMs);
+    };
+
+    poll();
 
     return {
       close() {
-        clearInterval(timer);
+        closed = true;
+        if (timer) clearTimeout(timer);
       }
     };
   }

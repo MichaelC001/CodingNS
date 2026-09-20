@@ -137,17 +137,32 @@ export class GrokAdapter implements ProviderAdapter {
     onEvent: (event: ProviderRealtimeEvent) => Promise<void> | void
   ): ProviderSubscription {
     let lastCursor = cursor;
-    const timer = setInterval(() => {
+    let closed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delayMs = 1_000;
+    const poll = (): void => {
+      timer = setTimeout(() => {
+      let changed = false;
       try {
         const page = this.store.readHistory(providerSessionId, rawStoreRef, lastCursor, limit, "forward");
-        if (page.messages.length === 0) return;
+        if (page.messages.length === 0) {
+          delayMs = 5_000;
+          return;
+        }
         lastCursor = page.cursor;
+        changed = true;
         void onEvent({ messages: page.messages, cursor: page.cursor });
       } catch {
         // 订阅回调没有错误通道，下一次历史读取会由上层显示诊断状态。
+        delayMs = 5_000;
+      } finally {
+        if (changed) delayMs = 1_000;
+        if (!closed) poll();
       }
-    }, 800);
-    return { close: () => clearInterval(timer) };
+      }, delayMs);
+    };
+    poll();
+    return { close: () => { closed = true; if (timer) clearTimeout(timer); } };
   }
 
   async readSessionHistoryDelta(

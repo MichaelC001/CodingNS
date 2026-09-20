@@ -1,5 +1,5 @@
 import { basename, dirname, join } from "node:path";
-import { existsSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import crypto from "node:crypto";
 
 import {
@@ -411,34 +411,78 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     onEvent: (event: ProviderRealtimeEvent) => Promise<void> | void
   ): ProviderSubscription {
     let currentCursor = cursor;
-    let lastMtime = statSync(rawStoreRef).mtimeMs;
+    let lastMtime = existsSync(rawStoreRef) ? statSync(rawStoreRef).mtimeMs : 0;
+    let closed = false;
+    let running = false;
+    let watcher: FSWatcher | null = null;
 
-    const timer = setInterval(async () => {
-      const nextStat = statSync(rawStoreRef);
-
-      if (nextStat.mtimeMs <= lastMtime) {
+    const refresh = async (force = false): Promise<void> => {
+      if (closed || running || !existsSync(rawStoreRef)) {
         return;
       }
 
-      lastMtime = nextStat.mtimeMs;
+      const nextMtime = statSync(rawStoreRef).mtimeMs;
 
-      const page = await this.readSessionHistory(providerSessionId, rawStoreRef, currentCursor, limit);
-
-      if (page.messages.length === 0) {
+      if (!force && nextMtime <= lastMtime) {
         return;
       }
 
-      currentCursor = page.cursor;
+      running = true;
 
-      await onEvent({
-        messages: page.messages,
-        cursor: page.cursor
-      });
-    }, 300);
+      try {
+        const page = await this.readSessionHistory(providerSessionId, rawStoreRef, currentCursor, limit);
+
+        if (closed) {
+          return;
+        }
+
+        // 读取成功后再推进 mtime。文件仍在写入、解析失败时保留旧值，
+        // 让 5 秒 fallback 能再次尝试，而不是把失败版本误判成已消费。
+        lastMtime = nextMtime;
+        if (page.messages.length === 0) {
+          return;
+        }
+
+        currentCursor = page.cursor;
+        await onEvent({ messages: page.messages, cursor: page.cursor });
+      } catch {
+        // 事件可能早于文件写入完成；下一次事件或兜底检查会重试。
+      } finally {
+        running = false;
+      }
+    };
+
+    const ensureWatcher = (): void => {
+      if (closed || watcher || !existsSync(rawStoreRef)) {
+        return;
+      }
+
+      try {
+        watcher = watch(rawStoreRef, (eventType) => {
+          if (eventType === "rename") {
+            watcher?.close();
+            watcher = null;
+          }
+          void refresh(true);
+        });
+      } catch {
+        watcher = null;
+      }
+    };
+
+    ensureWatcher();
+    // watcher 丢事件、文件被替换或订阅建立时文件尚不存在时的低频兜底。
+    const fallbackTimer = setInterval(() => {
+      ensureWatcher();
+      void refresh();
+    }, 5_000);
 
     return {
       close() {
-        clearInterval(timer);
+        closed = true;
+        clearInterval(fallbackTimer);
+        watcher?.close();
+        watcher = null;
       }
     };
   }

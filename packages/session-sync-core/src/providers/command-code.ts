@@ -9,7 +9,9 @@ import {
   readSync,
   rmSync,
   statSync,
-  writeFileSync
+  watch,
+  writeFileSync,
+  type FSWatcher
 } from "node:fs";
 import { homedir } from "node:os";
 import crypto from "node:crypto";
@@ -68,7 +70,7 @@ import {
 const COMMAND_CODE_PROVIDER = "command-code" as const;
 const COMMAND_CODE_PROJECTS_DIRNAME = "projects";
 const COMMAND_CODE_MAX_TITLE_LENGTH = 48;
-const COMMAND_CODE_POLL_INTERVAL_MS = 300;
+const COMMAND_CODE_FALLBACK_INTERVAL_MS = 5_000;
 const COMMAND_CODE_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
 /** Command Code CLI 接受的 effort 值；具体模型支持哪些值由模型目录决定。 */
 export const COMMAND_CODE_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -451,23 +453,58 @@ export class CommandCodeAdapter implements ProviderAdapter {
     onEvent: (event: ProviderRealtimeEvent) => Promise<void> | void
   ): ProviderSubscription {
     let currentCursor = cursor;
+    const filePath = this.resolveSessionFilePath(providerSessionId, rawStoreRef);
     let running = false;
-    const timer = setInterval(() => {
-      if (running) return;
+    let closed = false;
+    let watcher: FSWatcher | null = null;
+
+    const refresh = async (): Promise<void> => {
+      if (closed || running) return;
       running = true;
-      void this.readSessionHistoryDelta(providerSessionId, rawStoreRef, currentCursor, limit)
+
+      try {
+        await this.readSessionHistoryDelta(providerSessionId, rawStoreRef, currentCursor, limit)
         .then(async (delta) => {
-          if (delta.mode === "unchanged" || delta.messages.length === 0) return;
+          if (closed || delta.mode === "unchanged" || delta.messages.length === 0) return;
           currentCursor = delta.cursor;
           await onEvent({ messages: delta.messages, cursor: delta.cursor });
         })
-        .catch(() => undefined)
-        .finally(() => {
-          running = false;
-        });
-    }, COMMAND_CODE_POLL_INTERVAL_MS);
+        .catch(() => undefined);
+      } finally {
+        running = false;
+      }
+    };
 
-    return { close: () => clearInterval(timer) };
+    const ensureWatcher = (): void => {
+      if (closed || watcher || !existsSync(filePath)) return;
+
+      try {
+        watcher = watch(filePath, (eventType) => {
+          if (eventType === "rename") {
+            watcher?.close();
+            watcher = null;
+          }
+          void refresh();
+        });
+      } catch {
+        watcher = null;
+      }
+    };
+
+    ensureWatcher();
+    const fallbackTimer = setInterval(() => {
+      ensureWatcher();
+      void refresh();
+    }, COMMAND_CODE_FALLBACK_INTERVAL_MS);
+
+    return {
+      close: () => {
+        closed = true;
+        clearInterval(fallbackTimer);
+        watcher?.close();
+        watcher = null;
+      }
+    };
   }
 
   async resumeSession(providerSessionId: string, rawStoreRef: string): Promise<ResumeSessionResult> {

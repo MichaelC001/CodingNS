@@ -55,8 +55,8 @@ import { loadDatabaseSync, type DatabaseSyncType } from "../sqlite/node-sqlite.j
 
 const DEFAULT_DATA_DIR = join(homedir(), ".local", "share", "opencode");
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
-const DEFAULT_POLL_INTERVAL_MS = 800;
-const MIN_POLL_INTERVAL_MS = 200;
+const DEFAULT_POLL_INTERVAL_MS = 1_000;
+const MIN_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_SERVER_PAGE_LIMIT = 100;
 const TIMEOUT_WARNING_THRESHOLD_MS = 15_000;
 const MAX_CONSECUTIVE_TIMEOUTS = 5;
@@ -545,9 +545,13 @@ export class OpenCodeAdapter implements ProviderAdapter {
     let currentCursor = cursor;
     let closed = false;
     let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delayMs = pollIntervalMs;
 
-    const timer = setInterval(() => {
+    const poll = (): void => {
+      timer = setTimeout(() => {
       if (closed || inFlight) {
+        if (!closed) poll();
         return;
       }
 
@@ -562,9 +566,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
       )
         .then(async (page) => {
           if (page.messages.length === 0) {
+            delayMs = 5_000;
             return;
           }
 
+          delayMs = Math.max(1_000, pollIntervalMs);
           currentCursor = page.cursor;
           await onEvent({
             messages: page.messages,
@@ -576,13 +582,17 @@ export class OpenCodeAdapter implements ProviderAdapter {
         })
         .finally(() => {
           inFlight = false;
+          if (!closed) poll();
         });
-    }, pollIntervalMs);
+      }, delayMs);
+    };
+
+    poll();
 
     return {
       close() {
         closed = true;
-        clearInterval(timer);
+        if (timer) clearTimeout(timer);
       }
     };
   }
