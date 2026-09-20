@@ -2582,7 +2582,7 @@ export function normalizeCodexServerRequest(
             id: normalizeText(question.id) || createId(),
             header: normalizeText(question.header) || "问题",
             question: normalizeText(question.question) || "请输入答案",
-            allowOther: Boolean(question.isOther),
+            allowOther: readBoolean(question.isOther) ?? true,
             secret: Boolean(question.isSecret),
             multiSelect: Boolean(question.multiSelect),
             options: Array.isArray(question.options)
@@ -4024,7 +4024,8 @@ function normalizeHarnessQuestions(value: unknown): SessionPermissionRequestQues
       id: normalizeText(record.id ?? record.name) ?? `question-${index + 1}`,
       header: normalizeText(record.header ?? record.title) ?? "需要确认",
       question: normalizeText(record.question ?? record.text ?? record.prompt ?? record.message) ?? "请提供所需信息",
-      allowOther: readBoolean(record.allowOther ?? record.allow_other) ?? options.length === 0,
+      // 选项之外始终保留手动输入：只有调用方明确传 allowOther=false 才关掉。
+      allowOther: readBoolean(record.allowOther ?? record.allow_other) ?? true,
       secret: readBoolean(record.secret ?? record.isSecret) ?? false,
       multiSelect: readBoolean(record.multiSelect ?? record.multi_select) ?? false,
       ...(required === null ? {} : { required }),

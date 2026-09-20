@@ -476,6 +476,39 @@ describe("session-permission-request-service normalizers", () => {
     ]);
   });
 
+  it("Codex 补充输入即使带固定选项，也保留手动输入入口", () => {
+    const request = normalizeCodexServerRequest("session-ask-1", "codex-thread-1", {
+      id: 2,
+      method: "item/tool/requestUserInput",
+      params: {
+        itemId: "item-ask-1",
+        threadId: "codex-thread-1",
+        turnId: "turn-1",
+        questions: [
+          {
+            id: "scope",
+            header: "工作范围",
+            question: "这次需要哪些范围？",
+            options: [
+              { label: "代码", description: "只改代码" },
+              { label: "文档", description: "只改文档" }
+            ]
+          },
+          {
+            id: "note",
+            header: "备注",
+            question: "还有其他说明吗？",
+            isOther: false,
+            options: [{ label: "没有", description: null }]
+          }
+        ]
+      }
+    });
+
+    expect(request).not.toBeNull();
+    expect(request?.questions.map((question) => question.allowOther)).toEqual([true, false]);
+  });
+
   it("会自动放行 Claude 助手会话里的安全只读 shell 命令", () => {
     expect(resolveClaudeSafeShellAutoApprovalReason("pwd")).toBe(
       "CodingNS 已自动放行助手会话里的安全只读命令"
