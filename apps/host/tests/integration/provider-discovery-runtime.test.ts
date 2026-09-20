@@ -144,6 +144,111 @@ describe("provider-discovery-runtime", () => {
       extraProjectRoots: ["/tmp/runtime-home/projects"]
     });
   });
+
+  it("knownSessions 超过上限时只把截断后的部分传给 adapter，并回报截断信息", async () => {
+    let receivedKnownSessions: unknown[] = [];
+    const discoverWorkspaceSessions = vi.fn(async (_workspacePath: string, options: { knownSessions?: unknown[] }) => {
+      receivedKnownSessions = options.knownSessions ?? [];
+      return DISCOVERY_RESULT;
+    });
+
+    vi.doMock("@codingns/session-sync-core", () => ({
+      ClaudeCodeAdapter: class {},
+      LegnaCodeAdapter: class {},
+      CodexAdapter: class {},
+      GeminiAdapter: class {},
+      KimiAdapter: class {},
+      OpenCodeAdapter: class {},
+      ProviderRegistry: class {},
+      SessionSyncService: class {
+        discoverWorkspaceSessions = discoverWorkspaceSessions;
+        readSessionTitle = vi.fn(async () => "title");
+      }
+    }));
+
+    const runtime = await import("../../src/modules/provider/provider-discovery-runtime.js");
+    const oversize = Array.from(
+      { length: runtime.WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS + 25 },
+      (_, index) => ({
+        provider: "codex",
+        providerSessionId: `provider-session-${index}`,
+        title: `session-${index}`,
+        workspacePath: "/tmp/workspace",
+        rawStoreRef: `/tmp/workspace/.codex/session-${index}.json`,
+        lastMessageAt: "2026-04-17T00:00:00.000Z",
+        messageCount: 1,
+        sourceMtimeMs: index,
+        sourceSizeBytes: 64
+      })
+    );
+
+    const result = await runtime.discoverWorkspaceSessionsInRuntime(
+      createConfig(),
+      "/tmp/workspace",
+      oversize,
+      ["codex"]
+    );
+
+    // 传给 adapter 的必须是有上限的那部分，不能整包大数组。
+    expect(receivedKnownSessions).toHaveLength(runtime.WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS);
+    expect(result.truncation).toMatchObject({
+      knownSessionsLimit: runtime.WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS,
+      knownSessionsTotal: oversize.length,
+      knownSessionsTruncated: true,
+      resultSessionsTruncated: false
+    });
+    // 只截断输入不影响结果完整性，不能因此把 isComplete 置 false。
+    expect(result.isComplete).toBe(true);
+  });
+
+  it("结果超过上限时会截断并强制 isComplete=false，避免 Host 误清理", async () => {
+    const discoverWorkspaceSessions = vi.fn();
+
+    vi.doMock("@codingns/session-sync-core", () => ({
+      ClaudeCodeAdapter: class {},
+      LegnaCodeAdapter: class {},
+      CodexAdapter: class {},
+      GeminiAdapter: class {},
+      KimiAdapter: class {},
+      OpenCodeAdapter: class {},
+      ProviderRegistry: class {},
+      SessionSyncService: class {
+        discoverWorkspaceSessions = discoverWorkspaceSessions;
+        readSessionTitle = vi.fn(async () => "title");
+      }
+    }));
+
+    const runtime = await import("../../src/modules/provider/provider-discovery-runtime.js");
+    // 上限是常量，直接造出真正超限的数据量，避免依赖内部改写。
+    const oversizeCount = runtime.WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS + 10;
+    discoverWorkspaceSessions.mockImplementation(async () => ({
+      sessions: Array.from({ length: oversizeCount }, (_, index) => ({
+        provider: "codex",
+        providerSessionId: `provider-session-${index}`,
+        title: `session-${index}`,
+        workspacePath: "/tmp/workspace",
+        rawStoreRef: `/tmp/workspace/.codex/session-${index}.json`,
+        lastMessageAt: "2026-04-17T00:00:00.000Z",
+        messageCount: 1
+      })),
+      isComplete: true,
+      providerDiagnostics: []
+    }));
+
+    const result = await runtime.discoverWorkspaceSessionsInRuntime(
+      createConfig(),
+      "/tmp/workspace",
+      [],
+      ["codex"]
+    );
+
+    expect(result.sessions).toHaveLength(runtime.WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS);
+    expect(result.isComplete).toBe(false);
+    expect(result.truncation).toMatchObject({
+      resultSessionsTotal: oversizeCount,
+      resultSessionsTruncated: true
+    });
+  });
 });
 
 function createConfig() {

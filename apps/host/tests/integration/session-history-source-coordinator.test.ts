@@ -91,4 +91,53 @@ describe("SessionHistorySourceCoordinator", () => {
 
     subscription.close();
   });
+
+  it("没有文件版本的虚拟来源按低频 fallback 请求刷新", async () => {
+    vi.useFakeTimers();
+    const onRefreshRequested = vi.fn();
+    const coordinator = new SessionHistorySourceCoordinator({
+      onRefreshRequested,
+      quietWindowMs: 100,
+      fallbackIntervalMs: 1_000,
+      readVersion: () => null,
+      watchFile: () => {
+        throw new Error("virtual source");
+      }
+    });
+    const subscription = coordinator.subscribe({
+      sourceKey: "opencode:raw:opencode://session/1",
+      rawStoreRef: "opencode://session/1"
+    });
+
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(onRefreshRequested).toHaveBeenCalledTimes(1);
+    coordinator.markClean("opencode:raw:opencode://session/1");
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(onRefreshRequested).toHaveBeenCalledTimes(2);
+
+    subscription.close();
+  });
+
+  it("fallback 与 quiet window 相等时，虚拟来源不会被反复重置而永远不刷新", async () => {
+    vi.useFakeTimers();
+    const onRefreshRequested = vi.fn();
+    const coordinator = new SessionHistorySourceCoordinator({
+      onRefreshRequested,
+      quietWindowMs: 5_000,
+      fallbackIntervalMs: 5_000,
+      readVersion: () => null,
+      watchFile: () => {
+        throw new Error("virtual source");
+      }
+    });
+    const subscription = coordinator.subscribe({
+      sourceKey: "server:raw:server://session/1",
+      rawStoreRef: "server://session/1"
+    });
+
+    await vi.advanceTimersByTimeAsync(15_001);
+
+    expect(onRefreshRequested).toHaveBeenCalled();
+    subscription.close();
+  });
 });

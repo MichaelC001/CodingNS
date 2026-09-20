@@ -58,10 +58,12 @@ describe("session discovery diagnostics", () => {
     });
 
     await hosted.services.modules.sessionHistoryService.discoverWorkspaceSessions("workspace-1", userId, {
+      trigger: "explicit",
       force: true
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     await hosted.services.modules.sessionHistoryService.discoverWorkspaceSessions("workspace-1", userId, {
+      trigger: "explicit",
       force: true
     });
 

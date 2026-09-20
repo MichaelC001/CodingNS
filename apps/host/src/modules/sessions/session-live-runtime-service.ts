@@ -5074,7 +5074,6 @@ function createProviderRuntimeAdapters(
               ...transport,
               close() {
                 transport.close();
-                void client.dispose();
               }
             };
           },

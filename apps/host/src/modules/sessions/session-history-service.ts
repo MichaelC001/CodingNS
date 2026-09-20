@@ -438,6 +438,30 @@ type SessionDeletedObserver = (input: {
   remainingWorkspaceSessionCount: number;
 }) => Promise<void> | void;
 
+interface HistorySubscriptionMetrics {
+  activeSubscriptions: number;
+  watcherTriggers: number;
+  fallbackTriggers: number;
+  totalDeltaReads: number;
+  /** 最近一秒真实进入执行的 delta 读取时间戳，用来算滑动每秒次数。 */
+  deltaReadTimestamps: number[];
+  /** 上一次输出统计日志的时间，用来限频，不参与对外诊断口径。 */
+  lastMetricsLoggedAt: number;
+}
+
+export interface HistorySubscriptionMetricsSnapshot {
+  activeSubscriptions: number;
+  watcherTriggers: number;
+  fallbackTriggers: number;
+  totalDeltaReads: number;
+  deltaReadsPerSecond: number;
+}
+
+/** 每秒实际次数的滑动窗口：只保留最近一秒的读取时间戳。 */
+const HISTORY_SUBSCRIPTION_RATE_WINDOW_MS = 1_000;
+/** 指标日志最低输出间隔，避免高频读取把日志刷爆。 */
+const HISTORY_SUBSCRIPTION_METRICS_LOG_INTERVAL_MS = 1_000;
+
 const SESSION_START_DEFERRED_PROVIDERS = new Set([
   "codex",
   "claude-code",
@@ -459,6 +483,15 @@ const MUTABLE_HISTORY_TAIL_PROVIDERS = new Set([
   "command-code"
 ]);
 const MUTABLE_HISTORY_TAIL_REFRESH_INTERVAL_MS = 1_200;
+/**
+ * 活跃订阅的 Host 侧兜底间隔，硬下限是 1 秒。
+ *
+ * provider 自己的 subscribeSession 已经负责事件源（claude-code 走 watcher + 5 秒兜底，
+ * gemini/kimi 是 1 秒起步退让到 5 秒，opencode 不低于 1 秒，command-code 5 秒，pi 不起 timer）。
+ * 这里只做事件缺失时的低频补读，低于 1 秒就会重新变成机械轮询。
+ */
+const HISTORY_SUBSCRIPTION_FALLBACK_INTERVAL_MS = 5_000;
+const HISTORY_SUBSCRIPTION_QUIET_WINDOW_MS = 5_000;
 const WORKSPACE_DISCOVERY_BACKGROUND_MAX_AGE_MS = 15_000;
 const WORKSPACE_DISCOVERY_PARTIAL_COOLDOWN_MS = 60_000;
 const WORKSPACE_DISCOVERY_SCAN_CONCURRENCY = 2;
@@ -472,6 +505,20 @@ const SESSION_DISCOVERY_TRIGGER_SOURCES = {
 type WorkspaceDiscoveryTrigger = "automatic" | "explicit";
 // 全量会话发现只能由明确的用户操作启动，自动路径只能留下脏标记。
 const ALLOW_AUTOMATIC_WORKSPACE_DISCOVERY = false;
+/**
+ * 传给 helper 的已知会话上限。
+ *
+ * 这份数组会进任务输入快照、过管道，是“大 JSON”的主要来源。截断只影响
+ * adapter 跳过已存在会话的效率，不影响发现结果的完整性，因此不改变 `isComplete`。
+ */
+const WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS = 2_000;
+/**
+ * 单次发现可接受的会话上限。
+ *
+ * 超出即视为不完整：Host 只在 `isComplete === true` 时清理旧会话，
+ * 截断结果若自称完整会把没返回的会话误删。
+ */
+const WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS = 5_000;
 const SESSION_TRANSACTION_HOTSPOT_THRESHOLD_MS = 150;
 const WORKSPACE_STATE_REFRESH_COOLDOWN_MS = 1_500;
 /** 批量回写的锁重试：次数有限，总等待不超过 1 秒，避免拖住工作区发现。 */
@@ -530,6 +577,14 @@ export class SessionHistoryService {
   private readonly providerCapabilityCache = new Map<string, ProviderCapabilityCacheEntry>();
   private readonly streamingDeltaSuppressionDebugState = new Map<string, string>();
   private readonly helperHistorySourceStates = new Map<string, HelperHistorySourceState>();
+  private readonly historySubscriptionMetrics: HistorySubscriptionMetrics = {
+    activeSubscriptions: 0,
+    watcherTriggers: 0,
+    fallbackTriggers: 0,
+    totalDeltaReads: 0,
+    deltaReadTimestamps: [],
+    lastMetricsLoggedAt: 0
+  };
   private readonly sessionHistorySourceCoordinator: SessionHistorySourceCoordinator;
   private readonly liveActivityObservationResolvers = new Set<LiveActivityObservationResolver>();
   private readonly sessionTitleChangedObservers = new Set<SessionTitleChangedObserver>();
@@ -588,7 +643,8 @@ export class SessionHistoryService {
     this.sessionHistorySourceCoordinator = new SessionHistorySourceCoordinator({
       onRefreshRequested: (sourceKey) => {
         this.requestHelperHistorySourceRefresh(sourceKey);
-      }
+      },
+      fallbackIntervalMs: HISTORY_SUBSCRIPTION_FALLBACK_INTERVAL_MS
     });
     this.parallelSessionGroupRepository = parallelSessionGroupRepository;
     this.parallelSessionMemberRepository = parallelSessionMemberRepository;
@@ -752,11 +808,14 @@ export class SessionHistoryService {
     const existingWorkspaceSessions = this.sessionIndexRepository.listByWorkspace(workspaceId, userId);
     const existingWorkspaceSourceIndexes = this.sessionSourceIndexRepository.listByWorkspaceId(workspaceId);
     const activeRepairScope = this.sessionSourceIndexRepairScopes.get(workspaceId) ?? null;
-    const knownSessions = this.buildKnownSessionSummaries(
-      existingWorkspaceSessions.filter((session) => enabledProviders.includes(session.provider)),
-      existingWorkspaceSourceIndexes.filter((record) => enabledProviders.includes(record.provider)),
-      workspace.path,
-      activeRepairScope
+    const knownSessions = boundWorkspaceDiscoveryKnownSessions(
+      this.buildKnownSessionSummaries(
+        existingWorkspaceSessions.filter((session) => enabledProviders.includes(session.provider)),
+        existingWorkspaceSourceIndexes.filter((record) => enabledProviders.includes(record.provider)),
+        workspace.path,
+        activeRepairScope
+      ),
+      WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS
     );
     const claudeExtraProjectRoots = this.collectClaudeDiscoveryProjectRoots(
       workspaceId,
@@ -1398,7 +1457,10 @@ export class SessionHistoryService {
   ): Promise<SessionListItem[]> {
     this.getDiscoverableWorkspaceForUserOrThrow(workspaceId, userId);
 
-    if (!this.canStartWorkspaceDiscovery(options?.trigger ?? "explicit")) {
+    // 默认按 automatic 处理：内部调用如果忘了显式声明 trigger，也必须遵守
+    // “自动扫描默认关闭”的配置，不能因为漏传参数就绕过。
+    // 真正的用户扫描入口（显式扫描、索引修复）会显式传 "explicit"。
+    if (!this.canStartWorkspaceDiscovery(options?.trigger ?? "automatic")) {
       this.markAutomaticWorkspaceDiscoveryBlocked(workspaceId);
       return this.listWorkspaceSessions(workspaceId, userId);
     }
@@ -3033,7 +3095,6 @@ export class SessionHistoryService {
     let currentCursor = cursor;
     const current = this.sessionStatusSnapshotRepository.findBySessionId(sessionId);
     let closed = false;
-    let polling = false;
 
     await this.enqueueSqliteWrite("session.subscribe.snapshot_start", () => this.upsertSnapshot(sessionId, {
       syncStatus: "syncing",
@@ -3077,7 +3138,7 @@ export class SessionHistoryService {
 
     const binding = this.getBindingOrThrow(sessionId);
 
-    if (binding.provider === "codex" || binding.provider === "grok") {
+    if (isTaskHelperHistoryProvider(binding.provider)) {
       const source = binding.provider === "grok"
         ? await this.enqueueHistoryRead({
             sessionId,
@@ -3090,7 +3151,7 @@ export class SessionHistoryService {
             readMode: "page"
           }).catch((error) => { throw mapSessionProviderError(error); })
         : null;
-      return this.subscribeHelperHistorySource({
+      const subscription = this.subscribeHelperHistorySource({
         sessionId,
         userId,
         limit: safeLimit,
@@ -3100,13 +3161,19 @@ export class SessionHistoryService {
         deliveredMessages,
         onEnvelope
       });
+      // 句柄创建成功后再计数，构造阶段抛错不能留下虚假的活跃订阅。
+      this.recordHistorySubscriptionMetric("subscribe");
+      return subscription;
     }
 
-    if (binding.provider === "deepseek-harness" || binding.provider === "opencode") {
-      let providerSubscription: ProviderSubscription | null = null;
-      let fallbackPolling = false;
-      let lastProviderEventAt = Date.now();
+    // 其余 provider 统一走适配器自己的 subscribeSession：
+    // 事件源（文件事件、运行时推送或适配器内节流）由 provider 负责，
+    // Host 只保留不低于 5 秒的一次性低频历史兜底，不再按会话机械轮询。
+    let providerSubscription: ProviderSubscription | null = null;
+    let fallbackPolling = false;
+    let lastProviderEventAt = Date.now();
 
+    try {
       providerSubscription = this.sessionSyncService.subscribe(
         binding.provider,
         binding.providerSessionId,
@@ -3119,6 +3186,7 @@ export class SessionHistoryService {
           }
 
           lastProviderEventAt = Date.now();
+          this.recordHistorySubscriptionMetric("watcher");
           if (this.shouldSuppressStreamingSessionDelta(sessionId, userId)) {
             return;
           }
@@ -3141,75 +3209,41 @@ export class SessionHistoryService {
           );
         }
       );
-
-      // 实时流断开或 provider 暂时没有推送时，用低频历史读取兜底，避免恢复后丢消息。
-      const fallbackTimer = setInterval(() => {
-        if (closed || fallbackPolling) {
-          return;
-        }
-
-        if (this.shouldSuppressStreamingSessionDelta(sessionId, userId)) {
-          lastProviderEventAt = Date.now();
-          return;
-        }
-
-        if (Date.now() - lastProviderEventAt < 5_000) {
-          return;
-        }
-
-        fallbackPolling = true;
-        void this.pullSessionHistory(
+    } catch (error) {
+      // 适配器暂时建不起事件源（例如文件尚未落盘）不能打断订阅；
+      // 保留下面的低频兜底继续读，等来源恢复后由兜底推进。
+      providerSubscription = null;
+      logPerformance(
+        "session.history.provider_subscribe_failed",
+        0,
+        {
           sessionId,
-          currentCursor,
-          safeLimit,
-          deliveredMessages,
-          onEnvelope,
-          "session.delta",
-          () => closed
-        )
-          .then((nextCursor) => {
-            currentCursor = nextCursor;
-            lastProviderEventAt = Date.now();
-          })
-          .catch((error) => {
-            if (this.shouldSuppressDeepSeekHarnessSubscriptionFailure(sessionId, error)) {
-              closed = true;
-              clearInterval(fallbackTimer);
-              this.clearDeepSeekHarnessSubscriptionFailure(sessionId, currentCursor);
-              return;
-            }
-
-            this.markSessionError(sessionId, "SUBSCRIBE_FAILED", error);
-          })
-          .finally(() => {
-            fallbackPolling = false;
-          });
-      }, 5_000);
-
-      return {
-        close: () => {
-          if (closed) {
-            return;
-          }
-
-          closed = true;
-          clearInterval(fallbackTimer);
-          providerSubscription?.close();
-          this.streamingDeltaSuppressionDebugState.delete(sessionId);
-        }
-      };
+          provider: binding.provider,
+          error: error instanceof Error ? error.message : "unknown"
+        },
+        { thresholdMs: 0, force: true }
+      );
     }
 
-    const timer = setInterval(() => {
-      if (closed || polling) {
+    // provider 自己已经提供 watcher/自适应兜底时不再叠一层 Host 轮询。
+    // 只有 subscribeSession 建立失败时，Host 才用 5 秒低频读取维持可用性。
+    let fallbackTimer: NodeJS.Timeout | null = null;
+    if (!providerSubscription) fallbackTimer = setInterval(() => {
+      if (closed || fallbackPolling) {
         return;
       }
 
       if (this.shouldSuppressStreamingSessionDelta(sessionId, userId)) {
+        lastProviderEventAt = Date.now();
         return;
       }
 
-      polling = true;
+      if (Date.now() - lastProviderEventAt < HISTORY_SUBSCRIPTION_QUIET_WINDOW_MS) {
+        return;
+      }
+
+      fallbackPolling = true;
+      this.recordHistorySubscriptionMetric("fallback");
       void this.pullSessionHistory(
         sessionId,
         currentCursor,
@@ -3221,28 +3255,44 @@ export class SessionHistoryService {
       )
         .then((nextCursor) => {
           currentCursor = nextCursor;
+          lastProviderEventAt = Date.now();
         })
         .catch((error) => {
           if (this.shouldSuppressDeepSeekHarnessSubscriptionFailure(sessionId, error)) {
-            closed = true;
-            clearInterval(timer);
             this.clearDeepSeekHarnessSubscriptionFailure(sessionId, currentCursor);
+            closeSubscription();
             return;
           }
 
           this.markSessionError(sessionId, "SUBSCRIBE_FAILED", error);
         })
         .finally(() => {
-          polling = false;
+          fallbackPolling = false;
         });
-    }, 300);
+    }, HISTORY_SUBSCRIPTION_FALLBACK_INTERVAL_MS);
 
-    return {
-      close: () => {
-        closed = true;
-        clearInterval(timer);
+    const closeSubscription = (): void => {
+      if (closed) {
+        return;
+      }
+
+      closed = true;
+      if (fallbackTimer) {
+        clearInterval(fallbackTimer);
+        fallbackTimer = null;
+      }
+      try {
+        providerSubscription?.close();
+      } finally {
+        this.recordHistorySubscriptionMetric("unsubscribe");
         this.streamingDeltaSuppressionDebugState.delete(sessionId);
       }
+    };
+
+    // 到这里一定返回订阅句柄，才计入活跃订阅数。
+    this.recordHistorySubscriptionMetric("subscribe");
+    return {
+      close: closeSubscription
     };
   }
 
@@ -3754,11 +3804,14 @@ export class SessionHistoryService {
         .list()
         .map((adapter) => adapter.providerId)
         .filter((providerId) => this.isProviderEnabled(providerId));
-      const knownSessions = this.buildKnownSessionSummaries(
-        existingWorkspaceSessions.filter((session) => enabledProviders.includes(session.provider)),
-        existingWorkspaceSourceIndexes.filter((record) => enabledProviders.includes(record.provider)),
-        workspace.path,
-        activeRepairScope
+      const knownSessions = boundWorkspaceDiscoveryKnownSessions(
+        this.buildKnownSessionSummaries(
+          existingWorkspaceSessions.filter((session) => enabledProviders.includes(session.provider)),
+          existingWorkspaceSourceIndexes.filter((record) => enabledProviders.includes(record.provider)),
+          workspace.path,
+          activeRepairScope
+        ),
+        WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS
       );
       const claudeExtraProjectRoots = this.collectClaudeDiscoveryProjectRoots(
         workspaceId,
@@ -3812,13 +3865,29 @@ export class SessionHistoryService {
       // helper 只负责执行扫描，Host 仍必须以当前启用列表为最终边界，
       // 防止旧缓存、测试替身或异常 helper 把已停用 provider 的结果写回索引。
       const enabledProviderSet = new Set(enabledProviders);
-      const discovery: ProviderSessionDiscovery = {
+      const filteredDiscovery: ProviderSessionDiscovery = {
         ...rawDiscovery,
         sessions: rawDiscovery.sessions.filter((session) => enabledProviderSet.has(session.provider)),
         providerDiagnostics: rawDiscovery.providerDiagnostics?.filter((entry) =>
           enabledProviderSet.has(entry.provider)
         )
       };
+      // Host 侧再兜一次上限：helper 结果无论来自哪个版本，都不能把超大数组
+      // 直接灌进持久化和广播链路。截断会把 isComplete 置 false，避免误清理。
+      const bounded = boundWorkspaceDiscoveryResult(
+        filteredDiscovery,
+        WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS
+      );
+      const discovery = bounded.discovery;
+      if (bounded.resultSessionsTruncated) {
+        console.warn("[workspace.discovery] result_truncated", {
+          workspaceId,
+          triggerSource,
+          resultSessionsLimit: WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS,
+          resultSessionsTotal: bounded.resultSessionsTotal,
+          isComplete: discovery.isComplete
+        });
+      }
       const sessions = discovery.sessions;
       discoverDurationMs = Date.now() - discoverStartedAt;
       const timestamp = nowIso();
@@ -4280,7 +4349,7 @@ export class SessionHistoryService {
     }
 
     const historyTask: Promise<HistoryPage> =
-      provider === "codex" || provider === "grok"
+      isTaskHelperHistoryProvider(provider)
         ? this.readHistoryPageInHelper(
             sessionId,
             provider,
@@ -4456,9 +4525,12 @@ export class SessionHistoryService {
 
         closed = true;
         coordinatorSubscription.close();
+        // 先记账再清理来源状态：即使来源已被别的路径释放，关闭也必须归还订阅数。
+        this.recordHistorySubscriptionMetric("unsubscribe");
         const current = this.helperHistorySourceStates.get(sourceKey);
 
         if (!current) {
+          this.streamingDeltaSuppressionDebugState.delete(input.sessionId);
           return;
         }
 
@@ -4506,9 +4578,9 @@ export class SessionHistoryService {
       provider: source.binding.provider,
       providerSessionId: source.binding.providerSessionId,
       rawStoreRef: source.binding.rawStoreRef,
-      cursor: source.binding.provider === "grok" ? source.cursor : null,
+      cursor: source.binding.provider === "codex" ? null : source.cursor,
       limit: Math.max(...activeSubscribers.map((subscriber) => subscriber.limit)),
-      direction: source.binding.provider === "grok" ? "forward" : "backward",
+      direction: source.binding.provider === "codex" ? "backward" : "forward",
       readMode: "delta"
     });
 
@@ -4516,6 +4588,9 @@ export class SessionHistoryService {
       source.refreshRequestedDuringRun = true;
       return;
     }
+
+    // 只统计真正新开跑的 delta 读取；命中 inflight 去重的请求不算实际次数。
+    this.recordHistorySubscriptionMetric("deltaRead");
 
     void handle.promise
       .then(async (result) => {
@@ -4552,7 +4627,7 @@ export class SessionHistoryService {
         }
 
         this.sessionHistorySourceCoordinator.markClean(sourceKey);
-        if (current.binding.provider === "grok") {
+        if (current.binding.provider !== "codex") {
           current.cursor = delta.cursor;
           // 一个变化窗口可能追加多页，逐页补齐，不把突发消息截成最后一页。
           if (delta.nextCursor) current.refreshRequestedDuringRun = true;
@@ -4573,7 +4648,14 @@ export class SessionHistoryService {
         );
       })
       .catch((error) => {
-        this.markSessionError(source.sessionId, "SUBSCRIBE_FAILED", error);
+        const current = this.helperHistorySourceStates.get(sourceKey);
+
+        // 最后一个订阅关闭后，取消中的任务失败是预期收尾，不能把错误写回已关闭会话。
+        if (!current || current.subscribers.size === 0) {
+          return;
+        }
+
+        this.markSessionError(current.sessionId, "SUBSCRIBE_FAILED", error);
       })
       .finally(() => {
         const current = this.helperHistorySourceStates.get(sourceKey);
@@ -4583,6 +4665,76 @@ export class SessionHistoryService {
           this.sessionHistorySourceCoordinator.markDirty(sourceKey);
         }
       });
+  }
+
+  private recordHistorySubscriptionMetric(
+    kind: "subscribe" | "unsubscribe" | "watcher" | "fallback" | "deltaRead"
+  ): void {
+    const metrics = this.historySubscriptionMetrics;
+
+    if (kind === "subscribe") {
+      metrics.activeSubscriptions += 1;
+    } else if (kind === "unsubscribe") {
+      metrics.activeSubscriptions = Math.max(0, metrics.activeSubscriptions - 1);
+    } else if (kind === "watcher") {
+      metrics.watcherTriggers += 1;
+    } else if (kind === "fallback") {
+      metrics.fallbackTriggers += 1;
+    } else {
+      metrics.totalDeltaReads += 1;
+      metrics.deltaReadTimestamps.push(Date.now());
+    }
+
+    const now = Date.now();
+    const deltaReadsPerSecond = this.pruneAndCountDeltaReadsPerSecond(now);
+
+    if (now - metrics.lastMetricsLoggedAt < HISTORY_SUBSCRIPTION_METRICS_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    metrics.lastMetricsLoggedAt = now;
+    logPerformance(
+      "session.history.subscription_metrics",
+      0,
+      {
+        activeSubscriptions: metrics.activeSubscriptions,
+        watcherTriggers: metrics.watcherTriggers,
+        fallbackTriggers: metrics.fallbackTriggers,
+        totalDeltaReads: metrics.totalDeltaReads,
+        deltaReadsPerSecond
+      },
+      { thresholdMs: 0, force: true }
+    );
+  }
+
+  /**
+   * 订阅数和每秒 history_delta_read 实际次数的只读诊断口径。
+   *
+   * 这里只返回当前进程内的滑动窗口统计，不触发任何刷新，也不写库。
+   */
+  observeHistorySubscriptionMetrics(): HistorySubscriptionMetricsSnapshot {
+    const metrics = this.historySubscriptionMetrics;
+    const now = Date.now();
+
+    return {
+      activeSubscriptions: metrics.activeSubscriptions,
+      watcherTriggers: metrics.watcherTriggers,
+      fallbackTriggers: metrics.fallbackTriggers,
+      totalDeltaReads: metrics.totalDeltaReads,
+      deltaReadsPerSecond: this.pruneAndCountDeltaReadsPerSecond(now)
+    };
+  }
+
+  /** 只用最近一秒内的时间戳算次数，顺手丢掉窗口外的记录。 */
+  private pruneAndCountDeltaReadsPerSecond(now: number): number {
+    const timestamps = this.historySubscriptionMetrics.deltaReadTimestamps;
+    const cutoff = now - HISTORY_SUBSCRIPTION_RATE_WINDOW_MS;
+
+    while (timestamps.length > 0 && timestamps[0]! < cutoff) {
+      timestamps.shift();
+    }
+
+    return timestamps.length;
   }
 
   private async enqueueHistoryRead(input: Omit<SessionHistoryReadTaskInput, "rootDir" | "config"> & {
@@ -5485,7 +5637,7 @@ export class SessionHistoryService {
     let firstUserMessageTitle: string | null = null;
 
     if (!shouldSyncSessionTitleFromProvider(binding.provider, currentIndex.title, null)) {
-      firstUserMessageTitle = await this.readFirstUserMessageTitleForSync(binding).catch(() => null);
+      firstUserMessageTitle = await this.readFirstUserMessageTitleForSync(sessionId, binding).catch(() => null);
     }
 
     if (!shouldSyncSessionTitleFromProvider(binding.provider, currentIndex.title, firstUserMessageTitle)) {
@@ -5672,6 +5824,7 @@ export class SessionHistoryService {
   }
 
   private async readFirstUserMessageTitleForSync(
+    sessionId: string,
     binding: Pick<SessionBinding, "provider" | "providerSessionId" | "rawStoreRef">
   ): Promise<string | null> {
     if (!this.isProviderEnabled(binding.provider)) {
@@ -5683,7 +5836,8 @@ export class SessionHistoryService {
     let cursor: string | null = null;
 
     for (let index = 0; index < maxPages; index += 1) {
-      const page = await this.sessionSyncService.readHistory(
+      const page = await this.readPage(
+        sessionId,
         binding.provider,
         binding.providerSessionId,
         binding.rawStoreRef,
@@ -7465,6 +7619,12 @@ export class SessionHistoryService {
     });
   }
 
+  /**
+   * 异步路径上的快照写入：统一走共享写队列，和运行时事件、扫描回写排在同一条 FIFO 上。
+   *
+   * 同步的 `upsertSnapshot` 保留给事务内和已持有队列独占权的调用点，
+   * 那些位置不能 await，也不需要再排队。
+   */
   private async upsertSnapshotQueued(
     sessionId: string,
     input: Omit<SessionStatusSnapshot, "sessionId" | "updatedAt">
@@ -7659,7 +7819,6 @@ function createCodexForkTransportFactory(
       ...transport,
       close() {
         transport.close();
-        void client.dispose();
       }
     };
   };
@@ -7677,7 +7836,6 @@ function createCodexThreadControlTransportFactory(
       ...transport,
       close() {
         transport.close();
-        void client.dispose();
       }
     };
   };
@@ -8234,6 +8392,61 @@ function buildKnownSessionSummaryKey(
   return `${provider}::${providerSessionId}::${rawStoreRef}`;
 }
 
+/**
+ * 限制传给 helper 的 knownSessions 大小。
+ *
+ * 截断只影响 adapter 跳过已存在会话的效率（少命中一些指纹缓存），
+ * 不影响发现结果完整性，所以不改变 `isComplete`，也不触发清理。
+ */
+function boundWorkspaceDiscoveryKnownSessions<
+  TSummary extends { lastMessageAt: string | null; sourceMtimeMs?: number }
+>(sessions: TSummary[], limit: number): TSummary[] {
+  if (sessions.length <= limit) {
+    return sessions;
+  }
+
+  // 保留“最近有更新”的那一批，让增量跳过在常见场景下仍然有效。
+  return [...sessions]
+    .sort((left, right) => {
+      const leftAt = Date.parse(left.lastMessageAt ?? "") || left.sourceMtimeMs || 0;
+      const rightAt = Date.parse(right.lastMessageAt ?? "") || right.sourceMtimeMs || 0;
+      return rightAt - leftAt;
+    })
+    .slice(0, limit);
+}
+
+/**
+ * Host 侧兜底：即使 helper 返回了超量结果（旧版本、测试替身或异常实现），
+ * 也不能把超大数组直接灌进持久化和广播链路。
+ *
+ * 截断必须让 `isComplete` 变成 false，否则下游 `cleanupStaleHiddenSessions`
+ * 会把“没返回”的会话当成“已删除”。
+ */
+function boundWorkspaceDiscoveryResult(
+  discovery: ProviderSessionDiscovery,
+  limit: number
+): { discovery: ProviderSessionDiscovery; resultSessionsTotal: number; resultSessionsTruncated: boolean } {
+  const total = discovery.sessions.length;
+
+  if (total <= limit) {
+    return {
+      discovery,
+      resultSessionsTotal: total,
+      resultSessionsTruncated: false
+    };
+  }
+
+  return {
+    discovery: {
+      ...discovery,
+      sessions: discovery.sessions.slice(0, limit),
+      isComplete: false
+    },
+    resultSessionsTotal: total,
+    resultSessionsTruncated: true
+  };
+}
+
 function buildSessionSourceKey(
   provider: string,
   providerSessionId: string,
@@ -8246,6 +8459,23 @@ function buildSessionSourceKey(
   }
 
   return `${provider}:session:${providerSessionId}`;
+}
+
+/**
+ * 这些本地 provider 已经能在 task-helper 中构造 adapter。
+ * 它们的正文读取统一走 TaskManager，避免每个订阅各自直接解析文件或查询本地库。
+ * DeepSeek Harness 等远端实时 provider 不在这里，继续使用自己的事件订阅。
+ */
+function isTaskHelperHistoryProvider(provider: string): boolean {
+  return provider === "claude-code"
+    || provider === "legna-code"
+    || provider === "codex"
+    || provider === "gemini"
+    || provider === "kimi"
+    || provider === "opencode"
+    || provider === "grok"
+    || provider === "command-code"
+    || provider === "pi";
 }
 
 function buildSessionHistoryTaskKey(

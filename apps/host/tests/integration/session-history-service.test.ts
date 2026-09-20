@@ -68,6 +68,126 @@ describe("SessionHistoryService", () => {
       });
   });
 
+  it("discoverWorkspaceSessions 不传 trigger 时按 automatic 处理，不会绕过自动扫描禁用", async () => {
+    const taskManager = createTaskManager();
+    const service = createService({
+      taskManager,
+      workspaceRepository: {
+        findById: vi.fn(() => ({
+          id: "workspace-1",
+          ownerUserId: "user-1",
+          name: "正常工作区",
+          path: "/repo/workspace-1",
+          repoRoot: "/repo/workspace-1",
+          favorite: false,
+          sortOrder: 0,
+          createdAt: "2026-06-10T00:00:00.000Z",
+          updatedAt: "2026-06-10T00:00:00.000Z",
+          removedAt: null
+        }))
+      }
+    });
+
+    // 关键：这里故意不传 trigger。默认必须是 automatic，因此不允许真的发起扫描。
+    const items = await service.discoverWorkspaceSessions("workspace-1", "user-1", {
+      force: true
+    });
+
+    expect(items).toEqual([]);
+    expect(taskManager.peek(HOST_TASK_TYPES.workspaceDiscovery, "workspace-1")).toBeNull();
+
+    const statuses = (service as unknown as {
+      workspaceDiscoveryStatuses: Map<string, { dirtyReasons: Set<string> }>;
+    }).workspaceDiscoveryStatuses;
+
+    expect([...statuses.get("workspace-1")!.dirtyReasons]).toContain(
+      "session_history.automatic_discovery_blocked"
+    );
+  });
+
+  it("discoverWorkspaceSessions 显式传 explicit 时仍会真实入队扫描", async () => {
+    const taskManager = createTaskManager();
+    const service = createService({
+      taskManager,
+      workspaceRepository: {
+        findById: vi.fn(() => ({
+          id: "workspace-1",
+          ownerUserId: "user-1",
+          name: "正常工作区",
+          path: "/repo/workspace-1",
+          repoRoot: "/repo/workspace-1",
+          favorite: false,
+          sortOrder: 0,
+          createdAt: "2026-06-10T00:00:00.000Z",
+          updatedAt: "2026-06-10T00:00:00.000Z",
+          removedAt: null
+        }))
+      }
+    });
+    // 只观察是否入队，不让真实扫描跑起来（真实执行会去读 provider 本地存储）。
+    const enqueueSpy = vi.spyOn(taskManager, "enqueue").mockReturnValue({
+      taskId: "task-explicit",
+      taskType: HOST_TASK_TYPES.workspaceDiscovery,
+      key: "workspace-1",
+      executionLane: "helper_process",
+      deduped: false,
+      promise: Promise.resolve([]),
+      cancel: () => undefined
+    } as never);
+
+    await service.discoverWorkspaceSessions("workspace-1", "user-1", {
+      force: true,
+      trigger: "explicit"
+    });
+
+    expect(enqueueSpy).toHaveBeenCalledWith(
+      HOST_TASK_TYPES.workspaceDiscovery,
+      expect.objectContaining({
+        key: "workspace-1",
+        input: expect.objectContaining({
+          triggerSource: "session_history.explicit_workspace_scan"
+        })
+      })
+    );
+  });
+
+  it("repairSessionSourceIndex 的 awaitDiscovery 走显式路径，不被自动扫描禁用拦住", async () => {
+    const taskManager = createTaskManager();
+    const service = createService({
+      taskManager,
+      workspaceRepository: {
+        findById: vi.fn(() => ({
+          id: "workspace-1",
+          ownerUserId: "user-1",
+          name: "正常工作区",
+          path: "/repo/workspace-1",
+          repoRoot: "/repo/workspace-1",
+          favorite: false,
+          sortOrder: 0,
+          createdAt: "2026-06-10T00:00:00.000Z",
+          updatedAt: "2026-06-10T00:00:00.000Z",
+          removedAt: null
+        }))
+      }
+    });
+    const discoverSpy = vi
+      .spyOn(service, "discoverWorkspaceSessions")
+      .mockResolvedValue([]);
+
+    await service.repairSessionSourceIndex({
+      workspaceId: "workspace-1",
+      userId: "user-1",
+      awaitDiscovery: true
+    });
+
+    // 内部调用必须显式声明 explicit，否则自动扫描关闭时会被静默拦下。
+    expect(discoverSpy).toHaveBeenCalledWith(
+      "workspace-1",
+      "user-1",
+      expect.objectContaining({ trigger: "explicit" })
+    );
+  });
+
   it("discovery 已在 running 时只追加脏原因，不重复入队", () => {
     const taskManager = createTaskManager();
     const service = createService({

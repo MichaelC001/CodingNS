@@ -78,6 +78,7 @@ describe("SessionHistoryService background tasks", () => {
     await flushMicrotasks();
 
     const cached = await service.instance.discoverWorkspaceSessions("workspace-1", "user-1", {
+      trigger: "explicit",
       maxAgeMs: 60_000
     });
 
@@ -932,6 +933,7 @@ describe("SessionHistoryService background tasks", () => {
     seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
 
     const items = await service.instance.discoverWorkspaceSessions("workspace-1", "user-1", {
+      trigger: "explicit",
       force: true,
       refreshStateMode: "deferred"
     });
@@ -1047,14 +1049,17 @@ describe("SessionHistoryService background tasks", () => {
     });
 
     const firstPromise = service.instance.discoverWorkspaceSessions("workspace-1", "user-1", {
+      trigger: "explicit",
       force: true,
       refreshStateMode: "deferred"
     });
     const secondPromise = service.instance.discoverWorkspaceSessions("workspace-2", "user-1", {
+      trigger: "explicit",
       force: true,
       refreshStateMode: "deferred"
     });
     const thirdPromise = service.instance.discoverWorkspaceSessions("workspace-3", "user-1", {
+      trigger: "explicit",
       force: true,
       refreshStateMode: "deferred"
     });
@@ -1120,6 +1125,7 @@ describe("SessionHistoryService background tasks", () => {
 
     await expect(
       service.instance.discoverWorkspaceSessions("workspace-1", "user-1", {
+        trigger: "explicit",
         force: true,
         refreshStateMode: "deferred"
       })
@@ -1131,6 +1137,7 @@ describe("SessionHistoryService background tasks", () => {
 
     await expect(
       service.instance.discoverWorkspaceSessions("workspace-1", "user-1", {
+        trigger: "explicit",
         maxAgeMs: 15_000,
         refreshStateMode: "deferred"
       })
@@ -1744,6 +1751,7 @@ describe("SessionHistoryService background tasks", () => {
     });
 
     await service.instance.discoverWorkspaceSessions("workspace-1", "user-1", {
+      trigger: "explicit",
       force: true,
       refreshStateMode: "deferred"
     });
@@ -1817,6 +1825,7 @@ describe("SessionHistoryService background tasks", () => {
 
     await expect(
       service.instance.discoverWorkspaceSessions("workspace-1", "user-1", {
+        trigger: "explicit",
         force: true,
         refreshStateMode: "deferred"
       })

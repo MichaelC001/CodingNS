@@ -28,6 +28,38 @@ const SESSION_TITLE_CACHE_MAX_AGE_MS = 15_000;
 const WORKSPACE_DISCOVERY_CACHE_LIMIT = 8;
 const SESSION_TITLE_CACHE_LIMIT = 256;
 
+/**
+ * 传给 helper 的已知会话上限。
+ *
+ * `knownSessions` 会整包 JSON 序列化后过管道，也会进任务快照。超大工作区里
+ * 它是“大 JSON”的主要来源。截断只影响 adapter 的跳过效率（少命中一些指纹缓存），
+ * 不影响发现结果的完整性，所以不会因此把 `isComplete` 置 false。
+ */
+export const WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS = 2_000;
+
+/**
+ * 单次发现返回的会话上限。
+ *
+ * 超过就截断，并把 `isComplete` 置 false。这一点很关键：Host 只有看到
+ * `isComplete === true` 才会清理旧会话，截断结果必须让 Host 进入冷却而不是误删。
+ */
+export const WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS = 5_000;
+
+/** 截断信息随结果一起回传，便于 Host 记录和排查，而不是静默丢数据。 */
+export interface WorkspaceDiscoveryTruncation {
+  knownSessionsLimit: number;
+  knownSessionsTotal: number;
+  knownSessionsTruncated: boolean;
+  resultSessionsLimit: number;
+  resultSessionsTotal: number;
+  resultSessionsTruncated: boolean;
+}
+
+/** 发现结果 + 截断信息。截断信息是附加字段，不改变原有 ProviderSessionDiscovery 契约。 */
+export type WorkspaceDiscoveryResult = ProviderSessionDiscovery & {
+  truncation?: WorkspaceDiscoveryTruncation;
+};
+
 // 扫描、标题和历史共用 adapter 的文件指纹/checkpoint，不能因为调用入口切换就重建。
 // 按 provider 自己的配置分桶，Claude 的额外目录变化也不会清掉 Kimi/Codex 缓存。
 const runtimeAdapters = new Map<string, ProviderAdapter>();
@@ -51,11 +83,11 @@ function getRuntimeAdapter<T extends ProviderAdapter>(
 const workspaceDiscoveryCache = new Map<string, {
   knownSessionsSignature: string;
   cachedAt: number;
-  result: ProviderSessionDiscovery;
+  result: WorkspaceDiscoveryResult;
 }>();
 const workspaceDiscoveryInflight = new Map<string, {
   knownSessionsSignature: string;
-  promise: Promise<ProviderSessionDiscovery>;
+  promise: Promise<WorkspaceDiscoveryResult>;
 }>();
 const sessionTitleCache = new Map<string, {
   cachedAt: number;
@@ -81,10 +113,14 @@ export async function discoverWorkspaceSessionsInRuntime(
   knownSessions: ProviderSessionSummary[],
   enabledProviders: string[],
   signal?: AbortSignal
-): Promise<ProviderSessionDiscovery> {
+): Promise<WorkspaceDiscoveryResult> {
   const service = getWorkspaceDiscoveryService(config, enabledProviders);
   const runtimeKey = buildWorkspaceDiscoveryRuntimeKey(config, workspacePath, enabledProviders);
-  const knownSessionsSignature = buildKnownSessionsSignature(knownSessions);
+  // 先截断再算签名：签名只反映真正会传给 adapter 的那部分，避免大数组反复参与 JSON 序列化。
+  const boundedKnownSessions = knownSessions.length > WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS
+    ? knownSessions.slice(0, WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS)
+    : knownSessions;
+  const knownSessionsSignature = buildKnownSessionsSignature(boundedKnownSessions);
   const cached = workspaceDiscoveryCache.get(runtimeKey);
 
   if (
@@ -114,14 +150,20 @@ export async function discoverWorkspaceSessionsInRuntime(
   }
 
   const promise = service.discoverWorkspaceSessions(workspacePath, {
-    knownSessions
+    knownSessions: boundedKnownSessions
   }).then((result) => {
+    const boundedResult = boundWorkspaceDiscoveryResult(result, {
+      knownSessionsLimit: WORKSPACE_DISCOVERY_MAX_KNOWN_SESSIONS,
+      knownSessionsTotal: knownSessions.length,
+      knownSessionsTruncated: boundedKnownSessions.length < knownSessions.length
+    });
+
     touchWorkspaceDiscoveryCache(runtimeKey, {
       knownSessionsSignature,
       cachedAt: Date.now(),
-      result
+      result: boundedResult
     });
-    return result;
+    return boundedResult;
   }).finally(() => {
     const active = workspaceDiscoveryInflight.get(runtimeKey);
 
@@ -136,6 +178,53 @@ export async function discoverWorkspaceSessionsInRuntime(
   });
 
   return await raceWithAbortSignal(promise, signal);
+}
+
+/**
+ * 限制单次发现结果大小。
+ *
+ * 一旦截断就必须把 `isComplete` 置 false：Host 只在 `isComplete === true` 时
+ * 清理旧会话，截断结果若声称完整，会把没返回的会话误判为已删除。
+ */
+function boundWorkspaceDiscoveryResult(
+  result: ProviderSessionDiscovery,
+  known: {
+    knownSessionsLimit: number;
+    knownSessionsTotal: number;
+    knownSessionsTruncated: boolean;
+  }
+): WorkspaceDiscoveryResult {
+  const resultSessionsTruncated = result.sessions.length > WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS;
+
+  if (!resultSessionsTruncated && !known.knownSessionsTruncated) {
+    return {
+      ...result,
+      truncation: {
+        knownSessionsLimit: known.knownSessionsLimit,
+        knownSessionsTotal: known.knownSessionsTotal,
+        knownSessionsTruncated: false,
+        resultSessionsLimit: WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS,
+        resultSessionsTotal: result.sessions.length,
+        resultSessionsTruncated: false
+      }
+    };
+  }
+
+  return {
+    ...result,
+    sessions: resultSessionsTruncated
+      ? result.sessions.slice(0, WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS)
+      : result.sessions,
+    isComplete: result.isComplete && !resultSessionsTruncated,
+    truncation: {
+      knownSessionsLimit: known.knownSessionsLimit,
+      knownSessionsTotal: known.knownSessionsTotal,
+      knownSessionsTruncated: known.knownSessionsTruncated,
+      resultSessionsLimit: WORKSPACE_DISCOVERY_MAX_RESULT_SESSIONS,
+      resultSessionsTotal: result.sessions.length,
+      resultSessionsTruncated
+    }
+  };
 }
 
 export async function readSessionTitleInRuntime(
@@ -185,7 +274,7 @@ export async function readSessionTitleInRuntime(
 
 function touchWorkspaceDiscoveryCache(
   key: string,
-  entry: { knownSessionsSignature: string; cachedAt: number; result: ProviderSessionDiscovery }
+  entry: { knownSessionsSignature: string; cachedAt: number; result: WorkspaceDiscoveryResult }
 ): void {
   workspaceDiscoveryCache.delete(key);
   workspaceDiscoveryCache.set(key, entry);
@@ -362,7 +451,6 @@ function createCodexThreadControlTransportFactory(
       ...transport,
       close() {
         transport.close();
-        client.dispose();
       }
     };
   };

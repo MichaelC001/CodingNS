@@ -81,14 +81,16 @@ export class SessionHistorySourceCoordinator {
 
     source.dirty = true;
 
+    // 同一脏窗口只保留一个 quiet timer。fallback 与 quiet window 相等时，
+    // 如果每轮都重置计时器，虚拟来源（readVersion 返回 null）会永远触发不了刷新。
     if (source.quietTimer) {
-      clearTimeout(source.quietTimer);
+      return;
     }
 
     source.quietTimer = setTimeout(() => {
       source.quietTimer = null;
 
-      if (source.subscriberCount > 0) {
+      if (source.subscriberCount > 0 && source.dirty) {
         this.options.onRefreshRequested(source.sourceKey);
       }
     }, this.quietWindowMs);
@@ -185,13 +187,16 @@ export class SessionHistorySourceCoordinator {
         return;
       }
 
+      const versionUnavailable = nextVersion === null;
       const versionChanged = nextVersion !== source.lastObservedVersion;
 
       if (versionChanged) {
         source.lastObservedVersion = nextVersion;
       }
 
-      if (versionChanged || source.dirty) {
+      // server://、opencode://、SQLite 行引用等没有可 stat 的文件版本；
+      // 这类来源仍需低频兜底，由上层 TaskManager 统一限并发读取。
+      if (versionUnavailable || versionChanged || source.dirty) {
         this.markDirty(source.sourceKey);
       }
 
