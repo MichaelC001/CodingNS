@@ -4744,6 +4744,7 @@ body[data-code-terminal-dock-resizing="true"] .code-workbench-terminal-resizer::
   display: flex;
   min-width: 0;
   align-items: center;
+  gap: 8px;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -4857,6 +4858,154 @@ body[data-code-terminal-dock-resizing="true"] .code-workbench-terminal-resizer::
 .composer-quick-phrase-action:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+/* 手机竖屏下用满屏幕宽度：去掉遮罩左右内边距，卡片也不再留居中留白。 */
+@media (orientation: portrait) and (max-width: 767px) {
+  .ios-action-sheet-overlay.composer-quick-phrase-sheet-overlay {
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .mobile-sheet.composer-quick-phrase-sheet,
+  .mobile-sheet.composer-quick-phrase-create-sheet {
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .mobile-sheet-card,
+.mobile-sheet.composer-quick-phrase-create-sheet .mobile-sheet-card {
+  border-radius: 1.2rem;
+}
+
+/* 隐藏标题区后，把手下面直接接正文，不再留标题的空白。 */
+.mobile-sheet.composer-quick-phrase-sheet .mobile-sheet-body {
+  padding-top: 0.85rem;
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-modal-body,
+.mobile-sheet.composer-quick-phrase-create-sheet .composer-quick-phrase-modal-body {
+  gap: 8px;
+  padding: 0 1rem 1rem;
+}
+
+/* 工具栏保持一行，避免移动端上下各占一大块空白。 */
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-toolbar {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-toolbar .primary-button {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+/* 说明文字收进 tips：列表标题右侧一个纯图标按钮，点开才显示。
+   按钮本身不带边框和底色，只有图标，避免在标题行里显出一块方框。 */
+.composer-quick-phrase-toolbar-copy .composer-quick-phrase-tips-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent) 68%, var(--text-secondary));
+  transition: color var(--transition-fast);
+}
+
+.composer-quick-phrase-toolbar-copy .composer-quick-phrase-tips-button:hover,
+.composer-quick-phrase-toolbar-copy .composer-quick-phrase-tips-button[aria-expanded="true"] {
+  background: transparent;
+  color: var(--accent);
+}
+
+/* 键盘聚焦时仍然要给可见的焦点提示，不能只剩变色。 */
+.composer-quick-phrase-toolbar-copy .composer-quick-phrase-tips-button:focus-visible {
+  background: transparent;
+  color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.composer-quick-phrase-toolbar-copy .composer-quick-phrase-tips-button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.composer-quick-phrase-tips {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-list {
+  gap: 8px;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px 10px 8px;
+  touch-action: pan-y;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+/* 删除按钮和序号同一行，并压到最小尺寸，减少上下浪费。 */
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-head .composer-quick-phrase-action {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-select {
+  gap: 0;
+  padding: 0;
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-text {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* 拖拽排序：跟手的那条不参与过渡，其他条目平滑让位。 */
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-list[data-dragging="true"] .composer-quick-phrase-item {
+  transition: transform 160ms ease;
+}
+
+/* 跟手项必须关掉过渡，否则会慢半拍；这里要带上列表作用域，压过上面的让位规则。 */
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-list[data-dragging="true"] .composer-quick-phrase-item[data-dragging="true"] {
+  transition: none;
+  opacity: 0.96;
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border-primary));
+  box-shadow: 0 12px 28px color-mix(in srgb, #000 16%, transparent);
+}
+
+.mobile-sheet.composer-quick-phrase-sheet .composer-quick-phrase-item[data-drop-target="true"] {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border-primary));
 }
 
 .composer-input {

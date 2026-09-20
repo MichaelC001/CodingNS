@@ -2093,6 +2093,7 @@ export const enUS = {
     quickPhraseCreatePlaceholder: "Write a phrase you want to reuse later.",
     quickPhraseCreateAction: "Add Phrase",
     quickPhraseListLabel: "Quick phrase list",
+    quickPhraseTipsAction: "Show quick phrase help",
     quickPhraseEmpty: "There are no quick phrases yet. Add the first one you actually reuse.",
     quickPhraseOrderLabel: "Item {index}",
     quickPhraseMoveUp: "Move phrase up",

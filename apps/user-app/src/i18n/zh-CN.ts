@@ -1912,6 +1912,7 @@ export const zhCN = {
     quickPhraseCreatePlaceholder: "输入一条常用短语，保存后下次可以直接复用。",
     quickPhraseCreateAction: "添加短语",
     quickPhraseListLabel: "快捷短语列表",
+    quickPhraseTipsAction: "查看快捷短语说明",
     quickPhraseEmpty: "还没有可用的快捷短语，先加一条最常用的。",
     quickPhraseOrderLabel: "第 {index} 条",
     quickPhraseMoveUp: "上移短语",

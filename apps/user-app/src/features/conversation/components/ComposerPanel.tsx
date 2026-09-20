@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type Ref } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type Ref
+} from "react";
 import { createPortal } from "react-dom";
 
 import {
@@ -285,6 +295,130 @@ const NATIVE_FORK_PROVIDERS = new Set<ProviderId>([
   "opencode",
   "deepseek-harness"
 ]);
+/** 移动端长按拖拽排序：按下多久之后进入拖拽态。 */
+const QUICK_PHRASE_LONG_PRESS_DELAY_MS = 420;
+/** 长按判定期间，手指移动超过这个距离就当成滚动，不再进入拖拽。 */
+const QUICK_PHRASE_LONG_PRESS_MOVE_THRESHOLD_PX = 10;
+
+interface QuickPhraseLongPressState {
+  timer: ReturnType<typeof globalThis.setTimeout>;
+  startX: number;
+  startY: number;
+}
+
+interface QuickPhraseDragState {
+  phraseId: string;
+  pointerId: number;
+  fromIndex: number;
+  toIndex: number;
+  /** 手指按下时的纵坐标，用来算拖拽项跟手的位移。 */
+  startY: number;
+  /** 手指当前纵坐标。 */
+  pointerY: number;
+  /** 手指按在条目内部的偏移，用来算被拖条目的中心。 */
+  grabOffsetY: number;
+  /** 被拖条目的高度，用来给其他条目让位。 */
+  draggedItemHeight: number;
+  /** 条目之间的间距，让位时要一起算进去。 */
+  itemGap: number;
+  /** 进入拖拽时各条目的原始位置，用来判定落点。 */
+  itemBands: Array<{ top: number; height: number }>;
+}
+
+/**
+ * 把某条快捷短语移动到目标位置，返回新数组；没有实际移动时返回原数组。
+ * 抽成纯函数是为了让拖拽排序和上移/下移按钮共用同一套换位逻辑。
+ */
+export function reorderQuickPhraseRecords(
+  phrases: QuickPhraseRecord[],
+  fromIndex: number,
+  toIndex: number
+): QuickPhraseRecord[] {
+  if (fromIndex < 0 || fromIndex >= phrases.length) {
+    return phrases;
+  }
+
+  const targetIndex = Math.max(0, Math.min(phrases.length - 1, toIndex));
+
+  if (targetIndex === fromIndex) {
+    return phrases;
+  }
+
+  const nextPhrases = [...phrases];
+  const [movedPhrase] = nextPhrases.splice(fromIndex, 1);
+
+  if (!movedPhrase) {
+    return phrases;
+  }
+
+  nextPhrases.splice(targetIndex, 0, movedPhrase);
+  return nextPhrases;
+}
+
+/** 读取列表的行间距，让位位移要和实际 gap 对齐。 */
+function resolveQuickPhraseListGap(listElement: HTMLElement | null): number {
+  if (!listElement || typeof globalThis.getComputedStyle !== "function") {
+    return 8;
+  }
+
+  const gap = Number.parseFloat(globalThis.getComputedStyle(listElement).rowGap);
+  return Number.isFinite(gap) && gap > 0 ? gap : 8;
+}
+
+/** 记录进入拖拽时各条目的原始位置，拖拽过程中不再重算，避免条目移动后落点漂移。 */
+function resolveQuickPhraseItemBands(listElement: HTMLElement | null): Array<{ top: number; height: number }> {
+  if (!listElement) {
+    return [];
+  }
+
+  return Array.from(listElement.querySelectorAll<HTMLElement>(".composer-quick-phrase-item")).map((element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, height: rect.height };
+  });
+}
+
+/**
+ * 算出拖拽过程中每个条目的临时位移：
+ * 被拖的那条跟着手指走，其他条目朝目标位置方向让出空位。
+ */
+export function resolveQuickPhraseItemStyle(
+  dragState: QuickPhraseDragState | null,
+  index: number,
+  phraseId: string
+): CSSProperties | undefined {
+  if (!dragState) {
+    return undefined;
+  }
+
+  const { fromIndex, toIndex, startY, pointerY, draggedItemHeight, itemGap } = dragState;
+
+  if (phraseId === dragState.phraseId) {
+    return {
+      transform: `translateY(${pointerY - startY}px)`,
+      zIndex: 2,
+      position: "relative"
+    };
+  }
+
+  if (fromIndex === toIndex) {
+    return undefined;
+  }
+
+  const offset = draggedItemHeight + itemGap;
+
+  // 往下拖：中间这些条目整体上移一条。
+  if (fromIndex < toIndex && index > fromIndex && index <= toIndex) {
+    return { transform: `translateY(${-offset}px)` };
+  }
+
+  // 往上拖：中间这些条目整体下移一条。
+  if (fromIndex > toIndex && index >= toIndex && index < fromIndex) {
+    return { transform: `translateY(${offset}px)` };
+  }
+
+  return undefined;
+}
+
 const HIDDEN_FILE_INPUT_STYLE: CSSProperties = {
   position: "absolute",
   width: "1px",
@@ -649,6 +783,7 @@ export function ComposerPanel({
   onSend
 }: ComposerPanelProps) {
   const platform = usePlatform();
+  const isMobileLayout = platform.isMobile || platform.isNativeMobile;
   const libraryInputId = useId();
   const cameraInputId = useId();
   const [content, setContent] = useState("");
@@ -666,6 +801,10 @@ export function ComposerPanel({
   const [quickPhraseCreateModalOpen, setQuickPhraseCreateModalOpen] = useState(false);
   const [quickPhraseDraft, setQuickPhraseDraft] = useState("");
   const [quickPhraseSaving, setQuickPhraseSaving] = useState(false);
+  // 移动端把说明文字收进 tips，点一下才展开。
+  const [quickPhraseTipsOpen, setQuickPhraseTipsOpen] = useState(false);
+  // 移动端长按拖拽排序：null 表示当前没有拖拽。
+  const [quickPhraseDragState, setQuickPhraseDragState] = useState<QuickPhraseDragState | null>(null);
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
   const [mentionItems, setMentionItems] = useState<ComposerMentionItem[]>([]);
@@ -717,6 +856,10 @@ export function ComposerPanel({
   const attachmentRegistryRef = useRef(new Set<string>());
   const attachmentDraftCacheRef = useRef(new Map<string, StoredComposerDraftAttachment>());
   const quickPhraseMutationVersionRef = useRef(0);
+  const quickPhraseLongPressRef = useRef<QuickPhraseLongPressState | null>(null);
+  const quickPhraseDragRef = useRef<QuickPhraseDragState | null>(null);
+  const quickPhraseSuppressClickRef = useRef(false);
+  const quickPhraseListRef = useRef<HTMLDivElement | null>(null);
   const appliedInitialModelKeyRef = useRef<string | null>(null);
   const appliedInitialReasoningKeyRef = useRef<string | null>(null);
   const userSelectedModelRef = useRef(false);
@@ -742,6 +885,16 @@ export function ComposerPanel({
   }, []);
 
   useEffect(() => clearCompositionCommitLock, [clearCompositionCommitLock]);
+
+  // 组件卸载时把还没成立的长按计时器清掉，避免卸载后再去改状态。
+  useEffect(() => () => {
+    const pending = quickPhraseLongPressRef.current;
+
+    if (pending) {
+      globalThis.clearTimeout(pending.timer);
+      quickPhraseLongPressRef.current = null;
+    }
+  }, []);
 
   const provider = capabilities?.provider ?? taskProvider ?? getProviderFromCapabilities(capabilities);
   const modelSwitchApp = mapProviderToModelSwitchApp(provider);
@@ -1832,23 +1985,256 @@ export function ComposerPanel({
       return;
     }
 
-    const targetIndex = currentIndex + direction;
+    const nextPhrases = reorderQuickPhraseRecords(quickPhrases, currentIndex, currentIndex + direction);
 
-    if (targetIndex < 0 || targetIndex >= quickPhrases.length) {
+    if (nextPhrases === quickPhrases) {
       return;
     }
 
-    const nextPhrases = [...quickPhrases];
-    const [targetPhrase] = nextPhrases.splice(currentIndex, 1);
-    nextPhrases.splice(targetIndex, 0, targetPhrase);
     void persistQuickPhrases(nextPhrases);
   }, [persistQuickPhrases, quickPhrases]);
+
+  const clearQuickPhraseLongPress = useCallback(() => {
+    const pending = quickPhraseLongPressRef.current;
+
+    if (pending) {
+      globalThis.clearTimeout(pending.timer);
+      quickPhraseLongPressRef.current = null;
+    }
+  }, []);
+
+  const finishQuickPhraseDrag = useCallback((commit: boolean) => {
+    const dragState = quickPhraseDragRef.current;
+
+    quickPhraseDragRef.current = null;
+    setQuickPhraseDragState(null);
+
+    if (!dragState) {
+      return;
+    }
+
+    // 只要真的进入过拖拽，松手后浏览器补的那次 click 就不该把短语填进输入框。
+    // 如果浏览器这次没补 click，标志也会很快自动复位，不会吞掉下一次正常点击。
+    quickPhraseSuppressClickRef.current = true;
+    globalThis.setTimeout(() => {
+      quickPhraseSuppressClickRef.current = false;
+    }, 400);
+
+    if (!commit) {
+      return;
+    }
+
+    const nextPhrases = reorderQuickPhraseRecords(quickPhrases, dragState.fromIndex, dragState.toIndex);
+
+    if (nextPhrases === quickPhrases) {
+      return;
+    }
+
+    void haptics.trigger("selection");
+    void persistQuickPhrases(nextPhrases);
+  }, [haptics, persistQuickPhrases, quickPhrases]);
+
+  /**
+   * 按被拖条目当前的中心位置，算出它应该落到第几个位置。
+   * 用条目中心而不是手指位置，这样手指按在条目上/下边缘时落点才符合直觉。
+   * 判定方式是数「被拖条目已经越过几条其他条目的中线」，也就是它在新顺序里的下标。
+   */
+  const resolveQuickPhraseDropIndex = useCallback((pointerY: number) => {
+    const dragState = quickPhraseDragRef.current;
+
+    if (!dragState || dragState.itemBands.length === 0) {
+      return null;
+    }
+
+    const draggedCenter = pointerY - dragState.grabOffsetY + dragState.draggedItemHeight / 2;
+    const bands = dragState.itemBands;
+    let dropIndex = 0;
+
+    for (let index = 0; index < bands.length; index += 1) {
+      if (index === dragState.fromIndex) {
+        continue;
+      }
+
+      const band = bands[index]!;
+
+      if (draggedCenter > band.top + band.height / 2) {
+        dropIndex += 1;
+      }
+    }
+
+    return Math.min(dropIndex, bands.length - 1);
+  }, []);
+
+  // 拖拽期间手指可能滑出条目甚至滑出列表，所以监听挂在 window 上。
+  useEffect(() => {
+    if (!quickPhraseDragState) {
+      return;
+    }
+
+    const pointerId = quickPhraseDragState.pointerId;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const dragState = quickPhraseDragRef.current;
+
+      if (!dragState || dragState.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const nextIndex = resolveQuickPhraseDropIndex(event.clientY);
+
+      if (nextIndex === null) {
+        return;
+      }
+
+      if (nextIndex === dragState.toIndex && event.clientY === dragState.pointerY) {
+        return;
+      }
+
+      const nextDragState = { ...dragState, toIndex: nextIndex, pointerY: event.clientY };
+      quickPhraseDragRef.current = nextDragState;
+      setQuickPhraseDragState(nextDragState);
+    };
+
+    const handlePointerEnd = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) {
+        return;
+      }
+
+      finishQuickPhraseDrag(true);
+    };
+
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) {
+        return;
+      }
+
+      finishQuickPhraseDrag(false);
+    };
+
+    // 拖拽时不要让页面跟着滚。
+    const handleTouchMove = (event: TouchEvent) => {
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerCancel);
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+      window.removeEventListener("touchmove", handleTouchMove);
+    };
+  }, [finishQuickPhraseDrag, quickPhraseDragState, resolveQuickPhraseDropIndex]);
+
+  const handleQuickPhraseLongPressStart = useCallback((
+    event: ReactPointerEvent<HTMLDivElement>,
+    phrase: QuickPhraseRecord,
+    index: number
+  ) => {
+    if (!isMobileLayout || event.pointerType === "mouse" || quickPhraseSaving) {
+      return;
+    }
+
+    // 按在删除按钮上时不启动拖拽，否则长按删除会变成排序。
+    if (event.target instanceof Element && event.target.closest(".composer-quick-phrase-action")) {
+      return;
+    }
+
+    const itemElement = event.currentTarget;
+    const listElement = quickPhraseListRef.current;
+    const pointerId = event.pointerId;
+    const startY = event.clientY;
+    const itemRect = itemElement.getBoundingClientRect();
+
+    clearQuickPhraseLongPress();
+    quickPhraseLongPressRef.current = {
+      startX: event.clientX,
+      startY,
+      timer: globalThis.setTimeout(() => {
+        quickPhraseLongPressRef.current = null;
+
+        const dragState: QuickPhraseDragState = {
+          phraseId: phrase.id,
+          pointerId,
+          fromIndex: index,
+          toIndex: index,
+          startY,
+          pointerY: startY,
+          grabOffsetY: startY - itemRect.top,
+          draggedItemHeight: itemRect.height,
+          itemGap: resolveQuickPhraseListGap(listElement),
+          itemBands: resolveQuickPhraseItemBands(listElement)
+        };
+
+        quickPhraseDragRef.current = dragState;
+        setQuickPhraseDragState(dragState);
+        void haptics.trigger("gesture");
+      }, QUICK_PHRASE_LONG_PRESS_DELAY_MS)
+    };
+  }, [clearQuickPhraseLongPress, haptics, isMobileLayout, quickPhraseSaving]);
+
+  const handleQuickPhraseLongPressMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const pending = quickPhraseLongPressRef.current;
+
+    if (!pending) {
+      return;
+    }
+
+    // 长按还没成立，手指先动了：判定为列表滚动，取消长按。
+    if (
+      Math.abs(event.clientX - pending.startX) > QUICK_PHRASE_LONG_PRESS_MOVE_THRESHOLD_PX
+      || Math.abs(event.clientY - pending.startY) > QUICK_PHRASE_LONG_PRESS_MOVE_THRESHOLD_PX
+    ) {
+      clearQuickPhraseLongPress();
+    }
+  }, [clearQuickPhraseLongPress]);
+
+  const handleQuickPhraseLongPressEnd = useCallback(() => {
+    // 长按成立后由 window 上的 pointerup 负责收尾；这里只处理长按没成立就抬手的情况。
+    clearQuickPhraseLongPress();
+  }, [clearQuickPhraseLongPress]);
+
+  const handleQuickPhraseLongPressCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    clearQuickPhraseLongPress();
+
+    const dragState = quickPhraseDragRef.current;
+
+    if (dragState && dragState.pointerId === event.pointerId) {
+      finishQuickPhraseDrag(false);
+    }
+  }, [clearQuickPhraseLongPress, finishQuickPhraseDrag]);
+
+  const closeQuickPhraseModal = useCallback(() => {
+    clearQuickPhraseLongPress();
+    quickPhraseDragRef.current = null;
+    setQuickPhraseDragState(null);
+    setQuickPhraseModalOpen(false);
+    setQuickPhraseCreateModalOpen(false);
+  }, [clearQuickPhraseLongPress]);
+
+  const closeQuickPhraseCreateModal = useCallback(() => {
+    setQuickPhraseCreateModalOpen(false);
+  }, []);
 
   const applyQuickPhrase = useCallback((text: string) => {
     setContent(text);
     setQuickPhraseModalOpen(false);
     textareaRef.current?.focus();
   }, []);
+
+  const handleQuickPhraseSelect = useCallback((text: string) => {
+    if (quickPhraseSuppressClickRef.current) {
+      quickPhraseSuppressClickRef.current = false;
+      return;
+    }
+
+    applyQuickPhrase(text);
+  }, [applyQuickPhrase]);
 
   const removeMentionSelection = useCallback((selectionId: string) => {
     setMentionSelections((current) => current.filter((item) => item.id !== selectionId));
@@ -2600,6 +2986,182 @@ export function ComposerPanel({
     !attachmentDecision.allowed;
   const showQuickPhraseButton = content.length === 0 && !inRunSendBlocked;
   const forkControlDisabled = localSubmitting || isSubmitting || !onForkDraftChange;
+  const draggingQuickPhraseId = quickPhraseDragState?.phraseId ?? null;
+
+  /**
+   * 快捷短语列表内容。桌面端塞进模态框，移动端塞进全宽 sheet。
+   * 移动端不渲染上下调整按钮，改成在条目上长按后拖拽排序。
+   */
+  const quickPhrasePanel = (
+    <div className="composer-quick-phrase-modal-body">
+      <div className="composer-quick-phrase-toolbar">
+        <div className="composer-quick-phrase-toolbar-copy">
+          <span>{t("conversation.quickPhraseListLabel")}</span>
+          <button
+            type="button"
+            className="composer-quick-phrase-tips-button"
+            aria-label={t("conversation.quickPhraseTipsAction")}
+            title={t("conversation.quickPhraseTipsAction")}
+            aria-expanded={quickPhraseTipsOpen}
+            onClick={() => setQuickPhraseTipsOpen((current) => !current)}
+          >
+            <SessionCostInfoIcon />
+          </button>
+        </div>
+        <button
+          type="button"
+          className="primary-button"
+          disabled={quickPhraseSaving}
+          onClick={() => setQuickPhraseCreateModalOpen(true)}
+        >
+          {t("conversation.quickPhraseOpenCreateAction")}
+        </button>
+      </div>
+
+      {quickPhraseTipsOpen ? (
+        <p className="composer-quick-phrase-tips">{t("conversation.quickPhraseModalDescription")}</p>
+      ) : null}
+
+      <div
+        ref={quickPhraseListRef}
+        className="composer-quick-phrase-list"
+        data-dragging={draggingQuickPhraseId ? "true" : undefined}
+        role="list"
+        aria-label={t("conversation.quickPhraseListLabel")}
+      >
+        {quickPhrases.length === 0 ? (
+          <div className="composer-quick-phrase-empty">{t("conversation.quickPhraseEmpty")}</div>
+        ) : (
+          quickPhrases.map((phrase, index) => {
+            const dragging = draggingQuickPhraseId === phrase.id;
+            const dragState = quickPhraseDragState;
+            const dropTarget = dragState !== null && dragState.toIndex === index && !dragging;
+            // 拖拽项跟手，其他条目按目标位置让出空间。
+            const itemStyle = resolveQuickPhraseItemStyle(dragState, index, phrase.id);
+
+            return (
+              <div
+                key={phrase.id}
+                className="composer-quick-phrase-item"
+                data-dragging={dragging ? "true" : undefined}
+                data-drop-target={dropTarget ? "true" : undefined}
+                style={itemStyle}
+                role="listitem"
+                onPointerDown={(event) => handleQuickPhraseLongPressStart(event, phrase, index)}
+                onPointerMove={handleQuickPhraseLongPressMove}
+                onPointerUp={handleQuickPhraseLongPressEnd}
+                onPointerCancel={handleQuickPhraseLongPressCancel}
+              >
+                {isMobileLayout ? (
+                  <div className="composer-quick-phrase-head">
+                    <span className="composer-quick-phrase-order">
+                      {t("conversation.quickPhraseOrderLabel", {
+                        index: index + 1
+                      })}
+                    </span>
+                    <button
+                      type="button"
+                      className="composer-quick-phrase-action is-danger"
+                      disabled={quickPhraseSaving}
+                      aria-label={t("conversation.quickPhraseDelete")}
+                      title={t("conversation.quickPhraseDelete")}
+                      onClick={() => handleQuickPhraseDelete(phrase.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  className="composer-quick-phrase-select"
+                  onClick={() => handleQuickPhraseSelect(phrase.text)}
+                >
+                  {isMobileLayout ? null : (
+                    <span className="composer-quick-phrase-order">
+                      {t("conversation.quickPhraseOrderLabel", {
+                        index: index + 1
+                      })}
+                    </span>
+                  )}
+                  <span className="composer-quick-phrase-text">{phrase.text}</span>
+                </button>
+                {isMobileLayout ? null : (
+                  <div className="composer-quick-phrase-actions">
+                    <button
+                      type="button"
+                      className="composer-quick-phrase-action"
+                      disabled={quickPhraseSaving || index === 0}
+                      aria-label={t("conversation.quickPhraseMoveUp")}
+                      title={t("conversation.quickPhraseMoveUp")}
+                      onClick={() => handleQuickPhraseMove(phrase.id, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-quick-phrase-action"
+                      disabled={quickPhraseSaving || index === quickPhrases.length - 1}
+                      aria-label={t("conversation.quickPhraseMoveDown")}
+                      title={t("conversation.quickPhraseMoveDown")}
+                      onClick={() => handleQuickPhraseMove(phrase.id, 1)}
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-quick-phrase-action is-danger"
+                      disabled={quickPhraseSaving}
+                      aria-label={t("conversation.quickPhraseDelete")}
+                      title={t("conversation.quickPhraseDelete")}
+                      onClick={() => handleQuickPhraseDelete(phrase.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+
+  /** 新增快捷短语的表单内容，桌面端进模态框，移动端进 sheet。 */
+  const quickPhraseCreatePanel = (
+    <div className="composer-quick-phrase-modal-body">
+      <label className="workbench-modal-field">
+        <span>{t("conversation.quickPhraseCreateLabel")}</span>
+        <textarea
+          className="composer-quick-phrase-textarea"
+          value={quickPhraseDraft}
+          placeholder={t("conversation.quickPhraseCreatePlaceholder")}
+          rows={4}
+          onChange={(event) => setQuickPhraseDraft(event.target.value)}
+        />
+      </label>
+
+      <div className="workbench-modal-actions">
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={closeQuickPhraseCreateModal}
+        >
+          {t("common.cancel")}
+        </button>
+        <button
+          type="button"
+          className="primary-button"
+          disabled={quickPhraseSaving || quickPhraseDraft.trim().length === 0}
+          onClick={() => {
+            void handleQuickPhraseCreate();
+          }}
+        >
+          {t("conversation.quickPhraseCreateAction")}
+        </button>
+      </div>
+    </div>
+  );
 
   const contentNode = (
     <section ref={panelRef} className="composer-panel">
@@ -3144,126 +3706,54 @@ export function ComposerPanel({
         </div>
       </form>
       <WorkbenchModal
-        open={quickPhraseModalOpen}
+        open={quickPhraseModalOpen && !isMobileLayout}
         title={t("conversation.quickPhraseModalTitle")}
         description={t("conversation.quickPhraseModalDescription")}
         className="composer-quick-phrase-modal"
-        onClose={() => {
-          setQuickPhraseModalOpen(false);
-          setQuickPhraseCreateModalOpen(false);
-        }}
+        onClose={closeQuickPhraseModal}
       >
-        <div className="composer-quick-phrase-modal-body">
-          <div className="composer-quick-phrase-toolbar">
-            <div className="composer-quick-phrase-toolbar-copy">
-              <span>{t("conversation.quickPhraseListLabel")}</span>
-            </div>
-            <button
-              type="button"
-              className="primary-button"
-              disabled={quickPhraseSaving}
-              onClick={() => setQuickPhraseCreateModalOpen(true)}
-            >
-              {t("conversation.quickPhraseOpenCreateAction")}
-            </button>
-          </div>
-
-          <div className="composer-quick-phrase-list" role="list" aria-label={t("conversation.quickPhraseListLabel")}>
-            {quickPhrases.length === 0 ? (
-              <div className="composer-quick-phrase-empty">{t("conversation.quickPhraseEmpty")}</div>
-            ) : (
-              quickPhrases.map((phrase, index) => (
-                <div key={phrase.id} className="composer-quick-phrase-item" role="listitem">
-                  <button
-                    type="button"
-                    className="composer-quick-phrase-select"
-                    onClick={() => applyQuickPhrase(phrase.text)}
-                  >
-                    <span className="composer-quick-phrase-order">
-                      {t("conversation.quickPhraseOrderLabel", {
-                        index: index + 1
-                      })}
-                    </span>
-                    <span className="composer-quick-phrase-text">{phrase.text}</span>
-                  </button>
-                  <div className="composer-quick-phrase-actions">
-                    <button
-                      type="button"
-                      className="composer-quick-phrase-action"
-                      disabled={quickPhraseSaving || index === 0}
-                      aria-label={t("conversation.quickPhraseMoveUp")}
-                      title={t("conversation.quickPhraseMoveUp")}
-                      onClick={() => handleQuickPhraseMove(phrase.id, -1)}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      className="composer-quick-phrase-action"
-                      disabled={quickPhraseSaving || index === quickPhrases.length - 1}
-                      aria-label={t("conversation.quickPhraseMoveDown")}
-                      title={t("conversation.quickPhraseMoveDown")}
-                      onClick={() => handleQuickPhraseMove(phrase.id, 1)}
-                    >
-                      ↓
-                    </button>
-                    <button
-                      type="button"
-                      className="composer-quick-phrase-action is-danger"
-                      disabled={quickPhraseSaving}
-                      aria-label={t("conversation.quickPhraseDelete")}
-                      title={t("conversation.quickPhraseDelete")}
-                      onClick={() => handleQuickPhraseDelete(phrase.id)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+        {quickPhrasePanel}
       </WorkbenchModal>
+      <MobileSheet
+        open={quickPhraseModalOpen && isMobileLayout}
+        title={t("conversation.quickPhraseModalTitle")}
+        description={t("conversation.quickPhraseModalDescription")}
+        height="three-quarter"
+        kind="form"
+        className="composer-quick-phrase-sheet"
+        overlayClassName="composer-quick-phrase-sheet-overlay"
+        bodyClassName="composer-quick-phrase-sheet-body"
+        showHandle
+        showCancelButton={false}
+        hideHeader
+        onClose={closeQuickPhraseModal}
+      >
+        {quickPhrasePanel}
+      </MobileSheet>
       <WorkbenchModal
-        open={quickPhraseCreateModalOpen}
+        open={quickPhraseCreateModalOpen && !isMobileLayout}
         title={t("conversation.quickPhraseCreateModalTitle")}
         description={t("conversation.quickPhraseCreateModalDescription")}
         className="composer-quick-phrase-create-modal"
-        onClose={() => setQuickPhraseCreateModalOpen(false)}
+        onClose={closeQuickPhraseCreateModal}
       >
-        <div className="composer-quick-phrase-modal-body">
-          <label className="workbench-modal-field">
-            <span>{t("conversation.quickPhraseCreateLabel")}</span>
-            <textarea
-              className="composer-quick-phrase-textarea"
-              value={quickPhraseDraft}
-              placeholder={t("conversation.quickPhraseCreatePlaceholder")}
-              rows={4}
-              onChange={(event) => setQuickPhraseDraft(event.target.value)}
-            />
-          </label>
-
-          <div className="workbench-modal-actions">
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setQuickPhraseCreateModalOpen(false)}
-            >
-              {t("common.cancel")}
-            </button>
-            <button
-              type="button"
-              className="primary-button"
-              disabled={quickPhraseSaving || quickPhraseDraft.trim().length === 0}
-              onClick={() => {
-                void handleQuickPhraseCreate();
-              }}
-            >
-              {t("conversation.quickPhraseCreateAction")}
-            </button>
-          </div>
-        </div>
+        {quickPhraseCreatePanel}
       </WorkbenchModal>
+      <MobileSheet
+        open={quickPhraseCreateModalOpen && isMobileLayout}
+        title={t("conversation.quickPhraseCreateModalTitle")}
+        description={t("conversation.quickPhraseCreateModalDescription")}
+        height="auto"
+        kind="form"
+        className="composer-quick-phrase-create-sheet"
+        overlayClassName="composer-quick-phrase-sheet-overlay"
+        bodyClassName="composer-quick-phrase-create-sheet-body"
+        showHandle
+        showCancelButton={false}
+        onClose={closeQuickPhraseCreateModal}
+      >
+        {quickPhraseCreatePanel}
+      </MobileSheet>
       <WorkbenchModal
         open={pendingCrossProvider !== null}
         title={t("conversation.forkSwitchConfirmTitle")}

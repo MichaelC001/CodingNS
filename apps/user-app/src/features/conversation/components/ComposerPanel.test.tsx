@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -302,6 +302,29 @@ class MockFileReader {
     this.result = "data:image/png;base64,ZmFrZQ==";
     this.onload?.();
   }
+}
+
+/**
+ * jsdom 25 没有 PointerEvent，testing-library 会退回成没有坐标的普通 Event。
+ * 这里用 MouseEvent 手工补上 pointer 相关字段，让长按/拖拽逻辑能读到真实坐标。
+ */
+function createTouchPointerEvent(
+  type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel",
+  init: { pointerId: number; clientX: number; clientY: number }
+): MouseEvent {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    clientX: init.clientX,
+    clientY: init.clientY
+  });
+
+  Object.defineProperty(event, "pointerId", { value: init.pointerId });
+  Object.defineProperty(event, "pointerType", { value: "touch" });
+  Object.defineProperty(event, "isPrimary", { value: true });
+
+  return event;
 }
 
 function chooseOption(triggerLabel: string, optionLabel: string) {
@@ -3477,6 +3500,215 @@ describe("ComposerPanel", () => {
     await waitFor(() => {
       expect(screen.queryByText("新增的快捷短语")).not.toBeInTheDocument();
     });
+  });
+
+  it("移动端快捷短语去掉标题区，说明文字收进 tips 按钮按需展开", async () => {
+    platformMock.isMobile = true;
+    platformMock.viewportClass = "compact";
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText(t("conversation.quickPhraseTrigger")));
+
+    const sheet = screen.getByRole("dialog", { name: t("conversation.quickPhraseModalTitle") });
+
+    // 标题区被移除，但对话框仍然有无障碍名称。
+    expect(sheet.querySelector(".mobile-sheet-title-wrap")).toBeNull();
+    expect(sheet.querySelector(".mobile-sheet-header")).toBeNull();
+
+    // 说明文字默认不显示，点 tips 才展开。
+    expect(screen.queryByText(t("conversation.quickPhraseModalDescription"))).not.toBeInTheDocument();
+
+    const tipsButton = within(sheet).getByLabelText(t("conversation.quickPhraseTipsAction"));
+    expect(tipsButton).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(tipsButton);
+
+    expect(tipsButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(t("conversation.quickPhraseModalDescription"))).toBeInTheDocument();
+
+    // 再点一次收起。
+    fireEvent.click(tipsButton);
+    expect(screen.queryByText(t("conversation.quickPhraseModalDescription"))).not.toBeInTheDocument();
+  });
+
+  it("移动端快捷短语使用全宽 sheet，长按拖拽调整顺序且不显示上下按钮", async () => {
+    platformMock.isMobile = true;
+    platformMock.viewportClass = "compact";
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText(t("conversation.quickPhraseTrigger")));
+
+    const sheet = screen.getByRole("dialog", { name: t("conversation.quickPhraseModalTitle") });
+    expect(sheet).toHaveClass("composer-quick-phrase-sheet");
+    expect(document.querySelector(".composer-quick-phrase-sheet-overlay")).not.toBeNull();
+
+    const readPhraseOrder = () =>
+      Array.from(document.querySelectorAll(".composer-quick-phrase-item .composer-quick-phrase-text"))
+        .map((element) => element.textContent?.trim() ?? "");
+
+    await waitFor(() => {
+      expect(readPhraseOrder().length).toBeGreaterThan(1);
+    });
+
+    // 移动端不再渲染上下调整按钮，只保留删除。
+    expect(within(sheet).queryByLabelText(t("conversation.quickPhraseMoveUp"))).not.toBeInTheDocument();
+    expect(within(sheet).queryByLabelText(t("conversation.quickPhraseMoveDown"))).not.toBeInTheDocument();
+    expect(within(sheet).getAllByLabelText(t("conversation.quickPhraseDelete")).length).toBe(readPhraseOrder().length);
+
+    const items = Array.from(document.querySelectorAll<HTMLElement>(".composer-quick-phrase-item"));
+
+    // jsdom 没有真实布局，这里给每个条目补上等高的位置，让拖拽判定能算出落点。
+    items.forEach((item, index) => {
+      item.getBoundingClientRect = () => ({
+        top: index * 60,
+        bottom: index * 60 + 52,
+        height: 52,
+        left: 0,
+        right: 320,
+        width: 320,
+        x: 0,
+        y: index * 60,
+        toJSON: () => ({})
+      });
+    });
+
+    const orderBefore = readPhraseOrder();
+    const firstItem = items[0]!;
+
+    // 长按第一条，然后往下拖过第二条的中线。
+    fireEvent(firstItem, createTouchPointerEvent("pointerdown", { pointerId: 7, clientX: 40, clientY: 10 }));
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 460));
+    });
+
+    window.dispatchEvent(createTouchPointerEvent("pointermove", { pointerId: 7, clientX: 40, clientY: 90 }));
+    window.dispatchEvent(createTouchPointerEvent("pointerup", { pointerId: 7, clientX: 40, clientY: 90 }));
+
+    await waitFor(() => {
+      const orderAfter = readPhraseOrder();
+      expect(orderAfter[0]).toBe(orderBefore[1]);
+      expect(orderAfter[1]).toBe(orderBefore[0]);
+    });
+
+    expect(mockReplaceQuickPhrases).toHaveBeenCalled();
+  });
+
+  it("移动端长按删除按钮只删除，不会误触发排序", async () => {
+    platformMock.isMobile = true;
+    platformMock.viewportClass = "compact";
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText(t("conversation.quickPhraseTrigger")));
+
+    const readPhraseOrder = () =>
+      Array.from(document.querySelectorAll(".composer-quick-phrase-item .composer-quick-phrase-text"))
+        .map((element) => element.textContent?.trim() ?? "");
+
+    await waitFor(() => {
+      expect(readPhraseOrder().length).toBeGreaterThan(1);
+    });
+
+    const orderBefore = readPhraseOrder();
+    const deleteButton = within(
+      document.querySelector<HTMLElement>(".composer-quick-phrase-item")!
+    ).getByLabelText(t("conversation.quickPhraseDelete"));
+
+    fireEvent(deleteButton, createTouchPointerEvent("pointerdown", { pointerId: 11, clientX: 300, clientY: 12 }));
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 460));
+    });
+    fireEvent(deleteButton, createTouchPointerEvent("pointerup", { pointerId: 11, clientX: 300, clientY: 12 }));
+    fireEvent.click(deleteButton);
+
+    await waitFor(() => {
+      expect(screen.queryByText(orderBefore[0]!)).not.toBeInTheDocument();
+    });
+
+    // 剩下的顺序应该保持原样，说明没有发生排序。
+    expect(readPhraseOrder()).toEqual(orderBefore.slice(1));
+  });
+
+  it("移动端新增快捷短语走全宽 sheet，不再弹出窄桌面弹窗", async () => {
+    platformMock.isMobile = true;
+    platformMock.viewportClass = "compact";
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText(t("conversation.quickPhraseTrigger")));
+
+    const listSheet = screen.getByRole("dialog", { name: t("conversation.quickPhraseModalTitle") });
+    fireEvent.click(
+      within(listSheet).getByRole("button", { name: t("conversation.quickPhraseOpenCreateAction") })
+    );
+
+    const createDialog = screen.getByRole("dialog", {
+      name: t("conversation.quickPhraseCreateModalTitle")
+    });
+
+    expect(createDialog).toHaveClass("composer-quick-phrase-create-sheet");
+    expect(createDialog).not.toHaveClass("workbench-modal-card");
+    expect(document.querySelector(".composer-quick-phrase-create-sheet")).not.toBeNull();
+  });
+
+  it("移动端快捷短语短按不会进入拖拽，仍然直接填回输入框", async () => {
+    platformMock.isMobile = true;
+    platformMock.viewportClass = "compact";
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities()}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText(t("conversation.quickPhraseTrigger")));
+
+    const readPhraseOrder = () =>
+      Array.from(document.querySelectorAll(".composer-quick-phrase-item .composer-quick-phrase-text"))
+        .map((element) => element.textContent?.trim() ?? "");
+
+    await waitFor(() => {
+      expect(readPhraseOrder().length).toBeGreaterThan(0);
+    });
+
+    const firstPhraseText = readPhraseOrder()[0]!;
+    const firstItem = document.querySelector<HTMLElement>(".composer-quick-phrase-item")!;
+
+    // 按下后立刻抬手：没有达到长按时长，不应该排序，只当成一次普通点击。
+    fireEvent(firstItem, createTouchPointerEvent("pointerdown", { pointerId: 9, clientX: 40, clientY: 10 }));
+    fireEvent(firstItem, createTouchPointerEvent("pointerup", { pointerId: 9, clientX: 40, clientY: 10 }));
+    fireEvent.click(firstItem.querySelector(".composer-quick-phrase-select")!);
+
+    expect(mockReplaceQuickPhrases).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveValue(firstPhraseText);
   });
 
   it("会按会话维度恢复文本和图片草稿，并在发送后清空本地草稿", async () => {
