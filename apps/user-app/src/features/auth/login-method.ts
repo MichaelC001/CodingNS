@@ -41,14 +41,19 @@ export function resolveDefaultLoginMethod(input: LoginTargetInput): LoginMethod 
 /**
  * 是否展示"两种登录方式"的选择。
  *
- * - PC / 移动端：始终给 Connect 入口，用户不需要知道远程域名，
+ * - PC / Android：始终给 Connect 入口，用户不需要知道远程域名，
  *   登录 Connect 后直接从设备列表里选一台连。
+ * - iOS：不展示 Connect 页签；四级域名目标仍由调用方直接进入 Connect 登录面板。
  * - Web（H5）：页面靠用户手输地址打开，只有当前目标本身就是四级域名入口时才给 Connect 选项。
  */
 export function shouldOfferBothLoginMethods(
   platform: RuntimePlatform,
   input: LoginTargetInput
 ): boolean {
+  if (platform === "ios") {
+    return false;
+  }
+
   return platform !== "web" || isRemoteEntryLoginTarget(input);
 }
 

@@ -45,9 +45,9 @@ function hydrateDirectTarget(): void {
   });
 }
 
-function hydrateRelayTarget(): void {
+function hydrateRelayTarget(platform: "web" | "ios" = "web"): void {
   clientConfigStore.hydrate({
-    platform: "web",
+    platform,
     hostBaseUrl: "https://demo.channel.codingns.com:1443",
     releaseChannel: "stable",
     autoReconnect: true,
@@ -55,6 +55,21 @@ function hydrateRelayTarget(): void {
     language: "zh-CN",
     defaultPermissionMode: "default"
   });
+}
+
+function useIosRuntime(): void {
+  Object.defineProperty(window.navigator, "userAgent", {
+    configurable: true,
+    value:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+  });
+  Object.defineProperty(window.navigator, "platform", {
+    configurable: true,
+    value: "iPhone"
+  });
+  window.__TAURI_INTERNALS__ = {
+    invoke: vi.fn()
+  };
 }
 
 function useDesktopRuntime(): void {
@@ -226,6 +241,16 @@ describe("LoginPage 登录方式页签", () => {
     await user.click(screen.getByRole("button", { name: "切换到 CodingNS Connect 登录" }));
 
     expect(await screen.findByLabelText("CodingNS Connect 邮箱")).toBeInTheDocument();
+  });
+
+  it("iOS 四级域名目标直接显示 Connect 登录面板但不显示页签", async () => {
+    useIosRuntime();
+    hydrateRelayTarget("ios");
+    renderLoginPage();
+
+    expect(await screen.findByLabelText("CodingNS Connect 邮箱")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "直接登录" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "CodingNS Connect" })).not.toBeInTheDocument();
   });
 
   it("Connect 认证通过后读取 Host 账号，再完成 Host 登录并跳转", async () => {

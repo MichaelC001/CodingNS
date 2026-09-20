@@ -104,12 +104,22 @@ describe("login-method", () => {
     expect(isRemoteEntryLoginTarget({ baseUrl: null, host: null })).toBe(false);
   });
 
-  it("PC 和移动端始终提供两种登录方式", () => {
+  it("PC 和 Android 始终提供两种登录方式，iOS 隐藏页签", () => {
     const directTarget = { baseUrl: "http://127.0.0.1:3002", host: null };
 
     expect(shouldOfferBothLoginMethods("desktop", directTarget)).toBe(true);
-    expect(shouldOfferBothLoginMethods("ios", directTarget)).toBe(true);
     expect(shouldOfferBothLoginMethods("android", directTarget)).toBe(true);
+    expect(shouldOfferBothLoginMethods("ios", directTarget)).toBe(false);
+  });
+
+  it("iOS 的四级域名目标仍默认进入 Connect 登录，但不展示页签", () => {
+    const relayTarget = {
+      baseUrl: "https://demo.channel.codingns.com:1443",
+      host: null
+    };
+
+    expect(shouldOfferBothLoginMethods("ios", relayTarget)).toBe(false);
+    expect(resolveDefaultLoginMethod(relayTarget)).toBe("connect");
   });
 
   it("Web 只在目标是四级域名入口时提供两种登录方式", () => {

@@ -125,7 +125,7 @@ export function LoginPage() {
     [activeHost, persistedServerBaseUrl]
   );
   const remoteEntryTarget = useMemo(() => resolveRemoteEntryLoginTarget(loginTarget), [loginTarget]);
-  // PC / 移动端始终提供两种登录方式，用户不需要知道远程域名；
+  // PC / Android 始终提供两种登录方式；iOS 隐藏页签，但四级域名目标仍必须走 Connect；
   // Web 只在当前目标本身就是四级域名入口时才出现 Connect 选项。
   const showLoginMethodTabs = shouldOfferBothLoginMethods(platform.platform, loginTarget);
   const defaultLoginMethod = useMemo<LoginMethod>(() => {
@@ -138,7 +138,7 @@ export function LoginPage() {
   }, [loginTarget, platform.isNativeMobile, remoteEntryTarget]);
   const activeLoginMethod: LoginMethod = showLoginMethodTabs
     ? loginMethodOverride ?? defaultLoginMethod
-    : "direct";
+    : resolveDefaultLoginMethod(loginTarget);
   const connectHostBaseUrl = useMemo(
     () =>
       remoteEntryTarget

@@ -168,7 +168,7 @@ describe("LoginPage", () => {
     expect(screen.getByRole("button", { name: new RegExp(t("auth.serverSettings")) })).toBeInTheDocument();
   });
 
-  it("iOS 客户端登录页也允许打开服务器设置", async () => {
+  it("iOS 客户端直连时隐藏 CodingNS Connect 页签并允许打开服务器设置", async () => {
     mockNavigator({
       userAgent:
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
@@ -189,9 +189,9 @@ describe("LoginPage", () => {
 
     renderLoginPage();
 
-    // 移动端默认落在 CodingNS Connect 页签，切到直接登录后仍能打开服务器设置。
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: t("auth.loginMethodDirect") }));
+    expect(await screen.findByLabelText(t("auth.username"))).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: t("auth.loginMethodDirect") })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: t("auth.loginMethodConnect") })).not.toBeInTheDocument();
 
     expect(
       await screen.findByRole("button", { name: new RegExp(t("auth.serverSettings")) })
