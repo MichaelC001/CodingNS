@@ -45,6 +45,13 @@ function buildProcessSnapshot(): HostProcessInventorySnapshot {
 function createService(options: {
   getSqliteWriteQueue?: () => SqliteWriteQueueStats;
   getHostProcessInventory?: () => Promise<HostProcessInventorySnapshot>;
+  getProviderObservability?: () => {
+    subscriptionCount: number;
+    watcherCount: number;
+    fallbackPollCount: number;
+    historyDeltaReadsPerSecond: number;
+    cache: { hits: number; misses: number; evictions: number; rejections: number; bytes: number; entries: number; byProvider: Record<string, never>; byWorkspace: Record<string, never>; bySession: Record<string, never> };
+  };
 }) {
   return new RuntimeObservabilityService(
     () => ({ totals: {} as never, taskTypes: {} }),
@@ -54,7 +61,8 @@ function createService(options: {
     new TaskActivityLog(() => true),
     undefined,
     options.getSqliteWriteQueue,
-    options.getHostProcessInventory
+    options.getHostProcessInventory,
+    options.getProviderObservability
   );
 }
 
@@ -86,6 +94,23 @@ describe("运行观测快照的全局诊断字段", () => {
     expect(snapshot.sqliteWriteQueue).toBeNull();
     expect(snapshot.hostProcesses).toBeNull();
     expect(snapshot.session.sessionId).toBe(session.sessionId);
+  });
+
+  it("把 provider 订阅、delta read 和缓存预算放进统一快照", async () => {
+    const service = createService({
+      getProviderObservability: () => ({
+        subscriptionCount: 2,
+        watcherCount: 3,
+        fallbackPollCount: 1,
+        historyDeltaReadsPerSecond: 4,
+        cache: { hits: 8, misses: 2, evictions: 1, rejections: 0, bytes: 1024, entries: 2, byProvider: {}, byWorkspace: {}, bySession: {} }
+      })
+    });
+    const session = service.openSession(20_000);
+    const snapshot = await service.observe({ sessionId: session.sessionId, userId: "u-1" });
+    expect(snapshot.provider?.subscriptionCount).toBe(2);
+    expect(snapshot.provider?.historyDeltaReadsPerSecond).toBe(4);
+    expect(snapshot.provider?.cache.bytes).toBe(1024);
   });
 
   it("诊断读取抛错时降级为 null，不拖垮整份快照", async () => {

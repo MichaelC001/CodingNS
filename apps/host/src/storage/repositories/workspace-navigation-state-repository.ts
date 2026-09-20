@@ -1,9 +1,10 @@
 import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { WorkspaceNavigationStateRecord } from "../../types/domain.js";
+import type { SqliteWriterLike } from "./sqlite-writer-like.js";
 
 export class WorkspaceNavigationStateRepository {
-  constructor(private readonly db: SqliteDatabase) {}
+  constructor(private readonly db: SqliteDatabase, private readonly writer: SqliteWriterLike | null = null) {}
 
   listEnabledAffairsLibraries(): WorkspaceNavigationStateRecord[] {
     return this.db
@@ -75,6 +76,20 @@ export class WorkspaceNavigationStateRepository {
   }
 
   upsert(record: WorkspaceNavigationStateRecord): WorkspaceNavigationStateRecord {
+    if (this.writer) {
+      void this.writer.write(
+        `INSERT INTO workspace_navigation_states (workspace_id, user_id, collapsed, background_color, hidden, shortcut_apps_collapsed, shortcut_apps_side, affairs_library_root_path, affairs_library_enabled, affairs_library_favorites_json, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id, user_id) DO UPDATE SET collapsed=excluded.collapsed,
+           background_color=excluded.background_color, hidden=excluded.hidden,
+           shortcut_apps_collapsed=excluded.shortcut_apps_collapsed, shortcut_apps_side=excluded.shortcut_apps_side,
+           affairs_library_root_path=excluded.affairs_library_root_path, affairs_library_enabled=excluded.affairs_library_enabled,
+           affairs_library_favorites_json=excluded.affairs_library_favorites_json, updated_at=excluded.updated_at`,
+        [record.workspaceId, record.userId, record.collapsed ? 1 : 0, record.backgroundColor, record.hidden ? 1 : 0, record.shortcutAppsCollapsed ? 1 : 0, record.shortcutAppsSide, record.affairsLibraryRootPath ?? null, record.affairsLibraryEnabled ? 1 : 0, record.affairsLibraryFavoritesJson ?? null, record.updatedAt],
+        { priority: "latest_wins" }
+      ).catch((error) => console.warn("[workspace-navigation] writer helper write failed", error));
+      return record;
+    }
     this.db
       .prepare(
         `INSERT INTO workspace_navigation_states (

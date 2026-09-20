@@ -32,6 +32,7 @@ import {
   type ProviderSessionStats,
   type ProviderSessionStatsReadOptions,
   type ProviderSubscription,
+  type ProviderCacheStats,
   type NormalizedMessage,
   type SessionHistoryDeltaReadResult,
   type SendMessageResult
@@ -4823,6 +4824,35 @@ export class SessionHistoryService {
       totalDeltaReads: metrics.totalDeltaReads,
       deltaReadsPerSecond: this.pruneAndCountDeltaReadsPerSecond(now)
     };
+  }
+
+  /** 汇总 provider 缓存统计，供统一运行时快照读取；不会触发历史读取。 */
+  observeProviderCacheMetrics(): ProviderCacheStats {
+    const empty = (): ProviderCacheStats => ({
+      hits: 0, misses: 0, evictions: 0, rejections: 0, bytes: 0, entries: 0,
+      byProvider: {}, byWorkspace: {}, bySession: {}
+    });
+    const total = empty();
+    for (const entry of this.sessionSyncService.observeProviderCacheStats()) {
+      const statsList = flattenProviderCacheStats(entry.provider, entry.stats);
+      for (const stats of statsList) {
+        total.hits += stats.hits;
+        total.misses += stats.misses;
+        total.evictions += stats.evictions;
+        total.rejections += stats.rejections;
+        total.bytes += stats.bytes;
+        total.entries += stats.entries;
+        total.byProvider[entry.provider] = {
+          hits: (total.byProvider[entry.provider]?.hits ?? 0) + stats.hits,
+          misses: (total.byProvider[entry.provider]?.misses ?? 0) + stats.misses,
+          evictions: (total.byProvider[entry.provider]?.evictions ?? 0) + stats.evictions,
+          rejections: (total.byProvider[entry.provider]?.rejections ?? 0) + stats.rejections,
+          bytes: (total.byProvider[entry.provider]?.bytes ?? 0) + stats.bytes,
+          entries: (total.byProvider[entry.provider]?.entries ?? 0) + stats.entries
+        };
+      }
+    }
+    return total;
   }
 
   /** 只用最近一秒内的时间戳算次数，顺手丢掉窗口外的记录。 */
@@ -10287,4 +10317,23 @@ function applyImmediateModelOptionFallbacks(
   }
 
   return capabilities;
+}
+
+function flattenProviderCacheStats(provider: string, value: unknown): ProviderCacheStats[] {
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  if (typeof record.hits === "number" && typeof record.bytes === "number") {
+    const stats = value as ProviderCacheStats;
+    return [{
+      hits: Math.max(0, stats.hits), misses: Math.max(0, stats.misses),
+      evictions: Math.max(0, stats.evictions), rejections: Math.max(0, stats.rejections ?? 0),
+      bytes: Math.max(0, stats.bytes), entries: Math.max(0, stats.entries),
+      byProvider: stats.byProvider ?? { [provider]: {
+        hits: stats.hits, misses: stats.misses, evictions: stats.evictions,
+        rejections: stats.rejections ?? 0, bytes: stats.bytes, entries: stats.entries
+      } },
+      byWorkspace: stats.byWorkspace ?? {}, bySession: stats.bySession ?? {}
+    }];
+  }
+  return Object.values(record).flatMap((child) => flattenProviderCacheStats(provider, child));
 }

@@ -148,12 +148,9 @@ export function runSqliteWriteSync<T>(
 }
 
 function defaultSyncSleep(ms: number): void {
-  if (ms <= 0) {
-    return;
-  }
-
-  // 同步写入没有 await 点，只能用阻塞等待；总等待由 maxTotalWaitMs 兜底。
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  // Host 事件循环禁止同步阻塞。同步兼容路径只允许立即重试一次，真正需要退避的
+  // 写入必须走 SqliteWriteQueue/独立 writer；保留参数是为了兼容旧调用方和测试注入。
+  void ms;
 }
 
 function defaultSyncRetryLog(payload: SqliteRetryLogPayload): void {

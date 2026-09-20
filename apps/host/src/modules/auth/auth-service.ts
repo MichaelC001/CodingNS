@@ -573,6 +573,29 @@ export class AuthService {
     return toAuthUserView(record);
   }
 
+  /** HTTP 写入路径使用异步 writer，保留 createUser 供启动脚本和兼容测试使用。 */
+  async createUserAsync(auth: AuthContext, input: CreateUserInput): Promise<AuthUserView> {
+    this.ensureAdmin(auth);
+    const normalized = validateCreateUserInput(input);
+    if (this.authUserRepository.findByUsername(normalized.username)) {
+      throw new AppError({ statusCode: 409, errorCode: "USERNAME_EXISTS", detail: "用户名已经存在", field: "username" });
+    }
+    const timestamp = nowIso();
+    const record: AuthUser = {
+      id: createId(), username: normalized.username, passwordHash: hashPassword(normalized.password),
+      role: "admin", status: "active", createdAt: timestamp, updatedAt: timestamp
+    };
+    try {
+      await this.authUserRepository.createAsync(record);
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw new AppError({ statusCode: 409, errorCode: "USERNAME_EXISTS", detail: "用户名已经存在", field: "username" });
+      }
+      throw error;
+    }
+    return toAuthUserView(record);
+  }
+
   updateUser(auth: AuthContext, userId: string, input: UpdateUserInput): AuthUserView {
     this.ensureAdmin(auth);
     const current = this.findManagedUserOrThrow(userId);
@@ -596,6 +619,27 @@ export class AuthService {
     }) ?? current;
 
     return toAuthUserView(updated);
+  }
+
+  async updateUserAsync(auth: AuthContext, userId: string, input: UpdateUserInput): Promise<AuthUserView> {
+    this.ensureAdmin(auth);
+    const current = this.findManagedUserOrThrow(userId);
+    const normalized = validateUpdateUserInput(input, current.username);
+    const sameUsernameUser = this.authUserRepository.findByUsername(normalized.username);
+    if (sameUsernameUser && sameUsernameUser.id !== current.id) {
+      throw new AppError({ statusCode: 409, errorCode: "USERNAME_EXISTS", detail: "用户名已经存在", field: "username" });
+    }
+    const updatedAt = nowIso();
+    const passwordHash = normalized.password ? hashPassword(normalized.password) : null;
+    try {
+      await this.authUserRepository.updateProfileAsync({ id: current.id, username: normalized.username, passwordHash, updatedAt });
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw new AppError({ statusCode: 409, errorCode: "USERNAME_EXISTS", detail: "用户名已经存在", field: "username" });
+      }
+      throw error;
+    }
+    return toAuthUserView({ ...current, username: normalized.username, passwordHash: passwordHash ?? current.passwordHash, updatedAt });
   }
 
   deleteUser(auth: AuthContext, userId: string): DeleteUserResult {
@@ -633,6 +677,23 @@ export class AuthService {
       success: true,
       deletedUserId: current.id
     };
+  }
+
+  async deleteUserAsync(auth: AuthContext, userId: string): Promise<DeleteUserResult> {
+    this.ensureAdmin(auth);
+    const current = this.findManagedUserOrThrow(userId);
+    if (current.id === auth.user.userId) {
+      throw new AppError({ statusCode: 400, errorCode: "CURRENT_USER_DELETE_NOT_ALLOWED", detail: "不能删除当前登录用户" });
+    }
+    const activeUsers = this.authUserRepository.list().filter((user) => user.status === "active");
+    if (current.status === "active" && activeUsers.length <= 1) {
+      throw new AppError({ statusCode: 400, errorCode: "LAST_ACTIVE_USER_NOT_ALLOWED", detail: "不能删除最后一个可用管理员" });
+    }
+    if (this.authUserRepository.hasBlockingDataForDelete(current.id)) {
+      throw new AppError({ statusCode: 409, errorCode: "USER_HAS_DATA", detail: "该用户已经产生工作区、会话或登录记录。为避免误删数据，请先停用用户。" });
+    }
+    await this.authUserRepository.deleteByIdAsync(current.id);
+    return { success: true, deletedUserId: current.id };
   }
 
   getUserUsage(auth: AuthContext, period: unknown): AuthUserUsageSnapshot {
@@ -1363,4 +1424,9 @@ function toRecentLoginRecordView(
     isCurrentDevice: event.deviceId !== null && event.deviceId === currentDeviceId,
     isLegacy: event.deviceId === null
   };
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unique constraint|constraint failed.*auth_users/i.test(message);
 }

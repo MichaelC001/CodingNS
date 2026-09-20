@@ -1,9 +1,50 @@
 import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { AuthUser } from "../../types/domain.js";
+import type { SqliteWriterLike } from "./sqlite-writer-like.js";
 
 export class AuthUserRepository {
-  constructor(private readonly db: SqliteDatabase) {}
+  constructor(private readonly db: SqliteDatabase, private readonly writer: SqliteWriterLike | null = null) {}
+
+  async createAsync(record: AuthUser): Promise<void> {
+    if (!this.writer) {
+      this.create(record);
+      return;
+    }
+    await this.writer.write(
+      `INSERT INTO auth_users (id, username, password_hash, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [record.id, record.username, record.passwordHash, record.role, record.status, record.createdAt, record.updatedAt],
+      { priority: "critical" }
+    );
+  }
+
+  async updateProfileAsync(input: { id: string; username: string; passwordHash: string | null; updatedAt: string }): Promise<void> {
+    if (!this.writer) {
+      this.updateProfile(input);
+      return;
+    }
+    if (input.passwordHash) {
+      await this.writer.write(
+        "UPDATE auth_users SET username = ?, password_hash = ?, updated_at = ? WHERE id = ?",
+        [input.username, input.passwordHash, input.updatedAt, input.id],
+        { priority: "critical" }
+      );
+      return;
+    }
+    await this.writer.write(
+      "UPDATE auth_users SET username = ?, updated_at = ? WHERE id = ?",
+      [input.username, input.updatedAt, input.id],
+      { priority: "critical" }
+    );
+  }
+
+  async deleteByIdAsync(id: string): Promise<void> {
+    if (!this.writer) {
+      this.deleteById(id);
+      return;
+    }
+    await this.writer.write("DELETE FROM auth_users WHERE id = ?", [id], { priority: "critical" });
+  }
 
   create(record: AuthUser): void {
     this.db

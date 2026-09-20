@@ -13,6 +13,7 @@ import { AssistantCapabilityService } from "../modules/assistant-capability/assi
 import { BootstrapController } from "../modules/bootstrap/bootstrap-controller.js";
 import { HealthController } from "../modules/health/health-controller.js";
 import { HealthService } from "../modules/health/health-service.js";
+import { SqliteWriterClient } from "../modules/health/sqlite-writer-client.js";
 import { BootstrapService } from "../modules/bootstrap/bootstrap-service.js";
 import { AssistantAutomationService } from "../modules/butler/assistant-automation-service.js";
 import { ButlerControlTimerScheduler } from "../modules/butler/butler-control-timer-scheduler.js";
@@ -365,12 +366,15 @@ export function createServer(config: HostConfig) {
   const stopTerminalDebugEventLoopLagMonitor = startTerminalDebugEventLoopLagMonitor();
 
   const database = createDatabaseClient(config.databasePath);
+  const sqliteWriterClient = process.env.VITEST
+    ? null
+    : new SqliteWriterClient(config.databasePath);
   // 全局进程统计只做只读诊断：以当前 Host pid 为根，构建完整后代进程树，
   // 并额外列出命令行匹配 Codex / CodingNS Desktop 的树外进程。
   const hostProcessInventoryService = new HostProcessInventoryService();
   const repositories = {
     bootstrapStateRepository: new BootstrapStateRepository(database.db),
-    authUserRepository: new AuthUserRepository(database.db),
+    authUserRepository: new AuthUserRepository(database.db, sqliteWriterClient),
     authTokenRepository: new AuthTokenRepository(database.db),
     authDeviceRepository: new AuthDeviceRepository(database.db),
     authDeviceSessionRepository: new AuthDeviceSessionRepository(database.db),
@@ -383,7 +387,7 @@ export function createServer(config: HostConfig) {
     assistantAutomationRunRepository: new AssistantAutomationRunRepository(database.db),
     workspaceRepository: new WorkspaceRepository(database.db),
     workspaceWorktreeRepository: new WorkspaceWorktreeRepository(database.db),
-    workspaceNavigationStateRepository: new WorkspaceNavigationStateRepository(database.db),
+    workspaceNavigationStateRepository: new WorkspaceNavigationStateRepository(database.db, sqliteWriterClient),
     affairsAssistantSessionSnapshotRepository: new AffairsAssistantSessionSnapshotRepository(database.db),
     userAffairsLibrarySettingRepository: new UserAffairsLibrarySettingRepository(database.db),
     userTeableGlobalSettingRepository: new UserTeableGlobalSettingRepository(database.db),
@@ -445,13 +449,13 @@ export function createServer(config: HostConfig) {
     sessionCleanupRepository: new SessionCleanupRepository(database.db),
     sessionForkRepository: new SessionForkRepository(database.db),
     sessionCheckpointRepository: new SessionCheckpointRepository(database.db),
-    sessionIndexRepository: new SessionIndexRepository(database.db),
+    sessionIndexRepository: new SessionIndexRepository(database.db, sqliteWriterClient),
     sessionSourceIndexRepository: new SessionSourceIndexRepository(database.db),
     sessionMessageAttachmentRepository: new SessionMessageAttachmentRepository(database.db),
     sessionMessageOriginRepository: new SessionMessageOriginRepository(database.db),
     sessionSendQueueRepository: new SessionSendQueueRepository(database.db),
-    sessionStateRepository: new SessionStateRepository(database.db),
-    sessionStatusSnapshotRepository: new SessionStatusSnapshotRepository(database.db),
+    sessionStateRepository: new SessionStateRepository(database.db, database.writeQueue, sqliteWriterClient),
+    sessionStatusSnapshotRepository: new SessionStatusSnapshotRepository(database.db, {}, database.writeQueue, sqliteWriterClient),
     sessionStatsSnapshotRepository: new SessionStatsSnapshotRepository(database.db),
     instanceTailscaleRepository: new InstanceTailscaleRepository(database.db),
     instanceRelayTunnelIdentityRepository: new InstanceRelayTunnelIdentityRepository(database.db),
@@ -1041,7 +1045,17 @@ export function createServer(config: HostConfig) {
     () => database.writeQueue.getStats(),
     // 进程统计只在观测快照请求时读一次本机进程表；服务内部有短缓存和单飞，
     // 不常驻扫描，也不新增轮询。
-    () => hostProcessInventoryService.getSnapshot()
+    () => hostProcessInventoryService.getSnapshot(),
+    () => {
+      const subscriptions = sessionHistoryService.observeHistorySubscriptionMetrics();
+      return {
+        subscriptionCount: subscriptions.activeSubscriptions,
+        watcherCount: subscriptions.watcherTriggers,
+        fallbackPollCount: subscriptions.fallbackTriggers,
+        historyDeltaReadsPerSecond: subscriptions.deltaReadsPerSecond,
+        cache: sessionHistoryService.observeProviderCacheMetrics()
+      };
+    }
   );
   const sessionLiveRuntimeService = new SessionLiveRuntimeService(
     sessionHistoryService,
@@ -1558,7 +1572,8 @@ export function createServer(config: HostConfig) {
 
 
   const bootstrapController = new BootstrapController(bootstrapService);
-  const healthService = new HealthService(database.db);
+  // Writer 在独立进程中打开第二条 SQLite 连接；Host 请求线程只读取它的内存 readiness 快照。
+  const healthService = new HealthService(sqliteWriterClient ?? undefined);
   const healthController = new HealthController(healthService);
   const clientController = new ClientController(clientService);
   const channelController = new ChannelController(channelsService);
@@ -2032,6 +2047,7 @@ export function createServer(config: HostConfig) {
       disposeSharedOpenCodeSystemProbeHelperClient(),
       config.opencodeBaseUrlResolver?.dispose?.()
     ]);
+    await sqliteWriterClient?.dispose();
     database.close();
   });
 

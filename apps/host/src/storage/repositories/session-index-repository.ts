@@ -1,6 +1,7 @@
 import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionIndexRecord, SessionListItem } from "../../types/domain.js";
+import type { SqliteWriterLike } from "./sqlite-writer-like.js";
 
 export class SessionIndexRepository {
   private readonly upsertStatement: SqliteStatement<any[], any>;
@@ -9,7 +10,7 @@ export class SessionIndexRepository {
   private readonly findIndexRecordBySessionIdStatement: SqliteStatement<any[], any>;
   private readonly renameTitleStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: SqliteDatabase) {
+  constructor(private readonly db: SqliteDatabase, private readonly writer: SqliteWriterLike | null = null) {
     this.upsertStatement = this.db.prepare(
       `INSERT INTO session_indices (
          session_id,
@@ -175,6 +176,21 @@ export class SessionIndexRepository {
   }
 
   upsert(record: SessionIndexRecord): void {
+    if (this.writer) {
+      void this.writer.write(
+        `INSERT INTO session_indices (session_id, workspace_id, provider, session_visibility, parent_session_id, session_kind, annotation_source_message_id, annotation_source_text, is_subagent, subagent_label, title, message_count, is_archived, last_message_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET workspace_id=excluded.workspace_id, provider=excluded.provider,
+           session_visibility=excluded.session_visibility, parent_session_id=excluded.parent_session_id,
+           session_kind=excluded.session_kind, annotation_source_message_id=excluded.annotation_source_message_id,
+           annotation_source_text=excluded.annotation_source_text, is_subagent=excluded.is_subagent,
+           subagent_label=excluded.subagent_label, title=excluded.title, message_count=excluded.message_count,
+           is_archived=excluded.is_archived, last_message_at=excluded.last_message_at, updated_at=excluded.updated_at`,
+        [record.sessionId, record.workspaceId, record.provider, record.sessionVisibility ?? "workspace", record.parentSessionId ?? null, record.sessionKind ?? "default", record.annotationSourceMessageId ?? null, record.annotationSourceText ?? null, record.isSubagent ? 1 : 0, record.subagentLabel ?? null, record.title, record.messageCount, record.isArchived ? 1 : 0, record.lastMessageAt, record.createdAt, record.updatedAt],
+        { priority: "latest_wins" }
+      ).catch((error) => console.warn("[session-index] writer helper write failed", error));
+      return;
+    }
     this.upsertStatement
       .run(
         record.sessionId,
@@ -216,6 +232,14 @@ export class SessionIndexRepository {
   }
 
   renameTitle(sessionId: string, title: string, updatedAt: string): void {
+    if (this.writer) {
+      void this.writer.write(
+        "UPDATE session_indices SET title = ?, updated_at = ? WHERE session_id = ?",
+        [title, updatedAt, sessionId],
+        { priority: "latest_wins" }
+      ).catch((error) => console.warn("[session-index] writer helper title update failed", error));
+      return;
+    }
     this.renameTitleStatement.run(title, updatedAt, sessionId);
   }
 }

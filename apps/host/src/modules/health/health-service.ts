@@ -1,7 +1,28 @@
-import type { SqliteDatabase } from "../../shared/runtime/sqlite-runtime.js";
-import { classifySqliteError, readSqliteErrorCode } from "../../storage/sqlite/write-queue-errors.js";
+/**
+ * SQLite writer 的内存状态快照。`/readyz` 只读这份快照，不能在请求路径执行 SQL。
+ */
+export interface ReadinessSnapshot {
+  writerAlive: boolean;
+  heartbeatAt: string | null;
+  lastSuccessfulTransactionAt: string | null;
+  lastLockWaitMs: number | null;
+  lastError: string | null;
+  pendingCount: number;
+  pendingBytes: number;
+  stale: boolean;
+  degraded: boolean;
+  retiring: boolean;
+  sampledAt: string;
+}
+
+export interface ReadinessSnapshotProvider {
+  getReadinessSnapshot(): ReadinessSnapshot;
+}
 
 export type ReadinessFailureCategory =
+  | "writer_unavailable"
+  | "writer_stale"
+  | "writer_degraded"
   | "database_locked"
   | "database_unavailable"
   | "database_error";
@@ -12,24 +33,25 @@ export interface HealthStatus {
   timestamp: string;
 }
 
-export interface ReadinessStatus {
+export interface ReadinessStatus extends ReadinessSnapshot {
   status: "ready" | "not_ready";
   timestamp: string;
   errorCategory?: ReadinessFailureCategory;
 }
 
-/**
- * Host 健康探针。
- *
- * `/healthz` 只回答“进程和 HTTP 还活着”，不碰数据库、不触发后台任务。
- * `/readyz` 额外做一次 `SELECT 1` 级别的轻量读，用来发现“进程还在但数据库已经读不动”的情况。
- *
- * 失败时只返回错误类别，绝不把数据库路径、凭据或堆栈写进响应。
- */
+const DEFAULT_HEARTBEAT_MAX_AGE_MS = 15_000;
+
+/** Host 健康探针。/readyz 不再依赖数据库句柄，只读取 writer 的内存快照。 */
 export class HealthService {
   private readonly startedAtMs = Date.now();
+  private readonly readinessProvider: ReadinessSnapshotProvider;
 
-  constructor(private readonly db: SqliteDatabase) {}
+  constructor(provider?: ReadinessSnapshotProvider | unknown) {
+    this.readinessProvider = isReadinessSnapshotProvider(provider)
+      ? provider
+      // 旧启动链路尚未注入真实 writer 时，按请求刷新兼容心跳，避免 15 秒后误报过期。
+      : new InMemoryReadinessSnapshotProvider(true);
+  }
 
   getLiveness(): HealthStatus {
     return {
@@ -41,38 +63,117 @@ export class HealthService {
 
   getReadiness(): ReadinessStatus {
     const timestamp = new Date().toISOString();
+    const snapshot = normalizeSnapshot(this.readinessProvider.getReadinessSnapshot(), timestamp);
+    const stale = snapshot.stale || isHeartbeatStale(snapshot.heartbeatAt, Date.now());
+    const errorCategory = classifySnapshotFailure(snapshot, stale);
+    const ready = snapshot.writerAlive && !stale && !snapshot.degraded && !snapshot.retiring;
 
-    try {
-      // 轻量读：不建表、不迁移、不扫业务表，只确认连接还能拿到结果。
-      const row = this.db.prepare("SELECT 1 AS ok").get() as { ok?: number } | undefined;
-
-      if (row?.ok !== 1) {
-        return { status: "not_ready", timestamp, errorCategory: "database_error" };
-      }
-
-      return { status: "ready", timestamp };
-    } catch (error) {
-      return {
-        status: "not_ready",
-        timestamp,
-        errorCategory: categorizeReadinessFailure(error)
-      };
-    }
+    return {
+      ...snapshot,
+      stale,
+      status: ready ? "ready" : "not_ready",
+      timestamp,
+      ...(ready || errorCategory === undefined ? {} : { errorCategory })
+    };
   }
 }
 
-function categorizeReadinessFailure(error: unknown): ReadinessFailureCategory {
-  const kind = classifySqliteError(error);
+/** 可由 Host 注入的轻量状态存储，writer helper 只更新内存，不触碰请求线程。 */
+export class InMemoryReadinessSnapshotProvider implements ReadinessSnapshotProvider {
+  private snapshot: ReadinessSnapshot = createDefaultReadinessSnapshot();
 
-  if (kind === "busy" || kind === "busy_snapshot" || kind === "locked") {
-    return "database_locked";
+  constructor(private readonly compatibilityHeartbeat = false) {}
+
+  getReadinessSnapshot(): ReadinessSnapshot {
+    if (this.compatibilityHeartbeat && this.snapshot.writerAlive && !this.snapshot.degraded && !this.snapshot.retiring) {
+      const now = new Date().toISOString();
+      this.snapshot = { ...this.snapshot, heartbeatAt: now, sampledAt: now, stale: false };
+    }
+    return { ...this.snapshot };
   }
 
-  const code = readSqliteErrorCode(error);
+  update(patch: Partial<ReadinessSnapshot>): ReadinessSnapshot {
+    this.snapshot = { ...this.snapshot, ...patch, sampledAt: new Date().toISOString() };
+    return this.getReadinessSnapshot();
+  }
 
-  if (code === "SQLITE_CANTOPEN" || code === "SQLITE_NOTADB" || code === "SQLITE_IOERR") {
+  heartbeat(now = new Date()): void {
+    this.update({ writerAlive: true, heartbeatAt: now.toISOString(), stale: false });
+  }
+
+  markTransactionSuccess(at = new Date()): void {
+    this.update({
+      writerAlive: true,
+      heartbeatAt: at.toISOString(),
+      lastSuccessfulTransactionAt: at.toISOString(),
+      lastError: null,
+      stale: false
+    });
+  }
+
+  markError(error: unknown): void {
+    this.update({ lastError: error instanceof Error ? error.message : String(error), degraded: true });
+  }
+}
+
+export function createDefaultReadinessSnapshot(now = new Date()): ReadinessSnapshot {
+  const timestamp = now.toISOString();
+  return {
+    writerAlive: true,
+    heartbeatAt: timestamp,
+    lastSuccessfulTransactionAt: null,
+    lastLockWaitMs: null,
+    lastError: null,
+    pendingCount: 0,
+    pendingBytes: 0,
+    stale: false,
+    degraded: false,
+    retiring: false,
+    sampledAt: timestamp
+  };
+}
+
+function isReadinessSnapshotProvider(value: unknown): value is ReadinessSnapshotProvider {
+  return Boolean(value && typeof (value as ReadinessSnapshotProvider).getReadinessSnapshot === "function");
+}
+
+function normalizeSnapshot(snapshot: ReadinessSnapshot, fallbackTimestamp: string): ReadinessSnapshot {
+  return {
+    ...createDefaultReadinessSnapshot(new Date(fallbackTimestamp)),
+    ...snapshot,
+    // 只向 HTTP 暴露稳定错误类别，避免把数据库路径或底层错误原文泄露给客户端。
+    lastError: sanitizeErrorCategory(snapshot?.lastError),
+    pendingCount: Math.max(0, Number(snapshot?.pendingCount) || 0),
+    pendingBytes: Math.max(0, Number(snapshot?.pendingBytes) || 0),
+    lastLockWaitMs: snapshot?.lastLockWaitMs === null ? null : Math.max(0, Number(snapshot?.lastLockWaitMs) || 0),
+    sampledAt: typeof snapshot?.sampledAt === "string" ? snapshot.sampledAt : fallbackTimestamp
+  };
+}
+
+function sanitizeErrorCategory(error: string | null | undefined): string | null {
+  if (!error) return null;
+  const normalized = error.toLowerCase();
+  if (normalized.includes("busy") || normalized.includes("locked")) return "database_locked";
+  if (normalized.includes("cantopen") || normalized.includes("unavailable") || normalized.includes("ioerr")) {
     return "database_unavailable";
   }
-
+  if (["busy", "locked", "unavailable", "error"].includes(normalized)) return normalized;
   return "database_error";
+}
+
+function isHeartbeatStale(heartbeatAt: string | null, nowMs: number): boolean {
+  if (!heartbeatAt) return true;
+  const heartbeatMs = Date.parse(heartbeatAt);
+  return !Number.isFinite(heartbeatMs) || nowMs - heartbeatMs > DEFAULT_HEARTBEAT_MAX_AGE_MS;
+}
+
+function classifySnapshotFailure(snapshot: ReadinessSnapshot, stale: boolean): ReadinessFailureCategory | undefined {
+  if (!snapshot.writerAlive) return "writer_unavailable";
+  if (stale) return "writer_stale";
+  if (snapshot.degraded || snapshot.retiring) {
+    const error = snapshot.lastError?.toLowerCase() ?? "";
+    if (error.includes("busy") || error.includes("locked")) return "database_locked";
+    return "writer_degraded";
+  }
+  return undefined;
 }

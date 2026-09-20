@@ -8,6 +8,7 @@ import type { TaskDefinition, TaskMetricsSnapshot } from "./task-types.js";
 import type { SchedulerMetricsSnapshot } from "./scheduler-metrics.js";
 import type { EventLoopDelaySnapshot, EventLoopMonitor } from "./event-loop-monitor.js";
 import type { TaskActivityLog, TaskActivityRecord } from "./task-activity-log.js";
+import type { ProviderCacheStats } from "@codingns/session-sync-core";
 
 const DEFAULT_SESSION_TTL_MS = 20_000;
 const MIN_SESSION_TTL_MS = 5_000;
@@ -32,6 +33,15 @@ export interface RuntimeObservabilitySnapshot {
   readonly sqliteWriteQueue: SqliteWriteQueueStats | null;
   /** 全局进程统计（3009 Host 子进程 + 树外 Codex/Desktop）；未接入时为 null。 */
   readonly hostProcesses: HostProcessInventorySnapshot | null;
+  readonly provider: RuntimeProviderObservability | null;
+}
+
+export interface RuntimeProviderObservability {
+  subscriptionCount: number;
+  watcherCount: number;
+  fallbackPollCount: number;
+  historyDeltaReadsPerSecond: number;
+  cache: ProviderCacheStats;
 }
 
 export interface RuntimeObservabilityQueryInput {
@@ -80,7 +90,8 @@ export class RuntimeObservabilityService {
      * 全局进程统计；只在快照请求时读一次本机进程表（服务内部有短缓存），
      * 不常驻扫描、不加轮询。
      */
-    private readonly getHostProcessInventory?: () => Promise<HostProcessInventorySnapshot>
+    private readonly getHostProcessInventory?: () => Promise<HostProcessInventorySnapshot>,
+    private readonly getProviderObservability?: () => RuntimeProviderObservability
   ) {}
 
   hasActiveSession(): boolean {
@@ -159,8 +170,14 @@ export class RuntimeObservabilityService {
       schedulers: this.getSchedulerMetrics(),
       eventLoop: this.eventLoopMonitor.observe(),
       sqliteWriteQueue: this.readSqliteWriteQueue(),
-      hostProcesses
+      hostProcesses,
+      provider: this.readProviderObservability()
     };
+  }
+
+  private readProviderObservability(): RuntimeProviderObservability | null {
+    if (!this.getProviderObservability) return null;
+    try { return this.getProviderObservability(); } catch { return null; }
   }
 
   private readSqliteWriteQueue(): SqliteWriteQueueStats | null {

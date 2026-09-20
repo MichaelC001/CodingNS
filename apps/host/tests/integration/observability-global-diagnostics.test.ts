@@ -89,8 +89,8 @@ describe("观测快照的全局诊断字段", () => {
           hostPid: number;
           available: boolean;
           error: string | null;
-          hostTree: Array<{ pid: number; category: string }>;
-          externalCodexDesktop: Array<{ pid: number; category: string }>;
+          hostTree: Array<{ pid: number; category: string; commandLine?: string }>;
+          externalCodexDesktop: Array<{ pid: number; category: string; commandLine?: string }>;
           summary: { hostTreeCount: number; externalCodexCount: number; externalDesktopCount: number };
         } | null;
       };
@@ -113,9 +113,14 @@ describe("观测快照的全局诊断字段", () => {
         externalCodexCount: expect.any(Number),
         externalDesktopCount: expect.any(Number)
       });
-      // 进程记录只暴露 pid/ppid/rss/elapsed/category，不带命令行正文。
-      expect(JSON.stringify(snapshot.hostProcesses)).not.toContain("codingns start");
-      expect(JSON.stringify(snapshot.hostProcesses)).not.toContain("/Applications");
+      // 进程诊断需要保留受限命令行，便于区分 Host、helper、Codex 和 Desktop。
+      const processRecords = [
+        ...(snapshot.hostProcesses?.hostTree ?? []),
+        ...(snapshot.hostProcesses?.externalCodexDesktop ?? [])
+      ];
+      expect(processRecords.every((process) =>
+        process.commandLine === undefined || process.commandLine.length <= 1_024
+      )).toBe(true);
     }
   );
 });

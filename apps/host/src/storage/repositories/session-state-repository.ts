@@ -1,12 +1,18 @@
 import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { SessionStateRecord } from "../../types/domain.js";
+import type { SqliteWriteQueue } from "../sqlite/write-queue.js";
+import type { SqliteWriterLike } from "./sqlite-writer-like.js";
 
 export class SessionStateRepository {
   private readonly findBySessionAndUserStatement: SqliteStatement<any[], any>;
   private readonly upsertStatement: SqliteStatement<any[], any>;
 
-  constructor(private readonly db: SqliteDatabase) {
+  constructor(
+    private readonly db: SqliteDatabase,
+    private readonly writeQueue: SqliteWriteQueue | null = null,
+    private readonly writer: SqliteWriterLike | null = null
+  ) {
     this.findBySessionAndUserStatement = this.db.prepare(
       `SELECT
          session_id,
@@ -51,6 +57,36 @@ export class SessionStateRepository {
   }
 
   upsert(record: SessionStateRecord): void {
+    if (this.writer) {
+      void this.writer.write(
+        `INSERT INTO session_states (session_id, user_id, running_state, activity_source, favorite, last_event_at, completed_at, last_seen_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(session_id, user_id) DO UPDATE SET running_state=excluded.running_state, activity_source=excluded.activity_source,
+           favorite=excluded.favorite, last_event_at=excluded.last_event_at, completed_at=excluded.completed_at,
+           last_seen_at=excluded.last_seen_at, updated_at=excluded.updated_at`,
+        [record.sessionId, record.userId, record.runningState, record.activitySource, record.favorite ? 1 : 0, record.lastEventAt, record.completedAt, record.lastSeenAt, record.updatedAt],
+        { priority: "latest_wins" }
+      ).catch((error) => console.warn("[session-state] writer helper write failed", error));
+      return;
+    }
+    if (this.writeQueue) {
+      void this.writeQueue.enqueue(
+        "session_state.upsert",
+        () => this.upsertStatement.run(
+          record.sessionId,
+          record.userId,
+          record.runningState,
+          record.activitySource,
+          record.favorite ? 1 : 0,
+          record.lastEventAt,
+          record.completedAt,
+          record.lastSeenAt,
+          record.updatedAt
+        ),
+        { policy: "latest_wins", key: `session-state:${record.sessionId}:${record.userId}`, estimatedBytes: 512 }
+      ).catch((error) => console.warn("[session-state] async write failed", error));
+      return;
+    }
     this.upsertStatement
       .run(
         record.sessionId,
@@ -65,6 +101,7 @@ export class SessionStateRepository {
       );
   }
 }
+
 
 interface SessionStateRow {
   session_id: string;

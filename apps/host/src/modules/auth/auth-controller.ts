@@ -100,7 +100,7 @@ export class AuthController {
     request: FastifyRequest<{ Body: CreateUserInput }>,
     reply: FastifyReply
   ): Promise<void> => {
-    reply.status(201).send(this.authService.createUser(requireAuthContext(request), request.body));
+    reply.status(201).send(await this.authService.createUserAsync(requireAuthContext(request), request.body));
   };
 
   readonly updateUser = async (
@@ -108,7 +108,7 @@ export class AuthController {
     reply: FastifyReply
   ): Promise<void> => {
     reply.send(
-      this.authService.updateUser(
+      await this.authService.updateUserAsync(
         requireAuthContext(request),
         request.params.userId,
         request.body
@@ -120,7 +120,7 @@ export class AuthController {
     request: FastifyRequest<{ Params: { userId: string } }>,
     reply: FastifyReply
   ): Promise<void> => {
-    reply.send(this.authService.deleteUser(requireAuthContext(request), request.params.userId));
+    reply.send(await this.authService.deleteUserAsync(requireAuthContext(request), request.params.userId));
   };
 
   readonly getUserUsage = async (

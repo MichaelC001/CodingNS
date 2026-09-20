@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HealthService } from "../../src/modules/health/health-service.js";
+import {
+  HealthService,
+  InMemoryReadinessSnapshotProvider
+} from "../../src/modules/health/health-service.js";
 import {
   createEmptyFixture,
   createTestApp,
@@ -52,7 +55,7 @@ describe("健康接口", () => {
     expect(JSON.stringify(body)).not.toContain("memory");
   });
 
-  it("/readyz 执行一次轻量数据库读，正常时返回 ready", { timeout: 30_000 }, async () => {
+  it("/readyz 只读取 writer 内存快照，正常时返回 ready", { timeout: 30_000 }, async () => {
     const fixture = createEmptyFixture();
     activeFixtures.push(fixture);
 
@@ -66,18 +69,16 @@ describe("健康接口", () => {
     expect(response.json()).toMatchObject({ status: "ready" });
   });
 
-  it("数据库读失败时 /readyz 返回 503，且只给出错误类别", () => {
-    const db = {
-      prepare: () => {
-        throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
-      }
-    };
-    const service = new HealthService(db as never);
+  it("writer 锁竞争时 /readyz 返回 503，但不执行 SQL", () => {
+    const provider = new InMemoryReadinessSnapshotProvider();
+    provider.update({ degraded: true, lastError: "database is locked", lastLockWaitMs: 42 });
+    const service = new HealthService(provider);
 
     const readiness = service.getReadiness();
 
     expect(readiness.status).toBe("not_ready");
     expect(readiness.errorCategory).toBe("database_locked");
+    expect(readiness.lastLockWaitMs).toBe(42);
     // 只允许出现固定的错误类别，不允许把错误原文、路径、SQL 或堆栈带出去。
     expect(readiness).not.toHaveProperty("detail");
     expect(readiness).not.toHaveProperty("stack");
@@ -88,14 +89,11 @@ describe("健康接口", () => {
     expect(serialized).not.toContain(".sqlite");
   });
 
-  it("数据库打不开时归类为 database_unavailable", () => {
-    const db = {
-      prepare: () => {
-        throw Object.assign(new Error("unable to open database file"), { code: "SQLITE_CANTOPEN" });
-      }
-    };
+  it("writer 停止时归类为 writer_unavailable", () => {
+    const provider = new InMemoryReadinessSnapshotProvider();
+    provider.update({ writerAlive: false, heartbeatAt: null, stale: true });
 
-    expect(new HealthService(db as never).getReadiness().errorCategory).toBe("database_unavailable");
+    expect(new HealthService(provider).getReadiness().errorCategory).toBe("writer_unavailable");
   });
 
   it("健康接口不触发后台任务，只读不写", { timeout: 30_000 }, async () => {
@@ -113,9 +111,8 @@ describe("健康接口", () => {
     expect(prepareSpy).not.toHaveBeenCalled();
 
     await hosted.app.inject({ method: "GET", url: "/readyz" });
-    // /readyz 只发一条 SELECT 1。
-    expect(prepareSpy).toHaveBeenCalledTimes(1);
-    expect(String(prepareSpy.mock.calls[0]?.[0] ?? "")).toMatch(/SELECT 1/i);
+    // /readyz 只读内存快照，不能触发 prepare/get/run。
+    expect(prepareSpy).not.toHaveBeenCalled();
 
     prepareSpy.mockRestore();
   });
