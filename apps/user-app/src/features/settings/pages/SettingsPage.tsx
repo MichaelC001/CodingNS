@@ -1170,7 +1170,10 @@ function MobileSettingsPage({ model, appVersion }: { model: SettingsPageModel; a
 
   return (
     <div className="settings-page settings-page-mobile mobile-page-scroll-root mobile-page-with-top-header">
-      <MobilePageHeader title={t("settings.title")} />
+      <MobilePageHeader
+        title={currentSection.title}
+        onBack={() => navigate("/settings")}
+      />
       <div className="settings-mobile-container">
         {activeSection === "appearance" ? <MobileAppearanceSection model={model} /> : null}
         {activeSection === "usage" ? <MobileUsageSection /> : null}

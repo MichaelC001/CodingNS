@@ -51,12 +51,26 @@ describe("resolveMobileBackTarget", () => {
     for (const pathname of [
       "/workspaces/workspace-1",
       "/workspaces/workspace-1/terminals",
-      "/settings",
-      "/settings/relay"
+      "/settings"
     ]) {
       expect(resolveMobileBackTarget({ pathname })).toEqual({
         kind: "navigate",
         to: "/workspaces"
+      });
+    }
+  });
+
+  it("设置子页面先回设置列表", () => {
+    for (const pathname of [
+      "/settings/appearance",
+      "/settings/usage",
+      "/settings/ability-management",
+      "/settings/security-privacy",
+      "/settings/relay"
+    ]) {
+      expect(resolveMobileBackTarget({ pathname })).toEqual({
+        kind: "navigate",
+        to: "/settings"
       });
     }
   });

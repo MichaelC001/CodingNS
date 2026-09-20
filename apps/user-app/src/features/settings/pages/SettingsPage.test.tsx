@@ -280,7 +280,8 @@ describe("SettingsPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: new RegExp(t("settings.abilityManagement")) }));
 
-    expect(await screen.findByText(t("settings.abilityManagement"))).toBeInTheDocument();
+    // 顶部标题显示当前分区名，页面内另有同名分组标题，所以按一级标题断言。
+    expect(await screen.findByRole("heading", { level: 1, name: t("settings.abilityManagement") })).toBeInTheDocument();
     expect(screen.getByText(t("settings.providerManagement"))).toBeInTheDocument();
     expect(await screen.findByTestId("model-management-panel")).toBeInTheDocument();
     expect(screen.getByTestId("provider-management-panel")).toBeInTheDocument();
@@ -784,6 +785,34 @@ describe("SettingsPage", () => {
     await userEvent.click(usageEntry);
 
     expect(await screen.findByTestId("performance-overview-panel")).toBeInTheDocument();
+  });
+
+  it("移动端设置子页面提供返回按钮并回到设置列表", async () => {
+    setViewportWidth(390);
+    renderSettingsPage();
+
+    const backButtons = () => screen.queryAllByRole("button", { name: t("common.back") });
+
+    // 设置列表是一级页面，不显示返回按钮。
+    expect(backButtons()).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(t("settings.securityPrivacy")) }));
+
+    expect(screen.getByRole("button", { name: t("common.back") })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: t("common.back") }));
+
+    await waitFor(() => {
+      expect(backButtons()).toHaveLength(0);
+    });
+    expect(screen.getByRole("button", { name: new RegExp(t("settings.usage")) })).toBeInTheDocument();
+  });
+
+  it("移动端设置子页面顶部显示分区标题", async () => {
+    setViewportWidth(390);
+    renderSettingsPage("/settings/usage");
+
+    expect(screen.getAllByText(t("settings.usage")).length).toBeGreaterThan(0);
   });
 
   it("移动布局把默认会话权限放在安全与隐私分类下", async () => {
