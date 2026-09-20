@@ -45,6 +45,7 @@ function createService(
     findLatestUserMessage: vi.fn(),
     readAllTextHistoryMessages: vi.fn(),
     persistSessionBinding: vi.fn(),
+    requestWorkspaceDiscovery: vi.fn(),
     syncSessionTitle: vi.fn(async () => undefined),
     requestCodexTitleGenerationForNewSession: vi.fn(),
     readRecentHistoryEnvelope: vi.fn(),
@@ -3971,6 +3972,86 @@ describe("SessionLiveRuntimeService", () => {
 
     subscription.close();
     expect(sessionHistoryService.persistSessionBinding).toHaveBeenCalled();
+  });
+
+  it("Codex spawn_agent 完成事件会触发工作区会话发现，普通工具事件不会触发", async () => {
+    const {
+      service,
+      sessionHistoryService,
+      workspaceService,
+      sessionChangedFileService,
+      sessionIndexRepository
+    } = createService();
+    workspaceService.getWorkspaceOrThrow.mockReturnValue({
+      id: "workspace-1",
+      path: "/tmp/workspace"
+    });
+    sessionIndexRepository.findIndexRecordBySessionId.mockReturnValue({
+      sessionId: "session-1",
+      messageCount: 0
+    });
+
+    const baseEvent = {
+      sessionId: "session-1",
+      provider: "codex",
+      providerSessionId: "thread-parent",
+      rawStoreRef: "/tmp/.codex/thread-parent.jsonl",
+      timestamp: "2026-09-20T10:00:00.000Z",
+      detail: null,
+      interruptSource: null,
+      errorCode: null,
+      rawEventRef: null
+    } as const;
+
+    await (service as any).persistRuntimeEvent("session-1", "workspace-1", "user-1", {
+      ...baseEvent,
+      type: "message",
+      status: null,
+      message: {
+        role: "tool",
+        kind: "tool_call",
+        content: "{}",
+        toolCall: {
+          callId: "call-1",
+          name: "spawn_agent",
+          input: "{}",
+          output: null,
+          error: null,
+          status: "running"
+        }
+      }
+    });
+
+    await (service as any).persistRuntimeEvent("session-1", "workspace-1", "user-1", {
+      ...baseEvent,
+      type: "message",
+      status: null,
+      message: {
+        role: "tool",
+        kind: "tool_result",
+        content: "{\"agent_id\":\"thread-child\"}",
+        toolCall: {
+          callId: "call-1",
+          name: "spawn_agent",
+          input: "{}",
+          output: "{\"agent_id\":\"thread-child\"}",
+          error: null,
+          status: "completed"
+        }
+      }
+    });
+
+    expect(sessionHistoryService.requestWorkspaceDiscovery).toHaveBeenCalledTimes(1);
+    expect(sessionHistoryService.requestWorkspaceDiscovery).toHaveBeenCalledWith(
+      "workspace-1",
+      "user-1",
+      {
+        force: true,
+        refreshStateMode: "deferred",
+        trigger: "subagent_spawn"
+      }
+    );
+    expect(sessionChangedFileService.recordMessages).toHaveBeenCalled();
   });
 
   it("终态 runtime 快照不会阻塞 Codex 队列续跑", async () => {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -972,6 +972,134 @@ describe("SessionHistoryService background tasks", () => {
     expect(
       service.instance.observeBackgroundTaskMetrics().taskTypes[HOST_TASK_TYPES.sessionCodexTitleGenerate]
     ).toBeUndefined();
+
+    service.dispose();
+  });
+
+  it("Codex 子 Agent 创建事件会自动发现子 JSONL，并按父会话建立关系且只入队一次", async () => {
+    const parentProviderSessionId = "019ea4ef-a305-7f20-8da5-0b4dcc47ea29";
+    const childProviderSessionId = "019ea5e8-05c2-77a1-977e-90a6df8a44a7";
+    const scanCalls: unknown[] = [];
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType !== HOST_TASK_TYPES.workspaceDiscoveryScan) {
+            return await definition.run(input, context);
+          }
+
+          scanCalls.push(input);
+          const workspacePath = String((input as { workspacePath: string }).workspacePath);
+          return {
+            sessions: [
+              {
+                provider: "codex",
+                providerSessionId: parentProviderSessionId,
+                title: "父会话",
+                workspacePath,
+                rawStoreRef: `codex://thread/${parentProviderSessionId}`,
+                isArchived: false,
+                lastMessageAt: "2026-09-20T10:00:00.000Z",
+                messageCount: 1
+              },
+              {
+                provider: "codex",
+                providerSessionId: childProviderSessionId,
+                title: "子 Agent",
+                workspacePath,
+                rawStoreRef: `codex://thread/${childProviderSessionId}`,
+                isArchived: false,
+                lastMessageAt: "2026-09-20T10:00:01.000Z",
+                messageCount: 1,
+                parentProviderSessionId: parentProviderSessionId,
+                isSubagent: true,
+                subagentLabel: "worker · 子 Agent"
+              }
+            ],
+            isComplete: true,
+            providerDiagnostics: []
+          };
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    const discoveryCompleted = vi.fn();
+    service.instance.registerWorkspaceDiscoveryCompletedObserver(discoveryCompleted);
+    const childJsonlPath = join(
+      service.codexHomeDir,
+      "sessions",
+      "2026",
+      "09",
+      "20",
+      `${childProviderSessionId}.jsonl`
+    );
+    mkdirSync(dirname(childJsonlPath), { recursive: true });
+    writeFileSync(
+      childJsonlPath,
+      `${JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: childProviderSessionId,
+          cwd: service.workspacePath,
+          thread_source: "subagent",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: parentProviderSessionId
+              }
+            }
+          }
+        }
+      })}\n`,
+      "utf8"
+    );
+    expect(existsSync(childJsonlPath)).toBe(true);
+    seedSession(service.database.db, {
+      sessionId: "parent-session",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: parentProviderSessionId,
+      rawStoreRef: `codex://thread/${parentProviderSessionId}`,
+      title: "父会话",
+      messageCount: 1,
+      lastMessageAt: "2026-09-20T10:00:00.000Z",
+      createdAt: "2026-09-20T10:00:00.000Z",
+      updatedAt: "2026-09-20T10:00:00.000Z"
+    });
+
+    service.instance.requestWorkspaceDiscovery("workspace-1", "user-1", {
+      force: true,
+      trigger: "subagent_spawn",
+      refreshStateMode: "deferred"
+    });
+    service.instance.requestWorkspaceDiscovery("workspace-1", "user-1", {
+      force: true,
+      trigger: "subagent_spawn",
+      refreshStateMode: "deferred"
+    });
+
+    await waitUntil(() => scanCalls.length === 1);
+    await flushMicrotasks();
+
+    const sessions = service.instance.listWorkspaceSessions("workspace-1", "user-1");
+    const child = sessions.find((item) => item.providerSessionId === childProviderSessionId);
+    expect(child).toMatchObject({
+      isSubagent: true,
+      parentSessionId: "parent-session",
+      subagentLabel: "worker · 子 Agent"
+    });
+    expect(discoveryCompleted).toHaveBeenCalledWith({
+      workspaceId: "workspace-1",
+      userId: "user-1",
+      triggerSource: "session_history.codex_subagent_spawn"
+    });
+    expect(
+      service.instance.observeBackgroundTaskMetrics().taskTypes[HOST_TASK_TYPES.workspaceDiscovery]
+        ?.counters.dedupe
+    ).toBe(1);
+
+    await service.instance.discoverWorkspaceSessions("workspace-1", "user-1");
+    expect(scanCalls).toHaveLength(1);
 
     service.dispose();
   });
