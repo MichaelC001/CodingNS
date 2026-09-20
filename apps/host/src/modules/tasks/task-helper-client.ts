@@ -4,11 +4,20 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import type { TaskHelperProcessHandlerName } from "./task-helper-process-handlers.js";
-import { TaskQueueWaitTimeoutError, TaskTimeoutError } from "./task-types.js";
+import {
+  TASK_HELPER_RETIRING_ERROR_CODE,
+  TaskHelperRetiredError,
+  TaskQueueWaitTimeoutError,
+  TaskTimeoutError
+} from "./task-types.js";
 import {
   HELPER_PROCESS_CANCEL_FALLBACK_MS,
   terminateChildProcess
 } from "../../shared/utils/child-process-lifecycle.js";
+import {
+  measureUtf8Bytes,
+  TASK_HELPER_MAX_PROTOCOL_LINE_BYTES
+} from "./task-helper-metrics.js";
 
 interface PendingRequest<TResult> {
   resolve: (value: TResult) => void;
@@ -28,6 +37,9 @@ export interface TaskHelperProcessClientHealthSnapshot {
   lastHeartbeatAt: string | null;
   lastExitAt: string | null;
   lastTerminationReason: string | null;
+  /** 这个 client 是否已经安排当前 child 退出、正在等替代 child 接管。 */
+  retiring?: boolean;
+  retiringReason?: string | null;
 }
 
 export interface TaskHelperWorkerClientLike {
@@ -79,6 +91,13 @@ export class TaskHelperProcessClient {
   private readonly unacknowledgedRemoteRequestIds = new Set<string>();
   private readonly remoteRequestChildren = new Map<string, ChildProcessWithoutNullStreams>();
   private readonly cancelFallbackTimers = new Map<string, NodeJS.Timeout>();
+  /**
+   * 已经安排退出、但还没真正退出的 child。
+   *
+   * 这些 child 不再接新请求。它们的 stdout 关闭是预期行为，不能当成传输故障
+   * 去 reject 已经转到替代 child 上的请求。
+   */
+  private readonly retiringChildren = new Set<ChildProcessWithoutNullStreams>();
   private nextRequestId = 1;
   private disposed = false;
   private startedAtMs: number | null = null;
@@ -120,8 +139,23 @@ export class TaskHelperProcessClient {
         const failedChild = getFailedHelperChild(normalizedError);
 
         if (failedChild) {
-          this.handleChildTermination(failedChild, normalizedError);
+          if (error instanceof TaskHelperRetiredError) {
+            // helper 自己说要退了：标记 retiring 并立刻准备替代 child。
+            this.retireChild(failedChild, normalizedError.message);
+          } else {
+            this.handleChildTermination(failedChild, normalizedError);
+          }
           continue;
+        }
+
+        if (error instanceof TaskHelperRetiredError) {
+          // 没有附带 child 的 retiring 错误同样说明当前 child 正在回收。
+          const retiringChild = this.child ?? this.stdoutReaderChild;
+
+          if (retiringChild) {
+            this.retireChild(retiringChild, normalizedError.message);
+            continue;
+          }
         }
 
         if (
@@ -206,14 +240,29 @@ export class TaskHelperProcessClient {
       this.inflightRemoteRequestIds.add(id);
       this.unacknowledgedRemoteRequestIds.add(id);
 
-      child.stdin.write(
-        `${JSON.stringify({
+      const requestLine = `${JSON.stringify({
           id,
           type: "run",
           handler,
           input,
           queueWaitTimeoutMs: normalizeHelperQueueWaitTimeout(options.queueWaitTimeoutMs)
-        })}\n`,
+        })}\n`;
+      const requestBytes = measureUtf8Bytes(requestLine);
+
+      if (requestBytes > TASK_HELPER_MAX_PROTOCOL_LINE_BYTES) {
+        this.pendingRequests.delete(id);
+        this.clearRemoteRequestTracking(id);
+        if (onAbort && signal) {
+          signal.removeEventListener("abort", onAbort);
+        }
+        reject(new Error(
+          `TASK_HELPER_INPUT_TOO_LARGE: ${requestBytes} > ${TASK_HELPER_MAX_PROTOCOL_LINE_BYTES}`
+        ));
+        return;
+      }
+
+      child.stdin.write(
+        requestLine,
         (error) => {
           if (!error) {
             return;
@@ -265,7 +314,9 @@ export class TaskHelperProcessClient {
       startedAt: toIso(this.startedAtMs),
       lastHeartbeatAt: toIso(this.lastHeartbeatAtMs),
       lastExitAt: toIso(this.lastExitAtMs),
-      lastTerminationReason: this.lastTerminationReason
+      lastTerminationReason: this.lastTerminationReason,
+      retiring: this.retiringChildren.size > 0,
+      retiringReason: this.lastTerminationReason
     };
   }
 
@@ -303,6 +354,14 @@ export class TaskHelperProcessClient {
 
     if (payload.errorCode === "TASK_QUEUE_WAIT_TIMEOUT") {
       pending.reject(new TaskQueueWaitTimeoutError(payload.error));
+      this.armIdleRecycleTimerIfNeeded();
+      return;
+    }
+
+    if (payload.errorCode === TASK_HELPER_RETIRING_ERROR_CODE) {
+      // helper 明确说“我没执行”。这不是失败结果，而是可重试信号。
+      // 带上 child，重试路径才能准确把这个 helper 标成 retiring，而不误伤替代 child。
+      pending.reject(attachFailedHelperChild(new TaskHelperRetiredError(payload.error), pending.child));
       this.armIdleRecycleTimerIfNeeded();
       return;
     }
@@ -357,7 +416,15 @@ export class TaskHelperProcessClient {
   }
 
   private ensureChild(): ChildProcessWithoutNullStreams {
-    if (this.child && this.stdoutReader && !this.child.killed && !this.child.stdin.destroyed) {
+    // 正在回收的 child 一律不接新请求：这里已经把它从 this.child 摘掉，
+    // 所以会直接往下走，立刻拉起替代 child。
+    if (
+      this.child
+      && this.stdoutReader
+      && !this.retiringChildren.has(this.child)
+      && !this.child.killed
+      && !this.child.stdin.destroyed
+    ) {
       this.clearIdleRecycleTimer();
       return this.child;
     }
@@ -386,6 +453,13 @@ export class TaskHelperProcessClient {
 
       if (this.child === child) {
         this.child = null;
+      }
+
+      // 预期内的回收（idle/RSS/软取消）也会让 stdout 关闭。
+      // 这不能当成传输故障：否则会向业务层抛 PROVIDER_IO_ERROR，
+      // 而实际上这些请求应该转到替代 child 上重试。
+      if (this.retiringChildren.has(child)) {
+        return;
       }
 
       // stdout 提前关闭不等于 child 已经退出；必须继续回收整个进程组，
@@ -445,18 +519,35 @@ export class TaskHelperProcessClient {
       return;
     }
 
-    this.forceRecycleChild(this.child, reason);
+    this.retireChild(this.child, reason);
   }
 
-  private forceRecycleChild(child: ChildProcessWithoutNullStreams, reason: string): void {
+  /**
+   * 计划内回收 child 的唯一入口：空闲回收、RSS 高水位、软取消超时、
+   * 以及 helper 主动回 `TASK_HELPER_RETIRING` 都走这里。
+   *
+   * 关键语义：
+   * 1. 先标记 retiring，之后 `ensureChild()` 不会再复用这个 child；
+   * 2. 立刻把它从 `this.child` 摘掉，下一个请求会直接拉起替代 child；
+   * 3. 未完成请求统一收到可重试的 `TaskHelperRetiredError`，转到替代 child，
+   *    而不是被当成传输故障升级成 PROVIDER_IO_ERROR。
+   */
+  private retireChild(child: ChildProcessWithoutNullStreams, reason: string): void {
+    if (this.retiringChildren.has(child)) {
+      return;
+    }
+
+    this.retiringChildren.add(child);
     this.lastTerminationReason = reason;
     this.lastExitAtMs = Date.now();
+
     if (this.child === child) {
       this.child = null;
     }
     this.clearIdleRecycleTimer();
 
     if (this.stdoutReader && this.stdoutReaderChild === child) {
+      // close 回调会因为 retiring 标记而跳过传输故障分支。
       this.stdoutReader.close();
       this.stdoutReader = null;
       this.stdoutReaderChild = null;
@@ -464,11 +555,20 @@ export class TaskHelperProcessClient {
 
     // 统一走 TERM→KILL，并等待退出；不能只给 helper 外壳发一次信号。
     void terminateChildProcess(child, {
-      termGraceMs: 250,
-      killWaitMs: 250
+      termGraceMs: 750,
+      killWaitMs: 500
+    }).finally(() => {
+      // 退出事件可能早于这里触发；无论如何都要把标记清掉，避免集合只增不减。
+      this.retiringChildren.delete(child);
     });
 
-    this.rejectPendingForChild(child, new TaskTimeoutError(reason));
+    this.rejectPendingForChild(
+      child,
+      attachFailedHelperChild(
+        new TaskHelperRetiredError(`task helper 正在回收：${reason}`),
+        child
+      )
+    );
   }
 
   private handleChildTermination(
@@ -482,6 +582,11 @@ export class TaskHelperProcessClient {
       return;
     }
 
+    // 计划内回收的 child 关管、退出都是预期行为，不能当传输故障。
+    if (child && this.retiringChildren.has(child)) {
+      return;
+    }
+
     this.lastExitAtMs = Date.now();
     if (!this.lastTerminationReason) {
       this.lastTerminationReason = error.message;
@@ -492,10 +597,17 @@ export class TaskHelperProcessClient {
       return;
     }
 
-    if (this.child === child) {
+    const isCurrentChild = this.child === child;
+
+    if (isCurrentChild) {
       this.child = null;
     }
-    this.clearIdleRecycleTimer();
+
+    // 只有当前 child 的退出才该取消空闲回收计时；旧 child 的迟到事件
+    // 不能把替代 child 的回收计时器一起清掉。
+    if (isCurrentChild) {
+      this.clearIdleRecycleTimer();
+    }
 
     if (this.stdoutReader && this.stdoutReaderChild === child) {
       this.stdoutReader.close();
@@ -593,7 +705,7 @@ export class TaskHelperProcessClient {
         return;
       }
 
-      this.forceRecycleChild(
+      this.retireChild(
         child,
         `helper_soft_cancel_timeout:${requestId}`
       );
@@ -627,22 +739,9 @@ export class TaskHelperProcessClient {
       return;
     }
 
-    this.lastTerminationReason = reason;
-    this.lastExitAtMs = Date.now();
-    if (this.child === child) {
-      this.child = null;
-    }
-    if (this.stdoutReader && this.stdoutReaderChild === child) {
-      this.stdoutReader.close();
-      this.stdoutReader = null;
-      this.stdoutReaderChild = null;
-    }
-    // 空闲回收也必须经过统一的 TERM→KILL 等待流程，不能只发一次
-    // SIGTERM；否则不响应的 CLI 会在 Host 重启后继续成为孤儿进程。
-    void terminateChildProcess(child, {
-      termGraceMs: 750,
-      killWaitMs: 500
-    });
+    // 空闲回收同样走统一 retiring 流程：标记、摘除、明确失败语义、
+    // TERM→KILL 收尾，避免只发一次 SIGTERM 留下孤儿 CLI。
+    this.retireChild(child, reason);
   }
 
   private async disposeInternal(): Promise<void> {
@@ -660,6 +759,10 @@ export class TaskHelperProcessClient {
     }
     for (const requestChild of this.remoteRequestChildren.values()) {
       children.add(requestChild);
+    }
+    // 正在 retiring 的 child 也要一起收掉，否则 Host 关闭时会留下孤儿进程。
+    for (const retiringChild of this.retiringChildren) {
+      children.add(retiringChild);
     }
     this.disposed = true;
     this.clearIdleRecycleTimer();
@@ -726,9 +829,15 @@ function isRetryableHelperClientError(error: unknown): boolean {
     return false;
   }
 
+  // retiring 是“这个 helper 正在回收”，不是传输坏了。
+  // 必须允许重试，让请求转到替代 child 上，而不是升级成 PROVIDER_IO_ERROR。
+  if (error instanceof TaskHelperRetiredError) {
+    return true;
+  }
+
   const code = "code" in error ? error.code : null;
 
-  if (code === "EPIPE" || code === "ECONNRESET") {
+  if (code === TASK_HELPER_RETIRING_ERROR_CODE || code === "EPIPE" || code === "ECONNRESET") {
     return true;
   }
 
@@ -736,7 +845,8 @@ function isRetryableHelperClientError(error: unknown): boolean {
   return message.includes("task helper 已退出")
     || message.includes("task helper stdout 已关闭")
     || message.includes("task helper stdin 已断开")
-    || message.includes("task helper pipe 已断开");
+    || message.includes("task helper pipe 已断开")
+    || message.includes("正在回收");
 }
 
 function isHelperTimeoutError(error: unknown, signal?: AbortSignal): boolean {

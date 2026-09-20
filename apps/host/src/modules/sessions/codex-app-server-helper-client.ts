@@ -12,6 +12,13 @@ import type {
 } from "@codingns/session-sync-core";
 import { buildCodexAppServerRuntimeEnv } from "@codingns/session-sync-core";
 import { terminateChildProcess } from "../../shared/utils/child-process-lifecycle.js";
+import {
+  buildCodexAppServerHelperLeaseLogEntry,
+  createCodexAppServerHelperLeaseMetrics,
+  hashCodexAppServerHelperRootDir,
+  writeCodexAppServerHelperLeaseLog,
+  type CodexAppServerHelperLeaseMetrics
+} from "./codex-app-server-helper-lease.js";
 
 type HelperToParentMessage =
   | {
@@ -27,6 +34,7 @@ type HelperToParentMessage =
       requestId: string;
       ok: false;
       error: string;
+      errorCode?: string;
     }
   | {
       type: "notification";
@@ -104,74 +112,77 @@ interface LogicalTransportState {
   closed: boolean;
 }
 
+class CodexAppServerHelperRetiringError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexAppServerHelperRetiringError";
+  }
+}
+
 interface CodexAppServerHelperClientOptions {
   homeDir?: string;
   runtimeEnv?: Record<string, string> | null;
   requestTimeoutMs?: number;
+  /**
+   * 空闲租约时长。
+   *
+   * 只有“无 inflight 请求、无活跃 handler、无未关闭 transport”时才计时；
+   * 到期后释放当前 helper/app-server，下一个请求再懒启动。
+   */
+  idleLeaseMs?: number;
+}
+
+export interface CodexAppServerHelperClientHealthSnapshot {
+  pid: number | null;
+  alive: boolean;
+  retiring: boolean;
+  retiringReason: string | null;
+  idleLeaseMs: number;
+  idleLeaseArmed: boolean;
+  activeTransportCount: number;
+  inflightRequestCount: number;
+  activeHandlerCount: number;
+  metrics: CodexAppServerHelperLeaseMetrics;
 }
 
 const activeCodexAppServerHelpers = new Set<CodexAppServerHelperClient>();
+const CODEX_APP_SERVER_HELPER_MAX_PROTOCOL_LINE_BYTES = 16 * 1024 * 1024;
 
 export class CodexAppServerHelperClient {
-  private readonly child: ChildProcessWithoutNullStreams;
-  private readonly stdoutReader: readline.Interface;
+  private child: ChildProcessWithoutNullStreams | null = null;
+  private stdoutReader: readline.Interface | null = null;
+  private readonly helperEnv: NodeJS.ProcessEnv;
+  private readonly launch: { command: string; args: string[] };
   private readonly transports = new Map<string, LogicalTransportState>();
   private readonly requestTimeoutMs: number;
+  private readonly idleLeaseMs: number;
   private nextTransportId = 1;
   private nextRequestId = 1;
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
+  private idleLeaseTimer: NodeJS.Timeout | null = null;
+  private readonly retiringChildren = new Set<ChildProcessWithoutNullStreams>();
+  private retiringReason: string | null = null;
+  private inflightRequestCount = 0;
+  private activeHandlerCount = 0;
+  private readonly metrics = createCodexAppServerHelperLeaseMetrics();
 
 
   constructor(commandPath: string, options: CodexAppServerHelperClientOptions = {}) {
-    const launch = resolveHelperLaunch(commandPath);
-    const helperEnv = buildCodexAppServerRuntimeEnv({
+    this.requestTimeoutMs = Math.max(1, Math.floor(options.requestTimeoutMs ?? 20_000));
+    this.idleLeaseMs = Math.max(1, Math.floor(options.idleLeaseMs ?? 5 * 60_000));
+    this.launch = resolveHelperLaunch(commandPath, this.idleLeaseMs);
+    this.helperEnv = buildCodexAppServerRuntimeEnv({
       baseEnv: options.runtimeEnv,
       commandPath,
       homeDir: options.homeDir
     });
-    this.requestTimeoutMs = Math.max(1, Math.floor(options.requestTimeoutMs ?? 20_000));
-
-    this.child = spawn(launch.command, launch.args, {
-      cwd: process.cwd(),
-      env: helperEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32"
-    });
     activeCodexAppServerHelpers.add(this);
-    this.stdoutReader = readline.createInterface({
-      input: this.child.stdout
-    });
-
-    this.stdoutReader.on("line", (line) => {
-      void this.handleMessageLine(line);
-    });
-    this.child.stderr.on("data", (chunk) => {
-      const content = String(chunk).trim();
-
-      if (!content) {
-        return;
-      }
-
-      console.warn(`[codex-app-server-helper] ${content}`);
-    });
-    this.child.on("error", (error) => {
-      this.failAll(error);
-      void terminateChildProcess(this.child, {
-        termGraceMs: 250,
-        killWaitMs: 250
-      });
-    });
-    this.child.on("exit", (code, signal) => {
-      if (this.disposed && (code === 0 || signal === "SIGTERM")) {
-        return;
-      }
-
-      this.failAll(new Error(`Codex app-server helper 已退出：code=${code ?? "null"} signal=${signal ?? "null"}`));
-    });
+    // 构造 client 不拉进程；首个 transport/request 到来时再懒启动。
   }
 
   createTransport(): CodexAppServerTransport {
+    this.activate();
     const transportId = String(this.nextTransportId++);
     const state: LogicalTransportState = {
       pendingResponses: new Map(),
@@ -195,15 +206,20 @@ export class CodexAppServerHelperClient {
         workspacePath?: string;
         history?: unknown[];
         model?: string | null;
-      } = {}
+      } = {},
+      allowRetiringRetry = true
     ): Promise<Record<string, unknown>> => {
       if (state.closed) {
         throw new Error("CODEX_APP_SERVER_CLOSED");
       }
 
-      const requestId = String(this.nextRequestId++);
+      this.activate();
 
-      return await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const requestId = String(this.nextRequestId++);
+      this.beginInflightRequest(requestId, transportId, method, input);
+
+      try {
+        return await new Promise<Record<string, unknown>>((resolve, reject) => {
         const timeout = setTimeout(() => {
           this.closeLogicalTransport(transportId, state, new Error("SERVER_TIMEOUT"));
         }, this.requestTimeoutMs);
@@ -211,10 +227,12 @@ export class CodexAppServerHelperClient {
         state.pendingResponses.set(requestId, {
           resolve: (value) => {
             clearTimeout(timeout);
+            this.endInflightRequest();
             resolve(value);
           },
           reject: (error) => {
             clearTimeout(timeout);
+            this.endInflightRequest();
             reject(error);
           }
         });
@@ -228,9 +246,20 @@ export class CodexAppServerHelperClient {
         }).catch((error) => {
           clearTimeout(timeout);
           state.pendingResponses.delete(requestId);
+          this.endInflightRequest();
           reject(error);
         });
-      });
+        });
+      } catch (error) {
+        if (
+          allowRetiringRetry
+          && error instanceof CodexAppServerHelperRetiringError
+          && !state.closed
+        ) {
+          return await request(method, input, false);
+        }
+        throw error;
+      }
     };
 
     return {
@@ -304,6 +333,7 @@ export class CodexAppServerHelperClient {
   }
 
   createForkTransport(): CodexForkTransport {
+    this.activate();
     const transportId = String(this.nextTransportId++);
     const state: LogicalTransportState = {
       pendingResponses: new Map(),
@@ -325,15 +355,20 @@ export class CodexAppServerHelperClient {
         workspacePath?: string;
         history?: unknown[];
         model?: string | null;
-      } = {}
+      } = {},
+      allowRetiringRetry = true
     ): Promise<Record<string, unknown>> => {
       if (state.closed) {
         throw new Error("CODEX_APP_SERVER_CLOSED");
       }
 
-      const requestId = String(this.nextRequestId++);
+      this.activate();
 
-      return await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const requestId = String(this.nextRequestId++);
+      this.beginInflightRequest(requestId, transportId, method, input);
+
+      try {
+        return await new Promise<Record<string, unknown>>((resolve, reject) => {
         const timeout = setTimeout(() => {
           this.closeLogicalTransport(transportId, state, new Error("SERVER_TIMEOUT"));
         }, this.requestTimeoutMs);
@@ -341,10 +376,12 @@ export class CodexAppServerHelperClient {
         state.pendingResponses.set(requestId, {
           resolve: (value) => {
             clearTimeout(timeout);
+            this.endInflightRequest();
             resolve(value);
           },
           reject: (error) => {
             clearTimeout(timeout);
+            this.endInflightRequest();
             reject(error);
           }
         });
@@ -358,9 +395,20 @@ export class CodexAppServerHelperClient {
         }).catch((error) => {
           clearTimeout(timeout);
           state.pendingResponses.delete(requestId);
+          this.endInflightRequest();
           reject(error);
         });
-      });
+        });
+      } catch (error) {
+        if (
+          allowRetiringRetry
+          && error instanceof CodexAppServerHelperRetiringError
+          && !state.closed
+        ) {
+          return await request(method, input, false);
+        }
+        throw error;
+      }
     };
 
     return {
@@ -410,6 +458,7 @@ export class CodexAppServerHelperClient {
   }
 
   createThreadControlTransport(): CodexThreadControlTransport {
+    this.activate();
     const transportId = String(this.nextTransportId++);
     const state: LogicalTransportState = {
       pendingResponses: new Map(),
@@ -429,15 +478,20 @@ export class CodexAppServerHelperClient {
         providerSessionId?: string;
         name?: string;
         workspacePath?: string;
-      } = {}
+      } = {},
+      allowRetiringRetry = true
     ): Promise<Record<string, unknown>> => {
       if (state.closed) {
         throw new Error("CODEX_APP_SERVER_CLOSED");
       }
 
-      const requestId = String(this.nextRequestId++);
+      this.activate();
 
-      return await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const requestId = String(this.nextRequestId++);
+      this.beginInflightRequest(requestId, transportId, method, input);
+
+      try {
+        return await new Promise<Record<string, unknown>>((resolve, reject) => {
         const timeout = setTimeout(() => {
           this.closeLogicalTransport(transportId, state, new Error("SERVER_TIMEOUT"));
         }, this.requestTimeoutMs);
@@ -445,10 +499,12 @@ export class CodexAppServerHelperClient {
         state.pendingResponses.set(requestId, {
           resolve: (value) => {
             clearTimeout(timeout);
+            this.endInflightRequest();
             resolve(value);
           },
           reject: (error) => {
             clearTimeout(timeout);
+            this.endInflightRequest();
             reject(error);
           }
         });
@@ -462,9 +518,20 @@ export class CodexAppServerHelperClient {
         }).catch((error) => {
           clearTimeout(timeout);
           state.pendingResponses.delete(requestId);
+          this.endInflightRequest();
           reject(error);
         });
-      });
+        });
+      } catch (error) {
+        if (
+          allowRetiringRetry
+          && error instanceof CodexAppServerHelperRetiringError
+          && !state.closed
+        ) {
+          return await request(method, input, false);
+        }
+        throw error;
+      }
     };
 
     return {
@@ -534,9 +601,13 @@ export class CodexAppServerHelperClient {
       return;
     }
 
+    // helper 还在说话就说明它正在干活，不能进入 idle 计时。
+    this.clearIdleLease();
+
     const state = this.transports.get(message.transportId);
 
     if (!state) {
+      this.scheduleIdleLease();
       return;
     }
 
@@ -545,6 +616,7 @@ export class CodexAppServerHelperClient {
         const pending = state.pendingResponses.get(message.requestId);
 
         if (!pending) {
+          this.scheduleIdleLease();
           return;
         }
 
@@ -552,16 +624,34 @@ export class CodexAppServerHelperClient {
 
         if (message.ok) {
           pending.resolve(message.result);
+          this.scheduleIdleLease();
+          return;
+        }
+
+        if (message.errorCode === "CODEX_APP_SERVER_HELPER_RETIRING") {
+          const child = this.child;
+          if (child) {
+            this.retireChild(child, message.error);
+          }
+          pending.reject(new CodexAppServerHelperRetiringError(message.error));
+          this.scheduleIdleLease();
           return;
         }
 
         pending.reject(new Error(message.error));
+        this.scheduleIdleLease();
         return;
       }
       case "notification":
-        await state.notificationHandler(message.notification);
+        this.beginHandler();
+        try {
+          await state.notificationHandler(message.notification);
+        } finally {
+          this.endHandler();
+        }
         return;
       case "server_request":
+        this.beginHandler();
         try {
           const result = await state.serverRequestHandler(message.request);
           await this.sendMessage({
@@ -579,6 +669,8 @@ export class CodexAppServerHelperClient {
             ok: false,
             error: error instanceof Error ? error.message : String(error)
           });
+        } finally {
+          this.endHandler();
         }
         return;
       case "transport_closed":
@@ -589,12 +681,23 @@ export class CodexAppServerHelperClient {
           message.detail ? new Error(message.detail) : null
         );
         this.transports.delete(message.transportId);
+        this.scheduleIdleLease();
     }
   }
 
   private async sendMessage(message: ParentToHelperMessage): Promise<void> {
+    const child = this.ensureChild();
+    const line = `${JSON.stringify(message)}\n`;
+    const lineBytes = Buffer.byteLength(line, "utf8");
+
+    if (lineBytes > CODEX_APP_SERVER_HELPER_MAX_PROTOCOL_LINE_BYTES) {
+      throw new Error(
+        `CODEX_APP_SERVER_HELPER_INPUT_TOO_LARGE: ${lineBytes} > ${CODEX_APP_SERVER_HELPER_MAX_PROTOCOL_LINE_BYTES}`
+      );
+    }
+
     await new Promise<void>((resolve, reject) => {
-      this.child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+      child.stdin.write(line, (error) => {
         if (error) {
           reject(error);
           return;
@@ -631,6 +734,7 @@ export class CodexAppServerHelperClient {
     this.rejectTransportPending(state, error ?? new Error("CODEX_APP_SERVER_CLOSED"));
     this.notifyTransportClosed(state, error);
     this.transports.delete(transportId);
+    this.scheduleIdleLease();
     return closePromise;
   }
 
@@ -659,17 +763,360 @@ export class CodexAppServerHelperClient {
 
   private async disposeInternal(): Promise<void> {
     this.disposed = true;
+    this.clearIdleLease();
     const closePromises = [...this.transports.entries()].map(([transportId, state]) =>
       this.closeLogicalTransport(transportId, state, new Error("Codex app-server helper 已关闭"))
     );
     await Promise.allSettled(closePromises.map((promise) => withTimeout(promise, 250)));
     this.failAll(new Error("Codex app-server helper 已关闭"));
-    this.stdoutReader.close();
-    await terminateChildProcess(this.child, {
+    const child = this.child;
+    this.child = null;
+    this.stdoutReader?.close();
+    this.stdoutReader = null;
+    if (child) {
+      await terminateChildProcess(child, {
+        termGraceMs: 750,
+        killWaitMs: 500
+      });
+    }
+    activeCodexAppServerHelpers.delete(this);
+  }
+
+  private activate(): void {
+    if (this.disposed) {
+      throw new Error("CODEX_APP_SERVER_HELPER_DISPOSED");
+    }
+
+    activeCodexAppServerHelpers.add(this);
+    this.clearIdleLease();
+    this.ensureChild();
+  }
+
+  private ensureChild(): ChildProcessWithoutNullStreams {
+    if (this.child) {
+      return this.child;
+    }
+
+    return this.startChild();
+  }
+
+  private startChild(): ChildProcessWithoutNullStreams {
+    if (this.disposed) {
+      throw new Error("CODEX_APP_SERVER_HELPER_DISPOSED");
+    }
+
+    let child: ChildProcessWithoutNullStreams;
+
+    try {
+      child = spawn(this.launch.command, this.launch.args, {
+        cwd: process.cwd(),
+        env: this.helperEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32"
+      });
+    } catch (error) {
+      this.metrics.spawnFailedTotal += 1;
+      this.logLease("child.spawn_failed", {
+        errorMessage: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+
+    this.child = child;
+    this.metrics.spawnTotal += 1;
+    this.logLease("child.spawned", { pid: child.pid ?? null });
+    const stdoutReader = readline.createInterface({
+      input: child.stdout
+    });
+    this.stdoutReader = stdoutReader;
+
+    stdoutReader.on("line", (line) => {
+      if (this.child !== child) {
+        return;
+      }
+      void this.handleMessageLine(line);
+    });
+    child.stderr.on("data", (chunk) => {
+      if (this.child !== child) {
+        return;
+      }
+      const content = String(chunk).trim();
+
+      if (content) {
+        console.warn(`[codex-app-server-helper] ${content}`);
+      }
+    });
+    child.on("error", (error) => {
+      if (this.child !== child) {
+        return;
+      }
+      this.child = null;
+      this.metrics.spawnFailedTotal += 1;
+      this.stdoutReader?.close();
+      this.stdoutReader = null;
+      this.failAll(error);
+      this.removeIfInactive();
+      void terminateChildProcess(child, {
+        termGraceMs: 250,
+        killWaitMs: 250
+      });
+    });
+    child.on("exit", (code, signal) => {
+      if (this.child !== child) {
+        return;
+      }
+      this.child = null;
+      this.stdoutReader?.close();
+      this.stdoutReader = null;
+      if (this.disposed && (code === 0 || signal === "SIGTERM")) {
+        return;
+      }
+
+      this.failAll(new Error(`Codex app-server helper 已退出：code=${code ?? "null"} signal=${signal ?? "null"}`));
+      this.removeIfInactive();
+    });
+    return child;
+  }
+
+  private scheduleIdleLease(): void {
+    if (!this.isIdle()) {
+      return;
+    }
+
+    this.clearIdleLease();
+    this.logLease("lease.armed");
+    this.metrics.idleLeaseArmedTotal += 1;
+    this.idleLeaseTimer = setTimeout(() => {
+      this.idleLeaseTimer = null;
+      void this.expireIdleLease();
+    }, this.idleLeaseMs);
+    this.idleLeaseTimer.unref?.();
+  }
+
+  /**
+   * 空闲到期：走统一 retiring 流程。
+   *
+   * 先摘除当前 child、关掉 reader，之后新请求会懒启动替代 child；
+   * 迟到的 stdout close / exit 不会再把替代 child 判死。
+   */
+  private async expireIdleLease(): Promise<void> {
+    if (!this.isIdle()) {
+      return;
+    }
+
+    const child = this.child;
+
+    if (!child) {
+      return;
+    }
+
+    this.metrics.idleRecycleTotal += 1;
+    this.logLease("lease.expired", { reason: "idle_lease_expired" });
+    this.retireChild(child, "idle_lease_expired");
+
+    // 仍有 retiring child 时必须留在全局集合里，Host shutdown 才能等待其收尾。
+  }
+
+  /**
+   * 计划内回收 child 的唯一入口。
+   *
+   * 关键语义：先标记 retiring，保证 ensureChild 不再复用它；未完成请求拿到
+   * 明确的可重试失败，而不是含糊的传输错误。
+   */
+  private retireChild(child: ChildProcessWithoutNullStreams, reason: string): void {
+    if (this.retiringChildren.has(child)) {
+      return;
+    }
+
+    this.retiringChildren.add(child);
+    this.retiringReason = reason;
+    this.metrics.retireTotal += 1;
+
+    if (this.child === child) {
+      this.child = null;
+    }
+
+    this.clearIdleLease();
+    this.stdoutReader?.close();
+    this.stdoutReader = null;
+    this.logLease("child.retiring", {
+      reason,
+      pid: child.pid ?? null
+    });
+
+    void terminateChildProcess(child, {
       termGraceMs: 750,
       killWaitMs: 500
+    }).finally(() => {
+      this.retiringChildren.delete(child);
+      this.metrics.terminatedTotal += 1;
+      if (this.retiringChildren.size === 0) {
+        this.retiringReason = null;
+        if (!this.child && this.transports.size === 0 && !this.disposed) {
+          activeCodexAppServerHelpers.delete(this);
+        }
+      }
     });
-    activeCodexAppServerHelpers.delete(this);
+
+    // 正在回收的 child 上的未完成请求必须明确失败，父进程好转到替代 child。
+    this.rejectAllPendingForRetire(child, reason);
+  }
+
+  private rejectAllPendingForRetire(
+    child: ChildProcessWithoutNullStreams,
+    reason: string
+  ): void {
+    const error = new CodexAppServerHelperRetiringError(
+      `codex app-server helper 正在回收：${reason}`
+    );
+
+    for (const [transportId, state] of this.transports.entries()) {
+      if (state.pendingResponses.size === 0) {
+        continue;
+      }
+
+      this.rejectTransportPending(state, error);
+      this.logLease("request.retired", {
+        reason,
+        transportId,
+        pid: child.pid ?? null
+      });
+    }
+  }
+
+  private isIdle(): boolean {
+    return Boolean(
+      !this.disposed
+      && this.child
+      && !this.retiringChildren.has(this.child)
+      && this.transports.size === 0
+      && this.inflightRequestCount === 0
+      && this.activeHandlerCount === 0
+    );
+  }
+
+  private beginInflightRequest(
+    requestId: string,
+    transportId: string,
+    handler: string,
+    input: Record<string, unknown>
+  ): void {
+    this.inflightRequestCount += 1;
+    this.metrics.requestTotal += 1;
+    this.clearIdleLease();
+    this.logLease("request.start", {
+      handler,
+      requestId,
+      transportId,
+      rootDirHash: resolveRequestRootDirHash(input)
+    });
+  }
+
+  private endInflightRequest(): void {
+    this.inflightRequestCount = Math.max(0, this.inflightRequestCount - 1);
+    this.scheduleIdleLease();
+  }
+
+  private beginHandler(): void {
+    this.activeHandlerCount += 1;
+    this.metrics.handlerTotal += 1;
+    this.clearIdleLease();
+  }
+
+  private endHandler(): void {
+    this.activeHandlerCount = Math.max(0, this.activeHandlerCount - 1);
+    this.scheduleIdleLease();
+  }
+
+  private clearIdleLease(): void {
+    if (this.idleLeaseTimer) {
+      clearTimeout(this.idleLeaseTimer);
+      this.idleLeaseTimer = null;
+      this.metrics.idleLeaseCancelledTotal += 1;
+    }
+  }
+
+  private logLease(
+    event: string,
+    detail: {
+      reason?: string | null;
+      pid?: number | null;
+      handler?: string | null;
+      requestId?: string | null;
+      transportId?: string | null;
+      rootDirHash?: string | null;
+      errorMessage?: string | null;
+    } = {}
+  ): void {
+    writeCodexAppServerHelperLeaseLog(
+      buildCodexAppServerHelperLeaseLogEntry({
+        event,
+        state: this.resolveLeaseState(),
+        reason: detail.reason ?? this.retiringReason,
+        pid: detail.pid ?? this.child?.pid ?? null,
+        handler: detail.handler ?? null,
+        requestId: detail.requestId ?? null,
+        transportId: detail.transportId ?? null,
+        rootDirHash: detail.rootDirHash ?? null,
+        refCount: this.transports.size,
+        inflightRequestCount: this.inflightRequestCount,
+        activeTransportCount: this.transports.size,
+        activeHandlerCount: this.activeHandlerCount,
+        idleLeaseMs: this.idleLeaseMs
+      })
+    );
+  }
+
+  private resolveLeaseState():
+    | "starting"
+    | "active"
+    | "idle"
+    | "retiring"
+    | "recycled"
+    | "disposed" {
+    if (this.disposed) {
+      return "disposed";
+    }
+
+    if (this.retiringChildren.size > 0) {
+      return "retiring";
+    }
+
+    if (this.inflightRequestCount > 0 || this.activeHandlerCount > 0 || this.transports.size > 0) {
+      return "active";
+    }
+
+    if (this.child) {
+      return "idle";
+    }
+
+    return "recycled";
+  }
+
+  private removeIfInactive(): void {
+    if (!this.child && this.transports.size === 0 && this.retiringChildren.size === 0) {
+      activeCodexAppServerHelpers.delete(this);
+    }
+  }
+
+  getHealthSnapshot(): CodexAppServerHelperClientHealthSnapshot {
+    return {
+      pid: this.child?.pid ?? null,
+      alive: Boolean(
+        this.child
+        && !this.child.killed
+        && !this.child.stdin.destroyed
+        && !this.child.stdout.destroyed
+      ),
+      retiring: this.retiringChildren.size > 0,
+      retiringReason: this.retiringReason,
+      idleLeaseMs: this.idleLeaseMs,
+      idleLeaseArmed: this.idleLeaseTimer !== null,
+      activeTransportCount: this.transports.size,
+      inflightRequestCount: this.inflightRequestCount,
+      activeHandlerCount: this.activeHandlerCount,
+      metrics: { ...this.metrics }
+    };
   }
 }
 
@@ -697,7 +1144,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
-function resolveHelperLaunch(commandPath: string): { command: string; args: string[] } {
+function resolveHelperLaunch(
+  commandPath: string,
+  idleLeaseMs: number
+): { command: string; args: string[] } {
   const currentFilePath = fileURLToPath(import.meta.url);
   const extension = path.extname(currentFilePath);
   const helperPath = currentFilePath.replace(
@@ -708,10 +1158,20 @@ function resolveHelperLaunch(commandPath: string): { command: string; args: stri
 
   return {
     command: process.execPath,
-    args: [...baseArgs, "--command-path", commandPath]
+    // 把租约时长透传给 helper：父进程回收后，helper 自己也会在宽限期后兜底退出。
+    args: [...baseArgs, "--command-path", commandPath, "--idle-lease-ms", String(idleLeaseMs)]
   };
 }
 
 function normalizeNullableString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function resolveRequestRootDirHash(input: Record<string, unknown>): string | null {
+  const direct = typeof input.workspacePath === "string" ? input.workspacePath : null;
+  const request = input.request && typeof input.request === "object"
+    ? input.request as Record<string, unknown>
+    : null;
+  const nested = typeof request?.workspacePath === "string" ? request.workspacePath : null;
+  return hashCodexAppServerHelperRootDir(direct ?? nested);
 }

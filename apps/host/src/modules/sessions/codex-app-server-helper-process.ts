@@ -80,6 +80,11 @@ interface TransportRecord {
   activeThreadId: string | null;
   activeTurnId: string | null;
 }
+
+const CODEX_APP_SERVER_HELPER_MAX_PROTOCOL_LINE_BYTES = 16 * 1024 * 1024;
+const CODEX_APP_SERVER_HELPER_MAX_HISTORY_BYTES = 4 * 1024 * 1024;
+const CODEX_APP_SERVER_HELPER_MAX_LIST_BYTES = 4 * 1024 * 1024;
+const CODEX_APP_SERVER_HELPER_MAX_STDERR_BYTES = 64 * 1024;
 const CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 20_000;
 const CODEX_THREAD_LIST_SOURCE_KINDS = [
   "cli",
@@ -89,6 +94,26 @@ const CODEX_THREAD_LIST_SOURCE_KINDS = [
   "subAgentThreadSpawn"
 ] as const;
 
+/**
+ * helper 自身的 RSS 高水位。
+ *
+ * 和 task-helper / provider-discovery-helper 保持同一个 768 MiB 口径；
+ * 不允许为了规避问题把这个阈值调低。
+ */
+const CODEX_APP_SERVER_HELPER_RSS_HIGH_WATER_BYTES = 768 * 1024 * 1024;
+
+/** helper 侧空闲退出默认时长；父进程会通过 --idle-lease-ms 传入自己的租约。 */
+const CODEX_APP_SERVER_HELPER_DEFAULT_IDLE_EXIT_MS = 5 * 60_000;
+
+/**
+ * 父进程租约到期后会先回收整个 helper。helper 自己再等这么久，
+ * 保证“父进程先退，helper 后兜底”，避免两边同时抢着退出。
+ */
+const CODEX_APP_SERVER_HELPER_IDLE_EXIT_GRACE_MS = 30_000;
+
+/** retiring 后给已写出结果留的刷盘窗口。 */
+const CODEX_APP_SERVER_HELPER_RETIRE_GRACE_MS = 1_500;
+
 const helperArgs = process.argv.slice(2);
 const rawCommandPath = readFlag(helperArgs, "--command-path");
 
@@ -97,8 +122,26 @@ if (!rawCommandPath) {
 }
 
 const commandPath = rawCommandPath;
+const requestedIdleLeaseMs = Number(readFlag(helperArgs, "--idle-lease-ms"));
+const helperIdleExitMs = Number.isFinite(requestedIdleLeaseMs) && requestedIdleLeaseMs > 0
+  ? Math.floor(requestedIdleLeaseMs) + CODEX_APP_SERVER_HELPER_IDLE_EXIT_GRACE_MS
+  : CODEX_APP_SERVER_HELPER_DEFAULT_IDLE_EXIT_MS;
 
 const transports = new Map<string, TransportRecord>();
+/**
+ * 已经安排退出、还没真正退出的 helper。
+ *
+ * 和 task-helper 一样：一旦进入 retiring 就不再接新请求，避免请求结果
+ * 随进程一起丢，父进程只看到管道断开。
+ */
+let retiring = false;
+let retireReason: string | null = null;
+/** 正在处理的 transport_request 数量；只有它为 0 且没有 transport 时才允许空闲退出。 */
+let activeRequestCount = 0;
+let idleExitTimer: NodeJS.Timeout | null = null;
+/** 所有已写出、尚未落盘的管道字节。退出前必须等它们全部结束。 */
+const pendingWrites = new Set<Promise<void>>();
+
 const stdinReader = readline.createInterface({
   input: process.stdin,
   crlfDelay: Infinity
@@ -108,13 +151,56 @@ stdinReader.on("line", (line) => {
   void handleLine(line);
 });
 
+// 父进程关掉 stdin 说明管道已经没了，helper 不该继续挂着。
+stdinReader.on("close", () => {
+  clearIdleExitTimer();
+  retiring = true;
+  retireReason = "stdin_closed";
+  void flushAndExit();
+});
+
+// 启动后立刻进入空闲计时，避免“只创建不请求”的僵尸进程常驻。
+scheduleIdleExit();
+
 async function handleLine(line: string): Promise<void> {
+  clearIdleExitTimer();
+  activeRequestCount += 1;
+
+  try {
+    await handleLineInternal(line);
+  } finally {
+    activeRequestCount = Math.max(0, activeRequestCount - 1);
+    maybeScheduleIdleExit();
+  }
+}
+
+async function handleLineInternal(line: string): Promise<void> {
+  const lineBytes = Buffer.byteLength(line, "utf8");
+
+  if (lineBytes > CODEX_APP_SERVER_HELPER_MAX_PROTOCOL_LINE_BYTES) {
+    console.error(
+      `[codex-app-server-helper] protocol line too large: ${lineBytes} > ${CODEX_APP_SERVER_HELPER_MAX_PROTOCOL_LINE_BYTES}`
+    );
+    return;
+  }
+
   let message: ParentToHelperMessage;
 
   try {
     message = JSON.parse(line) as ParentToHelperMessage;
   } catch (error) {
     console.error("[codex-app-server-helper] 无法解析请求", error);
+    return;
+  }
+
+  // 已经安排退出的 helper 不再接新活，给出明确失败语义。
+  if (retiring && message.type === "transport_request") {
+    emitError(
+      message.transportId,
+      message.requestId,
+      `codex app-server helper 正在回收（${retireReason ?? "retiring"}），请求未执行`,
+      "CODEX_APP_SERVER_HELPER_RETIRING"
+    );
     return;
   }
 
@@ -440,6 +526,14 @@ async function handleTransportRequest(message: Extract<ParentToHelperMessage, { 
           throw new Error("CODEX_APP_SERVER_HISTORY_REQUIRED");
         }
 
+        const historyBytes = Buffer.byteLength(JSON.stringify(history), "utf8");
+
+        if (historyBytes > CODEX_APP_SERVER_HELPER_MAX_HISTORY_BYTES) {
+          throw new Error(
+            `CODEX_APP_SERVER_HISTORY_TOO_LARGE: ${historyBytes} > ${CODEX_APP_SERVER_HELPER_MAX_HISTORY_BYTES}`
+          );
+        }
+
         const result = await sendJsonRpcRequest(transport, {
           method: "thread/resume",
           params: createThreadResumeWithHistoryParams(
@@ -529,7 +623,19 @@ function createTransportRecord(commandPath: string): TransportRecord {
   });
 
   child.stderr.on("data", (chunk) => {
-    transport.stderrChunks.push(chunk.toString("utf8"));
+    const next = `${transport.stderrChunks.join("")}${chunk.toString("utf8")}`;
+    const nextBytes = Buffer.byteLength(next, "utf8");
+
+    if (nextBytes <= CODEX_APP_SERVER_HELPER_MAX_STDERR_BYTES) {
+      transport.stderrChunks = [next];
+      return;
+    }
+
+    transport.stderrChunks = [
+      Buffer.from(next, "utf8")
+        .subarray(-CODEX_APP_SERVER_HELPER_MAX_STDERR_BYTES)
+        .toString("utf8")
+    ];
   });
 
   stdout.on("line", (line) => {
@@ -752,6 +858,15 @@ async function listCodexThreads(
     const data = readProp(result, "data");
 
     if (Array.isArray(data)) {
+      const nextThreads = [...threads, ...data];
+      const nextBytes = Buffer.byteLength(JSON.stringify(nextThreads), "utf8");
+
+      if (nextBytes > CODEX_APP_SERVER_HELPER_MAX_LIST_BYTES) {
+        throw new Error(
+          `CODEX_APP_SERVER_THREAD_LIST_TOO_LARGE: ${nextBytes} > ${CODEX_APP_SERVER_HELPER_MAX_LIST_BYTES}`
+        );
+      }
+
       threads.push(...data);
     }
 
@@ -780,6 +895,8 @@ function closeTransport(transportId: string, transport: TransportRecord, error: 
     transportId,
     detail: error?.message ?? null
   });
+  // 最后一个会话绑定关掉后，helper 才有资格进入空闲退出计时。
+  maybeScheduleIdleExit();
 }
 
 function closeTransportForRecord(transport: TransportRecord, error: Error | null): void {
@@ -804,9 +921,139 @@ function closeTransportForRecord(transport: TransportRecord, error: Error | null
   void terminateChildProcess(transport.child, { termGraceMs: 250, killWaitMs: 250 });
 }
 
+/**
+ * 只有“无进行中请求、无活跃 transport”时才能进入空闲计时。
+ *
+ * 有会话绑定时不能退出：app-server 里的 thread/turn 状态还在，退出会把
+ * 正在跑的会话打断。
+ */
+function canEnterIdleExit(): boolean {
+  return !retiring && activeRequestCount === 0 && transports.size === 0;
+}
+
+function maybeScheduleIdleExit(): void {
+  if (!canEnterIdleExit()) {
+    clearIdleExitTimer();
+    return;
+  }
+
+  scheduleIdleExit();
+}
+
+function scheduleIdleExit(): void {
+  if (!canEnterIdleExit()) {
+    return;
+  }
+
+  clearIdleExitTimer();
+  idleExitTimer = setTimeout(() => {
+    idleExitTimer = null;
+    maybeRecycleProcess();
+  }, helperIdleExitMs);
+  idleExitTimer.unref?.();
+}
+
+function clearIdleExitTimer(): void {
+  if (!idleExitTimer) {
+    return;
+  }
+
+  clearTimeout(idleExitTimer);
+  idleExitTimer = null;
+}
+
+/**
+ * 空闲到期或 RSS 触顶后安排退出。
+ *
+ * RSS 高水位沿用 768 MiB，不因为空闲退出就放松这个口径。
+ */
+function maybeRecycleProcess(): void {
+  if (retiring || activeRequestCount > 0 || transports.size > 0) {
+    return;
+  }
+
+  const memory = process.memoryUsage();
+
+  if (memory.rss >= CODEX_APP_SERVER_HELPER_RSS_HIGH_WATER_BYTES) {
+    beginRetire(
+      `rss_high_water:rss=${memory.rss} heapUsed=${memory.heapUsed} `
+      + `external=${memory.external} arrayBuffers=${memory.arrayBuffers}`
+    );
+    return;
+  }
+
+  beginRetire("idle_exit");
+}
+
+/**
+ * 进入 retiring 并安排退出。
+ *
+ * 顺序很关键：先标记 retiring（新请求立刻被拒），等已写出的管道内容刷完，
+ * 最后才 exit。否则父进程只会看到“stdout 已关闭”，而不是本该到达的结果。
+ */
+function beginRetire(reason: string): void {
+  if (retiring) {
+    return;
+  }
+
+  retiring = true;
+  retireReason = reason;
+  clearIdleExitTimer();
+  void flushAndExit();
+}
+
+async function flushAndExit(): Promise<void> {
+  // 给还在写结果的请求一点收尾时间，避免进程退出截断 stdout。
+  if (activeRequestCount > 0) {
+    await Promise.race([
+      waitForActiveRequestsToSettle(),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, CODEX_APP_SERVER_HELPER_RETIRE_GRACE_MS);
+        timer.unref?.();
+      })
+    ]);
+  }
+
+  // 等所有已排队的写真正落盘；期间可能还有收尾写入，循环到稳定为止。
+  while (pendingWrites.size > 0) {
+    await Promise.allSettled([...pendingWrites]);
+  }
+
+  process.exit(0);
+}
+
+async function waitForActiveRequestsToSettle(): Promise<void> {
+  while (activeRequestCount > 0) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 50);
+      timer.unref?.();
+    });
+  }
+}
+
+/** 测试和父进程信号都可以用它观察 retiring 状态。 */
+export function isCodexAppServerHelperRetiring(): boolean {
+  return retiring;
+}
+
+export function getCodexAppServerHelperRetireReason(): string | null {
+  return retireReason;
+}
+
 export const __internal__ = {
   buildCodexAppServerExitDetail,
-  codexThreadListSourceKinds: CODEX_THREAD_LIST_SOURCE_KINDS
+  codexThreadListSourceKinds: CODEX_THREAD_LIST_SOURCE_KINDS,
+  helperIdleExitMs,
+  rssHighWaterBytes: CODEX_APP_SERVER_HELPER_RSS_HIGH_WATER_BYTES,
+  isCodexAppServerHelperRetiring,
+  getCodexAppServerHelperRetireReason,
+  // 只给测试观察内部状态用；生产代码不依赖这些访问器。
+  getTransportCount: () => transports.size,
+  getActiveRequestCount: () => activeRequestCount,
+  canEnterIdleExit,
+  handleLine,
+  maybeRecycleProcess,
+  scheduleIdleExit
 };
 
 function emitResponse(transportId: string, requestId: string, result: Record<string, unknown>): void {
@@ -819,18 +1066,54 @@ function emitResponse(transportId: string, requestId: string, result: Record<str
   });
 }
 
-function emitError(transportId: string, requestId: string, error: string): void {
+function emitError(
+  transportId: string,
+  requestId: string,
+  error: string,
+  errorCode?: string
+): void {
   emit({
     type: "response",
     transportId,
     requestId,
     ok: false,
-    error
+    error,
+    ...(errorCode ? { errorCode } : {})
   });
 }
 
 function emit(message: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+  const line = `${JSON.stringify(message)}\n`;
+  const write = new Promise<void>((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      resolve();
+    };
+
+    try {
+      process.stdout.write(line, finish);
+    } catch {
+      finish();
+      return;
+    }
+
+    // 管道卡住时不能让 helper 永久挂住。
+    timer = setTimeout(finish, 1_000);
+    timer.unref?.();
+  });
+  pendingWrites.add(write);
+  void write.finally(() => {
+    pendingWrites.delete(write);
+  });
 }
 
 function findTransportId(target: TransportRecord): string | null {

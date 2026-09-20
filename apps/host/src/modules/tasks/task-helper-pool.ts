@@ -8,6 +8,8 @@ import {
 const GLOBAL_TASK_HELPER_POOL_KEY = "__codingnsTaskHelperPool__";
 const DEFAULT_WORKER_KEY = "__default__";
 const ROOTDIR_HELPER_CANCEL_FALLBACK_MS = 3_000;
+/** 临时工作区可能很多；限制空闲 worker 条目，避免 workers Map 线性增长。 */
+const MAX_IDLE_WORKER_ENTRIES = 64;
 
 export interface TaskHelperPoolExecuteOptions {
   queueWaitTimeoutMs?: number;
@@ -29,6 +31,8 @@ export interface TaskHelperWorkerHealthSnapshot {
   lastHardKillAt: string | null;
   lastExitAt: string | null;
   lastTerminationReason: string | null;
+  /** 当前 worker 是否已经安排 child 退出、正在等替代 child 接管。 */
+  retiring?: boolean;
 }
 
 interface TaskHelperWorkerEntry {
@@ -42,6 +46,7 @@ interface TaskHelperWorkerEntry {
   lastSoftCancelRequestedAtMs: number | null;
   lastHardKillAtMs: number | null;
   state: "idle" | "running" | "terminating" | "recycled";
+  lastUsedAtMs: number;
 }
 
 type TaskHelperWorkerClientFactory = () => TaskHelperWorkerClientLike;
@@ -63,6 +68,7 @@ export class TaskHelperPool {
     const workerKey = rootDir ? `rootDir:${rootDir}` : DEFAULT_WORKER_KEY;
     const entry = this.getOrCreateWorker(workerKey, rootDir);
     entry.inflightLocalCount += 1;
+    entry.lastUsedAtMs = Date.now();
     entry.lastStartedAtMs = Date.now();
     entry.state = "running";
 
@@ -113,6 +119,7 @@ export class TaskHelperPool {
       if (entry.inflightLocalCount === 0) {
         entry.state = resolveWorkerState(entry.state, entry.client.hasInflightRemoteWork());
       }
+      entry.lastUsedAtMs = Date.now();
       if (cancelFallbackTimer) {
         clearTimeout(cancelFallbackTimer);
       }
@@ -150,8 +157,11 @@ export class TaskHelperPool {
   private getOrCreateWorker(workerKey: string, rootDir: string | null): TaskHelperWorkerEntry {
     const existing = this.workers.get(workerKey);
     if (existing) {
+      existing.lastUsedAtMs = Date.now();
       return existing;
     }
+
+    this.evictIdleWorkers();
 
     const entry: TaskHelperWorkerEntry = {
       workerKey,
@@ -163,10 +173,29 @@ export class TaskHelperPool {
       lastFailedAtMs: null,
       lastSoftCancelRequestedAtMs: null,
       lastHardKillAtMs: null,
-      state: "idle"
+      state: "idle",
+      lastUsedAtMs: Date.now()
     };
     this.workers.set(workerKey, entry);
     return entry;
+  }
+
+  private evictIdleWorkers(): void {
+    if (this.workers.size < MAX_IDLE_WORKER_ENTRIES) {
+      return;
+    }
+
+    const victim = [...this.workers.values()]
+      .filter((entry) => entry.inflightLocalCount === 0 && !entry.client.hasInflightRemoteWork())
+      .sort((left, right) => left.lastUsedAtMs - right.lastUsedAtMs)[0];
+
+    if (!victim) {
+      return;
+    }
+
+    this.workers.delete(victim.workerKey);
+    victim.state = "recycled";
+    void victim.client.dispose();
   }
 
   private describeWorker(workerKey: string): TaskHelperWorkerHealthSnapshot | null {
@@ -227,7 +256,8 @@ function buildWorkerHealthSnapshot(
     lastSoftCancelRequestedAt: toIso(entry.lastSoftCancelRequestedAtMs),
     lastHardKillAt: toIso(entry.lastHardKillAtMs),
     lastExitAt: health.lastExitAt,
-    lastTerminationReason: health.lastTerminationReason
+    lastTerminationReason: health.lastTerminationReason,
+    retiring: health.retiring ?? false
   };
 }
 

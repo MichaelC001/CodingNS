@@ -224,3 +224,19 @@ export class TaskQueueWaitTimeoutError extends Error {
     this.name = "TaskQueueWaitTimeoutError";
   }
 }
+
+/**
+ * helper 已经安排退出、明确拒绝这条请求时抛出的错误。
+ *
+ * 它和普通传输故障的区别很重要：这不是“管道坏了”，而是“这个 helper 正在回收”。
+ * Host 必须把它当成可重试信号，转到替代 child 上执行，
+ * 不能向上抛成 PROVIDER_IO_ERROR 让业务链路以为 provider 读挂了。
+ */
+export const TASK_HELPER_RETIRING_ERROR_CODE = "TASK_HELPER_RETIRING";
+
+export class TaskHelperRetiredError extends Error {
+  constructor(message = "task helper 正在回收，请求未执行") {
+    super(message);
+    this.name = "TaskHelperRetiredError";
+  }
+}

@@ -101,12 +101,14 @@ describe("TaskHelperProcessClient", () => {
       child: ChildProcessWithoutNullStreams | null;
       stdoutReader: readline.Interface | null;
       stdoutReaderChild: ChildProcessWithoutNullStreams | null;
+      retiringChildren: Set<ChildProcessWithoutNullStreams>;
       rejectPendingForChild: ReturnType<typeof vi.fn>;
     };
 
     client.child = newChild;
     client.stdoutReader = { close } as unknown as readline.Interface;
     client.stdoutReaderChild = newChild;
+    client.retiringChildren = new Set();
     client.rejectPendingForChild = vi.fn();
 
     (TaskHelperProcessClient.prototype as any).handleChildTermination.call(
@@ -220,6 +222,7 @@ describe("TaskHelperProcessClient", () => {
       unacknowledgedRemoteRequestIds: Set<string>;
       remoteRequestChildren: Map<string, ChildProcessWithoutNullStreams>;
       cancelFallbackTimers: Map<string, NodeJS.Timeout>;
+      retiringChildren: Set<ChildProcessWithoutNullStreams>;
       idleRecycleTimer: NodeJS.Timeout | null;
       lastTerminationReason: string | null;
       lastExitAtMs: number | null;
@@ -234,6 +237,7 @@ describe("TaskHelperProcessClient", () => {
     client.unacknowledgedRemoteRequestIds = new Set();
     client.remoteRequestChildren = new Map();
     client.cancelFallbackTimers = new Map();
+    client.retiringChildren = new Set();
     client.idleRecycleTimer = null;
     client.lastTerminationReason = null;
     client.lastExitAtMs = null;

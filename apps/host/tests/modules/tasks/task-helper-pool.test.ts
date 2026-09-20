@@ -96,6 +96,46 @@ describe("TaskHelperPool", () => {
     });
     expect(health?.lastCompletedAt).not.toBeNull();
   });
+
+  it("worker 健康信息会透传 client 的 retiring 状态", async () => {
+    const client = createFakeClient();
+    client.getHealthSnapshot = vi.fn(() => ({
+      pid: 123,
+      alive: true,
+      inflightRemoteRequestCount: 0,
+      startedAt: "2026-06-03T00:00:00.000Z",
+      lastHeartbeatAt: "2026-06-03T00:00:01.000Z",
+      lastExitAt: null,
+      lastTerminationReason: "helper_idle_timeout",
+      retiring: true
+    }));
+    const pool = new TaskHelperPool(() => client);
+
+    await pool.execute("affairs.library_index", { rootDir: "/tmp/a" });
+
+    expect(pool.getWorkerHealth("/tmp/a")).toMatchObject({
+      retiring: true,
+      lastTerminationReason: "helper_idle_timeout"
+    });
+  });
+
+  it("临时工作区过多时淘汰最久未使用的空闲 worker entry", async () => {
+    const clients: ReturnType<typeof createFakeClient>[] = [];
+    const pool = new TaskHelperPool(() => {
+      const client = createFakeClient();
+      clients.push(client);
+      return client;
+    });
+
+    for (let index = 0; index < 65; index += 1) {
+      await pool.execute("affairs.library_index", { rootDir: `/tmp/workspace-${index}` });
+    }
+
+    expect(clients).toHaveLength(65);
+    expect(clients[0]?.dispose).toHaveBeenCalledTimes(1);
+    expect(pool.getWorkerHealth("/tmp/workspace-0")).toBeNull();
+    expect(pool.listWorkerHealth()).toHaveLength(64);
+  });
 });
 
 function createDeferred<T>() {
