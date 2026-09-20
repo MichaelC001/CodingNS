@@ -231,7 +231,7 @@ test("连续 3 次健康检查失败后重启，并且只保留一个 Host", asy
   );
 });
 
-test("/readyz 数据库读失败（503）也算健康失败并触发重启", async () => {
+test("/readyz 数据库读失败（503）只进入降级，不触发重启", async () => {
   const harness = createHarness();
   await harness.supervisor.tick();
 
@@ -245,8 +245,8 @@ test("/readyz 数据库读失败（503）也算健康失败并触发重启", asy
   await harness.supervisor.tick();
   const third = await harness.supervisor.tick();
 
-  assert.equal(third.action, "restart");
-  assert.equal(third.reason, "health_failed:database_not_ready");
+  assert.equal(third.action, "degraded");
+  assert.equal(harness.spawned.length, 1, "readiness 失败不能重启 Host");
 });
 
 test("旧 Host 没退出前不会启动第二个 Host", async () => {
@@ -579,7 +579,7 @@ test("真实进程：主动停止标记存在时，Supervisor 不会拉起 Host"
   }
 });
 
-test("启动健康超时后会收掉不健康的 Host，不残留占端口", async () => {
+test("启动阶段 readiness 未就绪仍保持 Host 运行并进入降级", async () => {
   const harness = createHarness();
 
   // 让 Host 一直不健康：启动阶段就会超时。
@@ -587,34 +587,23 @@ test("启动健康超时后会收掉不健康的 Host，不残留占端口", asy
 
   const result = await harness.supervisor.tick();
 
-  assert.equal(result.healthy, false);
-  assert.equal(harness.supervisor.childPid, null, "不健康的 Host 必须被收掉，不能残留");
-  assert.equal(harness.supervisor.getStatus().hostAlive, false);
-  assert.ok(
-    harness.killed.some((entry) => entry.signal === "SIGTERM"),
-    "应该对不健康的 Host 发过 SIGTERM"
-  );
+  assert.equal(result.healthy, true);
+  assert.notEqual(harness.supervisor.childPid, null, "readiness 降级不能清退 Host");
+  assert.equal(harness.supervisor.getStatus().hostAlive, true);
 });
 
-test("启动健康超时连续熔断后，显式 start 仍能恢复", async () => {
+test("连续 readiness 降级不会熔断 Host", async () => {
   const harness = createHarness();
 
-  // 一直不健康：连续 3 次启动失败后进入熔断。
+  // readiness 一直失败，但 liveness 正常，不应计入启动熔断。
   harness.setReadinessAlwaysFails(true);
 
   for (let i = 0; i < 3; i += 1) {
     await harness.supervisor.tick();
   }
 
-  assert.equal(harness.supervisor.getStatus().circuitOpen, true);
-  assert.equal(harness.supervisor.childPid, null, "熔断时不该残留 Host");
-
-  // 人工修好之后显式 start：必须能真正拉起来，而不是返回 already_running。
-  harness.setReadinessAlwaysFails(false);
-  const result = await harness.supervisor.requestStart("explicit_start");
-
-  assert.equal(result.healthy, true, "显式 start 必须能恢复");
   assert.equal(harness.supervisor.getStatus().circuitOpen, false);
+  assert.notEqual(harness.supervisor.childPid, null);
   assert.equal(harness.supervisor.getStatus().hostAlive, true);
 });
 
@@ -896,7 +885,7 @@ test("熔断后收到控制请求会解除熔断并重新拉起 Host", async () 
   const harness = createHarness();
 
   // 先制造熔断：持续启动失败。
-  harness.setReadinessAlwaysFails(true);
+  harness.setLivenessAlwaysFails(true);
 
   for (let i = 0; i < 3; i += 1) {
     await harness.supervisor.tick();
@@ -909,7 +898,7 @@ test("熔断后收到控制请求会解除熔断并重新拉起 Host", async () 
   assert.equal(hasPendingControlRequest(harness.dataDir), true);
 
   // 修好故障后，Supervisor 下一轮必须自己解除熔断。
-  harness.setReadinessAlwaysFails(false);
+  harness.setLivenessAlwaysFails(false);
   const resumed = await harness.supervisor.tick();
 
   assert.equal(resumed.action, "resumed", "熔断状态下必须优先处理控制请求");
@@ -920,7 +909,7 @@ test("熔断后收到控制请求会解除熔断并重新拉起 Host", async () 
 
 test("控制请求在熔断早退之前被处理，不会被 circuit_open 吞掉", async () => {
   const harness = createHarness();
-  harness.setReadinessAlwaysFails(true);
+  harness.setLivenessAlwaysFails(true);
 
   for (let i = 0; i < 3; i += 1) {
     await harness.supervisor.tick();

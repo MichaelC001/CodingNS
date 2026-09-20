@@ -601,7 +601,7 @@ function classifyProbeError(error) {
 
 /**
  * 一次完整健康检查：先 `/healthz`，通过后再 `/readyz`。
- * 任一失败都算这次检查失败，并给出可读的失败类别。
+ * readiness 失败只表示暂时不能接收新请求；只有 liveness 失败才允许监督进程重启 Host。
  */
 export async function runHealthCheck(context, options = {}) {
   const probe = options.probe ?? probeHttpStatus;
@@ -953,7 +953,8 @@ export function createSupervisor(options = {}) {
       });
       lastProbe = result;
 
-      if (result.ok) {
+      // readiness 只影响接流量，不应在短暂 SQLite 锁竞争时重启整个 Host。
+      if (result.liveness?.ok) {
         return true;
       }
 
@@ -1110,6 +1111,18 @@ export function createSupervisor(options = {}) {
       healthRequestTimeoutMs: config.healthRequestTimeoutMs
     });
     lastProbe = health;
+
+    if (health.liveness?.ok && !health.readiness?.ok) {
+      if (consecutiveHealthFailures > 0) {
+        consecutiveHealthFailures = 0;
+      }
+      logEvent("host_readiness_degraded", {
+        probeReason: health.reason,
+        readinessStatus: health.readiness?.statusCode ?? null,
+        detail: "readiness 暂时失败，保持 Host 运行，不触发重启"
+      });
+      return { action: "degraded", consecutiveFailures: 0, reason: health.reason, readiness: health.readiness };
+    }
 
     if (health.ok) {
       if (consecutiveHealthFailures > 0) {
