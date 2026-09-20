@@ -72,6 +72,11 @@ export interface DesktopShellBridge {
   getPlatformInfo(): Promise<DesktopBridgeResult<DesktopPlatformInfo>>;
   showNotification(title: string, body: string): Promise<DesktopBridgeResult>;
   writeClipboardText(text: string): Promise<DesktopBridgeResult>;
+  saveFileToDownloads(
+    fileName: string,
+    contentBase64: string,
+    mimeType: string
+  ): Promise<DesktopBridgeResult<string>>;
   setWindowState(state: DesktopWindowState): Promise<DesktopBridgeResult>;
   readDesktopConfig(): Promise<DesktopBridgeResult<Partial<ClientRuntimeConfig>>>;
   writeDesktopConfig(config: ClientRuntimeConfigPatch): Promise<DesktopBridgeResult>;
@@ -385,6 +390,10 @@ class WebDesktopShellBridge implements DesktopShellBridge {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
 
+  saveFileToDownloads(): Promise<DesktopBridgeResult<string>> {
+    return Promise.resolve(unsupportedResult("当前平台不支持原生文件保存。"));
+  }
+
   setWindowState(): Promise<DesktopBridgeResult> {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
@@ -547,6 +556,10 @@ class TauriDesktopShellBridge implements DesktopShellBridge {
 
   writeClipboardText(text: string): Promise<DesktopBridgeResult> {
     return invokeDesktopCommand("copy_text", { text });
+  }
+
+  saveFileToDownloads(): Promise<DesktopBridgeResult<string>> {
+    return Promise.resolve(unsupportedResult("桌面端使用浏览器下载保存文件。"));
   }
 
   setWindowState(state: DesktopWindowState): Promise<DesktopBridgeResult> {
@@ -744,6 +757,22 @@ class TauriMobileShellBridge implements DesktopShellBridge {
 
   writeClipboardText(text: string): Promise<DesktopBridgeResult> {
     return invokeTauriCommand("copy_text", { text });
+  }
+
+  saveFileToDownloads(
+    fileName: string,
+    contentBase64: string,
+    mimeType: string
+  ): Promise<DesktopBridgeResult<string>> {
+    if (this.platform !== "android") {
+      return Promise.resolve(unsupportedResult("当前平台不支持原生文件保存。"));
+    }
+
+    return invokeTauriCommand<string>("save_file_to_downloads", {
+      fileName,
+      contentBase64,
+      mimeType
+    });
   }
 
   setWindowState(): Promise<DesktopBridgeResult> {

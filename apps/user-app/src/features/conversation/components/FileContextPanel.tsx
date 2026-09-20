@@ -32,6 +32,7 @@ import {
 import { listScopedWorkspaces } from "../api/conversation-api";
 import { addGitIgnoreTargets, getGitDiff, type GitChangeItemDto } from "../api/git-api";
 import { usePlatform } from "../../../platform/platform-provider";
+import { saveFileDownload } from "../../../platform/file-download";
 import { openFilePreviewExternalWindow } from "../../../platform/desktop/window-openers";
 import {
   showDesktopContextMenu,
@@ -1639,9 +1640,13 @@ export function FileContextPanel({
       const payload = await downloadWorkspaceFile(activeRequestWorkspaceId, explicitFilePath);
       const fileBuffer = decodeBase64ToArrayBuffer(payload.contentBase64);
 
-      downloadBlob(payload.fileName, new Blob([fileBuffer], {
-        type: "application/octet-stream"
-      }));
+      await saveFileDownload({
+        fileName: payload.fileName,
+        blob: new Blob([fileBuffer], {
+          type: "application/octet-stream"
+        }),
+        platform
+      });
       showToast({
         title: t("conversation.filePanelDownloadSuccess", {
           name: payload.fileName
@@ -3665,21 +3670,6 @@ function decodeBase64ToArrayBuffer(value: string): ArrayBuffer {
   }
 
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-}
-
-function downloadBlob(fileName: string, blob: Blob): void {
-  if (typeof document === "undefined") {
-    throw new Error(t("conversation.filePanelDownloadFailed"));
-  }
-
-  const objectUrl = window.URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = fileName;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  window.URL.revokeObjectURL(objectUrl);
 }
 
 async function writeTextToClipboard(

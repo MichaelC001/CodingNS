@@ -20,6 +20,7 @@ import { ModalCloseButton } from "../../../components/ModalCloseButton";
 import { getHostBaseUrl, getHostRequestUrl } from "../../../config/env";
 import { resolveHostTransportTarget } from "../../../network/host-transport-registry";
 import { usePlatform } from "../../../platform/platform-provider";
+import { saveFileDownload } from "../../../platform/file-download";
 import { createHtmlPreviewWorkspaceBridge } from "../../../platform/preview/html-preview-workspace-bridge";
 import {
   createPresentationExportTask,
@@ -754,7 +755,11 @@ export function FileViewerPanel({
       }
 
       const download = await downloadPresentationExportTask(finishedTask.taskId);
-      downloadBlob(download.fileName, download.blob);
+      await saveFileDownload({
+        fileName: download.fileName,
+        blob: download.blob,
+        platform
+      });
 
       showToast({
         title: format === "pdf"
@@ -3818,19 +3823,4 @@ function OverviewRuler({
       ) : null}
     </div>
   );
-}
-
-function downloadBlob(fileName: string, blob: Blob): void {
-  if (typeof document === "undefined") {
-    throw new Error(t("conversation.filePanelDownloadFailed"));
-  }
-
-  const objectUrl = window.URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = fileName;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  window.URL.revokeObjectURL(objectUrl);
 }
