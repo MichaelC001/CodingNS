@@ -296,6 +296,61 @@ describe("PermissionRequestList", () => {
     });
   });
 
+  it("已经有其他输入框时，不再重复显示“以上都不对”这类兜底选项", () => {
+    render(
+      <PermissionRequestList
+        requests={[{
+          id: "permission-ask-other-dup",
+          sessionId: "session-1",
+          provider: "deepseek-harness",
+          providerSessionId: "harness-session-1",
+          requestKey: "question-dup",
+          kind: "user_input",
+          status: "pending",
+          title: "Harness 请求补充信息",
+          summary: "袋子里至少还有一个白球的概率是多少？",
+          detail: null,
+          reason: null,
+          toolName: null,
+          command: null,
+          cwd: null,
+          paths: [],
+          permissionProfile: null,
+          questions: [{
+            id: "bayes_white_ball",
+            header: "逻辑推理题",
+            question: "袋子里至少还有一个白球的概率是多少？",
+            allowOther: true,
+            secret: false,
+            multiSelect: false,
+            options: [
+              { label: "1/2", description: "认为看到白球后排除了“3黑”" },
+              { label: "以上都不对，我的答案在下面补充", description: "如果你算出别的数值或分数，选这项并写出你的结果和理由。" },
+              { label: "其他", description: null }
+            ]
+          }],
+          actions: [{
+            value: "answer",
+            label: "提交回答",
+            tone: "primary",
+            description: null
+          }],
+          rawPayload: null,
+          createdAt: "2026-06-13T09:00:00.000Z",
+          updatedAt: "2026-06-13T09:00:00.000Z",
+          resolvedAt: null
+        }]}
+        replyingRequestId={null}
+        onReply={vi.fn()}
+      />
+    );
+
+    // 真正的选项保留，两个兜底选项都移除，只留卡片自带的输入框入口。
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+    expect(screen.queryByText(/以上都不对/)).not.toBeInTheDocument();
+    expect(screen.queryAllByText(t("conversation.permissionRequestQuestionOtherLabel"))).toHaveLength(1);
+  });
+
   it("权限申请会展示来源、读写范围、网络状态和可展开详情", () => {
     render(
       <PermissionRequestList

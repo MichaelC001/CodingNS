@@ -215,6 +215,11 @@ export function PermissionRequestCard({
                   <p>{question.question}</p>
                   <div className="permission-request-question-options">
                     {question.options.map((option) => {
+                      // 已经有"其他"输入框时，模型再给"以上都不对"这类兜底选项就是重复入口。
+                      if (question.allowOther && isOtherLikeOptionLabel(option.label)) {
+                        return null;
+                      }
+
                       const checked = answers[question.id]?.includes(option.label) ?? false;
                       const inputType = question.multiSelect ? "checkbox" : "radio";
                       const shouldUseSingleColumn =
@@ -338,6 +343,22 @@ export function PermissionRequestCard({
         ))}
       </footer>
     </article>
+  );
+}
+
+/**
+ * 判断选项是不是"以上都不对 / 其他"这类兜底入口。
+ *
+ * 这类选项本身不含答案，只是引导用户去自由填写，和卡片自带的"其他"输入框
+ * 是同一个入口。卡片已经显示输入框时把它去掉，避免出现两个重复的选项。
+ */
+function isOtherLikeOptionLabel(label: string): boolean {
+  const normalized = label.replace(/\s+/g, "").toLowerCase();
+
+  return (
+    /^(?:以上)?(?:都|均|全|皆)(?:都)?(?:不|非|否)/.test(normalized)
+    || /^(?:其他|其它)/.test(normalized)
+    || /^(?:noneoftheabove|none|other|somethingelse)(?:[（(:：,，。.].*)?$/.test(normalized)
   );
 }
 
