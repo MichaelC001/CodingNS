@@ -8076,15 +8076,58 @@ textarea:focus-visible {
     minmax(var(--deployment-reasoning-column-min, 0px), 1fr);
 }
 
+/* 移动端：整个面板压在屏幕高度的 75% 以内，每列列表各自限高并独立滚动。
+   三列叠加时如果只给弹层限高、不给内部限高，列表会直接溢出圆角盒子，出现
+   “文字被截断、又滑不动”的情况，所以这里把弹层、面板、列表三层一起约束。 */
 @media (max-width: 720px) {
   .composer-deployment-select {
     max-width: min(280px, 48vw);
   }
 
+  .composer-deployment-select-popover {
+    display: flex;
+    max-height: 75vh;
+    max-height: 75dvh;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
   .composer-deployment-select-panel,
   .composer-deployment-select-panel[data-columns="2"],
   .composer-deployment-select-panel[data-columns="3"] {
-    grid-template-columns: 1fr;
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 6px;
+    overflow: hidden;
+  }
+
+  .composer-deployment-select-column {
+    min-height: 0;
+    flex: 0 1 auto;
+  }
+
+  /* 列标题和配置摘要必须保持完整，压缩只发生在列表上。 */
+  .composer-deployment-select-column-header,
+  .composer-deployment-select-column-hint {
+    flex: 0 0 auto;
+  }
+
+  .composer-deployment-select-list {
+    max-height: 25vh;
+    max-height: 25dvh;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* 只剩模型一列时没有并排叠加的压力，允许它用满面板高度，不必卡在 25%。 */
+  .composer-deployment-select-panel[data-columns="1"] .composer-deployment-select-list,
+  .composer-deployment-select-panel.is-model-only .composer-deployment-select-list {
+    max-height: 75vh;
+    max-height: 75dvh;
   }
 }
 

@@ -149,7 +149,10 @@ export function ModelReasoningSelect({
     const viewportHeight = window.innerHeight;
     const edgePadding = 12;
     const gap = 8;
-    const preferredPopoverHeight = 320;
+    // 移动端整个面板最多占屏幕高度的 75%，桌面端沿用原来的 320px 预期高度。
+    const isMobilePopover = viewportWidth <= 720;
+    const mobileMaxPopoverHeight = Math.round(viewportHeight * 0.75);
+    const preferredPopoverHeight = isMobilePopover ? mobileMaxPopoverHeight : 320;
     const maxWidth = Math.min(
       DEPLOYMENT_SELECT_MAX_POPOVER_WIDTH,
       Math.max(DEPLOYMENT_SELECT_MIN_POPOVER_WIDTH, viewportWidth - edgePadding * 2)
@@ -191,12 +194,19 @@ export function ModelReasoningSelect({
     const shouldPlaceAbove = modalRect
       ? !(spaceBelow >= preferredPopoverHeight || spaceBelow > spaceAbove + 40)
       : spaceAbove >= 240 || spaceAbove >= spaceBelow;
+    // 弹层朝哪边展开就先按那边的可用空间收口，移动端再叠一层 75% 屏幕高度上限；
+    // 空间实在太小（例如贴到屏幕边缘）时留 160px 兜底，避免弹层被压成一条缝。
+    const availableHeight = shouldPlaceAbove ? spaceAbove : spaceBelow;
+    const maxPopoverHeight = isMobilePopover
+      ? Math.max(160, Math.min(mobileMaxPopoverHeight, availableHeight))
+      : undefined;
 
     setPopoverStyle({
       position: "fixed",
       left,
       width,
       maxWidth,
+      maxHeight: maxPopoverHeight,
       zIndex: 1905,
       top: shouldPlaceAbove ? undefined : rect.bottom + gap,
       bottom: shouldPlaceAbove ? viewportHeight - rect.top + gap : undefined,

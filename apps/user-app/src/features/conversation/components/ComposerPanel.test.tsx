@@ -443,6 +443,35 @@ describe("ComposerPanel", () => {
     ).toBe(312);
   });
 
+  it("移动端模型推理面板高度压在屏幕高度的 75% 以内", async () => {
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(390);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+
+    render(
+      <ComposerPanel
+        capabilities={createCapabilities({
+          provider: "codex",
+          modelOptions: [
+            { id: "gpt-5.4", name: "gpt-5.4", supportedReasoningEfforts: ["low", "high"] }
+          ]
+        })}
+        isSubmitting={false}
+        onSend={vi.fn().mockResolvedValue(undefined)}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText(t("conversation.modelSelectorLabel")));
+
+    const panel = await screen.findByRole("dialog", {
+      name: t("conversation.modelReasoningPanelLabel")
+    });
+    const popover = panel.closest(".composer-deployment-select-popover");
+
+    expect(popover).not.toBeNull();
+    await waitFor(() => {
+      expect(popover).toHaveStyle({ maxHeight: "600px" });
+    });
+  });
 
   it("PeerHOST 下 Composer 会从目标 HOST 读取模型配置", async () => {
     workbenchShellMock.currentTargetHostId = "peer-host-1";
