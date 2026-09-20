@@ -18,8 +18,10 @@ interface MobileSheetProps {
   readonly backdropVisible?: boolean;
   readonly showHandle?: boolean;
   readonly showCancelButton?: boolean;
+  readonly hideHeader?: boolean;
   readonly cancelLabel?: string;
   readonly className?: string;
+  readonly overlayClassName?: string;
   readonly cardClassName?: string;
   readonly bodyClassName?: string;
   readonly footer?: ReactNode;
@@ -38,8 +40,10 @@ export function MobileSheet({
   backdropVisible = true,
   showHandle = false,
   showCancelButton = true,
+  hideHeader = false,
   cancelLabel,
   className,
+  overlayClassName,
   cardClassName,
   bodyClassName,
   footer,
@@ -59,7 +63,7 @@ export function MobileSheet({
 
   return createPortal(
     <div
-      className="ios-action-sheet-overlay mobile-sheet-overlay"
+      className={`ios-action-sheet-overlay mobile-sheet-overlay${overlayClassName ? ` ${overlayClassName}` : ""}`}
       data-backdrop-visible={backdropVisible ? "true" : "false"}
       role="presentation"
       onClick={() => {
@@ -74,20 +78,23 @@ export function MobileSheet({
         data-kind={kind}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={description ? descriptionId : undefined}
+        aria-labelledby={hideHeader ? undefined : titleId}
+        aria-label={hideHeader ? title : undefined}
+        aria-describedby={!hideHeader && description ? descriptionId : undefined}
         onClick={(event) => event.stopPropagation()}
       >
         <div
           className={`mobile-workspace-home-sheet-card mobile-sheet-card${cardClassName ? ` ${cardClassName}` : ""}`}
         >
           {showHandle ? <div className="mobile-sheet-handle" aria-hidden="true" /> : null}
-          <div className="mobile-workspace-home-sheet-header mobile-sheet-header">
-            <div className="mobile-sheet-title-wrap">
-              <strong id={titleId}>{title}</strong>
-              {description ? <p id={descriptionId}>{description}</p> : null}
+          {hideHeader ? null : (
+            <div className="mobile-workspace-home-sheet-header mobile-sheet-header">
+              <div className="mobile-sheet-title-wrap">
+                <strong id={titleId}>{title}</strong>
+                {description ? <p id={descriptionId}>{description}</p> : null}
+              </div>
             </div>
-          </div>
+          )}
           <div className={bodyClassName ? `mobile-sheet-body ${bodyClassName}` : "mobile-sheet-body"}>{children}</div>
           {footer ? <div className="mobile-sheet-footer">{footer}</div> : null}
         </div>

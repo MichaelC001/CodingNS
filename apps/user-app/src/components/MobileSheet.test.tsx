@@ -88,4 +88,44 @@ describe("MobileSheet", () => {
 
     expect(overlay.dataset.backdropVisible).toBe("false");
   });
+
+  it("支持隐藏标题区，同时保留对话框的无障碍名称", () => {
+    render(
+      <MobileSheet
+        open
+        title="快捷短语"
+        description="这里集中管理你常用的会话指令。"
+        hideHeader
+        onClose={() => {}}
+      >
+        <p>正文</p>
+      </MobileSheet>
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "快捷短语" });
+
+    expect(dialog.querySelector(".mobile-sheet-header")).toBeNull();
+    expect(dialog.querySelector(".mobile-sheet-title-wrap")).toBeNull();
+    expect(screen.queryByText("这里集中管理你常用的会话指令。")).not.toBeInTheDocument();
+    expect(screen.getByText("正文")).toBeInTheDocument();
+  });
+
+  it("支持给遮罩和卡片补业务 class，业务侧不用再手写壳层", () => {
+    render(
+      <MobileSheet
+        open
+        title="快捷短语"
+        overlayClassName="demo-sheet-overlay"
+        className="demo-sheet"
+        cardClassName="demo-sheet-card"
+        onClose={() => {}}
+      >
+        <p>正文</p>
+      </MobileSheet>
+    );
+
+    expect(document.querySelector(".mobile-sheet-overlay.demo-sheet-overlay")).not.toBeNull();
+    expect(document.querySelector(".mobile-sheet.demo-sheet")).not.toBeNull();
+    expect(document.querySelector(".mobile-sheet-card.demo-sheet-card")).not.toBeNull();
+  });
 });
