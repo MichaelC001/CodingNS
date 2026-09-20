@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { SqliteWriteQueue, isInsideSqliteWriteQueue } from "../../src/storage/sqlite/write-queue.js";
+import {
+  SqliteWriteQueue,
+  SqliteWriteQueueBackpressureError,
+  SqliteWriteQueueClosedError,
+  SqliteWriteQueueCoalescedError,
+  isInsideSqliteWriteQueue
+} from "../../src/storage/sqlite/write-queue.js";
 import { classifySqliteError, isSqliteBusyError } from "../../src/storage/sqlite/write-queue-errors.js";
 import { runSqliteWriteSync } from "../../src/storage/sqlite/write-serializer.js";
 
@@ -294,5 +300,93 @@ describe("写入队列防重入", () => {
     expect(observed).toEqual([true, true]);
     expect(outside).toBe(false);
     expect(isInsideSqliteWriteQueue()).toBe(false);
+  });
+});
+
+describe("有界队列策略", () => {
+  it("队列满时返回明确 backpressure，critical 不静默丢失", async () => {
+    const release: { resolve?: () => void } = {};
+    const blocker = new Promise<void>((resolve) => {
+      release.resolve = resolve;
+    });
+    const queue = new SqliteWriteQueue({ maxPendingCommands: 1 });
+    const running = queue.enqueue("running", async () => blocker, { estimatedBytes: 1 });
+    const pending = queue.enqueue("pending", () => "pending");
+    const rejected = queue.enqueue("overflow", () => "overflow");
+
+    await expect(rejected).rejects.toBeInstanceOf(SqliteWriteQueueBackpressureError);
+    expect(queue.getStats().rejectedCount).toBe(1);
+    release.resolve?.();
+    await expect(running).resolves.toBeUndefined();
+    await expect(pending).resolves.toBe("pending");
+  });
+
+  it("latest_wins 只保留同 key 的最新待处理命令", async () => {
+    const release: { resolve?: () => void } = {};
+    const blocker = new Promise<void>((resolve) => {
+      release.resolve = resolve;
+    });
+    const queue = new SqliteWriteQueue({ maxPendingCommands: 8 });
+    const running = queue.enqueue("running", async () => blocker, { estimatedBytes: 1 });
+    const first = queue.enqueue("latest", () => "old", { policy: "latest_wins", key: "session-1" }).catch((error) => error);
+    const latest = queue.enqueue("latest", () => "new", { policy: "latest_wins", key: "session-1" });
+
+    release.resolve?.();
+    await running;
+    await expect(first).resolves.toBeInstanceOf(SqliteWriteQueueCoalescedError);
+    await expect(latest).resolves.toBe("new");
+    expect(queue.getStats().coalescedCount).toBe(1);
+  });
+
+  it("append_batch 合并连续同 key 命令并暴露批次数", async () => {
+    let calls = 0;
+    const release: { resolve?: () => void } = {};
+    const blocker = new Promise<void>((resolve) => {
+      release.resolve = resolve;
+    });
+    const queue = new SqliteWriteQueue({ maxBatchCommands: 8 });
+    const running = queue.enqueue("running", async () => blocker);
+    const first = queue.enqueue("append", () => {
+      calls += 1;
+      return "a";
+    }, { policy: "append_batch", key: "events" });
+    const second = queue.enqueue("append", () => {
+      calls += 1;
+      return "b";
+    }, { policy: "append_batch", key: "events" });
+
+    release.resolve?.();
+    await running;
+    // 批次以最后一个 operation 的结果完成，两个调用方都收到同一结果。
+    await expect(first).resolves.toBe("b");
+    await expect(second).resolves.toBe("b");
+    expect(calls).toBe(2);
+    expect(queue.getStats().batchCount).toBe(2);
+  });
+
+  it("单命令和 pending bytes 超限时拒绝", async () => {
+    const release: { resolve?: () => void } = {};
+    const blocker = new Promise<void>((resolve) => {
+      release.resolve = resolve;
+    });
+    const queue = new SqliteWriteQueue({ maxCommandBytes: 4, maxPendingBytes: 8 });
+    await expect(queue.enqueue("large", () => 1, { estimatedBytes: 5 })).rejects.toBeInstanceOf(SqliteWriteQueueBackpressureError);
+    const running = queue.enqueue("running", async () => blocker, { estimatedBytes: 1 });
+    const first = queue.enqueue("one", () => 1, { estimatedBytes: 4 });
+    const second = queue.enqueue("two", () => 2, { estimatedBytes: 5 });
+    await expect(second).rejects.toBeInstanceOf(SqliteWriteQueueBackpressureError);
+    await queue.close({ drain: false });
+    await expect(first).rejects.toBeInstanceOf(SqliteWriteQueueClosedError);
+    release.resolve?.();
+    await running;
+  });
+
+  it("关闭时 drain 已入队命令并拒绝新命令", async () => {
+    const queue = new SqliteWriteQueue();
+    const value = queue.enqueue("drain", () => 42);
+    const closing = queue.close();
+    await expect(value).resolves.toBe(42);
+    await closing;
+    await expect(queue.enqueue("after-close", () => 1)).rejects.toBeInstanceOf(SqliteWriteQueueClosedError);
   });
 });
