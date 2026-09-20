@@ -52,7 +52,66 @@ export function PerformanceOverviewPanel({ compact = false }: { compact?: boolea
 function ProviderFilter({ options, selected, onSelect }: { options: ProviderOption[]; selected: string; onSelect: (value: string) => void }) { return <div className="settings-performance-provider-filter" role="group" aria-label={t("settings.performanceProviderFilter")}><button type="button" className="settings-performance-provider" data-active={selected === "all" ? "true" : undefined} aria-pressed={selected === "all"} title={t("settings.performanceAllProviders")} onClick={() => onSelect("all")}><FiGrid aria-hidden="true" /><span>{t("settings.performanceAllProviders")}</span></button>{options.map((option) => <button key={option.id} type="button" className="settings-performance-provider" data-active={selected === option.id ? "true" : undefined} aria-pressed={selected === option.id} title={providerLabel(option.id)} onClick={() => onSelect(option.id)}><img src={getProviderIcon(option.id as ProviderId)} alt="" aria-hidden="true" /><span>{providerLabel(option.id)}</span></button>)}</div>; }
 function Metric({ icon, label, value, tone }: { icon?: ReactNode; label: string; value: string; tone?: "cost" | "cache" }) { return <div className={`settings-performance-metric${tone ? ` settings-performance-metric-${tone}` : ""}`}>{icon ? <span className="settings-performance-metric-icon">{icon}</span> : null}<span>{label}</span><strong>{value}</strong></div>; }
 
-function TrendChart({ points, selectedLabel, onSelect }: { points: TrendPoint[]; selectedLabel: string | null; onSelect: (point: TrendPoint) => void }) { if (!points.length) return <div className="settings-performance-empty">{t("settings.performanceEmpty")}</div>; const width = 1000, height = 280, left = 26, right = 24, top = 20, bottom = 34, chartWidth = width - left - right, chartHeight = height - top - bottom; const tokenMax = Math.max(1, ...points.map((item) => item.totalTokens)), costMax = Math.max(1, ...points.map((item) => item.costUsd)); const x = (index: number) => left + (points.length === 1 ? chartWidth / 2 : index / (points.length - 1) * chartWidth); const ty = (value: number) => top + chartHeight - value / tokenMax * chartHeight; const cy = (value: number) => top + chartHeight - value / costMax * chartHeight; const tokens = points.map((item, index) => `${x(index)},${ty(item.totalTokens)}`).join(" "); const costs = points.map((item, index) => `${x(index)},${cy(item.costUsd)}`).join(" "); return <div className="settings-performance-chart-wrap"><svg className="settings-performance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t("settings.performanceTrendAriaLabel")}>{[0, 1, 2, 3].map((line) => { const y = top + chartHeight / 3 * line; return <line key={line} x1={left} x2={left + chartWidth} y1={y} y2={y} className="settings-performance-grid-line" />; })}<polygon points={`${left},${top + chartHeight} ${tokens} ${left + chartWidth},${top + chartHeight}`} className="settings-performance-token-area" /><polyline points={tokens} className="settings-performance-token-line" /><polyline points={costs} className="settings-performance-cost-line" />{points.map((point, index) => <g key={`${point.label}-${index}`}><title>{t("settings.performancePointTooltip", { label: point.label, tokens: number(point.totalTokens), cost: usd(point.costUsd) })}</title><circle cx={x(index)} cy={ty(point.totalTokens)} r={selectedLabel === point.label ? "6" : "4"} className="settings-performance-token-dot" data-selected={selectedLabel === point.label ? "true" : undefined} role="button" tabIndex={0} aria-label={t("settings.performancePointTooltip", { label: point.label, tokens: number(point.totalTokens), cost: usd(point.costUsd) })} onClick={() => onSelect(point)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(point); } }} /></g>)}{labelIndexes(points.length).map((index) => <text key={index} x={x(index)} y={height - 8} textAnchor="middle" className="settings-performance-axis-label">{points[index]?.label}</text>)}</svg><div className="settings-performance-legend"><span><i className="settings-performance-legend-token" />{t("settings.performanceTokenLegend")}</span><span><i className="settings-performance-legend-cost" />{t("settings.performanceCostLegend")}</span></div></div>; }
+function TrendChart({ points, selectedLabel, onSelect }: { points: TrendPoint[]; selectedLabel: string | null; onSelect: (point: TrendPoint) => void }) {
+  if (!points.length) return <div className="settings-performance-empty">{t("settings.performanceEmpty")}</div>;
+
+  const width = 1000;
+  const height = 280;
+  const left = 26;
+  const right = 24;
+  const top = 20;
+  const bottom = 34;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const tokenMax = Math.max(1, ...points.map((item) => item.totalTokens));
+  const costMax = Math.max(1, ...points.map((item) => item.costUsd));
+  const x = (index: number) => left + (points.length === 1 ? chartWidth / 2 : index / (points.length - 1) * chartWidth);
+  const ty = (value: number) => top + chartHeight - value / tokenMax * chartHeight;
+  const cy = (value: number) => top + chartHeight - value / costMax * chartHeight;
+  const tokenCoordinates = points.map((item, index) => ({ x: x(index), y: ty(item.totalTokens) }));
+  const costCoordinates = points.map((item, index) => ({ x: x(index), y: cy(item.costUsd) }));
+  const tokenPath = smoothPath(tokenCoordinates);
+  const costPath = smoothPath(costCoordinates);
+  const baseline = top + chartHeight;
+  const tokenAreaPath = `${tokenPath} L ${tokenCoordinates.at(-1)?.x ?? left} ${baseline} L ${tokenCoordinates[0]?.x ?? left} ${baseline} Z`;
+
+  return <div className="settings-performance-chart-wrap"><svg className="settings-performance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t("settings.performanceTrendAriaLabel")}>
+    {[0, 1, 2, 3].map((line) => { const y = top + chartHeight / 3 * line; return <line key={line} x1={left} x2={left + chartWidth} y1={y} y2={y} className="settings-performance-grid-line" />; })}
+    <path d={tokenAreaPath} className="settings-performance-token-area" />
+    <path d={tokenPath} className="settings-performance-token-line" />
+    <path d={costPath} className="settings-performance-cost-line" />
+    {points.map((point, index) => <g key={`${point.label}-${index}`}>
+      <title>{t("settings.performancePointTooltip", { label: point.label, tokens: number(point.totalTokens), cost: usd(point.costUsd) })}</title>
+      <circle cx={x(index)} cy={ty(point.totalTokens)} r={selectedLabel === point.label ? "6" : "4"} className="settings-performance-token-dot" data-selected={selectedLabel === point.label ? "true" : undefined} role="button" tabIndex={0} aria-label={t("settings.performancePointTooltip", { label: point.label, tokens: number(point.totalTokens), cost: usd(point.costUsd) })} onClick={() => onSelect(point)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(point); } }} />
+    </g>)}
+    {labelIndexes(points.length).map((index) => <text key={index} x={x(index)} y={height - 8} textAnchor="middle" className="settings-performance-axis-label">{points[index]?.label}</text>)}
+  </svg><div className="settings-performance-legend"><span><i className="settings-performance-legend-token" />{t("settings.performanceTokenLegend")}</span><span><i className="settings-performance-legend-cost" />{t("settings.performanceCostLegend")}</span></div></div>;
+}
+
+interface ChartCoordinate { x: number; y: number; }
+
+function smoothPath(points: ChartCoordinate[]): string {
+  if (points.length === 0) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+
+  let path = `M ${points[0].x} ${points[0].y}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const previous = points[index - 1] ?? points[index];
+    const current = points[index];
+    const next = points[index + 1];
+    const afterNext = points[index + 2] ?? next;
+    const controlOne = {
+      x: current.x + (next.x - previous.x) / 6,
+      y: current.y + (next.y - previous.y) / 6
+    };
+    const controlTwo = {
+      x: next.x - (afterNext.x - current.x) / 6,
+      y: next.y - (afterNext.y - current.y) / 6
+    };
+    path += ` C ${controlOne.x} ${controlOne.y}, ${controlTwo.x} ${controlTwo.y}, ${next.x} ${next.y}`;
+  }
+  return path;
+}
 function PointDetails({ point, onClose }: { point: TrendPoint; onClose: () => void }) { return <div className="settings-performance-point-details"><div><strong>{point.label}</strong><span>{t("settings.performancePointDetails")}</span></div><div className="settings-performance-point-values"><span>{t("settings.performanceTotalTokens")}: <b>{number(point.totalTokens)}</b></span><span>{t("settings.performanceCost")}: <b>{usd(point.costUsd)}</b></span><span>{t("settings.performanceCacheReadTokens")}: <b>{number(point.cacheReadTokens)}</b></span><span>{t("settings.performanceCacheWriteTokens")}: <b>{number(point.cacheWriteTokens)}</b></span><span>{t("settings.performanceSessions")}: <b>{number(point.sessions)}</b></span></div><button type="button" onClick={onClose} aria-label={t("settings.performanceCloseDetails")} title={t("settings.performanceCloseDetails")}><FiX aria-hidden="true" /></button></div>; }
 
 function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string) {
