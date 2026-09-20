@@ -32015,6 +32015,10 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   padding: 0.8rem 1rem calc(8rem + var(--mobile-shell-safe-bottom, env(safe-area-inset-bottom, 0px)));
   background: transparent;
   font-family: "SF Pro Display", "SF Pro Text", -apple-system, BlinkMacSystemFont, sans-serif;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .mobile-tool-process-panel .terminal-manager-desktop-header {
@@ -32161,9 +32165,9 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 }
 
 .mobile-tool-process-panel .terminal-manager-status-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 0.7rem;
   padding: 0.9rem;
   border-radius: 1rem;
@@ -32177,9 +32181,17 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   font-size: 0.98rem;
 }
 
+.mobile-tool-process-panel .terminal-manager-status-copy {
+  width: 100%;
+  min-width: 0;
+}
+
 .mobile-tool-process-panel .terminal-manager-status-badges {
   flex-direction: row;
   align-items: center;
+  width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .mobile-tool-process-panel .terminal-manager-actions {

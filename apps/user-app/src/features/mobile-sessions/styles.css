@@ -1137,6 +1137,14 @@
   overflow: hidden;
 }
 
+/* 进程面板内容由自身滚动，避免工具壳层的 overflow:hidden 把启动项截断。 */
+.mobile-conversation-tool-panel-body > .terminal-manager-panel.mobile-conversation-tool-surface.mobile-tool-process-panel {
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
 .mobile-conversation-page[data-mobile-shell="true"] .mobile-conversation-preview-rail.surface-card,
 .mobile-conversation-preview-rail {
   position: absolute;
