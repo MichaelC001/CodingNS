@@ -24753,17 +24753,12 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   color: var(--text-primary);
 }
 
-/* 设置页顶部的性能概览：用平铺指标和轻量 SVG 图表承载高频查看的数据。 */
+/* 使用统计：不再套独立卡片底板，指标和图表直接贴在页面底色上。 */
 .settings-performance-panel {
   display: flex;
   flex-direction: column;
   gap: 18px;
   margin: 0 0 26px;
-  padding: 20px;
-  border: 1px solid color-mix(in srgb, var(--border-primary) 88%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--bg-surface) 96%, var(--bg-primary));
-  box-shadow: 0 12px 28px color-mix(in srgb, var(--shadow-color, #000) 8%, transparent);
 }
 
 .settings-performance-heading,
@@ -24916,10 +24911,8 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .settings-performance-summary {
   justify-content: space-between;
   gap: 18px;
-  padding: 16px;
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border-primary));
-  border-radius: 13px;
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+  padding: 0 0 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-primary) 60%, transparent);
 }
 
 .settings-performance-hero,
@@ -25025,10 +25018,7 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 
 .settings-performance-tiles .settings-performance-metric {
   gap: 4px;
-  padding: 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--bg-primary) 52%, transparent);
+  padding: 0;
 }
 
 .settings-performance-metric strong {
@@ -28788,8 +28778,6 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   .settings-performance-panel {
     gap: 14px;
     margin-bottom: 20px;
-    padding: 15px;
-    border-radius: 14px;
   }
 
   .settings-performance-heading,
@@ -29123,6 +29111,10 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   padding: 0;
   font-size: 13px;
   max-width: 34rem;
+}
+
+.settings-mobile-usage-section .settings-performance-panel {
+  margin-bottom: 0;
 }
 
 .settings-mobile-list,

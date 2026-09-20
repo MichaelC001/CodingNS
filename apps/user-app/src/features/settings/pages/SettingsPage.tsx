@@ -54,6 +54,7 @@ const DEFAULT_DEBUG_PORT_POOLS: DebugPortPoolConfig = {
 
 type SettingsSectionId =
   | "appearance"
+  | "usage"
   | "ability-management"
   | "channels-management"
   | "model-management"
@@ -120,6 +121,7 @@ interface SettingsSectionMeta {
 function isSettingsSectionId(value: string | undefined): value is SettingsSectionId {
   return (
     value === "appearance" ||
+    value === "usage" ||
     value === "ability-management" ||
     value === "channels-management" ||
     value === "model-management" ||
@@ -1068,6 +1070,13 @@ function MobileSettingsPage({ model, appVersion }: { model: SettingsPageModel; a
       description: t("settings.appearanceSectionSummary"),
       value: getLanguageLabel(model.accountPreferences.language),
       icon: <AppearanceSectionIcon />
+    },
+    {
+      id: "usage",
+      title: t("settings.usage"),
+      description: t("settings.usageSectionSummary"),
+      value: t("settings.usageNavValue"),
+      icon: <UsageSectionIcon />
     }
   ];
 
@@ -1127,7 +1136,6 @@ function MobileSettingsPage({ model, appVersion }: { model: SettingsPageModel; a
       <div className="settings-page settings-page-mobile mobile-page-scroll-root mobile-page-with-top-header">
         <MobilePageHeader title={t("settings.title")} />
         <div className="settings-mobile-container">
-          <PerformanceOverviewPanel compact />
           <section className="settings-mobile-group-section">
             <div className="settings-mobile-list">
               {sectionEntries.map((entry) => (
@@ -1165,6 +1173,7 @@ function MobileSettingsPage({ model, appVersion }: { model: SettingsPageModel; a
       <MobilePageHeader title={t("settings.title")} />
       <div className="settings-mobile-container">
         {activeSection === "appearance" ? <MobileAppearanceSection model={model} /> : null}
+        {activeSection === "usage" ? <MobileUsageSection /> : null}
         {activeSection === "ability-management" ? <MobileAbilityManagementSection /> : null}
         {activeSection === "channels-management" ? <MobileChannelsManagementSection /> : null}
         {activeSection === "server-connection" && model.showServerSettings
@@ -1176,6 +1185,14 @@ function MobileSettingsPage({ model, appVersion }: { model: SettingsPageModel; a
       </div>
       <MobileSettingsLogoutBar onLogout={model.handleLogout} />
     </div>
+  );
+}
+
+function MobileUsageSection() {
+  return (
+    <section className="settings-mobile-group-section settings-mobile-usage-section">
+      <PerformanceOverviewPanel compact />
+    </section>
   );
 }
 
@@ -1835,6 +1852,17 @@ function AppearanceSectionIcon() {
       <circle cx="6.6" cy="9.2" r=".8" fill="currentColor" stroke="none" />
       <circle cx="8.8" cy="6.8" r=".8" fill="currentColor" stroke="none" />
       <circle cx="12.1" cy="6.6" r=".8" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function UsageSectionIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M4 16V9.5" strokeLinecap="round" />
+      <path d="M8 16V5" strokeLinecap="round" />
+      <path d="M12 16v-4" strokeLinecap="round" />
+      <path d="M16 16V7.5" strokeLinecap="round" />
     </svg>
   );
 }

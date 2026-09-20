@@ -67,6 +67,10 @@ vi.mock("../../../settings/AuthDeviceManagementPanel", () => ({
   AuthDeviceManagementPanel: () => <div data-testid="auth-device-management-panel">auth-device-management-panel</div>
 }));
 
+vi.mock("../../../settings/PerformanceOverviewPanel", () => ({
+  PerformanceOverviewPanel: () => <div data-testid="performance-overview-panel">performance-overview-panel</div>
+}));
+
 vi.mock("../../conversation/components/WorkbenchLayout", () => ({
   useWorkbenchShell: () => mockUseWorkbenchShell()
 }));
@@ -762,6 +766,24 @@ describe("SettingsPage", () => {
     expect(screen.queryByText(t("settings.autoCheckUpdate"))).not.toBeInTheDocument();
     expect(screen.queryByText(t("settings.autoDownloadUpdate"))).not.toBeInTheDocument();
     expect(screen.getByText(t("settings.clientUpdateUnsupported"))).toBeInTheDocument();
+  });
+
+  it("移动布局把使用情况收进单独菜单入口", async () => {
+    setViewportWidth(390);
+    renderSettingsPage();
+
+    const navButtons = screen.getAllByRole("button");
+    const usageEntry = screen.getByRole("button", { name: new RegExp(t("settings.usage")) });
+    const appearanceEntry = screen.getByRole("button", { name: new RegExp(t("settings.appearance")) });
+    const abilityEntry = screen.getByRole("button", { name: new RegExp(t("settings.abilityManagement")) });
+
+    expect(navButtons.indexOf(appearanceEntry)).toBeLessThan(navButtons.indexOf(usageEntry));
+    expect(navButtons.indexOf(usageEntry)).toBeLessThan(navButtons.indexOf(abilityEntry));
+    expect(screen.queryByTestId("performance-overview-panel")).not.toBeInTheDocument();
+
+    await userEvent.click(usageEntry);
+
+    expect(await screen.findByTestId("performance-overview-panel")).toBeInTheDocument();
   });
 
   it("移动布局把默认会话权限放在安全与隐私分类下", async () => {
