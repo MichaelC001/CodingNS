@@ -828,7 +828,8 @@ describe("WorkbenchHostSwitcher", () => {
 
     const detailPanel = await screen.findByRole("region", { name: "连接详情" });
 
-    expect(within(detailPanel).getAllByText("CodingNS Connect")).toHaveLength(2);
+    expect(within(detailPanel).getByText("CodingNS Connect · 正在准备会话工作区…")).toBeInTheDocument();
+    expect(within(detailPanel).getAllByText("正在准备会话工作区…").length).toBeGreaterThan(0);
     expect(within(detailPanel).getByText("https://demo.channel.codingns.com")).toBeInTheDocument();
     expect(within(detailPanel).getByText("2.0 KB")).toBeInTheDocument();
     expect(within(detailPanel).getAllByText("42% · 10 核").length).toBeGreaterThan(0);

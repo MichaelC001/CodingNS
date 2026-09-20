@@ -34,6 +34,10 @@ import {
 import { httpClient } from "../../../network/http-client";
 import { useRelaySessionTrafficSummary } from "../../../network/relay-session-traffic-store";
 import {
+  resolveLinkTransportLabelKey,
+  useWebRtcLinkSelector
+} from "../../../network/webrtc/webrtc-link-store";
+import {
   fetchHostResourceSnapshot,
   type HostResourceSnapshotView
 } from "../../../platform/server/host-resource-manager";
@@ -160,6 +164,7 @@ export function WorkbenchHostSwitcher({ collapsed = false }: WorkbenchHostSwitch
   const activeHost = getActiveHost(runtimeConfig);
   const activeHostId = getEffectiveActiveHostId(runtimeConfig);
   const activeRoute = useActiveConnectionRouteSummary();
+  const webRtcTransportKind = useWebRtcLinkSelector((state) => state.transportKind);
   const relaySessionTraffic = useRelaySessionTrafficSummary(activeHostId);
   const orderedHosts = useMemo(
     () => sortHosts(runtimeConfig.hosts, activeHostId),
@@ -950,12 +955,19 @@ export function WorkbenchHostSwitcher({ collapsed = false }: WorkbenchHostSwitch
   const buttonTitle = session?.user.username
     ? `${activeHost.baseUrl} · ${session.user.username}`
     : activeHost.baseUrl;
+  const activeLinkTypeLabel = activeRoute?.kind === "relay"
+    ? webRtcTransportKind
+      ? t(resolveLinkTransportLabelKey(webRtcTransportKind) ?? "common.unknown")
+      : t("common.loading")
+    : null;
   const detailStatusLabel = activeRoute?.kind === "relay"
-    ? t("shell.hostSwitcherDetailStatusRelay")
+    ? `${t("shell.hostSwitcherDetailStatusRelay")} · ${activeLinkTypeLabel}`
     : t("shell.hostSwitcherDetailStatusDirect");
-  const detailRouteLabel = activeRoute
-    ? t(resolveActiveConnectionRouteLabelKey(activeRoute.kind))
-    : t("common.unknown");
+  const detailRouteLabel = activeRoute?.kind === "relay"
+    ? activeLinkTypeLabel ?? t("common.unknown")
+    : activeRoute
+      ? t(resolveActiveConnectionRouteLabelKey(activeRoute.kind))
+      : t("common.unknown");
 
   function renderHostItem(
     host: RuntimeHostProfile,
