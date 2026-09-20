@@ -30811,7 +30811,11 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .ios-action-sheet-overlay {
   position: fixed;
   inset: 0;
-  z-index: 39;
+  /*
+   * 移动端 sheet 是模态层，必须盖住页面内的浮动层（底部输入框层 z-index: 72）。
+   * 取 1900：高于底部输入框层和桌面弹层壳（1800），低于 combobox 浮层（2000）与 toast（3600）。
+   */
+  z-index: 1900;
   display: flex;
   align-items: center;
   justify-content: center;

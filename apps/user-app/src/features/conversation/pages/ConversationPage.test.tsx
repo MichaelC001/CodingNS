@@ -1410,6 +1410,41 @@ describe("ConversationPage", () => {
     expect(view.container.querySelector(".mobile-conversation-preview-rail")).toBeInTheDocument();
   });
 
+  it("会话列表里的新建会话会先弹出适配器选择，不直接沿用当前会话的适配器", async () => {
+    const startDraftSession = vi.fn();
+    mockUseWorkbenchShell.mockReturnValue(
+      createMobileWorkbenchShellValue({ startDraftSession })
+    );
+
+    const view = renderDraftConversationPage();
+    const stage = view.container.querySelector(".mobile-conversation-stage") as HTMLElement;
+
+    fireEvent.touchStart(stage, {
+      touches: [{ clientX: 24, clientY: 180 }]
+    });
+    fireEvent.touchMove(stage, {
+      touches: [{ clientX: 140, clientY: 184 }]
+    });
+    fireEvent.touchEnd(stage, {
+      changedTouches: [{ clientX: 140, clientY: 184 }]
+    });
+
+    const rail = await waitFor(() => {
+      const element = view.container.querySelector(".mobile-conversation-preview-rail");
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    });
+
+    await userEvent.click(within(rail).getByRole("button", { name: t("shell.createSession") }));
+
+    const sheet = await screen.findByRole("dialog", { name: t("shell.createSessionModalTitle") });
+    expect(startDraftSession).not.toHaveBeenCalled();
+
+    await userEvent.click(within(sheet).getByRole("button", { name: "OpenCode" }));
+
+    expect(startDraftSession).toHaveBeenCalledWith("workspace-1", "opencode");
+  });
+
   it("移动端会话列表会显示收藏会话和归档入口，没有收藏时会自动隐藏收藏分组", async () => {
     mockUseWorkbenchShell.mockReturnValue(
       createMobileWorkbenchShellValue({
@@ -1550,7 +1585,7 @@ describe("ConversationPage", () => {
 
     expect(await screen.findByText(t("shell.favoriteSectionTitle"))).toBeInTheDocument();
     expect(screen.getByRole("button", { name: t("shell.archiveCurrentSessionAction") })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: t("shell.archiveFolderLabel") })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: t("shell.archivedLabel") })).toBeInTheDocument();
 
     view.unmount();
     mockUseWorkbenchShell.mockReturnValue(createMobileWorkbenchShellValue());
@@ -1666,7 +1701,7 @@ describe("ConversationPage", () => {
       changedTouches: [{ clientX: 140, clientY: 184 }]
     });
 
-    await userEvent.click(await screen.findByRole("button", { name: t("shell.archiveFolderLabel") }));
+    await userEvent.click(await screen.findByRole("button", { name: t("shell.archivedLabel") }));
 
     const archiveDialog = await screen.findByRole("dialog", { name: t("shell.archiveModalTitle") });
     await userEvent.click(within(archiveDialog).getByRole("button", { name: t("shell.archiveSearchAction") }));

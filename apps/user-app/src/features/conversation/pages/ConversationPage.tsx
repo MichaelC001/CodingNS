@@ -395,6 +395,7 @@ function LiveConversationPage({
   const [archiveSubmitting, setArchiveSubmitting] = useState(false);
   const [branchTreeOpen, setBranchTreeOpen] = useState(false);
   const [parallelCreateOpen, setParallelCreateOpen] = useState(false);
+  const [createSessionOpen, setCreateSessionOpen] = useState(false);
   const composerSelectionWriteRef = useRef<Promise<void>>(Promise.resolve());
   const flattenedNavigationEntries = useMemo(
     () => flattenNavigationSessions(navigationGroups),
@@ -777,7 +778,6 @@ function LiveConversationPage({
     () => resolveNextMobileSessionEntry(navigationGroups, mobileNavigationWorkspaceId, sessionId),
     [mobileNavigationWorkspaceId, navigationGroups, sessionId]
   );
-  const mobileDraftProvider = session?.provider ?? navigationSession?.provider ?? null;
   const mobileSessionTitlePresentation = useMemo(
     () => buildSessionTitlePresentation((session ?? navigationSession)?.title ?? null, t("conversation.titleFallback")),
     [navigationSession, session]
@@ -1014,21 +1014,21 @@ function LiveConversationPage({
             activeSessionId={sessionId}
             pendingUserInputSessionIds={pendingUserInputSessionIds}
             createSessionActionLabel={
-              mobileNavigationWorkspaceId && mobileDraftProvider ? t("shell.createSession") : undefined
+              mobileNavigationWorkspaceId ? t("shell.createSession") : undefined
             }
             favoriteItems={mobileFavoritePreviewItems}
             items={mobilePreviewItems}
             expandedRootIds={expandedMobilePreviewRootIds}
             workspaceSectionLabel={mobileWorkspaceSummary?.label ?? t("shell.mobileConversationCurrentWorkspaceSection")}
             onCreateSession={
-              mobileNavigationWorkspaceId && mobileDraftProvider
+              mobileNavigationWorkspaceId
                 ? () => {
-                    startDraftSession(mobileNavigationWorkspaceId, mobileDraftProvider);
+                    setCreateSessionOpen(true);
                   }
                 : undefined
             }
             archiveCurrentActionLabel={t("shell.archiveCurrentSessionAction")}
-            archiveFolderActionLabel={mobileArchivedSessions.length > 0 ? t("shell.archiveFolderLabel") : undefined}
+            archiveFolderActionLabel={mobileArchivedSessions.length > 0 ? t("shell.archivedLabel") : undefined}
             onArchiveActiveSession={() => {
               setArchiveConfirmOpen(true);
             }}
@@ -1355,6 +1355,23 @@ function LiveConversationPage({
           }
         }}
       />
+      {!showInlineHeader ? (
+        <MobileCreateSessionSheet
+          open={createSessionOpen}
+          workspaces={mobileWorkspaces}
+          workspaceOptions={mobileWorkspaceOptions}
+          initialWorkspaceId={mobileNavigationWorkspaceId}
+          resolveTargetHostId={(workspaceId) => resolveNavigationWorkspaceRef(workspaceId, {
+            preferredTargetHostId: currentTargetHostId,
+            fallbackToCurrent: true
+          })?.hostId ?? null}
+          onClose={() => setCreateSessionOpen(false)}
+          onSelect={(workspaceId, provider) => {
+            setCreateSessionOpen(false);
+            startDraftSession(workspaceId, provider);
+          }}
+        />
+      ) : null}
       {supportsParallelSessionFeatures ? (
         <ParallelSessionCreateModal
           open={parallelCreateOpen}
@@ -1576,6 +1593,7 @@ function DraftConversationPage({
     : null;
   const [archiveFolderOpen, setArchiveFolderOpen] = useState(false);
   const [archiveRestoreSessionId, setArchiveRestoreSessionId] = useState<string | null>(null);
+  const [createSessionOpen, setCreateSessionOpen] = useState(false);
   const mobileConversationMainRef = useRef<HTMLDivElement | null>(null);
   const mobileConversationPageRef = useRef<HTMLElement | null>(null);
   const mobileConversationHeaderRef = useRef<HTMLDivElement | null>(null);
@@ -1721,9 +1739,9 @@ function DraftConversationPage({
           expandedRootIds={expandedMobilePreviewRootIds}
           workspaceSectionLabel={mobileWorkspaceSummary?.label ?? t("shell.mobileConversationCurrentWorkspaceSection")}
           onCreateSession={() => {
-            startDraftSession(draft.workspaceId, draft.provider);
+            setCreateSessionOpen(true);
           }}
-          archiveFolderActionLabel={mobileArchivedSessions.length > 0 ? t("shell.archiveFolderLabel") : undefined}
+          archiveFolderActionLabel={mobileArchivedSessions.length > 0 ? t("shell.archivedLabel") : undefined}
           onOpenArchiveFolder={
             mobileArchivedSessions.length > 0
               ? () => {
@@ -1946,6 +1964,23 @@ function DraftConversationPage({
           }
         }}
       />
+      {!showInlineHeader ? (
+        <MobileCreateSessionSheet
+          open={createSessionOpen}
+          workspaces={mobileWorkspaces}
+          workspaceOptions={mobileWorkspaceOptions}
+          initialWorkspaceId={draft.workspaceId}
+          resolveTargetHostId={(workspaceId) => resolveNavigationWorkspaceRef(workspaceId, {
+            preferredTargetHostId: currentTargetHostId,
+            fallbackToCurrent: true
+          })?.hostId ?? null}
+          onClose={() => setCreateSessionOpen(false)}
+          onSelect={(workspaceId, provider) => {
+            setCreateSessionOpen(false);
+            startDraftSession(workspaceId, provider);
+          }}
+        />
+      ) : null}
     </main>
     </>
   );
@@ -2796,7 +2831,7 @@ export function MobileConversationPreviewRail({
           {archiveFolderActionLabel && onOpenArchiveFolder ? (
             <button
               type="button"
-              className="mobile-conversation-preview-archive-button workbench-import-toggle"
+              className="mobile-conversation-preview-archive-button mobile-conversation-preview-archived-button workbench-import-toggle"
               onClick={onOpenArchiveFolder}
             >
               {archiveFolderActionLabel}

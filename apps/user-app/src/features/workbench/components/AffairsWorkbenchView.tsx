@@ -7192,10 +7192,10 @@ function AffairsLightweightChatPreviewPanel(input: {
         {archivedChats.length > 0 ? (
           <button
             type="button"
-            className="mobile-conversation-preview-archive-button workbench-import-toggle"
+            className="mobile-conversation-preview-archive-button mobile-conversation-preview-archived-button workbench-import-toggle"
             onClick={() => setArchiveFolderOpen(true)}
           >
-            {t("shell.archiveFolderLabel")}
+            {t("shell.archivedLabel")}
           </button>
         ) : null}
       </div>

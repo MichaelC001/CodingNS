@@ -1153,7 +1153,9 @@
   );
   left: var(--mobile-conversation-preview-gap);
   bottom: calc(
-    var(--mobile-conversation-composer-height, 0px) + var(--mobile-conversation-preview-gap)
+    var(--mobile-conversation-composer-height, 0px)
+    + var(--mobile-conversation-tabbar-offset, 0px)
+    + var(--mobile-conversation-preview-gap)
   );
   z-index: 11;
   display: flex;
@@ -1198,6 +1200,17 @@
 .mobile-conversation-preview-create-button,
 .mobile-conversation-preview-archive-button {
   width: 100%;
+}
+
+/* “已归档”只作为入口提示，弱化成灰色，避免和主操作抢注意力。 */
+.mobile-conversation-preview-actions .mobile-conversation-preview-archive-button.mobile-conversation-preview-archived-button,
+.mobile-conversation-preview-actions .mobile-conversation-preview-archive-button.mobile-conversation-preview-archived-button:hover {
+  color: var(--text-tertiary);
+}
+
+.mobile-conversation-preview-actions .mobile-conversation-preview-archive-button.mobile-conversation-preview-archived-button:hover {
+  border-color: color-mix(in srgb, var(--border-primary) 88%, transparent);
+  background: color-mix(in srgb, var(--bg-hover) 72%, transparent);
 }
 
 .mobile-conversation-preview-list {

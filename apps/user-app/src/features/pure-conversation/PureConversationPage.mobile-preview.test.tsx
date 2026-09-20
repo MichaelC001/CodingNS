@@ -217,7 +217,7 @@ describe("PureConversationPage 移动端会话列表", () => {
     });
 
     expect(
-      within(rail).queryByRole("button", { name: t("shell.archiveFolderLabel") })
+      within(rail).queryByRole("button", { name: t("shell.archivedLabel") })
     ).not.toBeInTheDocument();
   });
 });
