@@ -385,7 +385,7 @@ export function createServer(config: HostConfig) {
     peerHostWorkspaceBindingRepository: new PeerHostWorkspaceBindingRepository(database.db),
     assistantAutomationTaskRepository: new AssistantAutomationTaskRepository(database.db),
     assistantAutomationRunRepository: new AssistantAutomationRunRepository(database.db),
-    workspaceRepository: new WorkspaceRepository(database.db),
+    workspaceRepository: new WorkspaceRepository(database.db, sqliteWriterClient),
     workspaceWorktreeRepository: new WorkspaceWorktreeRepository(database.db),
     workspaceNavigationStateRepository: new WorkspaceNavigationStateRepository(database.db, sqliteWriterClient),
     affairsAssistantSessionSnapshotRepository: new AffairsAssistantSessionSnapshotRepository(database.db),

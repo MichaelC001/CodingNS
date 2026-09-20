@@ -1,13 +1,35 @@
 import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runtime";
 
 import type { Workspace } from "../../types/domain.js";
+import type { SqliteWriterLike } from "./sqlite-writer-like.js";
 
 type WorkspaceCreateInput = Omit<Workspace, "sortOrder"> & {
   sortOrder?: number;
 };
 
 export class WorkspaceRepository {
-  constructor(private readonly db: SqliteDatabase) {}
+  constructor(private readonly db: SqliteDatabase, private readonly writer: SqliteWriterLike | null = null) {}
+
+  async createAsync(record: WorkspaceCreateInput): Promise<Workspace> {
+    const sortOrder = record.sortOrder ?? this.getNextSortOrder();
+    if (this.writer) {
+      await this.writer.write(
+        `INSERT INTO workspaces (id, owner_user_id, name, path, repo_root, favorite, sort_order, created_at, updated_at, removed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [record.id, record.ownerUserId ?? null, record.name, record.path, record.repoRoot, record.favorite ? 1 : 0, sortOrder, record.createdAt, record.updatedAt, record.removedAt ?? null],
+        { priority: "critical" }
+      );
+      return { ...record, sortOrder, removedAt: record.removedAt ?? null };
+    }
+    return this.create({ ...record, sortOrder });
+  }
+
+  async markRemovedAsync(id: string, removedAt: string, updatedAt: string): Promise<Workspace | null> {
+    if (this.writer) {
+      await this.writer.write("UPDATE workspaces SET removed_at = ?, updated_at = ? WHERE id = ?", [removedAt, updatedAt, id], { priority: "critical" });
+      return { ...(this.findById(id) ?? { id, ownerUserId: null, name: "", path: "", repoRoot: null, favorite: false, sortOrder: 0, createdAt: updatedAt }), updatedAt, removedAt };
+    }
+    return this.markRemoved(id, removedAt, updatedAt);
+  }
 
   create(record: WorkspaceCreateInput): Workspace {
     const sortOrder = record.sortOrder ?? this.getNextSortOrder();
