@@ -48,6 +48,10 @@ import type {
 import { addProviderNativeCostMetric, addCatalogCostMetric, filterUsageLinesByBillingStart, buildProviderSessionModelUsages, type VerifiedUsageLine } from "../session-pricing.js";
 import { addDerivedCacheHitRate } from "../session-stats.js";
 import {
+  PROVIDER_CACHE_LIMITS,
+  WeightedLruCache
+} from "./provider-history-cache.js";
+import {
   appendJsonLine,
   createRawRef,
   encodeCursor,
@@ -248,6 +252,8 @@ export interface CommandCodeAdapterOptions {
   modelDiscoveryTimeoutMs?: number;
   listModels?: (workspacePath: string) => Promise<string[]>;
   readStatus?: (workspacePath: string) => Promise<Record<string, unknown> | null>;
+  /** 单个 provider 的历史缓存预算，未传时使用统一默认值。 */
+  historyCacheLimits?: Partial<Pick<typeof PROVIDER_CACHE_LIMITS, "sessionCacheBytes" | "providerTotalBytes">>;
 }
 
 interface TranscriptCache {
@@ -264,11 +270,23 @@ interface TranscriptCache {
 
 export class CommandCodeAdapter implements ProviderAdapter {
   readonly providerId: ProviderId = COMMAND_CODE_PROVIDER;
-  private readonly historyCache = new Map<string, TranscriptCache>();
+  private readonly historyCache: WeightedLruCache<string, TranscriptCache>;
 
   constructor(private readonly options: CommandCodeAdapterOptions = {
     homeDir: join(homedir(), ".commandcode")
-  }) {}
+  }) {
+    const limits = options.historyCacheLimits ?? {};
+    this.historyCache = new WeightedLruCache({
+      maxEntries: 64,
+      maxBytes: limits.providerTotalBytes ?? PROVIDER_CACHE_LIMITS.providerTotalBytes,
+      maxEntryBytes: limits.sessionCacheBytes ?? PROVIDER_CACHE_LIMITS.sessionCacheBytes,
+      dimensions: (_key, value) => ({ provider: this.providerId, session: value.providerSessionId })
+    });
+  }
+
+  getHistoryCacheStats() {
+    return this.historyCache.stats();
+  }
 
   async detectSessions(
     workspacePath: string,

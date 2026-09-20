@@ -33,6 +33,10 @@ import {
 } from "../session-pricing.js";
 import { buildApplyPatchFromStructuredFileTool } from "../patch-builder.js";
 import {
+  PROVIDER_CACHE_LIMITS,
+  WeightedLruCache
+} from "./provider-history-cache.js";
+import {
   ensureText,
   extractTextBlocks,
   messageIdFromRawRef,
@@ -52,6 +56,7 @@ interface GeminiAdapterOptions {
   homeDir: string;
   commandPath?: string;
   listSessions?: () => Promise<GeminiCliSessionRecord[]>;
+  historyCacheLimits?: Partial<Pick<typeof PROVIDER_CACHE_LIMITS, "sessionCacheBytes" | "providerTotalBytes">>;
 }
 
 interface GeminiCliSessionRecord {
@@ -121,10 +126,27 @@ interface GeminiMessageIdentityState {
 
 export class GeminiAdapter implements ProviderAdapter {
   readonly providerId: ProviderId = "gemini";
-  private readonly parsedChatCache = new Map<string, GeminiParsedChatCacheEntry>();
-  private readonly localSessionCache = new Map<string, GeminiLocalSessionCacheEntry>();
+  private readonly parsedChatCache: WeightedLruCache<string, GeminiParsedChatCacheEntry>;
+  private readonly localSessionCache: WeightedLruCache<string, GeminiLocalSessionCacheEntry>;
 
-  constructor(private readonly options: GeminiAdapterOptions) {}
+  constructor(private readonly options: GeminiAdapterOptions) {
+    const limits = options.historyCacheLimits ?? {};
+    const cacheOptions = {
+      maxEntries: 128,
+      maxBytes: limits.providerTotalBytes ?? PROVIDER_CACHE_LIMITS.providerTotalBytes,
+      maxEntryBytes: limits.sessionCacheBytes ?? PROVIDER_CACHE_LIMITS.sessionCacheBytes,
+      dimensions: () => ({ provider: this.providerId })
+    } as const;
+    this.parsedChatCache = new WeightedLruCache(cacheOptions);
+    this.localSessionCache = new WeightedLruCache(cacheOptions);
+  }
+
+  getHistoryCacheStats() {
+    return {
+      parsedChat: this.parsedChatCache.stats(),
+      localSession: this.localSessionCache.stats()
+    };
+  }
 
   async detectSessions(
     workspacePath: string,
