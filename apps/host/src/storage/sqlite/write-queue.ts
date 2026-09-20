@@ -33,6 +33,17 @@ export interface SqliteWriteQueueStats {
   completed: number;
   failed: number;
   busyRetries: number;
+  busyRetryWaitMs: number;
+  queueWaitMs: SqliteWriteDurationStats;
+  transactionDurationMs: SqliteWriteDurationStats;
+}
+
+export interface SqliteWriteDurationStats {
+  count: number;
+  total: number;
+  max: number;
+  min: number | null;
+  avg: number;
 }
 
 /**
@@ -53,6 +64,9 @@ export class SqliteWriteQueue {
   private completed = 0;
   private failed = 0;
   private busyRetries = 0;
+  private busyRetryWaitMs = 0;
+  private readonly queueWaitStats = createDurationStats();
+  private readonly transactionDurationStats = createDurationStats();
 
   constructor(defaultOptions: SqliteWriteQueueOptions = {}) {
     this.defaultOptions = defaultOptions;
@@ -72,6 +86,7 @@ export class SqliteWriteQueue {
       const startedAt = performance.now();
       const merged = { ...this.defaultOptions, ...options };
       let retryCount = 0;
+      let busyRetryWaitMs = 0;
 
       try {
         // 在队列任务内运行，并打上上下文标记：
@@ -85,6 +100,7 @@ export class SqliteWriteQueue {
             maxTotalWaitMs: merged.maxTotalWaitMs,
             sleep: merged.sleep,
             log: (payload) => {
+              busyRetryWaitMs = payload.waitedMs;
               if (!payload.exhausted) {
                 retryCount = payload.attempt;
                 this.busyRetries += 1;
@@ -96,11 +112,31 @@ export class SqliteWriteQueue {
         );
         retryCount = result.retryCount;
         this.completed += 1;
-        reportQueueMetric(scope, "completed", queuedAt, startedAt, retryCount);
+        this.busyRetryWaitMs += result.waitedMs;
+        reportQueueMetric(
+          scope,
+          "completed",
+          queuedAt,
+          startedAt,
+          retryCount,
+          result.waitedMs,
+          this.queueWaitStats,
+          this.transactionDurationStats
+        );
         return result.value;
       } catch (error) {
         this.failed += 1;
-        reportQueueMetric(scope, "failed", queuedAt, startedAt, retryCount);
+        this.busyRetryWaitMs += busyRetryWaitMs;
+        reportQueueMetric(
+          scope,
+          "failed",
+          queuedAt,
+          startedAt,
+          retryCount,
+          busyRetryWaitMs,
+          this.queueWaitStats,
+          this.transactionDurationStats
+        );
         throw error;
       } finally {
         this.running -= 1;
@@ -122,7 +158,10 @@ export class SqliteWriteQueue {
       running: this.running,
       completed: this.completed,
       failed: this.failed,
-      busyRetries: this.busyRetries
+      busyRetries: this.busyRetries,
+      busyRetryWaitMs: this.busyRetryWaitMs,
+      queueWaitMs: snapshotDurationStats(this.queueWaitStats),
+      transactionDurationMs: snapshotDurationStats(this.transactionDurationStats)
     };
   }
 }
@@ -146,18 +185,56 @@ function reportQueueMetric(
   event: "completed" | "failed",
   queuedAt: number,
   startedAt: number,
-  retryCount: number
+  retryCount: number,
+  busyRetryWaitMs: number,
+  queueWaitStats: SqliteWriteDurationStatsState,
+  transactionDurationStats: SqliteWriteDurationStatsState
 ): void {
   const waitMs = Math.max(0, startedAt - queuedAt);
-  const runMs = Math.max(0, performance.now() - startedAt);
+  const transactionDurationMs = Math.max(0, performance.now() - startedAt);
+  recordDuration(queueWaitStats, waitMs);
+  recordDuration(transactionDurationStats, transactionDurationMs);
 
-  if (waitMs >= 100 || runMs >= 100 || event === "failed" || retryCount > 0) {
-    console.info("[sqlite.write-queue] completed", {
+  if (waitMs >= 100 || transactionDurationMs >= 100 || event === "failed" || retryCount > 0) {
+    console.info(`[sqlite.write-queue] ${event}`, {
       scope,
       status: event,
       waitMs: Math.round(waitMs),
-      runMs: Math.round(runMs),
-      retryCount
+      queueWaitMs: Math.round(waitMs),
+      runMs: Math.round(transactionDurationMs),
+      transactionDurationMs: Math.round(transactionDurationMs),
+      retryCount,
+      busyRetryCount: retryCount,
+      busyRetryWaitMs: Math.round(busyRetryWaitMs)
     });
   }
+}
+
+interface SqliteWriteDurationStatsState {
+  count: number;
+  total: number;
+  max: number;
+  min: number | null;
+}
+
+function createDurationStats(): SqliteWriteDurationStatsState {
+  return { count: 0, total: 0, max: 0, min: null };
+}
+
+function recordDuration(stats: SqliteWriteDurationStatsState, durationMs: number): void {
+  const normalized = Math.max(0, durationMs);
+  stats.count += 1;
+  stats.total += normalized;
+  stats.max = Math.max(stats.max, normalized);
+  stats.min = stats.min === null ? normalized : Math.min(stats.min, normalized);
+}
+
+function snapshotDurationStats(stats: SqliteWriteDurationStatsState): SqliteWriteDurationStats {
+  return {
+    count: stats.count,
+    total: Math.round(stats.total),
+    max: Math.round(stats.max),
+    min: stats.min === null ? null : Math.round(stats.min),
+    avg: stats.count > 0 ? Math.round(stats.total / stats.count) : 0
+  };
 }

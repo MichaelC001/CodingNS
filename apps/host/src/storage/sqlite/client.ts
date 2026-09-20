@@ -10,6 +10,7 @@ import { SqliteWriteQueue } from "./write-queue.js";
 
 export interface DatabaseClient {
   db: SqliteDatabase;
+  /** 共享写队列；它的 getStats() 就是 queue wait / transaction duration / busyRetry 的快照。 */
   writeQueue: SqliteWriteQueue;
   close: () => void;
 }
