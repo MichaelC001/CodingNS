@@ -2063,6 +2063,91 @@ test("CodexRuntimeAdapter 会等 spawn_agent 子会话结束后再上报父会�
   }
 });
 
+test("CodexRuntimeAdapter 忽略同一连接上子线程的完成通知", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-app-server-child-notification-"));
+  const parentThreadId = "019eab4e-e1d9-7cd3-8b4d-4f6edcc01604";
+  const childThreadId = "019eab55-1f95-7a64-89ea-6f1234567890";
+  const parentThreadPath = join(tempDir, "parent.jsonl");
+  const emitted = [];
+  let notificationHandler = null;
+  let closed = false;
+  let completedResolved = false;
+
+  try {
+    const adapter = new CodexRuntimeAdapter({
+      transportFactory: () => ({
+        async initialize() {},
+        async startThread() {
+          return { providerSessionId: parentThreadId, rawStoreRef: parentThreadPath };
+        },
+        async resumeThread() {
+          return { providerSessionId: parentThreadId, rawStoreRef: parentThreadPath };
+        },
+        async resumeThreadFromHistory() {
+          return { providerSessionId: parentThreadId, rawStoreRef: parentThreadPath };
+        },
+        async startTurn() {
+          queueMicrotask(() => {
+            void notificationHandler?.({
+              method: "turn/completed",
+              params: {
+                threadId: childThreadId,
+                turn: { id: "turn-child", status: "completed" }
+              }
+            });
+            setTimeout(() => {
+              void notificationHandler?.({
+                method: "turn/completed",
+                params: {
+                  threadId: parentThreadId,
+                  turn: { id: "turn-parent", status: "completed" }
+                }
+              });
+            }, 50);
+          });
+        },
+        async steerTurn() {},
+        async interruptTurn() {},
+        setNotificationHandler(handler) {
+          notificationHandler = handler;
+        },
+        setServerRequestHandler() {},
+        setOnClose() {},
+        isClosed() {
+          return closed;
+        },
+        close() {
+          closed = true;
+        }
+      })
+    });
+
+    const launch = await adapter.startSession(createRunRequest({
+      sessionId: "session-child-notification",
+      workspacePath: tempDir,
+      sequenceBase: 0
+    }), {
+      async emit(event) {
+        emitted.push(event);
+      },
+      updateSessionBinding() {}
+    });
+
+    const completion = launch.completed.then(() => {
+      completedResolved = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(completedResolved, false);
+
+    await completion;
+    assert.equal(emitted.some((event) => event.type === "complete"), true);
+    assert.equal(closed, true);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("CodexRuntimeAdapter 实时 spawn_agent 事件优先使用 call_id，避免与历史回放的工具调用身份漂移", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-app-server-subagent-callid-"));
   const parentThreadId = "019eab4e-e1d9-7cd3-8b4d-4f6edcc01604";

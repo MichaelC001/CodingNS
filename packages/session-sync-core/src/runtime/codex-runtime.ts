@@ -594,6 +594,13 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
 
       let firstNotificationLogged = false;
       transport.setNotificationHandler(async (notification) => {
+        // 一个 app-server 连接可能同时推送父线程和 spawn_agent 子线程事件。
+        // 当前运行时只消费本次请求对应的父线程，否则子线程的 turn/completed
+        // 会提前关闭父线程事件队列，让主会话误报完成。
+        if (!isCodexNotificationForThread(notification, providerSessionId)) {
+          return;
+        }
+
         if (!firstNotificationLogged) {
           firstNotificationLogged = true;
           logCodexRuntimeStep("start_session.first_notification", launchPerfStartedAtMs, {
@@ -816,6 +823,10 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
 
       let firstNotificationLogged = false;
       transport.setNotificationHandler(async (notification) => {
+        if (!isCodexNotificationForThread(notification, resolvedSessionId)) {
+          return;
+        }
+
         if (!firstNotificationLogged) {
           firstNotificationLogged = true;
           logCodexRuntimeStep("continue_session.first_notification", runtimeStartedAtMs, {
@@ -1903,11 +1914,19 @@ function createCodexAppServerTransport(options: CodexRuntimeOptions): CodexAppSe
       const params = readJsonRpcParams(parsed);
 
       if (method === "turn/started") {
-        activeTurnId = ensureText(readProp(readProp(params, "turn"), "id")).trim() || activeTurnId;
+        const notificationThreadId = readNotificationThreadId(params);
+
+        if (!notificationThreadId || !activeThreadId || notificationThreadId === activeThreadId) {
+          activeTurnId = ensureText(readProp(readProp(params, "turn"), "id")).trim() || activeTurnId;
+        }
       }
 
       if (method === "thread/started") {
-        activeThreadId = ensureText(readProp(readProp(params, "thread"), "id")).trim() || activeThreadId;
+        const notificationThreadId = readNotificationThreadId(params);
+
+        if (!activeThreadId || !notificationThreadId || notificationThreadId === activeThreadId) {
+          activeThreadId = ensureText(readProp(readProp(params, "thread"), "id")).trim() || activeThreadId;
+        }
       }
 
       void notificationHandler({
@@ -3479,6 +3498,30 @@ function sendJsonRpcRequestDetached(
 
 function readJsonRpcParams(parsed: Record<string, unknown>): Record<string, unknown> {
   return toRecord(parsed.params) ?? {};
+}
+
+function readNotificationThreadId(params: Record<string, unknown>): string {
+  return pickFirstNonEmpty(
+    ensureText(readProp(params, "threadId")).trim(),
+    ensureText(readProp(params, "thread_id")).trim(),
+    ensureText(readProp(readProp(params, "thread"), "id")).trim()
+  );
+}
+
+/** 判断 app-server 通知是否属于当前适配器绑定的线程。 */
+function isCodexNotificationForThread(
+  notification: Record<string, unknown>,
+  expectedThreadId: string
+): boolean {
+  const params = toRecord(readProp(notification, "params"));
+  const threadId = pickFirstNonEmpty(
+    ensureText(readProp(params, "threadId")).trim(),
+    ensureText(readProp(params, "thread_id")).trim(),
+    ensureText(readProp(readProp(params, "thread"), "id")).trim()
+  );
+
+  // 旧版 app-server 的少数通知没有 threadId；没有归属信息时保留兼容行为。
+  return threadId.length === 0 || threadId === expectedThreadId;
 }
 
 function readJsonRpcResult(parsed: Record<string, unknown>): Record<string, unknown> {
