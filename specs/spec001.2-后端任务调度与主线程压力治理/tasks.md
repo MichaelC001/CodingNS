@@ -313,3 +313,43 @@
     - `design.md` §2.5.5
     - `design.md` §2.5.6
   - 回写时间：2026-04-13
+
+---
+
+## 阶段 6：第二轮性能治理
+
+- [ ] 6.1 进程统计和诊断可信度
+  - 状态：IN_PROGRESS
+  - 这一做到底做什么：补齐 3009 端口内外进程的 CPU、RSS、可执行文件摘要、启动时间、stale 和 rootPresent 可信度。
+  - 做完以后能看到什么结果：进程快照能解释“看到了什么、依据是什么、什么时候可能不可信”，并且结果有数量和命令行上限。
+  - 依赖什么：现有进程统计服务。
+  - 主要改哪些文件：`apps/host/src/modules/system/host-process-inventory-service.ts` 及对应测试。
+  - 这一步先不做什么：不杀进程、不启动常驻扫描、不降低 768 MiB 阈值。
+  - 怎么验证：进程统计定向测试和 `git diff --check`。
+
+- [ ] 6.2 Provider 历史缓存统一预算
+  - 状态：IN_PROGRESS
+  - 这一做到底做什么：用统一加权 LRU 限制 provider 历史缓存的条目数、真实字节数和单条目大小。
+  - 做完以后能看到什么结果：多 provider 并发读取仍不突破总预算，超大或失败结果不会进入缓存，淘汰可观测。
+  - 依赖什么：现有 provider 惰性读取和增量读取。
+  - 主要改哪些文件：`packages/session-sync-core/src/providers/*`、通用缓存模块及测试。
+  - 这一步先不做什么：不做全量历史预加载，不通过频繁重启 helper 规避预算。
+  - 怎么验证：provider 缓存定向测试和 session-sync-core 构建。
+
+- [ ] 6.3 有界 SQLite 命令队列
+  - 状态：IN_PROGRESS
+  - 这一做到底做什么：把写入队列变成有硬上限、类型化、可观测的命令队列。
+  - 做完以后能看到什么结果：队列满时 critical 返回 backpressure，latest_wins/append_batch/best_effort 行为固定，pending count/bytes 和等待分位数可读。
+  - 依赖什么：现有 better-sqlite3 写入封装。
+  - 主要改哪些文件：`apps/host/src/storage/sqlite/write-queue.ts`、`write-serializer.ts` 及测试。
+  - 这一步先不做什么：不使用 node:sqlite，不用同步等待，不改 auth_users 索引。
+  - 怎么验证：SQLite 写队列定向测试、`pnpm check:sqlite-runtime`。
+
+- [ ] 6.4 SQLite Writer 和 readiness 重构
+  - 状态：TODO
+  - 这一做到底做什么：让 writer 在 Host 请求路径之外处理写事务，让 `/readyz` 只读内存快照。
+  - 做完以后能看到什么结果：锁竞争时 readiness 仍快速返回，短暂 writer 降级不会触发 Host 重启，崩溃和 retiring 有明确收尾。
+  - 依赖什么：6.3 队列接口稳定。
+  - 主要改哪些文件：`apps/host/src/modules/health/health-service.ts`、supervisor/writer 协议及测试。
+  - 这一步先不做什么：不一次性迁移所有同步写路径；无法迁移的边界要记录。
+  - 怎么验证：health/readiness/helper lifecycle 定向测试，Host TypeScript 检查，搜索请求路径残留同步 SQLite。
