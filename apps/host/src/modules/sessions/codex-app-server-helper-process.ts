@@ -722,13 +722,29 @@ async function handleTransportStdout(transport: TransportRecord, line: string): 
     const params = readJsonRpcParams(parsed);
 
     if (method === "turn/started") {
-      transport.activeTurnId =
-        ensureText(readProp(readProp(params, "turn"), "id")).trim() || transport.activeTurnId;
+      const notificationThreadId = readNotificationThreadId(params);
+
+      if (
+        !notificationThreadId
+        || !transport.activeThreadId
+        || notificationThreadId === transport.activeThreadId
+      ) {
+        transport.activeTurnId =
+          ensureText(readProp(readProp(params, "turn"), "id")).trim() || transport.activeTurnId;
+      }
     }
 
     if (method === "thread/started") {
-      transport.activeThreadId =
-        ensureText(readProp(readProp(params, "thread"), "id")).trim() || transport.activeThreadId;
+      const notificationThreadId = readNotificationThreadId(params);
+
+      if (
+        !transport.activeThreadId
+        || !notificationThreadId
+        || notificationThreadId === transport.activeThreadId
+      ) {
+        transport.activeThreadId =
+          ensureText(readProp(readProp(params, "thread"), "id")).trim() || transport.activeThreadId;
+      }
     }
 
     emit({
@@ -1406,6 +1422,14 @@ function normalizeCodexReasoningEffort(value: string | null): string | null {
 
 function readJsonRpcParams(message: Record<string, unknown>): Record<string, unknown> {
   return toRecord(message.params) ?? {};
+}
+
+function readNotificationThreadId(params: Record<string, unknown>): string {
+  return (
+    ensureText(readProp(params, "threadId")).trim()
+    || ensureText(readProp(params, "thread_id")).trim()
+    || ensureText(readProp(readProp(params, "thread"), "id")).trim()
+  );
 }
 
 function readJsonRpcResult(message: Record<string, unknown>): Record<string, unknown> {
