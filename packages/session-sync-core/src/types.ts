@@ -283,6 +283,8 @@ export interface ProviderSessionStats {
   metrics: Partial<Record<ProviderSessionStatMetric, ProviderSessionStatValue>>;
   /** 仅供 Host 统计落库使用；runtime DTO 会剥离这个内部字段。 */
   modelUsages?: readonly ProviderSessionModelUsage[];
+  /** 仅供 Host 使用的逐条调用用量；每条记录对应一条已完成的消息/模型调用。 */
+  usageEvents?: readonly ProviderSessionUsageEvent[];
 }
 
 export interface ProviderSessionModelUsage {
@@ -294,6 +296,12 @@ export interface ProviderSessionModelUsage {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   costUsd?: number;
+}
+
+/** 按消息/调用时间归档的 Token 用量。 */
+export interface ProviderSessionUsageEvent extends ProviderSessionModelUsage {
+  eventId: string;
+  timestamp: string;
 }
 
 export interface ProviderSessionSummary {

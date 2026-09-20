@@ -45,7 +45,7 @@ import type {
   StartSessionOptions,
   StartSessionResult
 } from "../types.js";
-import { addProviderNativeCostMetric, addCatalogCostMetric, filterUsageLinesByBillingStart, buildProviderSessionModelUsages, type VerifiedUsageLine } from "../session-pricing.js";
+import { addProviderNativeCostMetric, addCatalogCostMetric, filterUsageLinesByBillingStart, buildProviderSessionModelUsages, buildProviderSessionUsageEvents, type VerifiedUsageLine } from "../session-pricing.js";
 import { addDerivedCacheHitRate } from "../session-stats.js";
 import {
   PROVIDER_CACHE_LIMITS,
@@ -611,8 +611,9 @@ export class CommandCodeAdapter implements ProviderAdapter {
     }));
     const billingLines = filterUsageLinesByBillingStart(usageLines, options?.billing);
     if (!hasNativeCost) addCatalogCostMetric(metrics, billingLines, options, watermark);
-    const modelUsages = buildProviderSessionModelUsages(usageLines);
-    return { provider: this.providerId, capturedAt, metrics, ...(modelUsages.length > 0 ? { modelUsages } : {}) };
+    const modelUsages = buildProviderSessionModelUsages(usageLines, options?.billing?.priceBook);
+    const usageEvents = buildProviderSessionUsageEvents(usageLines, options?.billing?.priceBook, options?.billing);
+    return { provider: this.providerId, capturedAt, metrics, ...(modelUsages.length > 0 ? { modelUsages } : {}), ...(usageEvents.length > 0 ? { usageEvents } : {}) };
   }
 
   async getProviderCapabilitiesForWorkspace(workspacePath: string): Promise<ProviderCapabilities> {

@@ -23,6 +23,7 @@ import type {
   ProviderId,
   ProviderRealtimeEvent,
   ProviderSessionStats,
+  ProviderSessionUsageEvent,
   ProviderSessionStatValue,
   ProviderSessionSummary,
   ProviderSessionDiscovery,
@@ -544,7 +545,8 @@ export class PiAdapter implements ProviderAdapter {
       provider: this.providerId,
       capturedAt: nextTimestamp(),
       metrics: metrics as ProviderSessionStats["metrics"],
-      ...(modelUsages.length > 0 ? { modelUsages } : {})
+      ...(modelUsages.length > 0 ? { modelUsages } : {}),
+      ...(usage.events.length > 0 ? { usageEvents: usage.events } : {})
     };
   }
 
@@ -1038,6 +1040,7 @@ interface PiSessionUsageTotals {
   assistantMessages: number;
   lastIndex: number;
   byModel: PiSessionModelUsageTotals[];
+  events: ProviderSessionUsageEvent[];
 }
 
 /**
@@ -1155,7 +1158,8 @@ function sumSessionUsage(filePath: string): PiSessionUsageTotals {
     costUsd: null,
     assistantMessages: 0,
     lastIndex: 0,
-    byModel: []
+    byModel: [],
+    events: []
   };
 
   for (const record of readJsonlRecords(filePath)) {
@@ -1189,6 +1193,21 @@ function sumSessionUsage(filePath: string): PiSessionUsageTotals {
       readText(message.provider),
       readText(message.model)
     ].filter(Boolean).join("/") || "unknown";
+    const timestamp = readText(entry.timestamp) || readText(message.timestamp) || "";
+    if (timestamp) {
+      totals.events.push({
+        eventId: readText(entry.id) || `pi:${totals.lastIndex}`,
+        timestamp,
+        provider: PI_PROVIDER_ID,
+        model: modelLabel,
+        inputTokens: readNumber(usage.input) ?? 0,
+        outputTokens: readNumber(usage.output) ?? 0,
+        reasoningTokens: reasoning ?? 0,
+        cacheReadTokens: readNumber(usage.cacheRead) ?? 0,
+        cacheWriteTokens: readNumber(usage.cacheWrite) ?? 0,
+        ...(costTotal === null ? {} : { costUsd: costTotal })
+      });
+    }
     let modelUsage = totals.byModel.find((entry) => entry.model === modelLabel);
 
     if (!modelUsage) {

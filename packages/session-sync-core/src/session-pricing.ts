@@ -9,7 +9,8 @@ import type {
   ProviderSessionStatValue,
   ProviderSessionStats,
   ProviderSessionStatsReadOptions,
-  ProviderSessionModelUsage
+  ProviderSessionModelUsage,
+  ProviderSessionUsageEvent
 } from "./types.js";
 
 /** 没有成功同步 models.dev 时使用的占位版本，不包含任何模型价格。 */
@@ -165,6 +166,35 @@ export function buildProviderSessionModelUsages(
   }
 
   return [...usages.values()];
+}
+
+/** 保留每条已完成调用的时间，供 Host 按消息时间统计。 */
+export function buildProviderSessionUsageEvents(
+  lines: readonly VerifiedUsageLine[],
+  priceBook?: ProviderSessionPriceBook,
+  billing?: ProviderSessionBillingContext
+): ProviderSessionUsageEvent[] {
+  const resolvedPriceBook = priceBook ? toProviderPriceBook(priceBook) : undefined;
+  return lines.flatMap((line) => {
+    const model = line.model.trim();
+    const timestamp = line.timestamp.trim();
+    if (!line.completed || !model || !timestamp) return [];
+    const entry = resolvedPriceBook ? findPriceBookEntry(resolvedPriceBook, line.provider, model) : null;
+    const isBillable = !billing || timestamp >= billing.billingStartedAt;
+    const costUsd = isBillable && entry ? calculateUsageLineCost(line, entry) : null;
+    return [{
+      eventId: line.key,
+      timestamp,
+      provider: line.provider,
+      model,
+      inputTokens: Math.max(0, Math.trunc(line.inputTokens)),
+      outputTokens: Math.max(0, Math.trunc(line.outputTokens)),
+      reasoningTokens: Math.max(0, Math.trunc(line.reasoningTokens ?? 0)),
+      cacheReadTokens: Math.max(0, Math.trunc(line.cacheReadTokens ?? 0)),
+      cacheWriteTokens: Math.max(0, Math.trunc(line.cacheWriteTokens ?? 0)),
+      ...(costUsd === null ? {} : { costUsd })
+    }];
+  });
 }
 
 export function addProviderNativeCostMetric(

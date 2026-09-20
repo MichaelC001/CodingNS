@@ -144,7 +144,9 @@ describe("auth user management", () => {
     });
 
     const timestamp = new Date().toISOString();
-    const dayBucket = `${timestamp.slice(0, 13).replace("T", " ")}:00`;
+    const sessionCreatedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const localTimestamp = new Date(timestamp);
+    const dayBucket = `${localTimestamp.getFullYear()}-${String(localTimestamp.getMonth() + 1).padStart(2, "0")}-${String(localTimestamp.getDate()).padStart(2, "0")} ${String(localTimestamp.getHours()).padStart(2, "0")}:${String(localTimestamp.getMinutes()).padStart(2, "0")}:${String(localTimestamp.getSeconds()).padStart(2, "0")}`;
     hosted.services.repositories.workspaceRepository.create({
       id: "workspace-alice",
       ownerUserId: aliceId,
@@ -152,7 +154,7 @@ describe("auth user management", () => {
       path: path.join(fixture.workspaceDir, "alice"),
       repoRoot: path.join(fixture.workspaceDir, "alice"),
       favorite: false,
-      createdAt: timestamp,
+      createdAt: sessionCreatedAt,
       updatedAt: timestamp,
       removedAt: null
     });
@@ -166,7 +168,7 @@ describe("auth user management", () => {
       providerConfigMode: "global-default",
       providerPresetId: null,
       runtimeHomeDir: null,
-      createdAt: timestamp,
+      createdAt: sessionCreatedAt,
       updatedAt: timestamp
     });
     hosted.services.database.db

@@ -2357,6 +2357,52 @@ function ensureSessionStatsSnapshotSchema(db: SqliteDatabase): void {
 
     CREATE INDEX IF NOT EXISTS idx_session_model_usages_session_id
       ON session_model_usages(session_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS session_usage_events (
+      session_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+      output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+      reasoning_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+      cost_usd REAL CHECK (cost_usd IS NULL OR cost_usd >= 0),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (session_id, event_id),
+      FOREIGN KEY (session_id) REFERENCES session_bindings(session_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_usage_events_time
+      ON session_usage_events(occurred_at, session_id);
+
+    CREATE VIEW IF NOT EXISTS session_usage_events_with_legacy AS
+    SELECT session_id, event_id, provider, model, occurred_at,
+           input_tokens, output_tokens, reasoning_tokens,
+           cache_read_tokens, cache_write_tokens, cost_usd, updated_at
+    FROM session_usage_events
+    UNION ALL
+    SELECT smu.session_id,
+           'legacy:' || smu.provider || ':' || smu.model,
+           smu.provider,
+           smu.model,
+           smu.updated_at,
+           smu.input_tokens,
+           smu.output_tokens,
+           smu.reasoning_tokens,
+           smu.cache_read_tokens,
+           smu.cache_write_tokens,
+           smu.cost_usd,
+           smu.updated_at
+    FROM session_model_usages smu
+    WHERE NOT EXISTS (
+      SELECT 1 FROM session_usage_events sue
+      WHERE sue.session_id = smu.session_id
+        AND sue.provider = smu.provider
+        AND sue.model = smu.model
+    );
   `);
 }
 

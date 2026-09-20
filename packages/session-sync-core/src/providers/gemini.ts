@@ -28,6 +28,7 @@ import { addDerivedCacheHitRate } from "../session-stats.js";
 import {
   addCatalogCostMetric,
   buildProviderSessionModelUsages,
+  buildProviderSessionUsageEvents,
   filterUsageLinesByBillingStart,
   type VerifiedUsageLine
 } from "../session-pricing.js";
@@ -556,14 +557,16 @@ export class GeminiAdapter implements ProviderAdapter {
       : { kind: "captured-at" as const, value: nextTimestamp() };
     addCatalogCostMetric(metrics, billingLines, options, costWatermark);
 
-    const modelUsages = buildProviderSessionModelUsages(usageLines);
+    const modelUsages = buildProviderSessionModelUsages(usageLines, options?.billing?.priceBook);
+    const usageEvents = buildProviderSessionUsageEvents(usageLines, options?.billing?.priceBook, options?.billing);
 
     return Object.keys(metrics).length > 0
       ? {
           provider: this.providerId,
           capturedAt: nextTimestamp(),
           metrics,
-          ...(modelUsages.length > 0 ? { modelUsages } : {})
+          ...(modelUsages.length > 0 ? { modelUsages } : {}),
+          ...(usageEvents.length > 0 ? { usageEvents } : {})
         }
       : null;
   }

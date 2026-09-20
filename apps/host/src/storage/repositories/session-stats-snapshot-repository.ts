@@ -5,7 +5,8 @@ import type {
   ProviderSessionCostBreakdown,
   ProviderSessionCostProvenance,
   ProviderSessionModelUsage,
-  ProviderSessionStats
+  ProviderSessionStats,
+  ProviderSessionUsageEvent
 } from "@codingns/session-sync-core";
 
 export interface SessionCostBillRecord {
@@ -134,8 +135,9 @@ export class SessionStatsSnapshotRepository {
       this.db.prepare("DELETE FROM session_stats_snapshots WHERE session_id = ?").run(sessionId);
       this.db.prepare("DELETE FROM session_cost_bills WHERE session_id = ?").run(sessionId);
       this.db.prepare("DELETE FROM session_model_usages WHERE session_id = ?").run(sessionId);
+      this.db.prepare("DELETE FROM session_usage_events WHERE session_id = ?").run(sessionId);
 
-      const { modelUsages: internalModelUsages, ...persistedStats } = stats;
+      const { modelUsages: internalModelUsages, usageEvents: internalUsageEvents, ...persistedStats } = stats;
       const statsJson = JSON.stringify(persistedStats);
       const sourceSignature = createHash("sha256")
         .update(JSON.stringify({ provider: stats.provider, metrics: stats.metrics }))
@@ -206,6 +208,31 @@ export class SessionStatsSnapshotRepository {
           updatedAt
         );
       }
+
+      const usageEvents = allocateUsageEventCosts(internalUsageEvents ?? [], hasCompleteCost ? costMetric?.value ?? null : null);
+      const insertEvent = this.db.prepare(
+        `INSERT INTO session_usage_events (
+           session_id, event_id, provider, model, occurred_at,
+           input_tokens, output_tokens, reasoning_tokens,
+           cache_read_tokens, cache_write_tokens, cost_usd, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const event of usageEvents) {
+        insertEvent.run(
+          sessionId,
+          event.eventId,
+          event.provider,
+          event.model,
+          event.timestamp,
+          event.inputTokens,
+          event.outputTokens,
+          event.reasoningTokens,
+          event.cacheReadTokens,
+          event.cacheWriteTokens,
+          event.costUsd ?? null,
+          updatedAt
+        );
+      }
     });
 
     persist();
@@ -216,8 +243,26 @@ export class SessionStatsSnapshotRepository {
       this.db.prepare("DELETE FROM session_stats_snapshots WHERE session_id = ?").run(sessionId);
       this.db.prepare("DELETE FROM session_cost_bills WHERE session_id = ?").run(sessionId);
       this.db.prepare("DELETE FROM session_model_usages WHERE session_id = ?").run(sessionId);
+      this.db.prepare("DELETE FROM session_usage_events WHERE session_id = ?").run(sessionId);
     })();
   }
+}
+
+function allocateUsageEventCosts(events: readonly ProviderSessionUsageEvent[], totalCost: number | null): ProviderSessionUsageEvent[] {
+  if (events.length === 0 || totalCost === null || events.some((event) => event.costUsd !== undefined)) {
+    return [...events];
+  }
+
+  const weights = events.map((event) => event.inputTokens + event.outputTokens + event.reasoningTokens);
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+  if (totalWeight <= 0) {
+    return events.map((event, index) => index === events.length - 1 ? { ...event, costUsd: totalCost } : event);
+  }
+
+  return events.map((event, index) => ({
+    ...event,
+    costUsd: totalCost * weights[index] / totalWeight
+  }));
 }
 
 interface SessionStatsSnapshotRow {
