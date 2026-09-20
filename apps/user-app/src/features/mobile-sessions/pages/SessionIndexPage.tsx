@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { t } from "../../../shared/i18n";
-import type { ProviderId, SessionSummaryDto } from "../../conversation/api/conversation-api";
+import type { ProviderId, SessionSummaryDto, WorkspaceRef } from "../../conversation/api/conversation-api";
 import { useWorkbenchShell } from "../../conversation/components/WorkbenchLayout";
 import { isArchivedSessionVisibleInArchive } from "../../conversation/session-fork-display";
-import { MobilePageHeader } from "../../mobile-shell/components/MobilePageHeader";
+import { MobileWorkspaceSwitcherHeader } from "../../mobile-shell/components/MobileWorkspaceSwitcherHeader";
 import { MobileArchivedSessionsDialog } from "../components/MobileArchivedSessionsDialog";
 import { MobileCreateSessionSheet } from "../components/MobileCreateSessionSheet";
 import {
@@ -43,6 +43,7 @@ export function SessionIndexPage() {
     currentWorkspaceId,
     currentSessionId,
     navigationLoading,
+    selectWorkspace,
     toggleFavoriteSession,
     archiveSession,
     unarchiveSession,
@@ -213,6 +214,18 @@ export function SessionIndexPage() {
     startDraftSession(workspaceId, provider);
   }
 
+  function handleSelectWorkspace(workspaceId: string, workspaceRef?: WorkspaceRef) {
+    const nextWorkspaceRef = workspaceRef
+      ?? resolveNavigationWorkspaceRef(workspaceId, {
+        preferredTargetHostId: currentWorkspaceRef?.hostId,
+        fallbackToCurrent: true
+      })
+      ?? undefined;
+
+    selectWorkspace(workspaceId, nextWorkspaceRef);
+    navigate(buildWorkspaceSessionIndexPath(workspaceId, nextWorkspaceRef));
+  }
+
   async function handleRestoreArchivedSession(sessionId: string) {
     setRestoringArchivedSessionId(sessionId);
 
@@ -342,22 +355,32 @@ export function SessionIndexPage() {
 
   return (
     <main className="session-index-page mobile-feature-page mobile-page-scroll-root mobile-page-with-top-header">
-      <MobilePageHeader
-        title={t("shell.mobileSessionsEntry")}
-        actions={(
+      <MobileWorkspaceSwitcherHeader
+        heading={t("shell.mobileSessionsEntry")}
+        currentWorkspace={
+          currentWorkspaceSummary
+            ? {
+                id: currentWorkspaceSummary.workspace.id,
+                name: currentWorkspaceSummary.label,
+                path: currentWorkspaceSummary.subtitle
+              }
+            : null
+        }
+        workspaces={navigationGroups.map((group) => group.workspace)}
+        workspaceOptions={workspaceOptions}
+        onSelectWorkspace={handleSelectWorkspace}
+      />
+
+      <div className="mobile-page-top-body">
+        <div className="session-index-actions">
           <button
             type="button"
-            className="primary-button mobile-session-index-create-button"
+            className="primary-button mobile-session-index-create-button session-index-create-button"
             disabled={navigationLoading || !canStartSession}
             onClick={() => setCreateSessionOpen(true)}
           >
             {t("shell.createSession")}
           </button>
-        )}
-      />
-
-      <div className="mobile-page-top-body">
-        <div className="session-index-archive-actions">
           <button
             type="button"
             className="primary-button mobile-session-index-create-button session-index-archive-button"

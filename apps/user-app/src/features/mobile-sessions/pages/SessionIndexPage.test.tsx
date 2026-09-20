@@ -170,6 +170,10 @@ const contextValue = {
   favoriteSessionIds: ["session-2"],
   navigationLoading: false,
   selectWorkspace: vi.fn(),
+  resolveNavigationWorkspaceRef: vi.fn((workspaceId: string) => ({
+    hostId: "current",
+    workspaceId
+  })),
   toggleFavoriteSession: vi.fn(async () => undefined),
   archiveSession: vi.fn(async () => undefined),
   unarchiveSession: vi.fn(async () => undefined),
@@ -218,6 +222,10 @@ describe("SessionIndexPage", () => {
     contextValue.currentWorkspaceId = "workspace-1";
     contextValue.currentSessionId = "session-1";
     contextValue.favoriteSessionIds = ["session-2"];
+    contextValue.resolveNavigationWorkspaceRef.mockImplementation((workspaceId: string) => ({
+      hostId: "current",
+      workspaceId
+    }));
   });
 
   afterEach(() => {
@@ -231,6 +239,28 @@ describe("SessionIndexPage", () => {
     expect(screen.queryByText("对话")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: t("shell.mobileSessionsEntry") })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: /^(当前工作区|Current Workspace)$/ })).toBeInTheDocument();
+
+    const createButton = screen.getByRole("button", { name: t("shell.createSession") });
+    const archiveButton = screen.getByRole("button", { name: new RegExp(t("shell.archiveViewAction")) });
+
+    expect(createButton.compareDocumentPosition(archiveButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("顶部使用全局工作区切换器并跳转到目标工作区会话列表", async () => {
+    const user = userEvent.setup();
+
+    renderPage({ withRouteProbe: true });
+
+    await user.click(screen.getByRole("button", { name: t("shell.workspaceHomeSwitcherLabel") }));
+
+    const dialog = screen.getByRole("dialog", { name: t("shell.hostWorkspaceSwitcherTitle") });
+    await user.click(within(dialog).getByRole("button", { name: /Project Two/ }));
+
+    expect(contextValue.selectWorkspace).toHaveBeenCalledWith("workspace-2", {
+      hostId: "current",
+      workspaceId: "workspace-2"
+    });
+    expect(screen.getByTestId("route-probe")).toHaveTextContent("/workspaces/workspace-2/sessions");
   });
 
   it("当前工作区列表会保留收藏会话，但不会混入其他工作区会话", () => {
