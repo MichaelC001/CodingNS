@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyHostProcessInventory,
+  calculateCpuPercent,
   HostProcessInventoryService,
   parseElapsedSeconds,
   parseUnixProcessTable,
@@ -47,6 +48,18 @@ describe("进程表解析", () => {
 
     expect(parsed).toHaveLength(1);
     expect(parsed[0]).toMatchObject({ pid: 12, ppid: 1, commandLine: "node a b c" });
+  });
+
+  it("解析带 state 和系统 CPU 百分比的 ps 快照", () => {
+    const parsed = parseUnixProcessTable("100 1 S 12.5 2048 00:10 node task-helper.js\n");
+
+    expect(parsed[0]).toMatchObject({
+      pid: 100,
+      state: "S",
+      cpuPercent: 12.5,
+      rssBytes: 2048 * 1024,
+      elapsedSeconds: 10
+    });
   });
 
   it("解析 Windows PowerShell JSON", () => {
@@ -110,6 +123,20 @@ describe("以当前 Host pid 构建后代进程树", () => {
     expect(snapshot.summary.hostTreeCount).toBe(4);
   });
 
+  it("3009 监听树会收录 helper、app-server、relay、webrtc、ACP 和 OpenCode", () => {
+    const snapshot = classifyHostProcessInventory([
+      entry(HOST_PID, 1, "node host --port=3009"),
+      entry(201, HOST_PID, "task-helper"),
+      entry(202, HOST_PID, "codex app-server"),
+      entry(203, HOST_PID, "relay-tunnel"),
+      entry(204, HOST_PID, "webrtc-worker"),
+      entry(205, HOST_PID, "acp-server"),
+      entry(206, HOST_PID, "opencode run")
+    ], { hostPid: HOST_PID, observedAt: "2026-09-19T00:00:00.000Z" });
+
+    expect(snapshot.hostTree.map((item) => item.pid)).toEqual([100, 201, 202, 203, 204, 205, 206]);
+  });
+
   it("根进程不在进程表时不抛错，只报空树", () => {
     const snapshot = classifyHostProcessInventory(
       [entry(500, 1, "node /opt/other.js")],
@@ -141,6 +168,77 @@ describe("以当前 Host pid 构建后代进程树", () => {
     );
 
     expect(snapshot.hostTree.map((record) => record.pid)).toEqual([100]);
+  });
+
+  it("记录状态、CPU、可执行文件摘要和采样可信度字段", () => {
+    const snapshot = classifyHostProcessInventory([
+      {
+        ...entry(HOST_PID, 1, "/usr/bin/node --port=3009"),
+        state: "S",
+        cpuPercent: 12.5,
+        executablePath: "/usr/bin/node",
+        executableBasename: "node",
+        executableDigest: "a".repeat(64),
+        sampledAt: "2026-09-19T00:00:00.000Z",
+        startedAt: "2026-09-18T23:59:50.000Z"
+      }
+    ], { hostPid: HOST_PID, observedAt: "2026-09-19T00:00:00.000Z" });
+
+    expect(snapshot.hostTree[0]).toMatchObject({
+      state: "S",
+      cpuPercent: 12.5,
+      rss: 1024,
+      memory: 1024,
+      executablePath: "/usr/bin/node",
+      executableBasename: "node",
+      executableDigest: "a".repeat(64),
+      startedAt: "2026-09-18T23:59:50.000Z",
+      sampledAt: "2026-09-19T00:00:00.000Z",
+      stale: false
+    });
+    expect(snapshot.rootPresent).toMatchObject({
+      status: "present",
+      basis: "process_table",
+      rootPid: HOST_PID,
+      rootCommand: "/usr/bin/node --port=3009",
+      untrustedReason: null
+    });
+  });
+
+  it("根进程消失时明确标记 absent 且不可信", () => {
+    const snapshot = classifyHostProcessInventory([entry(500, 1, "task-helper")], {
+      hostPid: HOST_PID,
+      observedAt: "2026-09-19T00:00:00.000Z"
+    });
+
+    expect(snapshot.rootPresent).toEqual({
+      status: "absent",
+      basis: "process_table",
+      rootPid: HOST_PID,
+      rootCommand: null,
+      sampledAt: "2026-09-19T00:00:00.000Z",
+      untrustedReason: "root pid is absent from the process snapshot"
+    });
+  });
+
+  it("支持两次累计 CPU 采样，禁止把累计值当瞬时值", () => {
+    const previous = { ...entry(10, 1, "node"), cpuTimeSeconds: 10 };
+    const current = { ...entry(10, 1, "node"), cpuTimeSeconds: 11.5 };
+
+    expect(calculateCpuPercent(previous, current, 1_000)).toBe(150);
+    expect(calculateCpuPercent(undefined, current, 1_000)).toBeNull();
+  });
+
+  it("快照 stale 时保留结果但明确标记过期", () => {
+    const snapshot = classifyHostProcessInventory([entry(HOST_PID, 1, "node")], {
+      hostPid: HOST_PID,
+      observedAt: "2026-09-19T00:00:00.000Z",
+      stale: true
+    });
+
+    expect(snapshot.stale).toBe(true);
+    expect(snapshot.hostTree[0]?.stale).toBe(true);
+    expect(snapshot.rootPresent.basis).toBe("stale_snapshot");
   });
 });
 
@@ -216,6 +314,18 @@ describe("Host 树外的 Codex / CodingNS Desktop 进程", () => {
     expect(snapshot.externalCodexDesktop).toHaveLength(2);
     expect(snapshot.summary.externalCodexCount).toBe(5);
     expect(snapshot.truncated).toBe(true);
+  });
+
+  it("命令行截断并按 pid 去重，避免异常进程无限扩大结果", () => {
+    const huge = "x".repeat(10_000);
+    const snapshot = classifyHostProcessInventory([
+      entry(HOST_PID, 1, `node ${huge}`),
+      entry(HOST_PID, 1, "node replacement"),
+      entry(300, 1, "codex app-server")
+    ], { hostPid: HOST_PID, observedAt: "2026-09-19T00:00:00.000Z" });
+
+    expect(snapshot.scannedProcessCount).toBe(2);
+    expect(snapshot.hostTree[0]?.commandLine.length).toBeLessThanOrEqual(1_024);
   });
 });
 
@@ -310,5 +420,22 @@ describe("HostProcessInventoryService", () => {
 
     expect(readCount).toBe(1);
     expect(snapshots[0]).toEqual(snapshots[2]);
+  });
+
+  it("可执行文件摘要失败只记录原因，不让整个快照失败", async () => {
+    const service = new HostProcessInventoryService({
+      hostPid: HOST_PID,
+      cacheTtlMs: 0,
+      nowIso: () => "2026-09-19T00:00:00.000Z",
+      readProcessTable: async () => [entry(HOST_PID, 1, "/definitely/missing/codingns-host")]
+    });
+
+    const snapshot = await service.getSnapshot();
+    const record = snapshot.hostTree[0];
+
+    expect(snapshot.available).toBe(true);
+    expect(record?.executablePath).toBe("/definitely/missing/codingns-host");
+    expect(record?.executableDigest).toBeNull();
+    expect(record?.executableDigestError).toBeTruthy();
   });
 });
