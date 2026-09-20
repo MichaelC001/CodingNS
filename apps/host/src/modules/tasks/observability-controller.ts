@@ -83,7 +83,7 @@ export class ObservabilityController {
     const activityLimit = Number.parseInt(request.query.activityLimit ?? "100", 10);
     const discoveryLimit = Number.parseInt(request.query.discoveryLimit ?? "20", 10);
     reply.send(
-      this.runtimeObservabilityService.observe({
+      await this.runtimeObservabilityService.observe({
         sessionId,
         userId,
         activityLimit,

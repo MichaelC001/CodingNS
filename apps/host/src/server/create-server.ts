@@ -113,6 +113,7 @@ import { RelayTunnelService } from "../modules/relay-tunnel/relay-tunnel-service
 import { CcSwitchAdapter } from "../modules/model-switch/cc-switch-adapter.js";
 import { ModelSwitchController } from "../modules/model-switch/model-switch-controller.js";
 import { ModelSwitchService } from "../modules/model-switch/model-switch-service.js";
+import { HostProcessInventoryService } from "../modules/system/host-process-inventory-service.js";
 import { HostResourceController } from "../modules/system/host-resource-controller.js";
 import { HostResourceService } from "../modules/system/host-resource-service.js";
 import { ParallelSessionController } from "../modules/parallel-sessions/parallel-session-controller.js";
@@ -364,6 +365,9 @@ export function createServer(config: HostConfig) {
   const stopTerminalDebugEventLoopLagMonitor = startTerminalDebugEventLoopLagMonitor();
 
   const database = createDatabaseClient(config.databasePath);
+  // 全局进程统计只做只读诊断：以当前 Host pid 为根，构建完整后代进程树，
+  // 并额外列出命令行匹配 Codex / CodingNS Desktop 的树外进程。
+  const hostProcessInventoryService = new HostProcessInventoryService();
   const repositories = {
     bootstrapStateRepository: new BootstrapStateRepository(database.db),
     authUserRepository: new AuthUserRepository(database.db),
@@ -1031,7 +1035,13 @@ export function createServer(config: HostConfig) {
     eventLoopMonitor,
     taskActivityLog,
     (workspaceId, userId, limit) =>
-      sessionHistoryService.listWorkspaceDiscoveryDiagnostics(workspaceId, userId, limit)
+      sessionHistoryService.listWorkspaceDiscoveryDiagnostics(workspaceId, userId, limit),
+    // SQLite 快照直接读共享写队列的 getStats()：queue wait / transaction duration /
+    // busyRetry 次数与等待都在里面，不额外维护第二份计数。
+    () => database.writeQueue.getStats(),
+    // 进程统计只在观测快照请求时读一次本机进程表；服务内部有短缓存和单飞，
+    // 不常驻扫描，也不新增轮询。
+    () => hostProcessInventoryService.getSnapshot()
   );
   const sessionLiveRuntimeService = new SessionLiveRuntimeService(
     sessionHistoryService,

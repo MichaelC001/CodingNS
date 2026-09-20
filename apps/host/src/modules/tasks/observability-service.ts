@@ -1,6 +1,8 @@
 import { createId } from "../../shared/utils/id.js";
 import { nowIso } from "../../shared/utils/time.js";
 import { AppError } from "../../shared/errors/app-error.js";
+import type { SqliteWriteQueueStats } from "../../storage/sqlite/write-queue.js";
+import type { HostProcessInventorySnapshot } from "../system/host-process-inventory-service.js";
 import type { SessionDiscoveryDiagnosticRecord } from "../../types/domain.js";
 import type { TaskDefinition, TaskMetricsSnapshot } from "./task-types.js";
 import type { SchedulerMetricsSnapshot } from "./scheduler-metrics.js";
@@ -26,6 +28,10 @@ export interface RuntimeObservabilitySnapshot {
   readonly workspaceDiscoveryDiagnostics: SessionDiscoveryDiagnosticRecord[];
   readonly schedulers: SchedulerMetricsSnapshot;
   readonly eventLoop: EventLoopDelaySnapshot;
+  /** 共享写队列快照：queue wait、transaction duration、busyRetry 次数与等待；未接入时为 null。 */
+  readonly sqliteWriteQueue: SqliteWriteQueueStats | null;
+  /** 全局进程统计（3009 Host 子进程 + 树外 Codex/Desktop）；未接入时为 null。 */
+  readonly hostProcesses: HostProcessInventorySnapshot | null;
 }
 
 export interface RuntimeObservabilityQueryInput {
@@ -64,7 +70,17 @@ export class RuntimeObservabilityService {
       workspaceId: string,
       userId: string,
       limit: number
-    ) => SessionDiscoveryDiagnosticRecord[]
+    ) => SessionDiscoveryDiagnosticRecord[],
+    /**
+     * 共享写队列的只读快照（queue wait / transaction duration / busyRetry）。
+     * 不接时快照字段为 null，保持原有调用方不感知。
+     */
+    private readonly getSqliteWriteQueue?: () => SqliteWriteQueueStats,
+    /**
+     * 全局进程统计；只在快照请求时读一次本机进程表（服务内部有短缓存），
+     * 不常驻扫描、不加轮询。
+     */
+    private readonly getHostProcessInventory?: () => Promise<HostProcessInventorySnapshot>
   ) {}
 
   hasActiveSession(): boolean {
@@ -114,10 +130,12 @@ export class RuntimeObservabilityService {
     this.syncCollectors();
   }
 
-  observe(input: RuntimeObservabilityQueryInput): RuntimeObservabilitySnapshot {
+  async observe(input: RuntimeObservabilityQueryInput): Promise<RuntimeObservabilitySnapshot> {
     const session = this.touchSession(input.sessionId);
     const activityLimit = normalizeListLimit(input.activityLimit, 100, 500);
     const discoveryLimit = normalizeListLimit(input.discoveryLimit, 20, 200);
+    // 进程表读取失败不能拖垮整个观测快照，失败时字段为 null。
+    const hostProcesses = await this.readHostProcessInventory();
 
     return {
       observedAt: nowIso(),
@@ -139,8 +157,36 @@ export class RuntimeObservabilityService {
           ? this.getWorkspaceDiscoveryDiagnostics(input.workspaceId, input.userId, discoveryLimit)
           : [],
       schedulers: this.getSchedulerMetrics(),
-      eventLoop: this.eventLoopMonitor.observe()
+      eventLoop: this.eventLoopMonitor.observe(),
+      sqliteWriteQueue: this.readSqliteWriteQueue(),
+      hostProcesses
     };
+  }
+
+  private readSqliteWriteQueue(): SqliteWriteQueueStats | null {
+    if (!this.getSqliteWriteQueue) {
+      return null;
+    }
+
+    try {
+      return this.getSqliteWriteQueue();
+    } catch {
+      // 诊断失败不能影响观测快照本身。
+      return null;
+    }
+  }
+
+  private async readHostProcessInventory(): Promise<HostProcessInventorySnapshot | null> {
+    if (!this.getHostProcessInventory) {
+      return null;
+    }
+
+    try {
+      return await this.getHostProcessInventory();
+    } catch {
+      // 读进程表失败时只回 null，由调用方决定怎么展示“拿不到”。
+      return null;
+    }
   }
 
   private pruneExpiredSessions(): void {
