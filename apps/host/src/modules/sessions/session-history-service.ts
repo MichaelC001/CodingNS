@@ -32,6 +32,7 @@ import {
   type ProviderSessionStats,
   type ProviderSessionStatsReadOptions,
   type ProviderSubscription,
+  type NormalizedMessage,
   type SessionHistoryDeltaReadResult,
   type SendMessageResult
 } from "@codingns/session-sync-core";
@@ -583,6 +584,7 @@ export class SessionHistoryService {
   private readonly providerCapabilityCache = new Map<string, ProviderCapabilityCacheEntry>();
   private readonly streamingDeltaSuppressionDebugState = new Map<string, string>();
   private readonly helperHistorySourceStates = new Map<string, HelperHistorySourceState>();
+  private readonly codexSubagentSpawnEventsSeen = new Set<string>();
   private readonly historySubscriptionMetrics: HistorySubscriptionMetrics = {
     activeSubscriptions: 0,
     watcherTriggers: 0,
@@ -1730,6 +1732,12 @@ export class SessionHistoryService {
         knownTotalMessageCount
       );
       readDurationMs = Date.now() - readStartedAt;
+
+      this.requestCodexSubagentWorkspaceDiscoveryIfNeeded(
+        binding,
+        userId ?? binding.userId,
+        page.messages
+      );
 
       const snapshotIdleStartedAt = Date.now();
       await this.upsertSnapshotQueued(resolvedSessionId, {
@@ -4571,6 +4579,55 @@ export class SessionHistoryService {
     };
   }
 
+  private requestCodexSubagentWorkspaceDiscoveryIfNeeded(
+    binding: Pick<SessionBinding, "workspaceId" | "provider" | "providerSessionId" | "userId">,
+    userId: string | null | undefined,
+    messages: readonly NormalizedMessage[]
+  ): void {
+    const normalizedUserId = userId?.trim() ?? "";
+
+    if (
+      binding.provider !== "codex"
+      || !normalizedUserId
+      || !hasCodexSubagentSpawnMessage(messages)
+    ) {
+      return;
+    }
+
+    const hasUnseenSpawnEvent = messages.some((message) => {
+      if (!isCodexSubagentSpawnMessage(message)) {
+        return false;
+      }
+
+      const eventIdentity = message.toolCall?.callId?.trim() || message.messageId;
+      const eventKey = `${binding.workspaceId}:${binding.providerSessionId}:${eventIdentity}`;
+
+      if (this.codexSubagentSpawnEventsSeen.has(eventKey)) {
+        return false;
+      }
+
+      if (this.codexSubagentSpawnEventsSeen.size >= 4096) {
+        const oldest = this.codexSubagentSpawnEventsSeen.values().next().value;
+        if (oldest) {
+          this.codexSubagentSpawnEventsSeen.delete(oldest);
+        }
+      }
+
+      this.codexSubagentSpawnEventsSeen.add(eventKey);
+      return true;
+    });
+
+    if (!hasUnseenSpawnEvent) {
+      return;
+    }
+
+    this.requestWorkspaceDiscovery(binding.workspaceId, normalizedUserId, {
+      force: true,
+      refreshStateMode: "deferred",
+      trigger: "subagent_spawn"
+    });
+  }
+
   private requestHelperHistorySourceRefresh(sourceKey: string): void {
     const source = this.helperHistorySourceStates.get(sourceKey);
 
@@ -4632,6 +4689,20 @@ export class SessionHistoryService {
 
         if (!current) {
           return;
+        }
+
+        // VSCode/Codex 外部运行时不会经过 SessionLiveRuntimeService，
+        // 子 Agent 创建事件只能从父会话 JSONL 的增量消息中识别。
+        // 这里复用现有工作区发现任务，按 workspaceId 去重，不新增轮询或私有队列。
+        if (current.binding.provider === "codex") {
+          const subscriber = [...current.subscribers.values()].find(
+            (candidate) => candidate.userId?.trim().length
+          );
+          this.requestCodexSubagentWorkspaceDiscoveryIfNeeded(
+            current.binding,
+            subscriber?.userId ?? current.binding.userId,
+            delta.messages
+          );
         }
 
         for (const subscriber of current.subscribers.values()) {
@@ -8519,6 +8590,26 @@ function isTaskHelperHistoryProvider(provider: string): boolean {
     || provider === "grok"
     || provider === "command-code"
     || provider === "pi";
+}
+
+function hasCodexSubagentSpawnMessage(messages: readonly Pick<NormalizedMessage, "provider" | "kind" | "toolCall">[]): boolean {
+  return messages.some((message) => isCodexSubagentSpawnMessage(message));
+}
+
+function isCodexSubagentSpawnMessage(
+  message: Pick<NormalizedMessage, "provider" | "kind" | "toolCall">
+): boolean {
+  if (
+    message.provider !== "codex"
+    || (message.kind !== "tool_call" && message.kind !== "tool_result")
+  ) {
+    return false;
+  }
+
+  const toolName = message.toolCall?.name?.trim().toLowerCase();
+  return toolName === "spawn_agent"
+    || toolName === "thread_spawn"
+    || toolName === "subagent";
 }
 
 function buildSessionHistoryTaskKey(

@@ -91,6 +91,172 @@ describe("SessionHistoryService background tasks", () => {
     service.dispose();
   });
 
+  it("Codex 历史增量收到子 Agent 创建事件时会触发一次工作区发现", async () => {
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.sessionHistoryDeltaRead) {
+            return {
+              readMode: "delta",
+              delta: {
+                messages: [{
+                  messageId: "spawn-call",
+                  provider: "codex",
+                  providerSessionId: "parent-thread",
+                  role: "tool",
+                  kind: "tool_call",
+                  content: "{}",
+                  toolCall: {
+                    callId: "call-1",
+                    name: "spawn_agent",
+                    input: "{}",
+                    output: null,
+                    error: null,
+                    status: "running"
+                  },
+                  timestamp: "2026-09-20T10:00:00.000Z",
+                  sequence: 1,
+                  rawRef: "codex://parent-thread#1"
+                }],
+                cursor: null,
+                nextCursor: null,
+                total: 1,
+                mode: "append",
+                bytesRead: 1,
+                recordsParsed: 1,
+                tailWindowBytes: 1
+              }
+            };
+          }
+
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    const requestDiscovery = vi
+      .spyOn(service.instance, "requestWorkspaceDiscovery")
+      .mockImplementation(() => undefined);
+    const sourceKey = "codex:raw:/tmp/codex-parent.jsonl";
+    const states = (service.instance as unknown as {
+      helperHistorySourceStates: Map<string, unknown>;
+    }).helperHistorySourceStates;
+
+    states.set(sourceKey, {
+      sessionId: "parent-session",
+      binding: {
+        sessionId: "parent-session",
+        userId: "user-1",
+        workspaceId: "workspace-1",
+        provider: "codex",
+        providerSessionId: "parent-thread",
+        rawStoreRef: "/tmp/codex-parent.jsonl"
+      },
+      subscribers: new Map([[
+        "subscriber-1",
+        {
+          sessionId: "parent-session",
+          userId: "user-1",
+          limit: 20,
+          deliveredMessages: {
+            signaturesByMessageId: new Map(),
+            lastMutableTailRefreshAtMs: 0
+          },
+          onEnvelope: vi.fn()
+        }
+      ]]),
+      refreshRequestedDuringRun: false,
+      cursor: null
+    });
+
+    (service.instance as unknown as {
+      requestHelperHistorySourceRefresh(source: string): void;
+    }).requestHelperHistorySourceRefresh(sourceKey);
+    await flushMicrotasks();
+
+    expect(requestDiscovery).toHaveBeenCalledTimes(1);
+    expect(requestDiscovery).toHaveBeenCalledWith("workspace-1", "user-1", {
+      force: true,
+      refreshStateMode: "deferred",
+      trigger: "subagent_spawn"
+    });
+
+    service.dispose();
+  });
+
+  it("首次读取已存在的 Codex 子 Agent 事件时也只触发一次发现", async () => {
+    const service = createSessionHistoryService();
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "parent-session-history",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "parent-thread-history",
+      rawStoreRef: "/tmp/codex-parent-history.jsonl",
+      title: "父会话",
+      messageCount: 1,
+      lastMessageAt: "2026-09-20T10:00:00.000Z",
+      createdAt: "2026-09-20T10:00:00.000Z",
+      updatedAt: "2026-09-20T10:00:00.000Z"
+    });
+    const readPage = vi.fn(async () => ({
+      messages: [{
+        messageId: "spawn-history",
+        provider: "codex",
+        providerSessionId: "parent-thread-history",
+        role: "tool",
+        kind: "tool_result",
+        content: "{\"agent_id\":\"child-thread-history\"}",
+        toolCall: {
+          callId: "call-history",
+          name: "thread_spawn",
+          input: "{}",
+          output: "{\"agent_id\":\"child-thread-history\"}",
+          error: null,
+          status: "completed"
+        },
+        timestamp: "2026-09-20T10:00:00.000Z",
+        sequence: 1,
+        rawRef: "codex://parent-thread-history#1"
+      }],
+      cursor: "cursor-1",
+      nextCursor: null,
+      total: 1
+    }));
+    const privateService = service.instance as unknown as {
+      readPage: (...args: unknown[]) => Promise<unknown>;
+    };
+    privateService.readPage = readPage;
+    const requestDiscovery = vi
+      .spyOn(service.instance, "requestWorkspaceDiscovery")
+      .mockImplementation(() => undefined);
+
+    await service.instance.readSessionHistory(
+      "parent-session-history",
+      null,
+      20,
+      "backward",
+      "user-1"
+    );
+    await service.instance.readSessionHistory(
+      "parent-session-history",
+      null,
+      20,
+      "backward",
+      "user-1"
+    );
+
+    expect(readPage).toHaveBeenCalledTimes(2);
+    expect(requestDiscovery).toHaveBeenCalledTimes(1);
+    expect(requestDiscovery).toHaveBeenCalledWith("workspace-1", "user-1", {
+      force: true,
+      refreshStateMode: "deferred",
+      trigger: "subagent_spawn"
+    });
+
+    service.dispose();
+  });
+
   it("显式扫描使用 helper_process 处理器，并由独立 Host 任务完成索引回写", async () => {
     const taskManager = createTaskManager(null, {
       helper_process: {
