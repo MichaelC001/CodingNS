@@ -101,4 +101,20 @@ describe("SQLite writer readiness 协议", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it("独立 writer 能以一个事务提交多条 critical 写入", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "codingns-sqlite-writer-tx-"));
+    const client = new SqliteWriterClient(join(directory, "writer.sqlite"));
+    try {
+      await client.write("CREATE TABLE tx_probe (id INTEGER PRIMARY KEY, value TEXT)");
+      await client.transaction([
+        { sql: "INSERT INTO tx_probe (id, value) VALUES (?, ?)", params: [1, "a"] },
+        { sql: "INSERT INTO tx_probe (id, value) VALUES (?, ?)", params: [2, "b"] }
+      ], { priority: "critical" });
+      expect(client.getReadinessSnapshot().lastSuccessfulTransactionAt).not.toBeNull();
+    } finally {
+      await client.dispose();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
