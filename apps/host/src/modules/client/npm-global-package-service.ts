@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { HostConfig } from "../../config/env.js";
 import { AppError } from "../../shared/errors/app-error.js";
@@ -22,6 +23,7 @@ interface ManagedPackageCheckResult {
 export interface NpmGlobalPackageInstallInput {
   packageName: string;
   distTag: "latest" | "beta";
+  targetVersion: string;
   signal: AbortSignal;
 }
 
@@ -116,14 +118,7 @@ export class NpmGlobalPackageService {
   ): Promise<NpmGlobalPackageInstallResult> {
     this.assertManagedPackage(input.packageName);
 
-    await runCommand({
-      command: resolveNpmCommand(),
-      args: ["install", "-g", `${input.packageName}@${input.distTag}`],
-      cwd: os.homedir(),
-      signal: input.signal,
-      failureLabel: "npm install -g 执行失败"
-    });
-    await this.scheduleHostRestart();
+    await this.scheduleHostInstall(input);
 
     return {
       restartScheduled: true,
@@ -143,27 +138,34 @@ export class NpmGlobalPackageService {
     });
   }
 
-  private async scheduleHostRestart(): Promise<void> {
+  private async scheduleHostInstall(input: NpmGlobalPackageInstallInput): Promise<void> {
     const installerScript = resolveHostInstallerScript();
 
     if (!installerScript) {
-      throw new Error("npm 包已更新，但找不到统一安装器脚本，无法调度服务重启。请重新运行安装脚本。");
+      throw new Error("找不到统一安装器脚本，无法执行服务更新。请重新运行安装脚本。");
     }
+
+    const installOptions = resolveHostInstallOptions(this.config);
 
     try {
       await spawnDetachedNodeProcess({
-        script: HOST_RESTART_HELPER_SOURCE,
+        script: HOST_INSTALL_HELPER_SOURCE,
         args: [
           String(HOST_RESTART_DELAY_MS),
           installerScript,
-          path.dirname(this.config.databasePath)
+          installOptions.dataDir,
+          input.targetVersion,
+          installOptions.port,
+          installOptions.host,
+          installOptions.installPrefix ?? "",
+          installOptions.autostart ? "1" : "0"
         ]
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : "未知错误";
 
       throw new Error(
-        `npm 包已更新，但无法调度服务重启。请手工运行统一安装器 restart --data-dir ${path.dirname(this.config.databasePath)}。${detail ? ` ${detail}` : ""}`
+        `服务更新已经排队，但无法调度统一安装器。请手工运行统一安装器 install --data-dir ${installOptions.dataDir} --version <目标版本>。${detail ? ` ${detail}` : ""}`
       );
     }
   }
@@ -305,33 +307,10 @@ function parseSemver(input: string): {
   };
 }
 
-function createBoundedOutputCollector(limit = 8_192): {
-  push(chunk: string): void;
-  read(): string;
-} {
-  let content = "";
-
-  return {
-    push(chunk) {
-      if (!chunk) {
-        return;
-      }
-
-      const next = `${content}${chunk}`;
-      content = next.length <= limit ? next : next.slice(next.length - limit);
-    },
-    read() {
-      return content;
-    }
-  };
-}
-
-function resolveNpmCommand(): string {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
-}
-
 function resolveHostInstallerScript(): string | null {
   const candidates = [];
+  const modulePackageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  candidates.push(path.join(modulePackageRoot, HOST_INSTALLER_FILE_NAME));
   const configuredPath = process.env.CODINGNS_HOST_INSTALLER_SCRIPT?.trim();
 
   if (configuredPath) {
@@ -372,64 +351,65 @@ function resolveHostInstallerScript(): string | null {
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
-async function runCommand(input: {
-  command: string;
-  args: string[];
-  cwd: string;
-  signal?: AbortSignal;
-  failureLabel: string;
-}): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(input.command, input.args, {
-      cwd: input.cwd,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      signal: input.signal
-    });
-    const output = createBoundedOutputCollector();
-    let settled = false;
+function resolveHostInstallOptions(config: HostConfig): {
+  dataDir: string;
+  host: string;
+  port: string;
+  installPrefix: string | null;
+  autostart: boolean;
+} {
+  const dataDir = path.dirname(config.databasePath);
+  const statePath = path.join(dataDir, "runtime", "install-state.json");
+  let state: Record<string, unknown> = {};
 
-    const finish = (callback: () => void) => {
-      if (settled) {
-        return;
-      }
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    if (parsed && typeof parsed === "object") {
+      state = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 没有安装状态时使用当前 Host 配置，并从当前 CLI 入口推断 npm prefix。
+  }
 
-      settled = true;
-      callback();
-    };
+  return {
+    dataDir,
+    host: typeof state.listenHost === "string" && state.listenHost.trim()
+      ? state.listenHost
+      : config.host,
+    port: String(typeof state.port === "number" ? state.port : config.port),
+    installPrefix: typeof state.installPrefix === "string" && state.installPrefix.trim()
+      ? state.installPrefix
+      : inferInstallPrefixFromEntry(process.argv[1]),
+    autostart: state.autostartEnabled === true
+  };
+}
 
-    child.stdout.on("data", (chunk) => {
-      output.push(String(chunk));
-    });
-    child.stderr.on("data", (chunk) => {
-      output.push(String(chunk));
-    });
-    child.on("error", (error) => {
-      finish(() => {
-        reject(error);
-      });
-    });
-    child.on("close", (code, signal) => {
-      if (code === 0) {
-        finish(resolve);
-        return;
-      }
+function inferInstallPrefixFromEntry(entryPath: string | undefined): string | null {
+  if (!entryPath) {
+    return null;
+  }
 
-      const detail = output.read().trim();
-      const suffix = signal ? `signal=${signal}` : `exitCode=${code ?? "null"}`;
+  const resolvedEntry = path.resolve(entryPath);
+  const packageRoot = path.resolve(path.dirname(resolvedEntry), "..");
+  const normalized = packageRoot.split(path.sep);
+  const nodeModulesIndex = normalized.lastIndexOf("node_modules");
 
-      finish(() => {
-        reject(
-          new Error(
-            detail.length > 0
-              ? `${input.failureLabel}: ${detail}\n${suffix}`
-              : `${input.failureLabel}，${suffix}`
-          )
-        );
-      });
-    });
-  });
+  if (nodeModulesIndex < 0) {
+    return null;
+  }
+
+  const prefixParts = normalized.slice(0, nodeModulesIndex);
+
+  if (process.platform !== "win32" && prefixParts.at(-1) === "lib") {
+    prefixParts.pop();
+  }
+  const prefix = prefixParts.length > 0 ? prefixParts.join(path.sep) || path.parse(packageRoot).root : null;
+
+  if (!prefix) {
+    return null;
+  }
+
+  return process.platform === "win32" && /^[A-Za-z]:$/.test(prefix) ? `${prefix}\\` : prefix;
 }
 
 async function spawnDetachedNodeProcess(input: {
@@ -467,19 +447,34 @@ async function spawnDetachedNodeProcess(input: {
   });
 }
 
-const HOST_RESTART_HELPER_SOURCE = String.raw`
+const HOST_INSTALL_HELPER_SOURCE = String.raw`
 const { spawn } = require("node:child_process");
 
 const delayMs = Number(process.argv[1] || "0");
 const installerScript = process.argv[2];
 const dataDir = process.argv[3];
+const targetVersion = process.argv[4];
+const port = process.argv[5];
+const host = process.argv[6];
+const installPrefix = process.argv[7];
+const autostart = process.argv[8] === "1";
 
 function exit(code) {
   process.exit(typeof code === "number" ? code : 0);
 }
 
 setTimeout(() => {
-  const child = spawn(process.execPath, [installerScript, "restart", "--data-dir", dataDir], {
+  const args = [installerScript, "install", "--data-dir", dataDir, "--version", targetVersion, "--port", port, "--host", host];
+
+  if (installPrefix) {
+    args.push("--install-prefix", installPrefix);
+  }
+
+  if (autostart) {
+    args.push("--autostart");
+  }
+
+  const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
     env: process.env,
     stdio: "ignore",

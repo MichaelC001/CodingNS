@@ -1764,7 +1764,18 @@ write_private_runtime_state() {
 const fs = require("node:fs");
 
 const outputPath = process.argv[2];
+let existing = {};
+try {
+  const parsed = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+  if (parsed && typeof parsed === "object") {
+    existing = parsed;
+  }
+} catch {
+  // 统一安装器还没有写过状态时，从空状态开始补齐私有运行时信息。
+}
+
 const payload = {
+  ...existing,
   schemaVersion: 1,
   packageName: process.env.CODINGNS_STATE_PACKAGE_NAME ?? "",
   packageVersion: process.env.CODINGNS_STATE_PACKAGE_VERSION ?? "",
@@ -1783,6 +1794,14 @@ const payload = {
   port: Number(process.env.CODINGNS_STATE_PORT ?? "0"),
   installedAt: process.env.CODINGNS_STATE_INSTALLED_AT ?? ""
 };
+
+payload.installPrefix = payload.installPrefix ?? payload.npmPrefix;
+payload.nodeBinary = payload.nodeBinary ?? payload.nodeExe;
+payload.packageRoot = payload.packageRoot ?? (
+  payload.codingnsCommand
+    ? require("node:path").dirname(require("node:path").dirname(payload.codingnsCommand))
+    : undefined
+);
 
 fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
 EOF

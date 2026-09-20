@@ -136,6 +136,7 @@ export class ServiceUpdateTaskService {
         return await this.npmGlobalPackageService.installGlobalPackage({
           packageName: input.packageName,
           distTag: input.distTag,
+          targetVersion: input.targetVersion,
           signal: context.signal
         });
       }

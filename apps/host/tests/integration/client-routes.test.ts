@@ -570,7 +570,7 @@ describe("client routes", () => {
     });
   }, SLOW_TEST_TIMEOUT_MS);
 
-  it("支持触发服务端全局 npm 安装任务，并调度服务重启", async () => {
+  it("支持通过统一安装器更新服务端，并调度服务重启", async () => {
     const fixture = createEmptyFixture();
     activeFixtures.push(fixture);
 
@@ -669,21 +669,14 @@ describe("client routes", () => {
       ]
     });
     expect(spawnMock).toHaveBeenCalledWith(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["install", "-g", "placeholder-server-package@latest"],
-      expect.objectContaining({
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true
-      })
-    );
-    expect(spawnMock).toHaveBeenCalledWith(
       process.execPath,
       expect.arrayContaining([
         "-e",
         expect.any(String),
         "3000",
         expect.stringContaining("host-install.mjs"),
-        expect.any(String)
+        expect.any(String),
+        "1.0.1"
       ]),
       expect.objectContaining({
         stdio: "ignore",
@@ -693,7 +686,7 @@ describe("client routes", () => {
     );
   });
 
-  it("开发版通道安装服务端更新时会优先安装更高的稳定版", async () => {
+  it("开发版通道通过统一安装器更新时会优先安装更高的稳定版", async () => {
     const fixture = createEmptyFixture();
     activeFixtures.push(fixture);
 
@@ -767,12 +760,9 @@ describe("client routes", () => {
     });
 
     expect(spawnMock).toHaveBeenCalledWith(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["install", "-g", "placeholder-server-package@latest"],
-      expect.objectContaining({
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true
-      })
+      process.execPath,
+      expect.arrayContaining(["-e", expect.any(String), "3000", expect.stringContaining("host-install.mjs"), "1.0.0"]),
+      expect.objectContaining({ detached: true })
     );
   });
 

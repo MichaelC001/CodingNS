@@ -36,7 +36,14 @@ export function DesktopUnifiedUpdatePanel() {
   const [downloadedVersion, setDownloadedVersion] = useState<string | null>(null);
   const clientManifest = latestState?.manifest ?? null;
   const clientHasUpdate = latestState?.hasUpdate ?? false;
-  const serviceHasUpdate = Boolean(servicePackage?.hasUpdate && !servicePackage.restartRequired);
+  const serviceInstallTask = servicePackage?.installTask ?? serviceTask;
+  const serviceUpdateBusy = Boolean(
+    serviceInstallTask
+      && (isPendingServiceTask(serviceInstallTask.status) || serviceInstallTask.restartScheduled)
+  );
+  const serviceHasUpdate = Boolean(
+    servicePackage?.hasUpdate && !servicePackage.restartRequired && !serviceUpdateBusy
+  );
   const hasAnyUpdate = serviceHasUpdate || Boolean(clientHasUpdate && clientManifest);
   const canInstallService = Boolean(serviceHasUpdate && servicePackage?.packageName);
   const canInstallClient = Boolean(clientHasUpdate && clientManifest);
@@ -163,12 +170,14 @@ export function DesktopUnifiedUpdatePanel() {
         const startedTask = await installServiceUpdate(servicePackage.packageName);
         setServiceTask(startedTask);
         const finishedTask = await waitForServiceTask(startedTask);
+        setServiceTask(finishedTask);
 
         if (finishedTask.status !== "succeeded") {
-          setServiceTask(finishedTask);
           setStatusText(finishedTask.errorMessage ?? t("settings.serverInstallFailed"));
           return;
         }
+
+        setServicePackage((current) => current ? { ...current, installTask: finishedTask } : current);
       }
 
       if (canInstallClient && clientManifest) {

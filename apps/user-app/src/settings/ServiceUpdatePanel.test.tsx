@@ -9,16 +9,19 @@ import { ServiceUpdatePanel } from "./ServiceUpdatePanel";
 
 const {
   checkForServiceUpdate,
+  fetchCurrentHostVersion,
   installServiceUpdate,
   getServiceUpdateTask
 } = vi.hoisted(() => ({
   checkForServiceUpdate: vi.fn(),
+  fetchCurrentHostVersion: vi.fn(),
   installServiceUpdate: vi.fn(),
   getServiceUpdateTask: vi.fn()
 }));
 
 vi.mock("../platform/server/service-update-manager", () => ({
   checkForServiceUpdate,
+  fetchCurrentHostVersion,
   installServiceUpdate,
   getServiceUpdateTask
 }));
@@ -26,6 +29,7 @@ vi.mock("../platform/server/service-update-manager", () => ({
 describe("ServiceUpdatePanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchCurrentHostVersion.mockResolvedValue("0.1.0");
     clientConfigStore.hydrate({
       platform: "web",
       hostBaseUrl: "http://127.0.0.1:3002",
