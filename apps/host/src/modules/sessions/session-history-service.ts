@@ -431,6 +431,11 @@ type SessionTitleChangedObserver = (input: {
   workspaceId: string;
   title: string;
 }) => Promise<void> | void;
+type WorkspaceDiscoveryCompletedObserver = (input: {
+  workspaceId: string;
+  userId: string;
+  triggerSource: string;
+}) => Promise<void> | void;
 type SessionDeletedObserver = (input: {
   sessionId: string;
   userId: string;
@@ -500,9 +505,10 @@ const PROVIDER_CAPABILITY_CACHE_MAX_AGE_MS = 10 * 60_000;
 const WORKSPACE_DISCOVERY_PERSIST_BATCH_SIZE = 25;
 const SESSION_DISCOVERY_TRIGGER_SOURCES = {
   background: "session_history.workspace_discovery.scan",
-  explicit: "session_history.explicit_workspace_scan"
+  explicit: "session_history.explicit_workspace_scan",
+  subagentSpawn: "session_history.codex_subagent_spawn"
 } as const;
-type WorkspaceDiscoveryTrigger = "automatic" | "explicit";
+type WorkspaceDiscoveryTrigger = "automatic" | "explicit" | "subagent_spawn";
 // 全量会话发现只能由明确的用户操作启动，自动路径只能留下脏标记。
 const ALLOW_AUTOMATIC_WORKSPACE_DISCOVERY = false;
 /**
@@ -588,6 +594,7 @@ export class SessionHistoryService {
   private readonly sessionHistorySourceCoordinator: SessionHistorySourceCoordinator;
   private readonly liveActivityObservationResolvers = new Set<LiveActivityObservationResolver>();
   private readonly sessionTitleChangedObservers = new Set<SessionTitleChangedObserver>();
+  private readonly workspaceDiscoveryCompletedObservers = new Set<WorkspaceDiscoveryCompletedObserver>();
   private readonly sessionDeletedObservers = new Set<SessionDeletedObserver>();
   private readonly workspaceSessionRelations = new Map<
     string,
@@ -980,6 +987,18 @@ export class SessionHistoryService {
     return {
       close: () => {
         this.sessionTitleChangedObservers.delete(observer);
+      }
+    };
+  }
+
+  registerWorkspaceDiscoveryCompletedObserver(
+    observer: WorkspaceDiscoveryCompletedObserver
+  ): { close(): void } {
+    this.workspaceDiscoveryCompletedObservers.add(observer);
+
+    return {
+      close: () => {
+        this.workspaceDiscoveryCompletedObservers.delete(observer);
       }
     };
   }
@@ -1498,9 +1517,7 @@ export class SessionHistoryService {
         workspaceId,
         userId,
         refreshStateMode: options?.refreshStateMode ?? "inline",
-        triggerSource: options?.trigger === "explicit"
-          ? SESSION_DISCOVERY_TRIGGER_SOURCES.explicit
-          : SESSION_DISCOVERY_TRIGGER_SOURCES.background
+        triggerSource: resolveWorkspaceDiscoveryTriggerSource(options?.trigger)
       }
     });
 
@@ -1558,9 +1575,7 @@ export class SessionHistoryService {
         workspaceId,
         userId,
         refreshStateMode: options?.refreshStateMode ?? "deferred",
-        triggerSource: options?.trigger === "explicit"
-          ? SESSION_DISCOVERY_TRIGGER_SOURCES.explicit
-          : SESSION_DISCOVERY_TRIGGER_SOURCES.background
+        triggerSource: resolveWorkspaceDiscoveryTriggerSource(options?.trigger)
       }
     });
 
@@ -1627,7 +1642,9 @@ export class SessionHistoryService {
   }
 
   private canStartWorkspaceDiscovery(trigger: WorkspaceDiscoveryTrigger): boolean {
-    return trigger === "explicit" || ALLOW_AUTOMATIC_WORKSPACE_DISCOVERY;
+    return trigger === "explicit"
+      || trigger === "subagent_spawn"
+      || ALLOW_AUTOMATIC_WORKSPACE_DISCOVERY;
   }
 
   private markAutomaticWorkspaceDiscoveryBlocked(workspaceId: string): void {
@@ -4203,6 +4220,12 @@ export class SessionHistoryService {
 
       const nextItems = this.listWorkspaceSessions(workspaceId, userId);
 
+      await this.notifyWorkspaceDiscoveryCompleted({
+        workspaceId,
+        userId,
+        triggerSource
+      });
+
       if (isTerminalDebugEnabled()) {
         logTerminalDebug("workspace.discovery.completed", {
           workspaceId,
@@ -5827,6 +5850,18 @@ export class SessionHistoryService {
           workspaceId: input.workspaceId,
           title: input.title
         });
+      })
+    );
+  }
+
+  private async notifyWorkspaceDiscoveryCompleted(input: {
+    workspaceId: string;
+    userId: string;
+    triggerSource: string;
+  }): Promise<void> {
+    await Promise.allSettled(
+      Array.from(this.workspaceDiscoveryCompletedObservers).map(async (observer) => {
+        await observer(input);
       })
     );
   }
@@ -10089,6 +10124,20 @@ function mergeSessionListItemsBySessionId(items: readonly SessionListItem[]): Se
   }
 
   return [...itemBySessionId.values()];
+}
+
+function resolveWorkspaceDiscoveryTriggerSource(
+  trigger: WorkspaceDiscoveryTrigger | undefined
+): string {
+  if (trigger === "explicit") {
+    return SESSION_DISCOVERY_TRIGGER_SOURCES.explicit;
+  }
+
+  if (trigger === "subagent_spawn") {
+    return SESSION_DISCOVERY_TRIGGER_SOURCES.subagentSpawn;
+  }
+
+  return SESSION_DISCOVERY_TRIGGER_SOURCES.background;
 }
 
 function sortSessionListItemsByRecentActivity(items: readonly SessionListItem[]): SessionListItem[] {

@@ -1819,6 +1819,21 @@ export function createServer(config: HostConfig) {
       });
     }
   );
+  const workspaceDiscoveryWorkbenchSync = sessionHistoryService.registerWorkspaceDiscoveryCompletedObserver(
+    (event) => {
+      void workbenchWsHub.broadcastSnapshot(event.userId).catch((error) => {
+        app.log.warn(
+          {
+            error,
+            userId: event.userId,
+            workspaceId: event.workspaceId,
+            triggerSource: event.triggerSource
+          },
+          "workspace discovery workbench broadcast failed"
+        );
+      });
+    }
+  );
   const wsHandle = createWsServer(
     app.server,
     new WsAuthGuard(authService),
@@ -1997,6 +2012,7 @@ export function createServer(config: HostConfig) {
     workspaceSessionInstructionWatchService.dispose();
     affairsLibraryService.dispose();
     sessionTitleChangedWorkbenchSync.close();
+    workspaceDiscoveryWorkbenchSync.close();
     workbenchRuntimeTerminalSync.close();
     await wsHandle.close();
     codexArchiveWatcher.dispose();

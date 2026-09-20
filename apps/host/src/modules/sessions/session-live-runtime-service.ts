@@ -3238,6 +3238,15 @@ export class SessionLiveRuntimeService {
     event: RuntimeEvent
   ): Promise<void> {
     this.observePendingSendDebugTraceEvent(sessionId, event);
+    if (isCodexSubagentSpawnEvent(event)) {
+      // spawn_agent 的完成事件说明子线程已经被 Codex 创建，触发一次针对当前工作区的发现。
+      // 这里仍走 SessionHistoryService 的 TaskManager，重复事件由工作区任务 key 去重。
+      this.sessionHistoryService.requestWorkspaceDiscovery(workspaceId, userId, {
+        force: true,
+        refreshStateMode: "deferred",
+        trigger: "subagent_spawn"
+      });
+    }
     await this.runRuntimeSqliteWrite(sessionId, "persistSessionBinding", () => {
       this.sessionHistoryService.persistSessionBinding(sessionId, workspaceId, {
         provider: event.provider,
@@ -5218,6 +5227,17 @@ function resolveClaudeHookBridgeScriptPath(): string {
   }
 
   return candidates[0]!;
+}
+
+function isCodexSubagentSpawnEvent(event: RuntimeEvent): boolean {
+  if (event.provider !== "codex" || event.type !== "message") {
+    return false;
+  }
+
+  const toolCall = event.message.toolCall;
+  const toolName = toolCall?.name.trim().toLowerCase();
+  return event.message.kind === "tool_result"
+    && (toolName === "spawn_agent" || toolName === "thread_spawn" || toolName === "subagent");
 }
 
 function normalizeOptionalBindingValue(value: string | null | undefined): string | null {
