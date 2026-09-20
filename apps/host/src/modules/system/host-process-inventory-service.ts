@@ -62,7 +62,7 @@ export type HostProcessUnavailableReason = "process_table_unavailable";
 export interface HostProcessTableEntry {
   pid: number;
   ppid: number;
-  commandLine?: string;
+  commandLine: string;
   /** 常驻内存（字节）；读不到时为 0。 */
   rssBytes: number;
   /** 已运行秒数；读不到时为 null。 */
