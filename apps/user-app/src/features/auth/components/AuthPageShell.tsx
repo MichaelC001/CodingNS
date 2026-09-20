@@ -3,6 +3,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { LanguageSwitcher, t } from "../../../shared/i18n";
 import { useTheme } from "../../../shared/theme";
 import { useAppVersion } from "../../../shared/version/app-version";
+// 该外壳会被四级域名入口按需加载，显式携带登录页样式，避免入口 chunk 加载时出现白底。
+import "../../../app/styles.css";
 
 /**
  * 登录页外壳（spec001.9 W2.5）

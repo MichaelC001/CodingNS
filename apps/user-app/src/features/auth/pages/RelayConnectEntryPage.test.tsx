@@ -61,6 +61,10 @@ describe("RelayConnectEntryPage", () => {
     loadHostLoginAccountsMock.mockResolvedValue([{ userId: "admin-id", username: "admin", role: "admin" }]);
     renderEntry();
 
+    expect(document.querySelector(".cyber-login-page")).toBeInTheDocument();
+    expect(document.querySelector(".cyber-bg")).toBeInTheDocument();
+    expect(document.querySelector(".cyber-grid")).toBeInTheDocument();
+    expect(document.querySelector(".scanlines")).toBeInTheDocument();
     expect(await screen.findByLabelText("CodingNS Connect 邮箱")).toBeInTheDocument();
     expect(screen.queryByLabelText("Host 密码")).not.toBeInTheDocument();
     expect(clientConfigStore.getState().hosts[0]).toMatchObject({
