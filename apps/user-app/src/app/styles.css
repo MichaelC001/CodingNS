@@ -33041,8 +33041,13 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 .android-workbench-shell[data-mobile-presentation="conversation-focus"] {
   --mobile-conversation-tabbar-progress: 0;
   --mobile-conversation-tabbar-height: var(--mobile-workbench-tabbar-height, 0px);
+  /*
+   * 导航栏自身的高度已经包含 safe-area 底部内边距。
+   * 会话沉浸层把它改成 relative 并裁剪显示时，必须分配完整盒高；
+   * 再扣一次安全区会让不同设备只显示半截导航，甚至把 Composer 控制栏裁掉。
+   */
   --mobile-conversation-tabbar-visible-height: max(
-    calc(var(--mobile-conversation-tabbar-height) - var(--mobile-shell-safe-bottom, 0px)),
+    var(--mobile-conversation-tabbar-height),
     0px
   );
   --mobile-conversation-tabbar-offset-open: var(--mobile-conversation-tabbar-visible-height);

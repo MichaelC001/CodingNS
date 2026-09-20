@@ -211,6 +211,17 @@ describe("MobileWorkbenchShell", () => {
     expect(shell).toHaveAttribute("data-conversation-tabbar-state", "hidden");
   });
 
+  it("底部导航尚未完成布局时不会把高度测量写成 0", () => {
+    const view = renderMobileShell({
+      presentation: "conversation-focus",
+      childVariant: "conversation"
+    });
+    const shell = view.container.querySelector(".mobile-workbench-shell");
+
+    expect(shell).not.toBeNull();
+    expect(shell?.style.getPropertyValue("--mobile-conversation-tabbar-height")).not.toBe("0px");
+  });
+
   it("聊天区没有滚到底时，在输入区上滑也能把底部导航拽出来", () => {
     vi.useFakeTimers();
     const view = renderMobileShell({
