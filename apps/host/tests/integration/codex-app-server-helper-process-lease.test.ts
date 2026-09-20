@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it, vi, afterEach } from "vitest";
 
 /**
@@ -12,6 +15,7 @@ async function loadHelperProcess(options: {
   argv?: string[];
   exitMock?: ReturnType<typeof vi.fn>;
   rss?: number;
+  commandPath?: string;
 } = {}) {
   const originalArgv = process.argv;
   const originalMemoryUsage = process.memoryUsage;
@@ -21,7 +25,7 @@ async function loadHelperProcess(options: {
   process.argv = [
     ...process.argv.slice(0, 2),
     "--command-path",
-    "/mock/codex",
+    options.commandPath ?? "/mock/codex",
     ...(options.argv ?? [])
   ];
 
@@ -157,6 +161,150 @@ describe("codex-app-server-helper-process 空闲退出", () => {
       expect(loaded.module.__internal__.helperIdleExitMs).toBe(5 * 60_000);
     } finally {
       loaded.restore();
+    }
+  });
+
+  it("子线程状态通知不会覆盖父线程的活动 threadId 和 turnId", async () => {
+    const loaded = await loadHelperProcess();
+
+    try {
+      const transport = {
+        activeThreadId: "parent-thread",
+        activeTurnId: "parent-turn"
+      };
+      const updateIds = loaded.module.__internal__.updateActiveCodexIdsFromNotification;
+
+      updateIds(transport, "thread/started", {
+        thread: { id: "child-thread" }
+      });
+      updateIds(transport, "turn/started", {
+        threadId: "child-thread",
+        turn: { id: "child-turn" }
+      });
+
+      expect(transport).toEqual({
+        activeThreadId: "parent-thread",
+        activeTurnId: "parent-turn"
+      });
+
+      updateIds(transport, "turn/started", {
+        threadId: "parent-thread",
+        turn: { id: "parent-turn-next" }
+      });
+      expect(transport.activeTurnId).toBe("parent-turn-next");
+
+      updateIds(transport, "turn/started", {
+        turn: { id: "child-turn-unscoped" }
+      });
+      expect(transport.activeTurnId).toBe("parent-turn-next");
+    } finally {
+      loaded.restore();
+    }
+  });
+
+  it("完整 Helper 路由不会把 interrupt 请求发给子线程", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-helper-routing-"));
+    const logPath = join(tempDir, "interrupt.jsonl");
+    const commandPath = join(tempDir, "fake-codex.cjs");
+
+    writeFileSync(commandPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const readline = require("node:readline");
+const logPath = ${JSON.stringify(logPath)};
+const rl = readline.createInterface({ input: process.stdin });
+const write = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    write({ jsonrpc: "2.0", id: message.id, result: {} });
+    return;
+  }
+  if (message.method === "thread/start") {
+    write({ jsonrpc: "2.0", id: message.id, result: { thread: { id: "parent-thread" } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    write({ jsonrpc: "2.0", id: message.id, result: { turn: { id: "parent-turn", status: "inProgress" } } });
+    write({ jsonrpc: "2.0", method: "thread/started", params: { thread: { id: "child-thread" } } });
+    write({ jsonrpc: "2.0", method: "turn/started", params: { threadId: "child-thread", turn: { id: "child-turn" } } });
+    return;
+  }
+  if (message.method === "turn/interrupt") {
+    fs.appendFileSync(logPath, JSON.stringify(message) + "\\n", "utf8");
+    write({ jsonrpc: "2.0", id: message.id, result: {} });
+    return;
+  }
+  if (message.method === "thread/unsubscribe") {
+    write({ jsonrpc: "2.0", id: message.id, result: {} });
+  }
+});
+`, "utf8");
+    chmodSync(commandPath, 0o755);
+
+    const loaded = await loadHelperProcess({ commandPath });
+
+    const request = {
+      sessionId: "session-helper-routing",
+      workspaceId: "workspace-helper-routing",
+      workspacePath: tempDir,
+      provider: "codex",
+      providerSessionId: null,
+      rawStoreRef: null,
+      sequenceBase: 0,
+      options: {
+        content: "检查并行任务",
+        clientRequestId: "client-helper-routing",
+        model: null,
+        reasoningLevel: null,
+        permissionMode: null,
+        providerPrompt: null,
+        attachments: []
+      }
+    };
+
+    try {
+      const internal = loaded.module.__internal__;
+      await internal.handleLine(JSON.stringify({
+        type: "transport_request",
+        transportId: "transport-1",
+        requestId: "initialize-1",
+        method: "initialize"
+      }));
+      await internal.handleLine(JSON.stringify({
+        type: "transport_request",
+        transportId: "transport-1",
+        requestId: "start-thread-1",
+        method: "startThread",
+        request
+      }));
+      await internal.handleLine(JSON.stringify({
+        type: "transport_request",
+        transportId: "transport-1",
+        requestId: "start-turn-1",
+        method: "startTurn",
+        providerSessionId: "parent-thread",
+        request
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await internal.handleLine(JSON.stringify({
+        type: "transport_request",
+        transportId: "transport-1",
+        requestId: "interrupt-1",
+        method: "interruptTurn"
+      }));
+
+      const interruptMessages = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      expect(interruptMessages.at(-1)?.params).toEqual({
+        threadId: "parent-thread",
+        turnId: "parent-turn"
+      });
+    } finally {
+      loaded.restore();
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });

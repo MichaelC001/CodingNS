@@ -721,31 +721,7 @@ async function handleTransportStdout(transport: TransportRecord, line: string): 
     const method = parsed.method.trim();
     const params = readJsonRpcParams(parsed);
 
-    if (method === "turn/started") {
-      const notificationThreadId = readNotificationThreadId(params);
-
-      if (
-        !notificationThreadId
-        || !transport.activeThreadId
-        || notificationThreadId === transport.activeThreadId
-      ) {
-        transport.activeTurnId =
-          ensureText(readProp(readProp(params, "turn"), "id")).trim() || transport.activeTurnId;
-      }
-    }
-
-    if (method === "thread/started") {
-      const notificationThreadId = readNotificationThreadId(params);
-
-      if (
-        !transport.activeThreadId
-        || !notificationThreadId
-        || notificationThreadId === transport.activeThreadId
-      ) {
-        transport.activeThreadId =
-          ensureText(readProp(readProp(params, "thread"), "id")).trim() || transport.activeThreadId;
-      }
-    }
+    updateActiveCodexIdsFromNotification(transport, method, params);
 
     emit({
       type: "notification",
@@ -1066,6 +1042,7 @@ export const __internal__ = {
   // 只给测试观察内部状态用；生产代码不依赖这些访问器。
   getTransportCount: () => transports.size,
   getActiveRequestCount: () => activeRequestCount,
+  updateActiveCodexIdsFromNotification,
   canEnterIdleExit,
   handleLine,
   maybeRecycleProcess,
@@ -1430,6 +1407,49 @@ function readNotificationThreadId(params: Record<string, unknown>): string {
     || ensureText(readProp(params, "thread_id")).trim()
     || ensureText(readProp(readProp(params, "thread"), "id")).trim()
   );
+}
+
+function readNotificationTurnId(params: Record<string, unknown>): string {
+  return (
+    ensureText(readProp(params, "turnId")).trim()
+    || ensureText(readProp(params, "turn_id")).trim()
+    || ensureText(readProp(readProp(params, "turn"), "id")).trim()
+  );
+}
+
+function updateActiveCodexIdsFromNotification(
+  transport: TransportRecord,
+  method: string,
+  params: Record<string, unknown>
+): void {
+  const notificationThreadId = readNotificationThreadId(params);
+
+  if (method === "turn/started") {
+    const notificationTurnId = readNotificationTurnId(params);
+    const belongsToActiveThread =
+      Boolean(notificationThreadId)
+      && (!transport.activeThreadId || notificationThreadId === transport.activeThreadId);
+    const unscopedTurnMatchesActive =
+      !notificationThreadId
+      && (!transport.activeTurnId
+        || !notificationTurnId
+        || notificationTurnId === transport.activeTurnId);
+
+    if (belongsToActiveThread || unscopedTurnMatchesActive) {
+      transport.activeTurnId = notificationTurnId || transport.activeTurnId;
+    }
+  }
+
+  if (method === "thread/started") {
+    if (
+      !transport.activeThreadId
+      || !notificationThreadId
+      || notificationThreadId === transport.activeThreadId
+    ) {
+      transport.activeThreadId =
+        ensureText(readProp(readProp(params, "thread"), "id")).trim() || transport.activeThreadId;
+    }
+  }
 }
 
 function readJsonRpcResult(message: Record<string, unknown>): Record<string, unknown> {
