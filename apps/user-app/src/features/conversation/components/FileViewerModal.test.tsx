@@ -316,6 +316,47 @@ describe("FileViewerModal", () => {
     expect(screen.getByText("abc!123")).toBeInTheDocument();
   });
 
+  it("配置文件密钥以数字开头时，预览和编辑高亮都会保留完整值", async () => {
+    const user = userEvent.setup();
+    const envContent = [
+      "STORAGE_ACCESS_KEY=127abcXYZ-should-stay",
+      "STORAGE_SECRET_KEY=3secret-value-should-stay"
+    ].join("\n");
+
+    fileApiMock.getFilePreview.mockResolvedValue(
+      createPreviewResponse({
+        path: ".env",
+        content: envContent
+      })
+    );
+
+    render(
+      <ToastProvider>
+        <FileViewerModal
+          workspaceId="workspace-1"
+          filePath=".env"
+          open
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      </ToastProvider>
+    );
+
+    const previewBody = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>(".file-viewer-code-body");
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    expect(previewBody).toHaveTextContent("127abcXYZ-should-stay");
+    expect(previewBody).toHaveTextContent("3secret-value-should-stay");
+
+    await user.click(screen.getByRole("tab", { name: t("conversation.fileViewerEdit") }));
+
+    const liveRender = await screen.findByTestId("file-viewer-inline-render");
+    expect(liveRender).toHaveTextContent("127abcXYZ-should-stay");
+    expect(liveRender).toHaveTextContent("3secret-value-should-stay");
+  });
+
   it("传入自定义 saveHandler 时，会优先走自定义保存逻辑", async () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();

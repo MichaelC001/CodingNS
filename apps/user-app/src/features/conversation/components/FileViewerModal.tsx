@@ -3060,18 +3060,9 @@ function tokenizeEnvLine(line: string): CodeToken[] {
   tokens.push({ text: keyMatch[2] ?? "", kind: "operator" });
 
   const valueText = rest.slice(keyMatch[0].length);
-  const valueTokens = readConfigScalar(valueText, {
-    trueValues: ["true"],
-    falseValues: ["false"],
-    nullValues: ["null"]
-  });
-
-  if (valueTokens) {
-    tokens.push(...valueTokens.tokens);
-    return tokens;
-  }
-
-  tokens.push({ text: valueText, kind: "plain" });
+  // 配置值可能以数字开头但仍是完整字符串（例如密钥 `127abc...`）。
+  // 不能只消费数字前缀后直接返回，否则后半段会在预览和编辑高亮层消失。
+  tokens.push(...tokenizeConfigValue(valueText));
   return tokens;
 }
 
