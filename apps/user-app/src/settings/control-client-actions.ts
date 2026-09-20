@@ -121,6 +121,7 @@ export async function loadHostLoginAccounts(input: {
 
       if (
         typeof record.userId !== "string"
+  QUOTA_EXHAUSTED: "settings.remoteAccessErrorQuotaExhausted",
         || !record.userId.trim()
         || typeof record.username !== "string"
         || !record.username.trim()

@@ -69,6 +69,8 @@ export interface PeerSessionOptions {
   signalSocket: SignalSocket;
   /** 控制面下发的 Host DTLS 指纹，唯一可信来源。 */
   hostDtlsFingerprint: string;
+  /** 换票时控制面返回的中继剩余流量。 */
+  trafficRemainingBytes: string;
   /** `hello` 帧里自报的客户端上下文。 */
   clientContext: TunnelClientContext;
   /** 协议版本，跟线格式的 `TUNNEL_WIRE_VERSION` 对齐即可。 */
@@ -116,6 +118,7 @@ export async function openTunnelPeerSession(
     iceServers: RelayIceServer[];
     iceTransportPolicy: "all" | "relay";
     hostDtlsFingerprint: string;
+    trafficRemainingBytes: string;
     clientContext: TunnelClientContext;
     protocolVersion: string;
     connectTimeoutMs?: number;
@@ -429,6 +432,19 @@ export async function openTunnelPeerSession(
         };
 
         if (
+          nextLinkInfo.transportKind === "relay"
+          && isZeroTrafficRemaining(input.trafficRemainingBytes)
+        ) {
+          failAndClose(
+            new WebRtcTunnelError(
+              "当前无法建立 P2P 直连，CodingNS Connect 中继流量已耗尽",
+              "QUOTA_EXHAUSTED"
+            )
+          );
+          return;
+        }
+
+        if (
           linkInfo
           && linkInfo.transportKind === nextLinkInfo.transportKind
           && linkInfo.updatedAt === nextLinkInfo.updatedAt
@@ -482,14 +498,11 @@ export async function openTunnelPeerSession(
       }
 
       settleError = error;
-      const wasOpened = channelOpened;
       teardown(error);
       rejectOpened(error);
 
-      if (wasOpened) {
-        for (const listener of closeListeners) {
-          listener(error);
-        }
+      for (const listener of closeListeners) {
+        listener(error);
       }
     }
 
@@ -566,6 +579,18 @@ export async function openTunnelPeerSession(
       };
     }
   });
+}
+
+function isZeroTrafficRemaining(value: string): boolean {
+  if (value.trim().length === 0) {
+    return false;
+  }
+
+  try {
+    return BigInt(value) <= 0n;
+  } catch {
+    return false;
+  }
 }
 
 /** 生成默认的 RTCPeerConnection。浏览器不支持时抛可读错误。 */

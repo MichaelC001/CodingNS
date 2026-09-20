@@ -32,6 +32,8 @@ export interface RelaySignalingTicketResponse {
   hostDtlsFingerprint: string;
   bindingId: string;
   tunnelDomain: string;
+  /** 当前账号可用于中继传输的剩余字节数。 */
+  trafficRemainingBytes: string;
 }
 
 export type RelaySignalingRole = "host" | "client";

@@ -18,6 +18,8 @@ export type WebRtcTunnelErrorCode =
   | "TUNNEL_NOT_FOUND"
   /** 控制面记录了另一个 Host 指纹，或者 Host 自报指纹与绑定记录不一致。 */
   | "HOST_DTLS_FINGERPRINT_MISMATCH"
+  /** P2P 未建立且中继流量余额为 0，连接必须中断。 */
+  | "QUOTA_EXHAUSTED"
   /** 当前域名没走 HTTPS（也不是 localhost），浏览器不允许建 WebRTC 连接。 */
   | "INSECURE_CONTEXT"
   /** 当前运行环境没有 RTCPeerConnection。 */

@@ -550,6 +550,8 @@ export const enUS = {
       "No computers on this account yet. Sign in on a computer with the same account and turn on remote access there.",
     remoteAccessClientDeviceOnline: "Online",
     remoteAccessClientDeviceOffline: "Offline",
+    remoteAccessErrorQuotaExhausted:
+      "A P2P connection could not be established, and CodingNS Connect relay traffic is exhausted.",
     remoteAccessClientDeviceDisabled: "Disabled",
     remoteAccessClientConnectAction: "Connect",
     remoteAccessClientConnecting: "Connecting...",
@@ -2274,6 +2276,11 @@ export const enUS = {
     permissionRequestQuestionOtherPlaceholder: "Type your answer",
     permissionQuestionResultTitle: "Selected",
     permissionQuestionResultDescription: "This is the answer sent to Claude.",
+    relayQuotaExhaustedTitle: "Remote connection unavailable",
+    relayQuotaExhaustedDescription:
+      "A P2P connection could not be established, and your CodingNS Connect relay traffic is exhausted.",
+    relayQuotaExhaustedDetail: "The connection was stopped. Add more CodingNS Connect traffic and try again.",
+    relayQuotaExhaustedAction: "Got it",
     permissionQuestionResultEmpty: "No answer recorded",
     permissionQuestionPendingTitle: "Waiting for input",
     permissionQuestionPendingDescription: "Complete the choice in the pending section above. History messages are read-only here.",

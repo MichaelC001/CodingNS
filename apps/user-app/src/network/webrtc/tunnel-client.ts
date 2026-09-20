@@ -181,6 +181,7 @@ export class ManagedWebRtcTunnelHostTransport implements HostTransport {
           iceServers: ticket.iceServers,
           iceTransportPolicy: ticket.iceTransportPolicy,
           hostDtlsFingerprint: ticket.hostDtlsFingerprint,
+          trafficRemainingBytes: ticket.trafficRemainingBytes,
           clientContext,
           protocolVersion: String(TUNNEL_WIRE_VERSION),
           connectTimeoutMs: this.dependencies.connectTimeoutMs,
@@ -206,7 +207,7 @@ export class ManagedWebRtcTunnelHostTransport implements HostTransport {
       const tunnelError = toTunnelError(error);
       webrtcLinkStore.markFailed(tunnelError.code, tunnelError.detail ?? tunnelError.message);
 
-      if (this.dependencies.fallbackTransport) {
+      if (this.dependencies.fallbackTransport && tunnelError.code !== "QUOTA_EXHAUSTED") {
         // 桌面端场景：隧道连不上时继续尝试原有的直连入口，
         // 避免客户端把一个还能用的反向代理入口直接判成不可用。
         this.fallbackTransport = this.dependencies.fallbackTransport;

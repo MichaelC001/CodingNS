@@ -660,6 +660,42 @@ describe("ManagedWebRtcTunnelHostTransport", () => {
     await responsePromise;
   });
 
+  it("P2P 不可用且中继流量为 0 时会中断连接并报告额度耗尽", async () => {
+    const harness = createHarness({
+      candidates: [
+        { type: "local-candidate", id: "L1", candidateType: "srflx", protocol: "udp" },
+        { type: "remote-candidate", id: "R1", candidateType: "relay", protocol: "udp" }
+      ],
+      fixtures: {
+        ticket: {
+          status: 201,
+          body: {
+            ticket: "ticket-1",
+            expiresAt: "2026-09-16T00:00:30.000Z",
+            signalingBaseUrl: "https://signal.codingns.com",
+            iceServers: [{ urls: "stun:stun.example.com:19302" }],
+            iceTransportPolicy: "all",
+            hostDtlsFingerprint: `sha-256 ${DTLS_FINGERPRINT}`,
+            bindingId: "binding_1",
+            tunnelDomain: "demo.channel.codingns.com",
+            trafficRemainingBytes: "0"
+          }
+        }
+      }
+    });
+    const responsePromise = startRequest(harness);
+
+    await harness.prepare();
+    await harness.waitForRequest();
+    harness.answer();
+
+    await waitFor(() => webrtcLinkStore.getState().errorCode === "QUOTA_EXHAUSTED");
+
+    expect(webrtcLinkStore.getState().phase).toBe("failed");
+    expect(harness.peerConnection.closed).toBe(true);
+    await expect(responsePromise).rejects.toThrow("中继流量已耗尽");
+  });
+
   it("对端断开（peer-left）时报出可读原因", async () => {
     const harness = createHarness();
     const responsePromise = startRequest(harness);
