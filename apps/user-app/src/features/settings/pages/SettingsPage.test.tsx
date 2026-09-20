@@ -55,6 +55,10 @@ vi.mock("../../../settings/RelayTunnelPanel", () => ({
   RelayTunnelPanel: () => <div data-testid="relay-tunnel-panel">relay-tunnel-panel</div>
 }));
 
+vi.mock("../../../settings/RelayStatusRow", () => ({
+  RelayStatusRow: () => <div data-testid="relay-status-row">relay-status-row</div>
+}));
+
 vi.mock("../../../settings/ModelManagementPanel", () => ({
   ModelManagementPanel: () => <div data-testid="model-management-panel">model-management-panel</div>
 }));
@@ -187,6 +191,7 @@ describe("SettingsPage", () => {
     expect(screen.queryByTestId("relay-tunnel-panel")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tailscale-panel")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: t("settings.remoteAccessManageAction") })).toBeInTheDocument();
+    expect(screen.getByTestId("relay-status-row")).toBeInTheDocument();
     expect(screen.queryByText(t("settings.tailscaleSectionTitle"))).not.toBeInTheDocument();
     expect(screen.queryByText(t("settings.tailscaleSectionDescription"))).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: t("settings.serverAddress") })).not.toBeInTheDocument();

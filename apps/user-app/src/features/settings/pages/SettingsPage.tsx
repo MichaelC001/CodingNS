@@ -31,10 +31,10 @@ import { ChannelsManagementPanel } from "../../../settings/ChannelsManagementPan
 import { AuthDeviceManagementPanel } from "../../../settings/AuthDeviceManagementPanel";
 import { UserManagementPanel } from "../../../settings/UserManagementPanel";
 import { SessionCleanupPanel } from "../../../settings/SessionCleanupPanel";
-import { RelayWebRtcClientPanel } from "../../../settings/RelayWebRtcClientPanel";
 import { ServiceUpdatePanel } from "../../../settings/ServiceUpdatePanel";
 import { BetaChannelConsentModal } from "../../../settings/BetaChannelConsentModal";
 import { RemoteAccessManagerModal } from "../../../settings/RemoteAccessManagerModal";
+import { RelayStatusRow } from "../../../settings/RelayStatusRow";
 import { TeableSettingsModal } from "../../../settings/TeableSettingsModal";
 import { SettingsSwitch } from "../../../settings/SettingsSwitch";
 import { PerformanceOverviewPanel } from "../../../settings/PerformanceOverviewPanel";
@@ -718,16 +718,7 @@ function DesktopSettingsPage({ model, appVersion }: { model: SettingsPageModel; 
               </div>
             </div>
 
-            <div className="settings-row settings-row-stacked">
-              <div className="settings-row-label settings-row-label-single-line">
-                <span className="settings-row-title settings-row-title-strong">
-                  {t("settings.remoteAccessClientSectionTitle")}
-                </span>
-              </div>
-              <div className="settings-row-control settings-row-control-stretch settings-row-control-full-width">
-                <RelayWebRtcClientPanel />
-              </div>
-            </div>
+            <RelayStatusRow />
           </div>
         </section>
 

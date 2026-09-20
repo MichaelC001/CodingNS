@@ -2266,62 +2266,6 @@ html[data-workbench-window-resizing] .workbench-shell[data-runtime-platform="des
   width: 100%;
 }
 
-/* 客户端远程连接面板（spec001.9 W2.1 / W2.3）
-   只补布局和分割线，按钮、输入框、文字色全部沿用设置页现有基线。 */
-.settings-remote-access-client {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 100%;
-}
-
-.settings-remote-access-client-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.settings-remote-access-client-devices {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  border-top: 1px solid var(--panel-border);
-}
-
-.settings-remote-access-client-device {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--panel-border);
-}
-
-.settings-remote-access-client-device-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.settings-remote-access-client-device-meta {
-  flex-shrink: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.settings-remote-access-client-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .settings-tailscale-status-indicator {
   display: inline-flex;
   align-items: center;
@@ -2399,6 +2343,56 @@ html[data-workbench-window-resizing] .workbench-shell[data-runtime-platform="des
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* 远程访问状态行（spec001.9 W2.6）
+   只做平铺键值对 + 细分割线，不套卡片；按钮、文字色沿用设置页现有基线。 */
+.settings-relay-status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.settings-relay-status-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-relay-status-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.settings-relay-status-item-label {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.settings-relay-status-item-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .settings-relay-status-items {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .settings-relay-tunnel-inline-stack {

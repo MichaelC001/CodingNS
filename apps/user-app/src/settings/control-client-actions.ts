@@ -1,18 +1,13 @@
 /**
- * 客户端远程连接操作（spec001.9 W2.1 / W2.3）
+ * CodingNS Connect 客户端操作（spec001.9 W2.1 / W2.3）
  *
- * 设置页那一块需要「登录 → 选设备 → 测试连接 → 看链路类型」这一串动作，
+ * 登录页的 Connect 登录流程需要「登录账号 → 拉设备列表 → 读 Host 账号」这一串动作，
  * 但页面本身不该知道 WebRTC 细节，所以把动作都收在这里。
- *
- * 这里不发业务请求，只做「连通性自检」：拉一次 Host 的运行时配置接口，
- * 能拿到响应就说明 DataChannel 真的通了。
  */
 
-import { closeAllWebRtcTunnelTransports, resolveHostTransport } from "../network/host-transport-registry";
-import { ManagedWebRtcTunnelHostTransport } from "../network/webrtc/tunnel-client";
+import { resolveHostTransport } from "../network/host-transport-registry";
 import {
   listControlHostBindings,
-  controlSessionStore,
   loginToControlSite,
   createDefaultControlEnvironment,
   type ControlClientEnvironment,
@@ -25,7 +20,6 @@ import {
   isWebRtcTunnelError,
   type WebRtcTunnelErrorCode
 } from "../network/webrtc/errors";
-import { webrtcLinkStore } from "../network/webrtc/webrtc-link-store";
 import { buildRelayAccessBaseUrl } from "../config/relay-entry";
 
 export interface HostLoginAccount {
@@ -53,37 +47,6 @@ export async function loginControlAccount(input: {
     { email: input.email, password: input.password },
     createEnvironment(input.controlBaseUrl, input.tunnelDomain)
   );
-}
-
-/**
- * 用指定设备建一次连接做自检。
- *
- * 会复用 registry 里同一个 Host 的 transport（和业务请求走同一条），
- * 所以自检成功后，业务请求不会再多建立一条隧道。
- */
-export async function testControlDeviceConnection(input: {
-  controlBaseUrl: string;
-  device: ControlHostBinding;
-}): Promise<{ transportKind: "p2p" | "relay" | null }> {
-  const transport = resolveHostTransport(input.controlBaseUrl);
-
-  if (!(transport instanceof ManagedWebRtcTunnelHostTransport)) {
-    throw new WebRtcTunnelError(
-      "host transport is not a CodingNS Connect WebRTC transport",
-      "TUNNEL_CONFIG_MISSING"
-    );
-  }
-
-  await transport.fetch({
-    path: "/api/client/runtime-config",
-    baseUrl: input.controlBaseUrl,
-    url: `${input.controlBaseUrl.replace(/\/$/, "")}/api/client/runtime-config`,
-    init: { method: "GET" }
-  });
-
-  return {
-    transportKind: webrtcLinkStore.getState().transportKind
-  };
 }
 
 /** 通过已认证的 CodingNS Connect 隧道读取目标 Host 的活动账号。 */
@@ -121,7 +84,6 @@ export async function loadHostLoginAccounts(input: {
 
       if (
         typeof record.userId !== "string"
-  QUOTA_EXHAUSTED: "settings.remoteAccessErrorQuotaExhausted",
         || !record.userId.trim()
         || typeof record.username !== "string"
         || !record.username.trim()
@@ -145,13 +107,6 @@ export async function loadHostLoginAccounts(input: {
   }
 }
 
-/** 清掉当前账号已经建好的隧道。退出登录、切换账号时必须调用。 */
-export function resetControlConnection(): void {
-  // 退出登录后旧账号建好的隧道不能继续留给新账号用，所以连接一并关掉。
-  closeAllWebRtcTunnelTransports();
-  webrtcLinkStore.reset();
-}
-
 /**
  * 错误码 → i18n 键。
  *
@@ -166,6 +121,7 @@ const CONTROL_ERROR_MESSAGE_KEYS: Record<WebRtcTunnelErrorCode, string> = {
   BINDING_FORBIDDEN: "settings.remoteAccessErrorBindingForbidden",
   TUNNEL_NOT_FOUND: "settings.remoteAccessErrorTunnelNotFound",
   HOST_DTLS_FINGERPRINT_MISMATCH: "settings.remoteAccessErrorFingerprintMismatch",
+  QUOTA_EXHAUSTED: "settings.remoteAccessErrorQuotaExhausted",
   INSECURE_CONTEXT: "settings.remoteAccessErrorInsecureContext",
   WEBRTC_UNAVAILABLE: "settings.remoteAccessErrorWebrtcUnavailable",
   SIGNALING_FAILED: "settings.remoteAccessErrorSignalingFailed",
@@ -222,9 +178,4 @@ export function listControlErrorMessageKeys(): string[] {
 
 function createEnvironment(controlBaseUrl: string, tunnelDomain: string): ControlClientEnvironment {
   return createDefaultControlEnvironment({ controlBaseUrl, tunnelDomain });
-}
-
-/** 让界面能读到当前登录账号（React 之外的地方用）。 */
-export function readControlSession(): ControlSessionSnapshot | null {
-  return controlSessionStore.getState();
 }

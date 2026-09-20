@@ -26,6 +26,17 @@ export const CONTROL_SIGNALING_TICKET_PATH = "/api/v1/relay/signaling/ticket";
  */
 export const CONTROL_HOSTS_PATH = "/api/v1/hosts";
 
+/**
+ * 控制站探活地址。
+ *
+ * 只用来回答「现在能不能连上 CodingNS Connect 服务器」，
+ * 不返回账号信息，也不需要登录态。
+ */
+export const CONTROL_HEALTH_PATH = "/healthz";
+
+/** 探活超时：服务器没响应时别让界面一直挂在「正在检查」。 */
+const CONTROL_PROBE_TIMEOUT_MS = 5000;
+
 /** 登录态存储键。加版本号方便以后改结构。 */
 export const CONTROL_SESSION_STORAGE_KEY = "codingns.relay-control.session.v1";
 
@@ -398,7 +409,9 @@ export async function requestSignalingTicket(
     iceTransportPolicy: payload.iceTransportPolicy === "relay" ? "relay" : "all",
     hostDtlsFingerprint: payload.hostDtlsFingerprint,
     bindingId: typeof payload.bindingId === "string" ? payload.bindingId : "",
-    tunnelDomain: typeof payload.tunnelDomain === "string" ? payload.tunnelDomain : tunnelDomain
+    tunnelDomain: typeof payload.tunnelDomain === "string" ? payload.tunnelDomain : tunnelDomain,
+    trafficRemainingBytes:
+      typeof payload.trafficRemainingBytes === "string" ? payload.trafficRemainingBytes : ""
   };
 }
 
@@ -415,6 +428,47 @@ async function sendControlRequest(
 ): Promise<Response> {
   const url = buildControlRequestUrl(environment.getControlBaseUrl(), path);
   return await environment.fetch(url, init);
+}
+
+/** 探活结果。`detail` 只进排错，不直接当正文显示。 */
+export interface ControlHealthProbeResult {
+  reachable: boolean;
+  detail: string | null;
+}
+
+/**
+ * 探一次控制站是否可达。
+ *
+ * 只回答「现在能不能连上 CodingNS Connect 服务器」：不带登录态、不改任何状态，
+ * 超时也当成不可达。什么时候探由调用方决定，这里不自己起定时器。
+ */
+export async function probeControlSiteHealth(
+  controlBaseUrl: string,
+  fetchFn: typeof fetch = fetch
+): Promise<ControlHealthProbeResult> {
+  const url = buildControlRequestUrl(controlBaseUrl, CONTROL_HEALTH_PATH);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONTROL_PROBE_TIMEOUT_MS);
+
+  try {
+    const response = await fetchFn(url, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal
+    });
+
+    return {
+      reachable: response.ok,
+      detail: response.ok ? null : `HTTP ${response.status}`
+    };
+  } catch (error) {
+    return {
+      reachable: false,
+      detail: describeUnknownError(error)
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function normalizeAccountSnapshot(value: unknown): ControlAccountSnapshot | null {

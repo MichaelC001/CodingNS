@@ -359,7 +359,7 @@
   - 主要改哪些文件：
     - `apps/user-app/src/network/webrtc/*`（新增：控制站客户端、登录态、信令、会话、传输、链路类型等 10 个文件）
     - `apps/user-app/src/network/host-transport-registry.ts`（relay 分支换成新 transport，保留缓存与直连回退）
-    - `apps/user-app/src/settings/RelayWebRtcClientPanel.tsx`、`control-client-actions.ts`（新增，登录与设备入口）
+    - `apps/user-app/src/settings/RelayWebRtcClientPanel.tsx`、`control-client-actions.ts`（新增，登录与设备入口；面板已在 W2.6 删除，`control-client-actions.ts` 保留）
     - `apps/user-app/src/features/settings/pages/SettingsPage.tsx`（远程访问区块）
     - `apps/user-app/src/bootstrap/bootstrap-app.ts`（启动时载入登录态）
     - `apps/user-app/src/app/workbench-native.css`、i18n 字典与测试
@@ -440,10 +440,11 @@
     - `docs/开发设计规范/20260419-前端页面与样式设计规范.md`（已读，面板按该规范沿用设置页现有基线）
   - 主要改哪些文件：
     - `apps/user-app/src/network/webrtc/link-info.ts`、`webrtc-link-store.ts`（新增，判定与状态）
-    - `apps/user-app/src/settings/RelayWebRtcClientPanel.tsx`（设置页展示）
+    - `apps/user-app/src/settings/RelayWebRtcClientPanel.tsx`（设置页展示；已在 W2.6 删除）
     - `apps/user-app/src/features/conversation/components/ConnectionBanner.tsx`（连接状态提示里带链路类型）
     - i18n 字典与测试
   - 这一步明确不做什么：不把 ICE 候选类型这种术语暴露给用户
+  - 后续变更：设置页那块展示面板已在 W2.6 删除并换成一行只读状态行（属于重复实现的清理）；链路类型现在在连接状态提示（`ConnectionBanner`）和设置页状态行里显示
   - 怎么验证：
     - 组件测试 + 手工联调
   - 验证结果：
@@ -1037,6 +1038,54 @@
 
 ---
 
+## 阶段 W2.6：把设置页的 Connect 面板换成只读状态行（2026-09-21）
+
+背景：W2.1 / W2.3 曾在设置页「远程访问」区块放了一块「从这台设备连接其他电脑」面板（`RelayWebRtcClientPanel`），自带邮箱密码登录、设备列表、连接自检和链路类型展示。W2.4 / W2.5 把 Connect 登录收口到登录页和四级域名入口页之后，这块面板就成了重复实现：登录、拉设备列表、读 Host 账号三件事在 `use-connect-login-flow` 里已经各有一套，设置页再留一套只会让用户看到两个入口、两套文案。
+
+- [x] W2.6.1 移除设置页重复的 Connect 登录面板
+  - 状态：DONE
+  - 这一步到底做什么：把设置页「远程访问」区块里的客户端面板整块删掉，连带删掉只服务它的组件、测试、i18n 键、样式和动作函数。设置页只保留「管理远程访问」入口（打开 `RemoteAccessManagerModal`）。
+  - 做完以后能看到什么结果：设置页「远程访问」只剩一个「管理远程访问」按钮，不再出现第二个 Connect 登录表单；连接 Connect 账号仍然在登录页 / 四级域名入口页完成，功能没有减少。
+  - 依赖什么：W2.4、W2.5（登录页与入口页的 Connect 流程已经覆盖了同样的动作）。
+  - 主要改哪些文件：
+    - `apps/user-app/src/settings/RelayWebRtcClientPanel.tsx`、`RelayWebRtcClientPanel.test.tsx`（删除）
+    - `apps/user-app/src/features/settings/pages/SettingsPage.tsx`（移除区块与 import）
+    - `apps/user-app/src/settings/control-client-actions.ts`（删掉只被面板调用的 `testControlDeviceConnection`、`resetControlConnection`、`readControlSession`）
+    - `apps/user-app/src/i18n/zh-CN.ts`、`apps/user-app/src/i18n/en-US.ts`（删掉面板专属键，保留 `remoteAccessLinkTypeP2p` / `remoteAccessLinkTypeRelay` 和错误码文案）
+    - `apps/user-app/src/app/workbench-native.css`（删掉 `settings-remote-access-client-*` 样式）
+  - 这一步明确不做什么：不动登录页 / 入口页的 Connect 流程；不删链路类型识别（`webrtc-link-store`、`ConnectionBanner` 仍要用）；不删错误码 → i18n 键映射；不改控制面接口。
+  - 怎么验证：
+    - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
+    - `pnpm --dir apps/user-app test src/settings/control-client-actions.test.ts src/features/settings/pages/SettingsPage.test.tsx src/features/auth/pages/LoginPage.connect-tab.test.tsx src/features/auth/pages/RelayConnectEntryPage.test.tsx`
+  - 验证结果：
+    - `tsc --noEmit -p tsconfig.json`：通过（无输出）
+    - 上述四个测试文件 49/49 通过；另外 `host-transport-registry`、`tunnel-client`、`ConnectionBanner` 共 27/27 通过
+    - 全仓搜索确认：`RelayWebRtcClientPanel`、`remote-access-link-state`、`settings-remote-access-client` 及面板专属 i18n 键都没有残留引用
+  - 已知的既有失败（与本次改动无关，改动前就存在）：`features/workbench/components/AffairsWorkbenchView.test.tsx` 的 21 个用例（缺 Router 上下文）、`shared/i18n/index.test.ts` 的 butler 文案用例、`app/App.test.tsx` 的 5 个用例。
+
+- [x] W2.6.2 在原位置补一行只读状态显示
+  - 状态：DONE
+  - 这一步到底做什么：面板删掉后，设置页「远程访问」区块少了一块能看到当前状况的地方。这里补回一行只读状态，只显示四个事实，不做任何配置动作：启用状态、四级域名、服务器状态（能不能连上 CodingNS Connect 控制站）、当前链路（直连 / 经中继）。
+  - 做完以后能看到什么结果：设置页「远程访问」区块里，「管理远程访问」按钮下面多一块「当前状态」：四行键值对，右下角一个「刷新」按钮。启用状态和四级域名直接读当前 Host 的本地配置；服务器状态在打开设置页时探一次 `/healthz`，之后靠用户点「刷新」；当前链路读现有的 `webrtc-link-store`，不额外发请求。
+  - 依赖什么：W2.6.1、W2.3（链路类型识别）。
+  - 主要改哪些文件：
+    - `apps/user-app/src/settings/RelayStatusRow.tsx`、`RelayStatusRow.test.tsx`（新增）
+    - `apps/user-app/src/network/webrtc/control-site-client.ts`（新增只读探活 `probeControlSiteHealth`）
+    - `apps/user-app/src/features/settings/pages/SettingsPage.tsx`（挂载状态行）
+    - `apps/user-app/src/i18n/zh-CN.ts`、`apps/user-app/src/i18n/en-US.ts`
+    - `apps/user-app/src/app/workbench-native.css`（`settings-relay-status-*`）
+  - 这一步明确不做什么：不在状态行里做登录 / 绑定 / 开关等写操作（那些仍在 `RemoteAccessManagerModal` 里）；不新增定时轮询（刷新入口显式，靠打开时读一次 + 手动刷新）；不新增后台任务；不把 ICE / 候选 / DTLS 这类术语暴露给用户。
+  - 怎么验证：
+    - `pnpm --dir apps/user-app exec tsc --noEmit -p tsconfig.json`
+    - `pnpm --dir apps/user-app test src/settings/RelayStatusRow.test.tsx src/features/settings/pages/SettingsPage.test.tsx`
+  - 验证结果：
+    - `tsc --noEmit -p tsconfig.json`：通过（无输出）
+    - `RelayStatusRow.test.tsx` 7/7 通过：本地配置（启用 / 未启用、有域名 / 未设置）、服务器可达与不可达、点刷新重新探一次、链路未连接 / 直连 / 经中继、文案里不出现 ICE 术语、中英文字典逐键补齐
+    - `SettingsPage.test.tsx` 35/35 通过；连同 `control-client-actions`、`LoginPage.connect-tab`、`RelayConnectEntryPage` 共 56/56 通过
+  - 已知的既有失败（与本阶段无关，改动前就存在）：`AffairsWorkbenchView.test.tsx` 21 个用例、`shared/i18n/index.test.ts` 的 butler 文案用例、`app/App.test.tsx` 5 个用例。
+
+---
+
 ## 阶段 W7：回归与验收
 
 - [ ] W7.1 真实网络吞吐验收
@@ -1091,7 +1140,7 @@
 上一版留下、这一版需要跟着调整的地方：
 
 - `InstanceRelayTunnelStatus` 的阶段枚举要按新链路调整：`running` 拆成 `running_p2p` / `running_relay`
-- 设置页面板要补「当前链路类型」展示（新增需求 11）
+- 设置页面板要补「当前链路类型」展示（新增需求 11）；设置页这块面板后来在 W2.6 换成一行只读状态（启用状态 / 四级域名 / 服务器状态 / 当前链路），链路类型仍由连接状态提示和状态行共同承担
 - 指纹字段语义从「Host 公钥指纹」换成「DTLS 指纹」
 - 控制面「流量钱包 / 超额断流」相关语义按 `W5` 调整，界面上不再出现硬限额文案
 - `relay-edge` 的 Host challenge / claim-next-session 链路随数据面一起下线
