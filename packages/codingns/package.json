@@ -12,6 +12,7 @@
     "README.md",
     "scripts/claude-hook-bridge.cjs",
     "scripts/codex-runtime-layout.mjs",
+    "scripts/preinstall.mjs",
     "scripts/postinstall.mjs",
     "scripts/host-install.mjs",
     "scripts/host-supervisor.mjs",
@@ -29,6 +30,7 @@
     "build": "node ./scripts/build.mjs",
     "prepack": "node ./scripts/prepack.mjs",
     "postpack": "node ./scripts/postpack.mjs",
+    "preinstall": "node ./scripts/preinstall.mjs",
     "postinstall": "node ./scripts/postinstall.mjs"
   },
   "publishConfig": {

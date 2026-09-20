@@ -24,6 +24,7 @@ import {
   resolveDataDir,
   resolveLogDirPath,
   resolveNpmInvocation,
+  prepareNpmInstallTarget,
   resolvePackageRootPath,
   resolveHostServiceLogPath,
   resolveHostWorkingDirectory,
@@ -335,6 +336,28 @@ test("resolvePackageRootPath 按平台拼出全局包目录", async () => {
   assert.equal(resolvePackageRootPath("/tmp/prefix"), expected);
 });
 
+test("npm 安装目标会清理残留临时目录并备份旧包", () => {
+  const dataDir = createTempDataDir();
+  const prefix = path.join(dataDir, "runtime", "npm");
+  const packageRoot = writeFakeInstalledPackage(prefix, "2.0.0");
+  const packageParent = path.dirname(packageRoot);
+  const staleDirectory = path.join(packageParent, ".codingns-stale123");
+
+  fs.mkdirSync(staleDirectory, { recursive: true });
+  fs.writeFileSync(path.join(staleDirectory, "partial.txt"), "残留", "utf8");
+
+  const target = prepareNpmInstallTarget(prefix);
+
+  assert.equal(target.prefix, prefix);
+  assert.equal(target.packageRoot, packageRoot);
+  assert.equal(target.fallback, false);
+  assert.equal(fs.existsSync(packageRoot), false);
+  assert.equal(fs.existsSync(staleDirectory), false);
+  assert.ok(target.backupPath && fs.existsSync(target.backupPath));
+
+  fs.rmSync(target.backupPath, { recursive: true, force: true });
+});
+
 test("verifyInstalledPackage 会发现版本对不上和缺 CLI 入口", async () => {
   const dataDir = createTempDataDir();
   const packageRoot = writeFakeInstalledPackage(path.join(dataDir, "runtime", "npm"), "2.0.0");
@@ -369,6 +392,43 @@ test("官方源失败时会换镜像重试一次并装成功", async () => {
   assert.equal(result.attempts.length, 2);
   assert.equal(result.attempts[0].ok, false);
   assert.equal(result.attempts[1].ok, true);
+});
+
+test("npm 报 ENOTEMPTY 时改用新安装目录并继续完成安装", async () => {
+  const dataDir = createTempDataDir();
+  const prefixes = [];
+  let callIndex = 0;
+  const { deps } = createInstallDeps({ dataDir, materializePackage: false });
+
+  const { value: exitCode, events } = await captureOutput(() =>
+    runInstall({ dataDir, port: "3002" }, createLoggerStub(), {
+      ...deps,
+      runNpmCommand: (file, args) => {
+        const prefix = args[args.indexOf("--prefix") + 1];
+        prefixes.push(prefix);
+        callIndex += 1;
+
+        if (callIndex === 1) {
+          return {
+            status: 1,
+            stdout: "",
+            stderr: "npm error code ENOTEMPTY\nnpm error syscall rename\nnpm error ENOTEMPTY: directory not empty"
+          };
+        }
+
+        writeFakeInstalledPackage(prefix, "2.1.0");
+        return { status: 0, stdout: "", stderr: "" };
+      }
+    })
+  );
+
+  assert.equal(exitCode, EXIT_OK);
+  assert.equal(prefixes.length, 2);
+  assert.notEqual(prefixes[0], prefixes[1], "ENOTEMPTY 重试必须切换到新 prefix");
+  assert.equal(readInstallState(dataDir).installPrefix, prefixes[1]);
+
+  const logs = events.filter((event) => event.type === "log").map((event) => event.message);
+  assert.ok(logs.some((line) => line.includes("npm 临时目录冲突")));
 });
 
 test("两个源都失败时报 NPM_INSTALL_FAILED", async () => {

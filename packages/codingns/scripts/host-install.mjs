@@ -49,6 +49,9 @@ const MIRROR_REGISTRY = "https://registry.npmmirror.com";
 const NPM_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 /** 被占用导致的安装失败，停掉占用者后等一会儿再试；Windows 释放文件句柄需要一点时间。 */
 const DIRECTORY_LOCK_RETRY_DELAY_MS = 2_000;
+/** npm 全局升级失败后可能留下的临时包目录前缀。 */
+const NPM_STAGING_DIRECTORY_PATTERN = /^\.codingns-[A-Za-z0-9]+$/;
+const INSTALL_BACKUP_DIRECTORY_PREFIX = ".codingns-backup-";
 /** npm 输出往界面转发多少行、每行最多多长，避免刷屏。 */
 const NPM_LOG_FORWARD_LIMIT = 120;
 const NPM_LOG_LINE_MAX_CHARS = 240;
@@ -1418,6 +1421,12 @@ function isDirectoryLockedError(text) {
   return /EBUSY|resource busy or locked|errno -4082/i.test(String(text ?? ""));
 }
 
+/** npm 的 ENOTEMPTY 同样是本地安装目录冲突，不是 registry 网络问题。 */
+function isDirectoryInstallConflictError(text) {
+  return isDirectoryLockedError(text)
+    || /ENOTEMPTY|directory not empty/i.test(String(text ?? ""));
+}
+
 /**
  * 装之前先停掉上一份服务。
  * 两个原因：Windows 上运行中的服务会锁住安装目录（npm 换包报 EBUSY）；
@@ -1754,6 +1763,133 @@ export function resolvePackageRootPath(prefix, packageName = DEFAULT_PACKAGE_NAM
   return path.join(nodeModulesDir, ...segments);
 }
 
+/**
+ * 为 npm 安装准备目标目录。
+ *
+ * npm 升级全局包时会先把旧包改名到 `.codingns-XXXX`。上一次安装中断后，
+ * 这个临时目录可能已经存在且非空，npm 随后的 rename 就会报 ENOTEMPTY。
+ * 先清理残留目录，再把旧包改名保存；如果目录仍被占用，则换一个新的 prefix，
+ * 让本次安装不再依赖旧目录能否被移动。
+ */
+export function prepareNpmInstallTarget(prefix, logger = null) {
+  const normalizedPrefix = path.resolve(prefix);
+  const packageRoot = resolvePackageRootPath(normalizedPrefix, DEFAULT_PACKAGE_NAME);
+  const packageParent = path.dirname(packageRoot);
+
+  fs.mkdirSync(packageParent, { recursive: true });
+
+  try {
+    cleanupNpmStagingDirectories(packageParent, logger);
+  } catch (error) {
+    logger?.log("清理 npm 残留临时目录失败，将改用新安装目录", describeInstallError(error));
+    return createAlternateNpmInstallTarget(normalizedPrefix, logger);
+  }
+
+  if (!fs.existsSync(packageRoot)) {
+    return { prefix: normalizedPrefix, packageRoot, backupPath: null, fallback: false };
+  }
+
+  const backupPath = createInstallBackupPath(packageParent);
+
+  try {
+    fs.renameSync(assertSafeToRemove(packageRoot), backupPath);
+    logger?.log("已将旧服务包改名保存，准备安装新版本", { packageRoot, backupPath });
+
+    return { prefix: normalizedPrefix, packageRoot, backupPath, fallback: false };
+  } catch (error) {
+    logger?.log("旧服务包无法删除或改名，将改用新安装目录", {
+      packageRoot,
+      detail: describeInstallError(error)
+    });
+
+    return createAlternateNpmInstallTarget(normalizedPrefix, logger);
+  }
+}
+
+function cleanupNpmStagingDirectories(packageParent, logger) {
+  for (const entry of fs.readdirSync(packageParent, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !NPM_STAGING_DIRECTORY_PATTERN.test(entry.name)) {
+      continue;
+    }
+
+    const stagingPath = path.join(packageParent, entry.name);
+    fs.rmSync(assertSafeToRemove(stagingPath), { recursive: true, force: true });
+    logger?.log("已清理 npm 残留临时目录", stagingPath);
+  }
+}
+
+function createInstallBackupPath(packageParent) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidate = path.join(
+      packageParent,
+      `${INSTALL_BACKUP_DIRECTORY_PREFIX}${Date.now().toString(36)}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+    );
+
+    if (!fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`无法生成安装备份目录：${packageParent}`);
+}
+
+function createAlternateNpmInstallTarget(prefix, logger) {
+  const alternatePrefix = fs.mkdtempSync(`${prefix}-`);
+  const packageRoot = resolvePackageRootPath(alternatePrefix, DEFAULT_PACKAGE_NAME);
+
+  logger?.log("本次安装改用新的运行时目录", { prefix: alternatePrefix, packageRoot });
+
+  return { prefix: alternatePrefix, packageRoot, backupPath: null, fallback: true };
+}
+
+function describeInstallError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function removeInstallBackup(target, logger) {
+  if (!target?.backupPath) {
+    if (target?.previousTarget) {
+      removeInstallBackup(target.previousTarget, logger);
+    }
+
+    return;
+  }
+
+  try {
+    fs.rmSync(assertSafeToRemove(target.backupPath), { recursive: true, force: true });
+    logger?.log("已清理旧服务包备份目录", target.backupPath);
+  } catch (error) {
+    logger?.log("旧服务包备份目录清理失败，暂时保留", describeInstallError(error));
+  }
+
+  if (target.previousTarget) {
+    removeInstallBackup(target.previousTarget, logger);
+  }
+}
+
+function restoreInstallBackup(target, logger) {
+  if (!target) {
+    return;
+  }
+
+  if (target.backupPath && fs.existsSync(target.backupPath)) {
+    try {
+      if (fs.existsSync(target.packageRoot)) {
+        fs.rmSync(assertSafeToRemove(target.packageRoot), { recursive: true, force: true });
+      }
+
+      fs.renameSync(target.backupPath, target.packageRoot);
+      logger?.log("新包安装失败，已恢复旧服务包", target.packageRoot);
+    } catch (error) {
+      logger?.log("新包安装失败，旧服务包恢复失败", describeInstallError(error));
+    }
+  }
+
+  if (target.previousTarget) {
+    restoreInstallBackup(target.previousTarget, logger);
+  }
+}
+
 export function verifyInstalledPackage(packageRoot, expectedVersion) {
   const manifestPath = path.join(packageRoot, "package.json");
 
@@ -1983,7 +2119,7 @@ export async function runInstall(options, logger, deps = {}) {
   const resolveNpm = deps.resolveNpmBinary ?? resolveNpmBinary;
   const runNpm = deps.runNpmCommand ?? runNpmCommand;
   const dataDir = resolveDataDir(options.dataDir);
-  const prefix =
+  let prefix =
     typeof options.installPrefix === "string" && options.installPrefix.trim()
       ? path.resolve(expandHome(options.installPrefix.trim()))
       : path.join(resolveRuntimeDir(dataDir), "npm");
@@ -2035,6 +2171,7 @@ export async function runInstall(options, logger, deps = {}) {
   const attempts = [];
   const reuseExisting = options.reuseExisting === true;
   let installed = reuseExisting;
+  let installTarget = null;
   const stopContext = resolveAutostartContext({ ...options, dataDir, port });
 
   if (reuseExisting) {
@@ -2049,19 +2186,46 @@ export async function runInstall(options, logger, deps = {}) {
 
     emitStep("install-package", "running", "安装服务包");
 
+    try {
+      installTarget = prepareNpmInstallTarget(prefix, logger);
+      prefix = installTarget.prefix;
+
+      if (installTarget.fallback) {
+        emitLog(`原安装目录无法复用，本次改用新目录：${prefix}`);
+      }
+    } catch (error) {
+      emitStep("install-package", "failed");
+      emitError(
+        "INSTALL_TARGET_FAILED",
+        "准备安装目录失败",
+        error instanceof Error ? error.message : String(error),
+        logger.logPath
+      );
+      return EXIT_FAILURE;
+    }
+
     for (let index = 0; index < registryCandidates.length; index += 1) {
       const registry = registryCandidates[index];
       let result = await runNpm(npmPath, buildNpmInstallArgs(prefix, packageSpec, registry), logger);
       let detail = result.status === 0 ? null : truncateText(result.stderr || result.stdout);
 
-      if (result.status !== 0 && isDirectoryLockedError(detail)) {
-        // 目录被占用不是网络问题，换源没用：先停掉占用者，再用同一个源试一次。
-        emitLog("安装目录被别的进程占着（EBUSY），先停掉服务再试一次。");
+      if (result.status !== 0 && isDirectoryInstallConflictError(detail)) {
+        if (isDirectoryLockedError(detail)) {
+          // 目录被占用不是网络问题，换源没用：先停掉占用者，再用同一个源试一次。
+          emitLog("安装目录被别的进程占着（EBUSY），先停掉服务再试一次。");
 
-        const blocker = stopPreviousHost(stopContext, options, logger, deps);
+          const blocker = stopPreviousHost(stopContext, options, logger, deps);
 
-        if (blocker.stopped) {
-          emitLog(`已停掉占用安装目录的服务（pid ${blocker.pid}）。`);
+          if (blocker.stopped) {
+            emitLog(`已停掉占用安装目录的服务（pid ${blocker.pid}）。`);
+          }
+        } else {
+          // npm 自己的临时 rename 目标残留时，换源没有意义；换一个 prefix 绕开冲突目录。
+          const previousTarget = installTarget;
+          installTarget = createAlternateNpmInstallTarget(prefix, logger);
+          installTarget.previousTarget = previousTarget;
+          prefix = installTarget.prefix;
+          emitLog(`检测到 npm 临时目录冲突，本次改用新目录：${prefix}`);
         }
 
         await delay(DIRECTORY_LOCK_RETRY_DELAY_MS);
@@ -2083,11 +2247,15 @@ export async function runInstall(options, logger, deps = {}) {
         break;
       }
 
-      const locked = isDirectoryLockedError(detail);
+      const directoryConflict = isDirectoryInstallConflictError(detail);
       const hasNextRegistry = index < registryCandidates.length - 1;
 
-      if (locked) {
-        emitLog("安装目录一直被占用，换镜像源没用；先确认没有别的 CodingNS 服务在跑，再重试。");
+      if (directoryConflict) {
+        emitLog(
+          isDirectoryLockedError(detail)
+            ? "安装目录一直被占用，换镜像源没用；先确认没有别的 CodingNS 服务在跑，再重试。"
+            : "安装目录仍然冲突，换镜像源没用；已尝试清理、改名和切换新目录。"
+        );
       } else {
         emitLog(
           hasNextRegistry
@@ -2100,6 +2268,7 @@ export async function runInstall(options, logger, deps = {}) {
     logger.log("npm 安装结束", attempts);
 
     if (!installed) {
+      restoreInstallBackup(installTarget, logger);
       emitStep("install-package", "failed");
       emitError(
         "NPM_INSTALL_FAILED",
@@ -2120,6 +2289,7 @@ export async function runInstall(options, logger, deps = {}) {
   const verification = verifyInstalledPackage(packageRoot, version);
 
   if (!verification.ok) {
+    restoreInstallBackup(installTarget, logger);
     emitStep("verify-package", "failed");
     emitError(verification.code, "服务包校验没通过", verification.detail, logger.logPath);
     return EXIT_FAILURE;
@@ -2164,6 +2334,7 @@ export async function runInstall(options, logger, deps = {}) {
   const healthy = await startHostAndWaitHealthy(installContext, options, logger, deps, platform);
 
   if (!healthy) {
+    restoreInstallBackup(installTarget, logger);
     emitError(
       "HEALTH_CHECK_TIMEOUT",
       "服务装好了但一直没响应",
@@ -2172,6 +2343,9 @@ export async function runInstall(options, logger, deps = {}) {
     );
     return EXIT_FAILURE;
   }
+
+  // 新包已经通过健康检查，旧包备份不再需要，避免运行时目录持续膨胀。
+  removeInstallBackup(installTarget, logger);
 
   if (shouldConfigureAutostart) {
     // 自启必须在健康检查通过后再真正启用，否则会留下每次开机都失败的自启项。
