@@ -33127,6 +33127,30 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   transition: none;
 }
 
+/* 移动端问题卡片整体可能比剩余空间更高：让问题列表自己滚动并限制在主区内，
+   底部提交按钮就能停在输入框上方，不再被输入框盖住。 */
+.mobile-workbench-shell[data-mobile-presentation="conversation-focus"] .permission-request-list,
+.ios-workbench-shell[data-mobile-presentation="conversation-focus"] .permission-request-list,
+.android-workbench-shell[data-mobile-presentation="conversation-focus"] .permission-request-list {
+  /* 不参与收缩：否则会被下方时间线按比例挤压到很小。 */
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+/* 外层列表已经是滚动容器，问题块不再自己滚，避免出现嵌套滚动条。 */
+.mobile-workbench-shell[data-mobile-presentation="conversation-focus"] .permission-request-scrollable-questions,
+.ios-workbench-shell[data-mobile-presentation="conversation-focus"] .permission-request-scrollable-questions,
+.android-workbench-shell[data-mobile-presentation="conversation-focus"] .permission-request-scrollable-questions {
+  max-height: none;
+  overflow-y: visible;
+  padding-right: 0;
+}
+
 .mobile-workbench-shell[data-mobile-presentation="conversation-focus"][data-conversation-tabbar-state="dragging"] .mobile-conversation-main,
 .ios-workbench-shell[data-mobile-presentation="conversation-focus"][data-conversation-tabbar-state="dragging"] .mobile-conversation-main,
 .android-workbench-shell[data-mobile-presentation="conversation-focus"][data-conversation-tabbar-state="dragging"] .mobile-conversation-main,
