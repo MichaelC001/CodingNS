@@ -3825,10 +3825,16 @@ export class SessionHistoryService {
       const discoverStartedAt = Date.now();
       const existingWorkspaceSessions = this.sessionIndexRepository.listByWorkspace(workspaceId, userId);
       const existingWorkspaceSourceIndexes = this.sessionSourceIndexRepository.listByWorkspaceId(workspaceId);
-      const enabledProviders = this.providerRegistry
+      const enabledProviderIds = this.providerRegistry
         .list()
         .map((adapter) => adapter.providerId)
         .filter((providerId) => this.isProviderEnabled(providerId));
+      // 子 Agent 创建事件只需要寻找 Codex 新生成的 JSONL。
+      // 如果沿用全 provider 扫描，会把工作区里多年积累的 command-code、opencode
+      // 历史文件再次导入主列表，造成一次精准刷新变成全量历史扫描。
+      const enabledProviders = triggerSource === SESSION_DISCOVERY_TRIGGER_SOURCES.subagentSpawn
+        ? enabledProviderIds.filter((providerId) => providerId === "codex")
+        : enabledProviderIds;
       const knownSessions = boundWorkspaceDiscoveryKnownSessions(
         this.buildKnownSessionSummaries(
           existingWorkspaceSessions.filter((session) => enabledProviders.includes(session.provider)),

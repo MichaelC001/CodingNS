@@ -1179,6 +1179,26 @@ describe("SessionHistoryService background tasks", () => {
                 parentProviderSessionId: parentProviderSessionId,
                 isSubagent: true,
                 subagentLabel: "worker · 子 Agent"
+              },
+              {
+                provider: "command-code",
+                providerSessionId: "historical-command-code-session",
+                title: "历史 Command Code 会话",
+                workspacePath,
+                rawStoreRef: "/tmp/command-code-history.jsonl",
+                isArchived: false,
+                lastMessageAt: "2026-09-14T10:00:00.000Z",
+                messageCount: 1
+              },
+              {
+                provider: "opencode",
+                providerSessionId: "historical-opencode-session",
+                title: "历史 OpenCode 会话",
+                workspacePath,
+                rawStoreRef: "opencode://session/historical-opencode-session",
+                isArchived: false,
+                lastMessageAt: "2026-09-14T10:00:00.000Z",
+                messageCount: 1
               }
             ],
             isComplete: true,
@@ -1247,6 +1267,8 @@ describe("SessionHistoryService background tasks", () => {
     await waitUntil(() => scanCalls.length === 1);
     await flushMicrotasks();
 
+    expect((scanCalls[0] as { enabledProviders: string[] }).enabledProviders).toEqual(["codex"]);
+
     const sessions = service.instance.listWorkspaceSessions("workspace-1", "user-1");
     const child = sessions.find((item) => item.providerSessionId === childProviderSessionId);
     expect(child).toMatchObject({
@@ -1254,6 +1276,8 @@ describe("SessionHistoryService background tasks", () => {
       parentSessionId: "parent-session",
       subagentLabel: "worker · 子 Agent"
     });
+    expect(sessions.some((item) => item.providerSessionId === "historical-command-code-session")).toBe(false);
+    expect(sessions.some((item) => item.providerSessionId === "historical-opencode-session")).toBe(false);
     expect(discoveryCompleted).toHaveBeenCalledWith({
       workspaceId: "workspace-1",
       userId: "user-1",
