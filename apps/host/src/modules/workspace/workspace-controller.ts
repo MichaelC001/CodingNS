@@ -93,7 +93,7 @@ export class WorkspaceController {
     request: FastifyRequest<{ Body: ImportWorkspaceBody }>,
     reply: FastifyReply
   ): Promise<void> => {
-    const workspace = this.workspaceService.importWorkspaceForUser(
+    const workspace = await this.workspaceService.importWorkspaceForUserAsync(
       requireUserId(request),
       request.body.path?.trim() || "",
       request.body.name?.trim()
@@ -135,7 +135,7 @@ export class WorkspaceController {
     request: FastifyRequest<{ Params: WorkspaceParams }>,
     reply: FastifyReply
   ): Promise<void> => {
-    const workspace = this.workspaceService.removeWorkspaceForUser(
+    const workspace = await this.workspaceService.removeWorkspaceForUserAsync(
       requireUserId(request),
       request.params.workspaceId
     );
