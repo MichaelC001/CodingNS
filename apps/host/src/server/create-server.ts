@@ -366,7 +366,7 @@ export function createServer(config: HostConfig) {
   const stopTerminalDebugEventLoopLagMonitor = startTerminalDebugEventLoopLagMonitor();
 
   const database = createDatabaseClient(config.databasePath);
-  const sqliteWriterClient = process.env.VITEST
+  const sqliteWriterClient = isHostTestRuntime()
     ? null
     : new SqliteWriterClient(config.databasePath);
   // 全局进程统计只做只读诊断：以当前 Host pid 为根，构建完整后代进程树，
@@ -499,7 +499,8 @@ export function createServer(config: HostConfig) {
     repositories.authLoginEventRepository,
     repositories.authLoginAttemptRepository,
     effectiveConfig,
-    demoServices
+    demoServices,
+    sqliteWriterClient
   );
   const butlerProfileService = new ButlerProfileService(
     repositories.butlerProfileRepository,
@@ -2132,6 +2133,12 @@ export function createServer(config: HostConfig) {
     },
     startWs: () => wsHandle
   };
+}
+
+function isHostTestRuntime(): boolean {
+  return process.env.VITEST === "true"
+    || process.env.NODE_ENV === "test"
+    || process.argv.some((argument) => /(?:^|[\\/])vitest(?:[.@/]|$)/i.test(argument));
 }
 
 function ensureDefaultOfficeConnectors(

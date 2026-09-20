@@ -26,6 +26,7 @@ import type {
   AuthUserUsageSnapshot
 } from "../../storage/repositories/auth-user-repository.js";
 import type { BootstrapStateRepository } from "../../storage/repositories/bootstrap-state-repository.js";
+import type { SqliteWriterLike } from "../../storage/repositories/sqlite-writer-like.js";
 import type { DemoCleanupService, DemoOnlineTracker } from "../demo/demo-cleanup-service.js";
 
 export interface AuthenticatedUser {
@@ -218,7 +219,8 @@ export class AuthService {
     private readonly authLoginEventRepository: AuthLoginEventRepository,
     private readonly authLoginAttemptRepository: AuthLoginAttemptRepository,
     private readonly config: HostConfig,
-    demoServices?: { cleanupService: DemoCleanupService; onlineTracker: DemoOnlineTracker }
+    demoServices?: { cleanupService: DemoCleanupService; onlineTracker: DemoOnlineTracker },
+    private readonly sqliteWriter: SqliteWriterLike | null = null
   ) {
     this.demoCleanupService = demoServices?.cleanupService;
     this.demoOnlineTracker = demoServices?.onlineTracker;
@@ -734,6 +736,40 @@ export class AuthService {
     }
 
     return toAuthUserView(updated);
+  }
+
+  async updateUserStatusAsync(auth: AuthContext, userId: string, input: UpdateUserStatusInput): Promise<AuthUserView> {
+    this.ensureAdmin(auth);
+    if (input.status !== "active" && input.status !== "disabled") {
+      throw new AppError({ statusCode: 400, errorCode: "INVALID_INPUT", detail: "用户状态非法", field: "status" });
+    }
+    const current = this.findManagedUserOrThrow(userId);
+    const activeUsers = this.authUserRepository.list().filter((user) => user.status === "active");
+    if (current.status === "active" && input.status === "disabled" && activeUsers.length <= 1) {
+      throw new AppError({ statusCode: 400, errorCode: "LAST_ACTIVE_USER_NOT_ALLOWED", detail: "不能停用最后一个可用管理员" });
+    }
+    const updatedAt = nowIso();
+    if (this.sqliteWriter?.transaction) {
+      const statements: Array<{ sql: string; params: readonly unknown[] }> = [
+        { sql: "UPDATE auth_users SET status = ?, updated_at = ? WHERE id = ?", params: [input.status, updatedAt, current.id] }
+      ];
+      if (input.status === "disabled") {
+        statements.push(
+          { sql: "UPDATE auth_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", params: [updatedAt, current.id] },
+          { sql: "UPDATE auth_device_sessions SET revoked_at = ?, updated_at = ? WHERE user_id = ? AND revoked_at IS NULL", params: [updatedAt, updatedAt, current.id] }
+        );
+      }
+      await this.sqliteWriter.transaction(statements, { priority: "critical" });
+    } else {
+      const updated = this.authUserRepository.updateStatus(current.id, input.status, updatedAt) ?? current;
+      if (input.status === "disabled") {
+        this.authTokenRepository.revokeAllByUser(current.id, updatedAt);
+        const activeSessions = this.authDeviceSessionRepository.listActiveByUser(current.id);
+        this.authDeviceSessionRepository.revokeByIds(activeSessions.map((session) => session.id), updatedAt);
+        return toAuthUserView(updated);
+      }
+    }
+    return toAuthUserView({ ...current, status: input.status, updatedAt });
   }
 
   authenticateAccessToken(accessToken: string): AuthContext {

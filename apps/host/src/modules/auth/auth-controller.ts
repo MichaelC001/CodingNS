@@ -135,7 +135,7 @@ export class AuthController {
     reply: FastifyReply
   ): Promise<void> => {
     reply.send(
-      this.authService.updateUserStatus(
+      await this.authService.updateUserStatusAsync(
         requireAuthContext(request),
         request.params.userId,
         request.body
