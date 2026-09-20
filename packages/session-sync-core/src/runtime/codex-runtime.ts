@@ -122,11 +122,21 @@ interface CodexRuntimeOptions {
 interface CodexTurnLifecycle {
   keepTransportAliveAfterTurn: boolean;
   spawnedAgentsSettledAfterTurn: boolean;
+  spawnedAgentsWaitTimedOut: boolean;
   parentTurnStopped: boolean;
+  parentTurnId: string | null;
+  parallelAgentActivityDetected: boolean;
   spawnedAgentIds: Set<string>;
   pendingComplete: {
     timestamp: string;
     detail: string;
+  } | null;
+  pendingTerminal: {
+    type: "interrupted" | "failed";
+    timestamp: string;
+    detail: string;
+    interruptSource?: "user" | "runtime";
+    errorCode?: string;
   } | null;
   closedSpawnedAgentIds: Set<string>;
 }
@@ -191,11 +201,7 @@ function shouldKeepCodexTransportAliveAfterTurn(
   lifecycle: CodexTurnLifecycle,
   rawStoreRef: string
 ): boolean {
-  if (lifecycle.parentTurnStopped) {
-    return false;
-  }
-
-  if (lifecycle.spawnedAgentsSettledAfterTurn) {
+  if (lifecycle.spawnedAgentsSettledAfterTurn || lifecycle.spawnedAgentsWaitTimedOut) {
     return false;
   }
 
@@ -203,7 +209,9 @@ function shouldKeepCodexTransportAliveAfterTurn(
     return lifecycle.closedSpawnedAgentIds.size < lifecycle.spawnedAgentIds.size;
   }
 
-  return lifecycle.keepTransportAliveAfterTurn || codexRawStoreContainsSpawnAgentCall(rawStoreRef);
+  return lifecycle.parallelAgentActivityDetected
+    || lifecycle.keepTransportAliveAfterTurn
+    || codexRawStoreContainsSpawnAgentCall(rawStoreRef);
 }
 
 function codexRawStoreContainsSpawnAgentCall(rawStoreRef: string): boolean {
@@ -419,6 +427,10 @@ function markCodexSpawnAgentLifecycleFromEvents(
   lifecycle: CodexTurnLifecycle,
   events: Record<string, unknown>[]
 ): void {
+  if (events.some((event) => isCodexSpawnAgentEvent(event))) {
+    lifecycle.parallelAgentActivityDetected = true;
+  }
+
   for (const agentId of extractCodexSpawnedAgentIdsFromEvents(events)) {
     lifecycle.spawnedAgentIds.add(agentId);
   }
@@ -549,9 +561,13 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
       const lifecycle: CodexTurnLifecycle = {
         keepTransportAliveAfterTurn: false,
         spawnedAgentsSettledAfterTurn: false,
+        spawnedAgentsWaitTimedOut: false,
         parentTurnStopped: false,
+        parentTurnId: null,
+        parallelAgentActivityDetected: false,
         spawnedAgentIds: new Set(),
         pendingComplete: null,
+        pendingTerminal: null,
         closedSpawnedAgentIds: new Set()
       };
       const translateNotification = createCodexAppServerNotificationTranslator();
@@ -597,9 +613,18 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
         // 一个 app-server 连接可能同时推送父线程和 spawn_agent 子线程事件。
         // 当前运行时只消费本次请求对应的父线程，否则子线程的 turn/completed
         // 会提前关闭父线程事件队列，让主会话误报完成。
-        if (!isCodexNotificationForThread(notification, providerSessionId)) {
+        if (!isCodexNotificationForThread(notification, providerSessionId, {
+          expectedTurnId: lifecycle.parentTurnId,
+          rejectUnscopedTerminal: lifecycle.parallelAgentActivityDetected
+        })) {
           return;
         }
+
+        lifecycle.parentTurnId = rememberCodexParentTurnId(
+          lifecycle.parentTurnId,
+          notification,
+          providerSessionId
+        );
 
         if (!firstNotificationLogged) {
           firstNotificationLogged = true;
@@ -640,6 +665,11 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
       const startTurnNotification = startTurnResult?.notification ?? null;
 
       if (startTurnNotification) {
+        lifecycle.parentTurnId = rememberCodexParentTurnId(
+          lifecycle.parentTurnId,
+          startTurnNotification,
+          providerSessionId
+        );
         const translated = translateNotification(startTurnNotification);
         markCodexSpawnAgentLifecycleFromEvents(lifecycle, translated.events);
         forwardTranslatedNotification(translated);
@@ -657,14 +687,17 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
         providerSessionId,
         rawStoreRef,
         submitDuringRun: async (options) => {
-          await transport.steerTurn(options);
+          const result = await transport.steerTurn(options);
+
+          if (result?.turnId) {
+            lifecycle.parentTurnId = result.turnId;
+          }
         },
         interrupt: async () => {
           abortController.abort();
           await transport.interruptTurn().catch(() => {
             return;
           });
-          transport.close();
         },
         isAlive: () => transport.isClosed() === false,
         completed: this.runTurn(
@@ -800,9 +833,13 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
       const lifecycle: CodexTurnLifecycle = {
         keepTransportAliveAfterTurn: false,
         spawnedAgentsSettledAfterTurn: false,
+        spawnedAgentsWaitTimedOut: false,
         parentTurnStopped: false,
+        parentTurnId: null,
+        parallelAgentActivityDetected: false,
         spawnedAgentIds: new Set(),
         pendingComplete: null,
+        pendingTerminal: null,
         closedSpawnedAgentIds: new Set()
       };
       const translateNotification = createCodexAppServerNotificationTranslator();
@@ -823,9 +860,18 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
 
       let firstNotificationLogged = false;
       transport.setNotificationHandler(async (notification) => {
-        if (!isCodexNotificationForThread(notification, resolvedSessionId)) {
+        if (!isCodexNotificationForThread(notification, resolvedSessionId, {
+          expectedTurnId: lifecycle.parentTurnId,
+          rejectUnscopedTerminal: lifecycle.parallelAgentActivityDetected
+        })) {
           return;
         }
+
+        lifecycle.parentTurnId = rememberCodexParentTurnId(
+          lifecycle.parentTurnId,
+          notification,
+          resolvedSessionId
+        );
 
         if (!firstNotificationLogged) {
           firstNotificationLogged = true;
@@ -866,6 +912,11 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
       const startTurnNotification = startTurnResult?.notification ?? null;
 
       if (startTurnNotification) {
+        lifecycle.parentTurnId = rememberCodexParentTurnId(
+          lifecycle.parentTurnId,
+          startTurnNotification,
+          resolvedSessionId
+        );
         const translated = translateNotification(startTurnNotification);
         markCodexSpawnAgentLifecycleFromEvents(lifecycle, translated.events);
         forwardTranslatedNotification(translated);
@@ -883,14 +934,17 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
         providerSessionId: resolvedSessionId,
         rawStoreRef,
         submitDuringRun: async (options) => {
-          await transport.steerTurn(options);
+          const result = await transport.steerTurn(options);
+
+          if (result?.turnId) {
+            lifecycle.parentTurnId = result.turnId;
+          }
         },
         interrupt: async () => {
           abortController.abort();
           await transport.interruptTurn().catch(() => {
             return;
           });
-          transport.close();
         },
         isAlive: () => transport.isClosed() === false,
         completed: this.runTurn(
@@ -988,9 +1042,13 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
     lifecycle: CodexTurnLifecycle = {
       keepTransportAliveAfterTurn: false,
       spawnedAgentsSettledAfterTurn: false,
+      spawnedAgentsWaitTimedOut: false,
       parentTurnStopped: false,
+      parentTurnId: null,
+      parallelAgentActivityDetected: false,
       spawnedAgentIds: new Set(),
       pendingComplete: null,
+      pendingTerminal: null,
       closedSpawnedAgentIds: new Set()
     },
     transport: CodexAppServerTransport | null = null
@@ -1038,11 +1096,25 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
         const next = await events.next();
 
         if (next.done) {
+          await this.waitForSpawnedCodexAgentsIfNeeded(context, abortController.signal);
+          await this.emitPendingTerminalIfReady(context);
+
           if (context.lifecycle.parentTurnStopped) {
             return;
           }
 
-          await this.waitForSpawnedCodexAgentsIfNeeded(context, abortController.signal);
+          if (abortController.signal.aborted) {
+            context.lifecycle.parentTurnStopped = true;
+            context.lifecycle.pendingTerminal ??= {
+              type: "interrupted",
+              interruptSource: "user",
+              detail: "codex turn interrupted",
+              timestamp: nextTimestamp()
+            };
+            await this.emitPendingTerminalIfReady(context);
+            return;
+          }
+
           await this.emitPendingCompleteIfReady(context);
           return;
         }
@@ -1053,28 +1125,28 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
       }
     } catch (error) {
       if (abortController.signal.aborted) {
-        await sink.emit({
+        context.lifecycle.parentTurnStopped = true;
+        context.lifecycle.pendingTerminal ??= {
           type: "interrupted",
-          status: "interrupted",
           interruptSource: "user",
-          providerSessionId: context.providerSessionId,
-          rawStoreRef: context.rawStoreRef,
           detail: "codex turn interrupted",
           timestamp: nextTimestamp()
-        });
+        };
+        await this.waitForSpawnedCodexAgentsIfNeeded(context, abortController.signal);
+        await this.emitPendingTerminalIfReady(context);
         return;
       }
 
       const failure = classifyCodexRuntimeFailure(error);
-      await sink.emit({
-        type: "error",
-        status: "failed",
-        providerSessionId: context.providerSessionId,
-        rawStoreRef: context.rawStoreRef,
+      context.lifecycle.parentTurnStopped = true;
+      context.lifecycle.pendingTerminal ??= {
+        type: "failed",
         errorCode: failure.errorCode,
         detail: failure.detail,
         timestamp: nextTimestamp()
-      });
+      };
+      await this.waitForSpawnedCodexAgentsIfNeeded(context, abortController.signal);
+      await this.emitPendingTerminalIfReady(context);
     }
   }
 
@@ -1096,6 +1168,39 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
     });
   }
 
+  private async emitPendingTerminalIfReady(context: ActiveTurnContext): Promise<void> {
+    const pendingTerminal = context.lifecycle.pendingTerminal;
+
+    if (!pendingTerminal) {
+      return;
+    }
+
+    context.lifecycle.pendingTerminal = null;
+
+    if (pendingTerminal.type === "interrupted") {
+      await context.sink.emit({
+        type: "interrupted",
+        status: "interrupted",
+        interruptSource: pendingTerminal.interruptSource ?? "runtime",
+        providerSessionId: context.providerSessionId,
+        rawStoreRef: context.rawStoreRef,
+        detail: pendingTerminal.detail,
+        timestamp: pendingTerminal.timestamp
+      });
+      return;
+    }
+
+    await context.sink.emit({
+      type: "error",
+      status: "failed",
+      providerSessionId: context.providerSessionId,
+      rawStoreRef: context.rawStoreRef,
+      errorCode: pendingTerminal.errorCode ?? "CODEX_CLI_TURN_FAILED",
+      detail: pendingTerminal.detail,
+      timestamp: pendingTerminal.timestamp
+    });
+  }
+
   private async waitForSpawnedCodexAgentsIfNeeded(
     context: ActiveTurnContext,
     signal: AbortSignal
@@ -1104,26 +1209,34 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
       return;
     }
 
-    const agentIds = Array.from(
-      new Set([
-        ...context.lifecycle.spawnedAgentIds,
-        ...extractCodexSpawnedAgentIdsFromRawStore(context.rawStoreRef)
-      ])
-    );
-
-    if (agentIds.length === 0) {
-      return;
-    }
-
+    // 优先使用本轮实时事件识别出的子 Agent。synthetic raw store 会复用历史
+    // transcript，不能把其中旧 turn 的 spawn_agent ID 当成当前仍在运行。
+    const agentIds = context.lifecycle.spawnedAgentIds.size > 0
+      ? [...context.lifecycle.spawnedAgentIds]
+      : extractCodexSpawnedAgentIdsFromRawStore(context.rawStoreRef);
     const deadline = Date.now() + CODEX_APP_SERVER_SPAWN_AGENT_GRACE_MS;
     const remainingAgentIds = new Set(agentIds);
+    let discoveredAgentId = agentIds.length > 0;
+    const abortRequested = signal.aborted && !context.lifecycle.parentTurnStopped;
+
+    logCodexRuntimeStep("turn.spawned_agents_wait_start", context.launchPerfStartedAtMs, {
+      providerSessionId: context.providerSessionId,
+      agentIds,
+      parentTurnStopped: context.lifecycle.parentTurnStopped
+    });
 
     while (
-      remainingAgentIds.size > 0
+      (remainingAgentIds.size > 0 || (context.lifecycle.parallelAgentActivityDetected && !discoveredAgentId))
       && Date.now() < deadline
-      && !signal.aborted
-      && !context.lifecycle.parentTurnStopped
+      && !abortRequested
     ) {
+      if (context.lifecycle.spawnedAgentIds.size === 0) {
+        for (const agentId of extractCodexSpawnedAgentIdsFromRawStore(context.rawStoreRef)) {
+          remainingAgentIds.add(agentId);
+          discoveredAgentId = true;
+        }
+      }
+
       for (const agentId of [...remainingAgentIds]) {
         const rawStoreRef = this.findRawStoreRefOnce(
           agentId,
@@ -1132,16 +1245,23 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
         );
 
         if (rawStoreRef && isCodexRawStoreTerminal(rawStoreRef)) {
+          logCodexRuntimeStep("turn.spawned_agent_terminal", context.launchPerfStartedAtMs, {
+            providerSessionId: context.providerSessionId,
+            agentId,
+            rawStoreRef
+          });
           await this.closeSpawnedCodexAgentIfNeeded(context, agentId);
           remainingAgentIds.delete(agentId);
         }
       }
 
       if (
-        remainingAgentIds.size === 0
+        (
+          remainingAgentIds.size === 0
+          && (!context.lifecycle.parallelAgentActivityDetected || discoveredAgentId)
+        )
         || Date.now() >= deadline
-        || signal.aborted
-        || context.lifecycle.parentTurnStopped
+        || abortRequested
       ) {
         break;
       }
@@ -1149,8 +1269,30 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
       await sleep(CODEX_SPAWN_AGENT_POLL_INTERVAL_MS);
     }
 
-    if (remainingAgentIds.size === 0) {
+    if (
+      remainingAgentIds.size === 0
+      && (!context.lifecycle.parallelAgentActivityDetected || discoveredAgentId)
+    ) {
       context.lifecycle.spawnedAgentsSettledAfterTurn = true;
+      return;
+    }
+
+    if (Date.now() >= deadline) {
+      context.lifecycle.spawnedAgentsWaitTimedOut = true;
+      if (context.lifecycle.pendingComplete) {
+        context.lifecycle.pendingComplete = null;
+        context.lifecycle.parentTurnStopped = true;
+        context.lifecycle.pendingTerminal = {
+          type: "failed",
+          errorCode: "CODEX_SPAWNED_AGENT_TIMEOUT",
+          detail: `spawned Codex agents did not settle before timeout: ${[...remainingAgentIds].join(", ") || "unknown"}`,
+          timestamp: nextTimestamp()
+        };
+      }
+      logCodexRuntimeStep("turn.spawned_agents_wait_timeout", context.launchPerfStartedAtMs, {
+        providerSessionId: context.providerSessionId,
+        remainingAgentIds: [...remainingAgentIds]
+      });
     }
   }
 
@@ -1211,29 +1353,23 @@ export class CodexRuntimeAdapter implements ProviderRuntimeAdapter {
     if (eventType === "turn.failed") {
       context.lifecycle.parentTurnStopped = true;
       const detail = extractTextBlocks(readProp(event, "error")).trim() || "codex turn failed";
-      await context.sink.emit({
-        type: "error",
-        status: "failed",
-        providerSessionId: context.providerSessionId,
-        rawStoreRef: context.rawStoreRef,
+      context.lifecycle.pendingTerminal = {
+        type: "failed",
         errorCode: classifyCodexDetailErrorCode(detail, "CODEX_CLI_TURN_FAILED"),
         detail,
         timestamp: pickTimestamp(event)
-      });
+      };
       return;
     }
 
     if (eventType === "turn.interrupted") {
       context.lifecycle.parentTurnStopped = true;
-      await context.sink.emit({
+      context.lifecycle.pendingTerminal = {
         type: "interrupted",
-        status: "interrupted",
         interruptSource: interrupted ? "user" : "runtime",
-        providerSessionId: context.providerSessionId,
-        rawStoreRef: context.rawStoreRef,
         detail: "codex turn interrupted",
         timestamp: pickTimestamp(event)
-      });
+      };
       return;
     }
 
@@ -1915,8 +2051,12 @@ function createCodexAppServerTransport(options: CodexRuntimeOptions): CodexAppSe
 
       if (method === "turn/started") {
         const notificationThreadId = readNotificationThreadId(params);
+        const notificationTurnId = readNotificationTurnId(params);
 
-        if (!notificationThreadId || !activeThreadId || notificationThreadId === activeThreadId) {
+        if (
+          (!notificationThreadId && (!activeTurnId || !notificationTurnId || notificationTurnId === activeTurnId))
+          || (notificationThreadId && (!activeThreadId || notificationThreadId === activeThreadId))
+        ) {
           activeTurnId = ensureText(readProp(readProp(params, "turn"), "id")).trim() || activeTurnId;
         }
       }
@@ -2915,6 +3055,7 @@ function translateCodexAppServerItem(item: Record<string, unknown> | null): Reco
     return {
       type: "function_call",
       id: item.id,
+      call_id: readProp(item, "call_id") ?? readProp(item, "callId"),
       name: item.name,
       arguments: readProp(item, "arguments") ?? readProp(item, "input"),
       output: item.output,
@@ -3500,7 +3641,7 @@ function readJsonRpcParams(parsed: Record<string, unknown>): Record<string, unkn
   return toRecord(parsed.params) ?? {};
 }
 
-function readNotificationThreadId(params: Record<string, unknown>): string {
+function readNotificationThreadId(params: Record<string, unknown> | null): string {
   return pickFirstNonEmpty(
     ensureText(readProp(params, "threadId")).trim(),
     ensureText(readProp(params, "thread_id")).trim(),
@@ -3508,10 +3649,27 @@ function readNotificationThreadId(params: Record<string, unknown>): string {
   );
 }
 
+function readNotificationTurnId(params: Record<string, unknown> | null): string {
+  return pickFirstNonEmpty(
+    ensureText(readProp(params, "turnId")).trim(),
+    ensureText(readProp(params, "turn_id")).trim(),
+    ensureText(readProp(readProp(params, "turn"), "id")).trim()
+  );
+}
+
+function isCodexTerminalNotification(notification: Record<string, unknown>): boolean {
+  const method = ensureText(readProp(notification, "method")).trim();
+  return method === "turn/completed";
+}
+
 /** 判断 app-server 通知是否属于当前适配器绑定的线程。 */
-function isCodexNotificationForThread(
+export function isCodexNotificationForThread(
   notification: Record<string, unknown>,
-  expectedThreadId: string
+  expectedThreadId: string,
+  options: {
+    expectedTurnId?: string | null;
+    rejectUnscopedTerminal?: boolean;
+  } = {}
 ): boolean {
   const params = toRecord(readProp(notification, "params"));
   const threadId = pickFirstNonEmpty(
@@ -3519,9 +3677,36 @@ function isCodexNotificationForThread(
     ensureText(readProp(params, "thread_id")).trim(),
     ensureText(readProp(readProp(params, "thread"), "id")).trim()
   );
+  const turnId = readNotificationTurnId(params);
 
-  // 旧版 app-server 的少数通知没有 threadId；没有归属信息时保留兼容行为。
+  if (threadId.length === 0) {
+    if (options.rejectUnscopedTerminal && isCodexTerminalNotification(notification)) {
+      return Boolean(options.expectedTurnId && turnId && turnId === options.expectedTurnId);
+    }
+
+    if (options.expectedTurnId && turnId.length > 0 && turnId !== options.expectedTurnId) {
+      return false;
+    }
+  }
+
+  // 旧版 app-server 的非终止通知可能没有 threadId；有父 turn 时仍用 turnId 做第二层隔离。
   return threadId.length === 0 || threadId === expectedThreadId;
+}
+
+function rememberCodexParentTurnId(
+  currentTurnId: string | null,
+  notification: Record<string, unknown>,
+  expectedThreadId: string
+): string | null {
+  const params = toRecord(readProp(notification, "params"));
+  const threadId = readNotificationThreadId(params);
+  const turnId = readNotificationTurnId(params);
+
+  if (!turnId || (threadId && threadId !== expectedThreadId)) {
+    return currentTurnId;
+  }
+
+  return turnId;
 }
 
 function readJsonRpcResult(parsed: Record<string, unknown>): Record<string, unknown> {

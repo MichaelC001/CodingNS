@@ -6,7 +6,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { CodexAdapter } from "../dist/index.js";
-import { CodexRuntimeAdapter, createThreadOptions } from "../dist/runtime/codex-runtime.js";
+import {
+  CodexRuntimeAdapter,
+  createThreadOptions,
+  isCodexNotificationForThread
+} from "../dist/runtime/codex-runtime.js";
 
 function createStableMessageId(providerSessionId, stableIdentity) {
   return createHash("sha1").update(`codex:${providerSessionId}:${stableIdentity}`).digest("hex");
@@ -2063,7 +2067,139 @@ test("CodexRuntimeAdapter 会等 spawn_agent 子会话结束后再上报父会�
   }
 });
 
-test("CodexRuntimeAdapter 忽略同一连接上子线程的完成通知", async () => {
+test("CodexRuntimeAdapter 父 turn 中断时仍等待运行中的子 Agent 收敛", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-app-server-subagent-interrupt-wait-"));
+  const parentThreadId = "019eab4e-e1d9-7cd3-8b4d-4f6edcc01604";
+  const childThreadId = "019eab55-1f95-7a64-89ea-6f1234567890";
+  const parentThreadPath = join(tempDir, "parent.jsonl");
+  const childSessionDir = join(tempDir, "sessions", "2026", "06", "09");
+  const childThreadPath = join(
+    childSessionDir,
+    `rollout-2026-06-09T15-45-00-${childThreadId}.jsonl`
+  );
+  const emitted = [];
+  const closedAgentIds = [];
+  let notificationHandler = null;
+  let closed = false;
+  let childDone = false;
+  let interruptedBeforeChildClosed = false;
+
+  try {
+    mkdirSync(childSessionDir, { recursive: true });
+
+    const adapter = new CodexRuntimeAdapter({
+      homeDir: tempDir,
+      transportFactory: () => ({
+        async initialize() {},
+        async startThread() {
+          return { providerSessionId: parentThreadId, rawStoreRef: parentThreadPath };
+        },
+        async resumeThread() {
+          return { providerSessionId: parentThreadId, rawStoreRef: parentThreadPath };
+        },
+        async resumeThreadFromHistory() {
+          return { providerSessionId: parentThreadId, rawStoreRef: parentThreadPath };
+        },
+        async startTurn() {
+          queueMicrotask(() => {
+            void notificationHandler?.({
+              method: "item/completed",
+              params: {
+                threadId: parentThreadId,
+                item: {
+                  type: "function_call",
+                  id: "call_spawn",
+                  call_id: "call_spawn",
+                  name: "spawn_agent",
+                  output: JSON.stringify({ agent_id: childThreadId }),
+                  status: "completed"
+                }
+              }
+            });
+            void notificationHandler?.({
+              method: "turn/completed",
+              params: {
+                threadId: parentThreadId,
+                turn: { id: "turn-parent", status: "interrupted" }
+              }
+            });
+          });
+          setTimeout(() => {
+            writeFileSync(
+              childThreadPath,
+              [
+                JSON.stringify({
+                  timestamp: "2026-06-09T07:45:00.000Z",
+                  type: "session_meta",
+                  payload: {
+                    id: childThreadId,
+                    cwd: tempDir,
+                    source: { subagent: { thread_spawn: { parent_thread_id: parentThreadId } } },
+                    thread_source: "subagent"
+                  }
+                }),
+                JSON.stringify({
+                  timestamp: "2026-06-09T07:45:01.000Z",
+                  type: "event_msg",
+                  payload: { type: "task_started", turn_id: "turn-child" }
+                }),
+                JSON.stringify({
+                  timestamp: "2026-06-09T07:45:02.000Z",
+                  type: "event_msg",
+                  payload: { type: "turn_aborted", turn_id: "turn-child" }
+                })
+              ].join("\n"),
+              "utf8"
+            );
+            childDone = true;
+          }, 50);
+        },
+        async steerTurn() {},
+        async interruptTurn() {},
+        async closeSpawnedAgent(agentId) {
+          closedAgentIds.push(agentId);
+        },
+        setNotificationHandler(handler) {
+          notificationHandler = handler;
+        },
+        setServerRequestHandler() {},
+        setOnClose() {},
+        isClosed() {
+          return closed;
+        },
+        close() {
+          closed = true;
+        }
+      })
+    });
+
+    const launch = await adapter.startSession(createRunRequest({
+      sessionId: "session-subagent-interrupt-wait",
+      workspacePath: tempDir,
+      sequenceBase: 0
+    }), {
+      async emit(event) {
+        if (event.type === "interrupted" && !closedAgentIds.includes(childThreadId)) {
+          interruptedBeforeChildClosed = true;
+        }
+        emitted.push(event);
+      },
+      updateSessionBinding() {}
+    });
+
+    await launch.completed;
+
+    assert.equal(interruptedBeforeChildClosed, false);
+    assert.equal(childDone, true);
+    assert.deepEqual(closedAgentIds, [childThreadId]);
+    assert.equal(emitted.filter((event) => event.type === "interrupted").length, 1);
+    assert.equal(closed, true);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("CodexRuntimeAdapter 忽略同一连接上子线程的中断通知", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-app-server-child-notification-"));
   const parentThreadId = "019eab4e-e1d9-7cd3-8b4d-4f6edcc01604";
   const childThreadId = "019eab55-1f95-7a64-89ea-6f1234567890";
@@ -2092,7 +2228,7 @@ test("CodexRuntimeAdapter 忽略同一连接上子线程的完成通知", async 
               method: "turn/completed",
               params: {
                 threadId: childThreadId,
-                turn: { id: "turn-child", status: "completed" }
+                turn: { id: "turn-child", status: "interrupted" }
               }
             });
             setTimeout(() => {
@@ -2141,6 +2277,7 @@ test("CodexRuntimeAdapter 忽略同一连接上子线程的完成通知", async 
     assert.equal(completedResolved, false);
 
     await completion;
+    assert.equal(emitted.some((event) => event.type === "interrupted"), false);
     assert.equal(emitted.some((event) => event.type === "complete"), true);
     assert.equal(closed, true);
   } finally {
@@ -2148,15 +2285,75 @@ test("CodexRuntimeAdapter 忽略同一连接上子线程的完成通知", async 
   }
 });
 
+test("CodexRuntimeAdapter 丢弃旧版无线程 ID 的子线程终止通知", () => {
+  const parentThreadId = "019eab4e-e1d9-7cd3-8b4d-4f6edcc01604";
+
+  assert.equal(
+    isCodexNotificationForThread(
+      {
+        method: "turn/completed",
+        params: {
+          turn: { id: "turn-child", status: "interrupted" }
+        }
+      },
+      parentThreadId,
+      {
+        expectedTurnId: "turn-parent",
+        rejectUnscopedTerminal: true
+      }
+    ),
+    false
+  );
+  assert.equal(
+    isCodexNotificationForThread(
+      {
+        method: "turn/completed",
+        params: {
+          turn: { id: "turn-parent", status: "completed" }
+        }
+      },
+      parentThreadId,
+      {
+        expectedTurnId: "turn-parent",
+        rejectUnscopedTerminal: true
+      }
+    ),
+    true
+  );
+});
+
 test("CodexRuntimeAdapter 实时 spawn_agent 事件优先使用 call_id，避免与历史回放的工具调用身份漂移", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-app-server-subagent-callid-"));
   const parentThreadId = "019eab4e-e1d9-7cd3-8b4d-4f6edcc01604";
   const childThreadId = "019eab55-1f95-7a64-89ea-6f1234567890";
   const parentThreadPath = join(tempDir, "parent.jsonl");
+  const childSessionDir = join(tempDir, "sessions", "2026", "06", "09");
+  const childThreadPath = join(
+    childSessionDir,
+    `rollout-2026-06-09T15-45-00-${childThreadId}.jsonl`
+  );
   const emitted = [];
   let notificationHandler = null;
 
   try {
+    mkdirSync(childSessionDir, { recursive: true });
+    writeFileSync(
+      childThreadPath,
+      [
+        JSON.stringify({
+          timestamp: "2026-06-09T07:45:00.000Z",
+          type: "session_meta",
+          payload: { id: childThreadId, cwd: tempDir, thread_source: "subagent" }
+        }),
+        JSON.stringify({
+          timestamp: "2026-06-09T07:45:02.000Z",
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-child" }
+        })
+      ].join("\n"),
+      "utf8"
+    );
+
     const adapter = new CodexRuntimeAdapter({
       homeDir: tempDir,
       transportFactory: () => ({
@@ -2559,16 +2756,43 @@ test("CodexRuntimeAdapter 关闭已完成子 Agent 失败时不会阻塞父会�
   }
 });
 
-test("CodexRuntimeAdapter 父会话故障停止时不会继续等待 spawn_agent 子会话", async () => {
+test("CodexRuntimeAdapter 父会话故障停止时也等待已发现子会话收敛", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "codingns-codex-app-server-subagent-parent-failed-"));
   const parentThreadId = "019eab4e-e1d9-7cd3-8b4d-4f6edcc01604";
   const childThreadId = "019eab55-1f95-7a64-89ea-6f1234567890";
   const parentThreadPath = join(tempDir, "parent.jsonl");
+  const childSessionDir = join(tempDir, "sessions", "2026", "06", "09");
+  const childThreadPath = join(
+    childSessionDir,
+    `rollout-2026-06-09T15-45-00-${childThreadId}.jsonl`
+  );
   const emitted = [];
   let notificationHandler = null;
   let closed = false;
 
   try {
+    mkdirSync(childSessionDir, { recursive: true });
+    writeFileSync(
+      childThreadPath,
+      [
+        JSON.stringify({
+          timestamp: "2026-06-09T07:45:00.000Z",
+          type: "session_meta",
+          payload: {
+            id: childThreadId,
+            cwd: tempDir,
+            thread_source: "subagent"
+          }
+        }),
+        JSON.stringify({
+          timestamp: "2026-06-09T07:45:02.000Z",
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-child" }
+        })
+      ].join("\n"),
+      "utf8"
+    );
+
     const adapter = new CodexRuntimeAdapter({
       homeDir: tempDir,
       transportFactory: () => ({
@@ -2622,6 +2846,7 @@ test("CodexRuntimeAdapter 父会话故障停止时不会继续等待 spawn_agent
         },
         async steerTurn() {},
         async interruptTurn() {},
+        async closeSpawnedAgent() {},
         setNotificationHandler(handler) {
           notificationHandler = handler;
         },
