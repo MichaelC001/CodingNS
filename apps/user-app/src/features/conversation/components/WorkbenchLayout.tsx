@@ -16805,14 +16805,24 @@ export function WorkbenchLayout({
         return false;
       }
 
-      ensureInfoPanelReady();
-      setActiveInfoTab("files");
+      if (isMobileShell) {
+        // 移动端不能打开桌面右侧信息抽屉，否则文件标签会被压成窄列，
+        // 且返回手势无法回到文件入口。统一走移动工具路由，让页面自己接管返回层级。
+        setMobileNavOpen(false);
+        setMobileInfoOpen(false);
+        const workspaceRef = resolveNavigationWorkspaceRef(targetWorkspaceId, {
+          preferredTargetHostId: currentTargetHostId,
+          fallbackToCurrent: true
+        });
+        navigate(buildWorkspaceToolFilesPath(targetWorkspaceId, workspaceRef));
+      } else {
+        ensureInfoPanelReady();
+        setActiveInfoTab("files");
+        setRightCollapsed(false);
+      }
 
       if (isMobileShell) {
-        setMobileNavOpen(false);
-        setMobileInfoOpen(true);
-      } else {
-        setRightCollapsed(false);
+        return true;
       }
 
       // 即使路径没变，也要允许用户再次点击后重新定位。
@@ -16826,7 +16836,14 @@ export function WorkbenchLayout({
 
       return true;
     },
-    [currentWorkspaceId, isMobileShell]
+    [
+      currentTargetHostId,
+      currentWorkspaceId,
+      ensureInfoPanelReady,
+      isMobileShell,
+      navigate,
+      resolveNavigationWorkspaceRef
+    ]
   );
 
   const renameNavigationSession = useCallback(
@@ -18318,7 +18335,7 @@ export function WorkbenchLayout({
           });
           const targetPath = resolveStoredConversationPath(item.workspaceId)
             ?? buildWorkspaceSessionIndexPath(item.workspaceId, currentWorkspaceRef);
-          if (location.pathname !== targetPath) {
+          if (!isMobileShell && location.pathname !== targetPath) {
             navigate(targetPath);
           }
         }}
