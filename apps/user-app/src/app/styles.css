@@ -25110,12 +25110,14 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 }
 
 .settings-performance-point-details {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px 12px;
   margin-top: 8px;
-  padding: 11px 12px;
+  padding: 11px 44px 11px 12px;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border-primary));
   border-radius: 11px;
   background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface));
@@ -25125,21 +25127,25 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   display: flex;
   flex-direction: column;
   gap: 3px;
+  flex: 1 1 8rem;
   min-width: 0;
 }
 
 .settings-performance-point-details strong {
   color: var(--text-primary);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .settings-performance-point-details span {
   color: var(--text-secondary);
   font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .settings-performance-point-values {
   display: flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px 14px;
@@ -25152,7 +25158,11 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   font-variant-numeric: tabular-nums;
 }
 
+/* 关闭按钮脱离文档流固定在右上角，避免窄屏时被挤到数值行下面。 */
 .settings-performance-point-details button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -28823,6 +28833,40 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
 
   .settings-performance-chart {
     min-height: 145px;
+  }
+
+  /* 窄屏下详情卡改为上下堆叠：标题独占一行，数值左对齐，避免标题被数值列挤成逐字换行。 */
+  .settings-performance-point-details {
+    position: relative;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 44px 12px 12px;
+  }
+
+  /* 竖排后主轴变成纵向，必须清掉横排留下的 flex 伸缩，否则标题块会被撑高成大片空白。 */
+  .settings-performance-point-details > div:first-child,
+  .settings-performance-point-values {
+    flex: 0 0 auto;
+  }
+
+  .settings-performance-point-details > div:first-child {
+    gap: 2px;
+  }
+
+  .settings-performance-point-details strong {
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: keep-all;
+  }
+
+  .settings-performance-point-details span {
+    overflow-wrap: anywhere;
+  }
+
+  .settings-performance-point-values {
+    justify-content: flex-start;
+    gap: 6px 14px;
   }
 
   .theme-selector {
