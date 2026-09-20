@@ -180,6 +180,12 @@ export class WorkspaceService {
     return createWorkspaceRecord(this.workspaceRepository, resolvedPath, name, userId);
   }
 
+  async importWorkspaceForUserAsync(userId: string, workspacePath: string, name?: string): Promise<Workspace> {
+    const resolvedPath = path.resolve(workspacePath);
+    ensureExistingDirectory(resolvedPath, "path");
+    return await createWorkspaceRecordAsync(this.workspaceRepository, resolvedPath, name, userId);
+  }
+
   async cloneWorkspace(input: CloneWorkspaceInput): Promise<Workspace> {
     const repositoryUrl = input.repositoryUrl.trim();
 
@@ -265,7 +271,7 @@ export class WorkspaceService {
         operation: "workspace.cloneWorkspace"
       });
 
-      return this.importWorkspaceForUser(userId, targetPath, input.name?.trim());
+      return await this.importWorkspaceForUserAsync(userId, targetPath, input.name?.trim());
     } catch (error) {
       if (fs.existsSync(targetPath)) {
         // clone 失败会留下半成品目录，直接清掉，避免下一次重试被脏状态卡死。
@@ -402,6 +408,16 @@ export class WorkspaceService {
         removedAt: timestamp
       }
     );
+  }
+
+  async removeWorkspaceForUserAsync(userId: string, workspaceId: string): Promise<Workspace> {
+    const workspace = this.getWorkspaceForUserOrThrow(workspaceId, userId);
+    const timestamp = nowIso();
+    return (await this.workspaceRepository.markRemovedAsync(workspace.id, timestamp, timestamp)) ?? {
+      ...workspace,
+      updatedAt: timestamp,
+      removedAt: timestamp
+    };
   }
 
   async getManagementSummary(workspaceId: string): Promise<WorkspaceManagementSummary> {
@@ -855,6 +871,54 @@ function createWorkspaceRecord(
   const timestamp = nowIso();
 
   return workspaceRepository.create({
+    id: createId(),
+    ownerUserId: ownerUserId ?? null,
+    name: name?.trim() || path.basename(workspacePath),
+    path: workspacePath,
+    repoRoot: workspacePath,
+    favorite: false,
+    sortOrder: workspaceRepository.getNextSortOrder(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    removedAt: null
+  });
+}
+
+async function createWorkspaceRecordAsync(
+  workspaceRepository: WorkspaceRepository,
+  workspacePath: string,
+  name?: string,
+  ownerUserId?: string | null
+): Promise<Workspace> {
+  const existing = workspaceRepository.findByPath(workspacePath);
+  if (existing) {
+    if (ownerUserId && existing.ownerUserId && existing.ownerUserId !== ownerUserId) {
+      throw new AppError({ statusCode: 409, errorCode: "WORKSPACE_PATH_EXISTS", detail: "这个路径已经被其他用户导入，不能重复使用", field: "path" });
+    }
+    if (!existing.removedAt) {
+      if (ownerUserId && !existing.ownerUserId) {
+        const timestamp = nowIso();
+        return (await workspaceRepository.restoreAsync(existing.id, { ownerUserId, repoRoot: workspacePath, updatedAt: timestamp })) ?? { ...existing, ownerUserId, repoRoot: workspacePath, updatedAt: timestamp };
+      }
+      return existing;
+    }
+    const timestamp = nowIso();
+    return (await workspaceRepository.restoreAsync(existing.id, {
+      name: name?.trim() || undefined,
+      ownerUserId: ownerUserId ?? undefined,
+      repoRoot: workspacePath,
+      updatedAt: timestamp
+    })) ?? {
+      ...existing,
+      ownerUserId: ownerUserId ?? existing.ownerUserId ?? null,
+      name: name?.trim() || existing.name,
+      repoRoot: workspacePath,
+      updatedAt: timestamp,
+      removedAt: null
+    };
+  }
+  const timestamp = nowIso();
+  return await workspaceRepository.createAsync({
     id: createId(),
     ownerUserId: ownerUserId ?? null,
     name: name?.trim() || path.basename(workspacePath),
