@@ -232,6 +232,10 @@ import {
   type ContextMenuAnchorPoint
 } from "../../workbench/utils/context-menu-position";
 import {
+  useLongPressContextMenu,
+  type LongPressContextMenuPoint
+} from "../../../shared/interaction/use-long-press-context-menu";
+import {
   mapWorkbenchSnapshotToNavigationGroups,
   readWorkbenchNavigationSnapshot,
   WORKBENCH_NAVIGATION_CACHE_MAX_AGE_MS,
@@ -5023,6 +5027,19 @@ function SessionCard({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuPositionStyle, setMenuPositionStyle] = useState<CSSProperties | null>(null);
   const [exportSubmenuOpen, setExportSubmenuOpen] = useState(false);
+  const longPressHandlers = useLongPressContextMenu({
+    enabled:
+      !selectionMode
+      && !platform.isDesktop
+      && (platform.isNativeMobile || platform.isMobile)
+      && showActions
+      && Boolean(onOpenContextMenu),
+    onLongPress: (point: LongPressContextMenuPoint) => {
+      if (onOpenContextMenu) {
+        onOpenContextMenu(point);
+      }
+    }
+  });
 
   useEffect(() => {
     if (!menuOpen) {
@@ -5295,6 +5312,7 @@ function SessionCard({
         ...(createWorkspaceToneStyle(workspaceContext) ?? {}),
         ...(parallelGroupStyle ?? {})
       }}
+      {...longPressHandlers}
       onContextMenu={(event) => {
         if (selectionMode || !showActions || !onOpenContextMenu) {
           return;
@@ -5426,6 +5444,37 @@ function SessionCard({
 
       {sessionMenu}
     </article>
+  );
+}
+
+function WorkspaceContextMenuTitle({
+  onOpen,
+  children
+}: {
+  onOpen: (anchorPoint: ContextMenuAnchorPoint) => void;
+  children: ReactNode;
+}) {
+  const platform = usePlatform();
+  const longPressHandlers = useLongPressContextMenu({
+    enabled: platform.isNativeMobile || platform.isMobile,
+    onLongPress: onOpen
+  });
+
+  return (
+    <span
+      className="workbench-workspace-title-copy"
+      {...longPressHandlers}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onOpen({
+          x: event.clientX,
+          y: event.clientY
+        });
+      }}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -8471,24 +8520,17 @@ function SidebarContent({
             <span className="workbench-workspace-toggle-icon" aria-hidden="true">
               <ChevronIcon expanded={!isCollapsed} />
             </span>
-              <span
-                className="workbench-workspace-title-copy"
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  void openWorkspaceContextMenu(
-                    node.workspace,
-                    { pinDisabled: true },
-                    { x: event.clientX, y: event.clientY }
-                  );
-                }}
-              >
+            <WorkspaceContextMenuTitle
+              onOpen={(anchorPoint) => {
+                void openWorkspaceContextMenu(node.workspace, { pinDisabled: true }, anchorPoint);
+              }}
+            >
               <span className="workbench-workspace-title-line">
                 <strong>{node.meta.displayName || node.workspace.name}</strong>
                 {renderWorkspaceHostBadge(node.workspace)}
               </span>
               <span className="session-meta">{node.meta.branchName}</span>
-            </span>
+            </WorkspaceContextMenuTitle>
           </button>
 
           {batchWorkspaceId === node.workspace.id
@@ -10336,24 +10378,20 @@ function SidebarContent({
                   <span className="workbench-workspace-toggle-icon" aria-hidden="true">
                     <ChevronIcon expanded={!isWorkspaceCollapsed} />
                   </span>
-                  <span
-                    className="workbench-workspace-title-copy"
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      void openWorkspaceContextMenu(group.workspace, {
-                        pinDisabled: workspaceGroups[0]?.workspace.id === group.workspace.id
-                      }, {
-                        x: event.clientX,
-                        y: event.clientY
-                      });
+                  <WorkspaceContextMenuTitle
+                    onOpen={(anchorPoint) => {
+                      void openWorkspaceContextMenu(
+                        group.workspace,
+                        { pinDisabled: workspaceGroups[0]?.workspace.id === group.workspace.id },
+                        anchorPoint
+                      );
                     }}
                   >
                     <span className="workbench-workspace-title-line">
                       <strong>{group.workspace.name}</strong>
                       {renderWorkspaceHostBadge(group.workspace)}
                     </span>
-                  </span>
+                  </WorkspaceContextMenuTitle>
                 </button>
 
                 {batchWorkspaceId === group.workspace.id ? (
