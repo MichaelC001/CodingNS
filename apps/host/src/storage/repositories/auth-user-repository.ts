@@ -326,7 +326,8 @@ export class AuthUserRepository {
           totalTokens: 0,
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
-          costUsd: 0
+          costUsd: 0,
+          modelUsage: []
         });
       }
     }
@@ -344,7 +345,7 @@ export class AuthUserRepository {
       const item = byUserId.get(row.user_id);
       if (!item || !row.bucket) continue;
       const timeline = item.cliProviderTimeline[row.provider] ?? (item.cliProviderTimeline[row.provider] = []);
-      timeline.push({ bucket: row.bucket, sessionCount: row.session_count, inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 });
+      timeline.push({ bucket: row.bucket, sessionCount: row.session_count, inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, modelUsage: [] });
     }
 
     for (const row of this.db
@@ -388,6 +389,47 @@ export class AuthUserRepository {
       if (bucket) bucket.costUsd = row.cost_usd ?? 0;
     }
 
+    // 时间线的每个数据桶同时保留模型明细，详情表才能展示该时间点的真实用量。
+    for (const row of this.listDetailedUsageRows(
+      `SELECT sb.user_id AS user_id, sue.model AS label,
+              ${getUsageBucketSql(period, "sue.occurred_at")} AS bucket,
+              COUNT(DISTINCT sue.session_id) AS count,
+              SUM(sue.input_tokens) AS input_tokens,
+              SUM(sue.output_tokens) AS output_tokens,
+              SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
+              SUM(sue.cache_read_tokens) AS cache_read_tokens,
+              SUM(sue.cache_write_tokens) AS cache_write_tokens,
+              SUM(sue.cost_usd) AS cost_usd
+       FROM session_usage_events_with_legacy sue
+       INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
+       WHERE sb.user_id IS NOT NULL AND TRIM(sue.model) <> '' AND ${usageWindowSql}
+       GROUP BY sb.user_id, sue.model, bucket`
+    )) {
+      const bucket = byUserId.get(row.userId)?.timeline.find((value) => value.bucket === row.bucket);
+      if (bucket) mergeUsageItem(bucket.modelUsage, row);
+    }
+
+    for (const row of this.listDetailedUsageRows(
+      `SELECT sb.user_id AS user_id, sue.model AS label,
+              sb.provider AS provider,
+              ${getUsageBucketSql(period, "sue.occurred_at")} AS bucket,
+              COUNT(DISTINCT sue.session_id) AS count,
+              SUM(sue.input_tokens) AS input_tokens,
+              SUM(sue.output_tokens) AS output_tokens,
+              SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
+              SUM(sue.cache_read_tokens) AS cache_read_tokens,
+              SUM(sue.cache_write_tokens) AS cache_write_tokens,
+              SUM(sue.cost_usd) AS cost_usd
+       FROM session_usage_events_with_legacy sue
+       INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
+       WHERE sb.user_id IS NOT NULL AND TRIM(sue.model) <> '' AND ${usageWindowSql}
+       GROUP BY sb.user_id, sb.provider, sue.model, bucket`
+    )) {
+      const timeline = row.bucket ? byUserId.get(row.userId)?.cliProviderTimeline[row.provider ?? ""] : undefined;
+      const bucket = timeline?.find((value) => value.bucket === row.bucket);
+      if (bucket) mergeUsageItem(bucket.modelUsage, row);
+    }
+
     for (const row of this.listGroupedUsageRows(
       `SELECT sb.user_id AS user_id, sb.provider AS label, COUNT(DISTINCT sue.session_id) AS count
        FROM session_usage_events_with_legacy sue
@@ -396,16 +438,6 @@ export class AuthUserRepository {
        GROUP BY sb.user_id, sb.provider`
     )) {
       mergeCountUsageItem(byUserId.get(row.userId)?.cliProviderUsage, row);
-    }
-
-    for (const row of this.listGroupedUsageRows(
-      `SELECT sb.user_id AS user_id, sue.model AS label, COUNT(DISTINCT sue.session_id) AS count
-       FROM session_usage_events_with_legacy sue
-       INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
-       WHERE sb.user_id IS NOT NULL AND TRIM(sue.model) <> '' AND ${usageWindowSql}
-       GROUP BY sb.user_id, sue.model`
-    )) {
-      mergeCountUsageItem(byUserId.get(row.userId)?.modelUsage, row);
     }
 
     for (const row of this.listGroupedUsageRows(
@@ -460,6 +492,8 @@ export class AuthUserRepository {
       item.modelUsage.sort(sortUsageItem);
       item.cliProviderUsage.sort(sortUsageItem);
       item.modelProviderUsage.sort(sortUsageItem);
+      item.timeline.forEach((bucket) => bucket.modelUsage.sort(sortUsageItem));
+      Object.values(item.cliProviderTimeline).forEach((timeline) => timeline.forEach((bucket) => bucket.modelUsage.sort(sortUsageItem)));
     }
 
     return {
@@ -485,6 +519,7 @@ export class AuthUserRepository {
       user_id: string; label: string | null; count: number;
       input_tokens: number | null; output_tokens: number | null;
       total_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null; cost_usd: number | null;
+      bucket?: string | null; provider?: string | null;
     }>).map((row) => ({
       userId: row.user_id,
       label: row.label?.trim() || "unknown",
@@ -494,7 +529,9 @@ export class AuthUserRepository {
       totalTokens: row.total_tokens ?? 0,
       cacheReadTokens: row.cache_read_tokens ?? 0,
       cacheWriteTokens: row.cache_write_tokens ?? 0,
-      costUsd: row.cost_usd
+      costUsd: row.cost_usd,
+      bucket: row.bucket ?? undefined,
+      provider: row.provider?.trim() || undefined
     }));
   }
 }
@@ -540,6 +577,7 @@ export interface AuthUserUsageBucket {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   costUsd: number;
+  modelUsage: AuthUserUsageItem[];
 }
 
 export interface AuthUserUsageItem {
@@ -566,6 +604,8 @@ interface DetailedUsageRow extends GroupedUsageRow {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   costUsd: number | null;
+  bucket?: string;
+  provider?: string;
 }
 
 function getUsageBucketSql(period: AuthUserUsagePeriod, column = "created_at"): string {

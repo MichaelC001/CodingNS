@@ -3,10 +3,10 @@ import { FiActivity, FiDollarSign, FiGrid, FiRefreshCw, FiX, FiZap } from "react
 import { getProviderDisplayName, getProviderIcon } from "../features/conversation/capability/provider-ui";
 import { useProviderCatalog } from "../features/conversation/capability/provider-catalog-store";
 import type { ProviderId } from "../features/conversation/api/conversation-api";
-import { fetchUserUsage, type UserUsagePeriod, type UserUsageSnapshotDto } from "../features/settings/api/user-management-api";
+import { fetchUserUsage, type UserUsageItemDto, type UserUsagePeriod, type UserUsageSnapshotDto } from "../features/settings/api/user-management-api";
 import { t } from "../shared/i18n";
 
-interface TrendPoint { label: string; sessions: number; totalTokens: number; costUsd: number; cacheReadTokens: number; cacheWriteTokens: number; }
+interface TrendPoint { label: string; sessions: number; totalTokens: number; costUsd: number; cacheReadTokens: number; cacheWriteTokens: number; modelUsage: UserUsageItemDto[]; }
 interface ProviderOption { id: string; sessions: number; totalTokens: number; costUsd: number; }
 
 export function PerformanceOverviewPanel({ compact = false }: { compact?: boolean }) {
@@ -41,11 +41,12 @@ export function PerformanceOverviewPanel({ compact = false }: { compact?: boolea
     [providerCatalog, snapshot]
   );
   const summary = useMemo(() => aggregateUsage(snapshot, selectedProvider), [snapshot, selectedProvider]);
-  useEffect(() => { if (selectedProvider !== "all" && !providers.some((item) => item.id === selectedProvider)) setSelectedProvider("all"); setSelectedPoint(null); }, [period, selectedProvider, providers]);
+  useEffect(() => { if (selectedProvider !== "all" && !providers.some((item) => item.id === selectedProvider)) setSelectedProvider("all"); }, [selectedProvider, providers]);
+  useEffect(() => { setSelectedPoint(null); }, [period, selectedProvider]);
   if (failed && !snapshot) return null;
   return <section className={`settings-performance-panel${compact ? " settings-performance-panel-compact" : ""}`}>
     <div className="settings-performance-heading"><div><h2>{t("settings.performanceTitle")}</h2><p>{t("settings.performanceDescription")}</p></div><div className="settings-performance-actions"><div className="settings-performance-periods" role="tablist" aria-label={t("settings.performancePeriodLabel")}>{(["day", "week", "month"] as UserUsagePeriod[]).map((value) => <button key={value} type="button" role="tab" aria-selected={period === value} className="settings-performance-period" data-active={period === value ? "true" : undefined} onClick={() => { allowEmptyDayFallback.current = false; setPeriod(value); }}>{periodLabel(value)}</button>)}</div><button type="button" className="settings-performance-refresh" title={t("settings.performanceRefresh")} aria-label={t("settings.performanceRefresh")} onClick={() => setReloadVersion((value) => value + 1)}><FiRefreshCw aria-hidden="true" /></button></div></div>
-    {loading && !snapshot ? <div className="settings-performance-loading">{t("settings.performanceLoading")}</div> : <><ProviderFilter options={providers} selected={selectedProvider} onSelect={setSelectedProvider} /><div className="settings-performance-summary"><div className="settings-performance-hero"><span className="settings-performance-hero-icon"><FiZap aria-hidden="true" /></span><div><span>{t("settings.performanceTotalTokens")}</span><strong>{compactNumber(summary.totalTokens)}</strong><small>{`≈ ${compactNumber(summary.totalTokens)}`}</small></div></div><div className="settings-performance-side-metrics"><Metric icon={<FiActivity aria-hidden="true" />} label={t("settings.performanceSessions")} value={number(summary.sessions)} /><Metric icon={<FiDollarSign aria-hidden="true" />} label={t("settings.performanceCost")} value={usd(summary.costUsd)} tone="cost" /></div></div><div className="settings-performance-tiles"><Metric label={t("settings.performanceInputTokens")} value={compactNumber(summary.inputTokens)} /><Metric label={t("settings.performanceOutputTokens")} value={compactNumber(summary.outputTokens)} /><Metric label={t("settings.performanceCacheReadTokens")} value={compactNumber(summary.cacheReadTokens)} tone="cache" /><Metric label={t("settings.performanceCacheWriteTokens")} value={compactNumber(summary.cacheWriteTokens)} tone="cache" /><Metric label={t("settings.performanceCacheHitRate")} value={percent(summary.cacheHitRate)} tone="cache" /><Metric label={t("settings.performanceModels")} value={number(summary.models)} /><Metric label={t("settings.performancePricedSessions")} value={number(summary.pricedSessions)} /><Metric label={t("settings.performanceAverageTokensPerSession")} value={compactNumber(summary.averageTokensPerSession)} /></div><div className="settings-performance-trend"><div className="settings-performance-trend-heading"><strong>{t("settings.performanceTrendTitle")}</strong><span>{periodLabel(period)}</span></div><TrendChart points={summary.points} selectedLabel={selectedPoint?.label ?? null} onSelect={setSelectedPoint} />{selectedPoint ? <PointDetails point={selectedPoint} onClose={() => setSelectedPoint(null)} /> : null}</div></>}
+    {loading && !snapshot ? <div className="settings-performance-loading">{t("settings.performanceLoading")}</div> : <><ProviderFilter options={providers} selected={selectedProvider} onSelect={setSelectedProvider} /><div className="settings-performance-summary"><div className="settings-performance-hero"><span className="settings-performance-hero-icon"><FiZap aria-hidden="true" /></span><div><span>{t("settings.performanceTotalTokens")}</span><strong>{compactNumber(summary.totalTokens)}</strong></div></div><div className="settings-performance-side-metrics"><Metric icon={<FiActivity aria-hidden="true" />} label={t("settings.performanceSessions")} value={number(summary.sessions)} /><Metric icon={<FiDollarSign aria-hidden="true" />} label={t("settings.performanceCost")} value={usd(summary.costUsd)} tone="cost" /></div></div><div className="settings-performance-tiles"><Metric label={t("settings.performanceInputTokens")} value={compactNumber(summary.inputTokens)} /><Metric label={t("settings.performanceOutputTokens")} value={compactNumber(summary.outputTokens)} /><Metric label={t("settings.performanceCacheReadTokens")} value={compactNumber(summary.cacheReadTokens)} tone="cache" /><Metric label={t("settings.performanceCacheWriteTokens")} value={compactNumber(summary.cacheWriteTokens)} tone="cache" /><Metric label={t("settings.performanceCacheHitRate")} value={percent(summary.cacheHitRate)} tone="cache" /><Metric label={t("settings.performanceModels")} value={number(summary.models)} /><Metric label={t("settings.performancePricedSessions")} value={number(summary.pricedSessions)} /><Metric label={t("settings.performanceAverageTokensPerSession")} value={compactNumber(summary.averageTokensPerSession)} /></div><div className="settings-performance-trend"><div className="settings-performance-trend-heading"><strong>{t("settings.performanceTrendTitle")}</strong><span>{periodLabel(period)}</span></div><TrendChart points={summary.points} selectedLabel={selectedPoint?.label ?? null} onSelect={setSelectedPoint} />{selectedPoint ? <PointDetails point={selectedPoint} onClose={() => setSelectedPoint(null)} /> : null}</div></>}
   </section>;
 }
 
@@ -112,7 +113,11 @@ function smoothPath(points: ChartCoordinate[]): string {
   }
   return path;
 }
-function PointDetails({ point, onClose }: { point: TrendPoint; onClose: () => void }) { return <div className="settings-performance-point-details"><div><strong>{point.label}</strong><span>{t("settings.performancePointDetails")}</span></div><div className="settings-performance-point-values"><span>{t("settings.performanceTotalTokens")}: <b>{number(point.totalTokens)}</b></span><span>{t("settings.performanceCost")}: <b>{usd(point.costUsd)}</b></span><span>{t("settings.performanceCacheReadTokens")}: <b>{number(point.cacheReadTokens)}</b></span><span>{t("settings.performanceCacheWriteTokens")}: <b>{number(point.cacheWriteTokens)}</b></span><span>{t("settings.performanceSessions")}: <b>{number(point.sessions)}</b></span></div><button type="button" onClick={onClose} aria-label={t("settings.performanceCloseDetails")} title={t("settings.performanceCloseDetails")}><FiX aria-hidden="true" /></button></div>; }
+function PointDetails({ point, onClose }: { point: TrendPoint; onClose: () => void }) { return <div className="settings-performance-point-details"><div><strong>{point.label}</strong><span>{t("settings.performancePointDetails")}</span></div><div className="settings-performance-point-values"><span>{t("settings.performanceTotalTokens")}: <b>{number(point.totalTokens)}</b></span><span>{t("settings.performanceCost")}: <b>{usd(point.costUsd)}</b></span><span>{t("settings.performanceCacheReadTokens")}: <b>{number(point.cacheReadTokens)}</b></span><span>{t("settings.performanceCacheWriteTokens")}: <b>{number(point.cacheWriteTokens)}</b></span><span>{t("settings.performanceSessions")}: <b>{number(point.sessions)}</b></span></div><ModelUsageTable items={point.modelUsage} /><button type="button" onClick={onClose} aria-label={t("settings.performanceCloseDetails")} title={t("settings.performanceCloseDetails")}><FiX aria-hidden="true" /></button></div>; }
+
+function ModelUsageTable({ items }: { items: UserUsageItemDto[] }) {
+  return <div className="settings-performance-model-table-wrap"><table className="settings-performance-model-table"><caption>{t("settings.performanceModelDetails")}</caption><thead><tr><th scope="col">{t("settings.performanceModel")}</th><th scope="col">{t("settings.performanceInputTokens")}</th><th scope="col">{t("settings.performanceOutputTokens")}</th><th scope="col">{t("settings.performanceCacheReadTokens")}</th><th scope="col">{t("settings.performanceCacheWriteTokens")}</th><th scope="col">{t("settings.performanceCacheHitRate")}</th><th scope="col">{t("settings.performanceCost")}</th></tr></thead><tbody>{items.length ? items.map((item) => <tr key={item.label}><th scope="row">{item.label}</th><td>{number(item.inputTokens)}</td><td>{number(item.outputTokens)}</td><td>{number(item.cacheReadTokens ?? 0)}</td><td>{number(item.cacheWriteTokens ?? 0)}</td><td>{item.inputTokens > 0 ? percent((item.cacheReadTokens ?? 0) / item.inputTokens) : "--"}</td><td>{item.costUsd == null ? "--" : usd(item.costUsd)}</td></tr>) : <tr><td colSpan={7} className="settings-performance-model-empty">{t("settings.performanceModelDetailsEmpty")}</td></tr>}</tbody></table></div>;
+}
 
 function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string) {
   const points = new Map<string, TrendPoint>();
@@ -147,13 +152,15 @@ function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string)
         totalTokens: 0,
         costUsd: 0,
         cacheReadTokens: 0,
-        cacheWriteTokens: 0
+        cacheWriteTokens: 0,
+        modelUsage: []
       };
       current.sessions += bucket.sessionCount ?? 0;
       current.totalTokens += bucket.totalTokens ?? 0;
       current.costUsd += bucket.costUsd ?? 0;
       current.cacheReadTokens += bucket.cacheReadTokens ?? 0;
       current.cacheWriteTokens += bucket.cacheWriteTokens ?? 0;
+      for (const item of bucket.modelUsage ?? []) mergeModelUsage(current.modelUsage, item);
       points.set(bucket.bucket, current);
     }
   }
@@ -169,9 +176,21 @@ function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string)
     pricedSessions,
     models: models.size,
     averageTokensPerSession: totalTokens / Math.max(1, sessions),
-    cacheHitRate: cacheReadTokens / Math.max(1, cacheReadTokens + inputTokens),
+    cacheHitRate: cacheReadTokens / Math.max(1, inputTokens),
     points: [...points.values()].sort((left, right) => left.label.localeCompare(right.label))
   };
+}
+function mergeModelUsage(items: UserUsageItemDto[], incoming: UserUsageItemDto) {
+  const current = items.find((item) => item.label === incoming.label);
+  if (!current) { items.push({ ...incoming }); return; }
+  current.count += incoming.count;
+  current.inputTokens += incoming.inputTokens;
+  current.outputTokens += incoming.outputTokens;
+  current.totalTokens += incoming.totalTokens;
+  current.cacheReadTokens = (current.cacheReadTokens ?? 0) + (incoming.cacheReadTokens ?? 0);
+  current.cacheWriteTokens = (current.cacheWriteTokens ?? 0) + (incoming.cacheWriteTokens ?? 0);
+  if (current.costUsd != null && incoming.costUsd != null) current.costUsd += incoming.costUsd;
+  else current.costUsd = null;
 }
 function getProviderOptions(snapshot: UserUsageSnapshotDto | null, enabledProviders: readonly string[]): ProviderOption[] { const enabledProviderSet = new Set(enabledProviders); const options = new Map<string, ProviderOption>(); for (const user of snapshot?.users ?? []) for (const item of user.cliProviderUsage) { if (!enabledProviderSet.has(item.label)) continue; const current = options.get(item.label) ?? { id: item.label, sessions: 0, totalTokens: 0, costUsd: 0 }; current.sessions += item.count; current.totalTokens += item.totalTokens; current.costUsd += item.costUsd ?? 0; options.set(item.label, current); } return [...options.values()].sort((left, right) => right.totalTokens - left.totalTokens || left.id.localeCompare(right.id)); }
 function hasUsageData(snapshot: UserUsageSnapshotDto): boolean {

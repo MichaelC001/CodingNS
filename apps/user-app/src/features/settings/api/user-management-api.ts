@@ -72,6 +72,7 @@ export interface UserUsageBucketDto {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costUsd: number;
+  modelUsage?: UserUsageItemDto[];
 }
 
 export interface UserUsageItemDto {

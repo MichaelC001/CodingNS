@@ -25350,6 +25350,66 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   font-variant-numeric: tabular-nums;
 }
 
+.settings-performance-model-table-wrap {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-x: auto;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border-primary));
+  padding-top: 8px;
+}
+
+.settings-performance-model-table {
+  width: 100%;
+  min-width: 680px;
+  border-collapse: collapse;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.settings-performance-model-table caption {
+  margin-bottom: 6px;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.settings-performance-model-table th,
+.settings-performance-model-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-performance-model-table thead th {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.settings-performance-model-table th:first-child,
+.settings-performance-model-table td:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+.settings-performance-model-table tbody th {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.settings-performance-model-table tbody tr:last-child th,
+.settings-performance-model-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.settings-performance-model-empty {
+  color: var(--text-secondary);
+  text-align: left !important;
+}
+
 /* 关闭按钮脱离文档流固定在右上角，避免窄屏时被挤到数值行下面。 */
 .settings-performance-point-details button {
   position: absolute;

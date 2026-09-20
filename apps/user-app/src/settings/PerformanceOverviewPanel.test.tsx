@@ -71,6 +71,21 @@ describe("PerformanceOverviewPanel", () => {
     });
     expect(screen.getByText(t("settings.performanceEmpty"))).toBeInTheDocument();
   });
+
+  it("选中时间点后按模型展示 token、缓存率和费用", async () => {
+    render(
+      <I18nProvider language="zh-CN">
+        <PerformanceOverviewPanel />
+      </I18nProvider>
+    );
+
+    await waitFor(() => expect(screen.getByRole("img", { name: t("settings.performanceTrendAriaLabel") })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /2026-09-20/ }));
+    await waitFor(() => expect(screen.getByRole("table")).toBeInTheDocument());
+    expect(screen.getByRole("row", { name: /gpt-5\.6-sol/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /gpt-5\.6-astra/ })).toBeInTheDocument();
+    expect(screen.getByText("50%")).toBeInTheDocument();
+  });
 });
 
 function createUsageSnapshot(): UserUsageSnapshotDto {
@@ -93,7 +108,20 @@ function createUsageSnapshot(): UserUsageSnapshotDto {
         tokenUsageAvailable: true,
         costUsd: 0.12,
         costUsageAvailable: true,
-        timeline: [],
+        timeline: [{
+          bucket: "2026-09-20",
+          sessionCount: 1,
+          inputTokens: 100,
+          outputTokens: 40,
+          totalTokens: 140,
+          cacheReadTokens: 50,
+          cacheWriteTokens: 5,
+          costUsd: 0.12,
+          modelUsage: [
+            { label: "gpt-5.6-sol", count: 1, inputTokens: 100, outputTokens: 40, totalTokens: 140, cacheReadTokens: 50, cacheWriteTokens: 5, costUsd: 0.1 },
+            { label: "gpt-5.6-astra", count: 1, inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.02 }
+          ]
+        }],
         cliProviderUsage: [
           {
             label: "codex",
