@@ -366,6 +366,39 @@ describe("MobileWorkspaceSwitcherHeader", () => {
     expect(screen.getAllByText("本地 Host")).toHaveLength(2);
     expect(screen.getByText("http://127.0.0.1:3002")).toBeInTheDocument();
   });
+
+  it("项目切换器可以打开现有项目管理功能", async () => {
+    const user = userEvent.setup();
+    const onManageWorkspace = vi.fn();
+
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <MobileWorkspaceSwitcherHeader
+            currentWorkspace={{
+              id: "workspace-1",
+              name: "项目一",
+              path: "/repo/project-one"
+            }}
+            workspaces={[
+              {
+                id: "workspace-1",
+                name: "项目一",
+                path: "/repo/project-one"
+              }
+            ]}
+            onManageWorkspace={onManageWorkspace}
+          />
+        </MemoryRouter>
+      </ToastProvider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "切换工作区" }));
+    await user.click(screen.getByRole("button", { name: "管理项目" }));
+
+    expect(onManageWorkspace).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "HOST 与工作区" })).not.toBeInTheDocument();
+  });
 });
 
 function RouteProbe() {

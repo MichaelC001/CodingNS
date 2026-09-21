@@ -23,6 +23,7 @@ import {
   type WorkspaceRef
 } from "../../conversation/api/conversation-api";
 import { MobileTopHeaderFrame } from "./MobileTopHeaderFrame";
+import { useWorkbenchShell } from "../../conversation/components/WorkbenchLayout";
 
 interface WorkspaceSummary {
   readonly id: string;
@@ -50,6 +51,8 @@ interface MobileWorkspaceSwitcherHeaderProps {
   readonly showTriggerChevron?: boolean;
   readonly showWorkspaceSubtitle?: boolean;
   readonly onTriggerClick?: () => void;
+  /** 打开现有项目管理弹层；未传时从工作台上下文读取。 */
+  readonly onManageWorkspace?: () => void;
   readonly trailing?: ReactNode;
   readonly gestureHandlers?: {
     readonly onTouchStart?: TouchEventHandler<HTMLDivElement>;
@@ -76,6 +79,7 @@ export function MobileWorkspaceSwitcherHeader({
   showTriggerChevron = true,
   showWorkspaceSubtitle = true,
   onTriggerClick,
+  onManageWorkspace,
   trailing,
   gestureHandlers
 }: MobileWorkspaceSwitcherHeaderProps) {
@@ -86,6 +90,8 @@ export function MobileWorkspaceSwitcherHeader({
   const navigate = useNavigate();
   const { showToast } = useToast();
   const runtimeConfig = useClientConfigSelector((state) => state);
+  const workbenchShell = useWorkbenchShell();
+  const manageWorkspace = onManageWorkspace ?? workbenchShell.openWorkspaceManager;
   const activeHost = getActiveHost(runtimeConfig);
   const switcherItems = workspaceOptions ?? workspaces.map((workspace) => ({
     workspace: {
@@ -320,6 +326,26 @@ export function MobileWorkspaceSwitcherHeader({
                   />
                 ))}
               </ModalList>
+              {manageWorkspace ? (
+                <ModalList className="mobile-workspace-home-group mobile-workspace-home-sheet-group">
+                  <ModalListItem
+                    as="button"
+                    className="mobile-workspace-home-row mobile-workspace-home-sheet-row"
+                    label={
+                      <span className="mobile-workspace-home-sheet-label">
+                        <span className="mobile-workspace-home-sheet-label-text">
+                          {t("shell.manageWorkspaceAction")}
+                        </span>
+                      </span>
+                    }
+                    trailing={<ChevronRightIcon />}
+                    onClick={() => {
+                      setSwitcherOpen(false);
+                      manageWorkspace();
+                    }}
+                  />
+                </ModalList>
+              ) : null}
               {sheetContent ? sheetContent(() => setSwitcherOpen(false)) : null}
             </WorkspaceSwitcherSheet>
           )
