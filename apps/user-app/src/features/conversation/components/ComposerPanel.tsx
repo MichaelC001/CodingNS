@@ -110,6 +110,10 @@ import {
   type ComposerMentionFileItemDto,
   type ComposerMentionSkillItemDto
 } from "../api/composer-mention-api";
+import {
+  ATTACHMENT_COMPRESSION_ERROR,
+  prepareAttachmentFile
+} from "./attachment-image-compression";
 
 export { resolveMacSelectPopoverWidth as resolveComposerMacSelectPopoverWidth } from "./MacSelect";
 
@@ -794,6 +798,7 @@ export function ComposerPanel({
     () => normalizeModelReasoningLevel(initialReasoningLevel) ?? "medium"
   );
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [preparingAttachments, setPreparingAttachments] = useState(false);
   const [attachmentSheetOpen, setAttachmentSheetOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [quickPhrases, setQuickPhrases] = useState<QuickPhraseRecord[]>(DEFAULT_QUICK_PHRASES);
@@ -854,6 +859,7 @@ export function ComposerPanel({
   const compositionCommitLockRef = useRef(false);
   const compositionCommitUnlockTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
   const attachmentRegistryRef = useRef(new Set<string>());
+  const attachmentPreparationCountRef = useRef(0);
   const attachmentDraftCacheRef = useRef(new Map<string, StoredComposerDraftAttachment>());
   const quickPhraseMutationVersionRef = useRef(0);
   const quickPhraseLongPressRef = useRef<QuickPhraseLongPressState | null>(null);
@@ -1662,23 +1668,56 @@ export function ComposerPanel({
     setAttachments(nextAttachments);
   }, []);
 
-  const mergeAttachments = useCallback((incomingFiles: File[]) => {
+  const mergeAttachments = useCallback(async (incomingFiles: File[]) => {
     if (incomingFiles.length === 0) {
       return;
     }
 
-    setAttachments((current) => {
-      const next = mergeComposerAttachments(current, incomingFiles);
+    attachmentPreparationCountRef.current += 1;
+    setPreparingAttachments(true);
 
-      next.forEach((attachment) => {
-        if (attachment.previewUrl) {
-          attachmentRegistryRef.current.add(attachment.previewUrl);
+    try {
+      const preparedFiles: File[] = [];
+
+      for (const file of incomingFiles) {
+        try {
+          preparedFiles.push(await prepareAttachmentFile(file));
+        } catch (error) {
+          showToast({
+            title:
+              error instanceof Error && error.message === ATTACHMENT_COMPRESSION_ERROR
+                ? t("conversation.attachmentCompressionFailed")
+                : t("conversation.attachmentReadFailed"),
+            tone: "error"
+          });
         }
-      });
+      }
 
-      return next;
-    });
-  }, []);
+      if (preparedFiles.length === 0) {
+        return;
+      }
+
+      setAttachments((current) => {
+        const next = mergeComposerAttachments(current, preparedFiles);
+
+        next.forEach((attachment) => {
+          if (attachment.previewUrl) {
+            attachmentRegistryRef.current.add(attachment.previewUrl);
+          }
+        });
+
+        return next;
+      });
+    } finally {
+      attachmentPreparationCountRef.current = Math.max(
+        0,
+        attachmentPreparationCountRef.current - 1
+      );
+      if (attachmentPreparationCountRef.current === 0) {
+        setPreparingAttachments(false);
+      }
+    }
+  }, [showToast]);
 
   const removeAttachment = useCallback((attachmentId: string) => {
     attachmentDraftCacheRef.current.delete(attachmentId);
@@ -1698,7 +1737,7 @@ export function ComposerPanel({
     const nextFiles = Array.from(event.target.files ?? []);
 
     if (nextFiles.length > 0) {
-      mergeAttachments(nextFiles);
+      void mergeAttachments(nextFiles);
     }
 
     event.target.value = "";
@@ -1750,7 +1789,7 @@ export function ComposerPanel({
 
     event.preventDefault();
     setDragActive(false);
-    mergeAttachments(droppedFiles);
+    void mergeAttachments(droppedFiles);
   }, [attachmentDecision.allowed, inRunSendBlocked, mergeAttachments, platform.isMobile]);
 
   const triggerNativeAttachmentInput = useCallback((target: "camera" | "library") => {
@@ -2841,6 +2880,7 @@ export function ComposerPanel({
     if (
       (rawNextContent.length === 0 && nextAttachments.length === 0)
       || !sendDecision.allowed
+      || preparingAttachments
       || inRunSendBlocked
       || forkSendBlocked
     ) {
@@ -2975,6 +3015,7 @@ export function ComposerPanel({
   const isDisabled =
     localSubmitting ||
     isSubmitting ||
+    preparingAttachments ||
     inRunSendBlocked ||
     forkSendBlocked ||
     !sendDecision.allowed ||
@@ -2982,6 +3023,7 @@ export function ComposerPanel({
   const attachButtonDisabled =
     localSubmitting ||
     isSubmitting ||
+    preparingAttachments ||
     inRunSendBlocked ||
     !attachmentDecision.allowed;
   const showQuickPhraseButton = content.length === 0 && !inRunSendBlocked;
@@ -3491,7 +3533,7 @@ export function ComposerPanel({
                 }
 
                 event.preventDefault();
-                mergeAttachments(pastedFiles);
+                void mergeAttachments(pastedFiles);
               }}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
