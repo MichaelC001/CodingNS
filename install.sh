@@ -74,6 +74,15 @@ CODINGNS_PTY_PACKAGE_NAME=""
 CODINGNS_PTY_PACKAGE_VERSION=""
 CODINGNS_SQLITE_PACKAGE_NAME=""
 CODINGNS_SQLITE_PACKAGE_VERSION=""
+PACKAGE_NAME=""
+SELECTED_PACKAGE_VERSION=""
+INSTALLED_PACKAGE_VERSION=""
+INSTALLED_DATA_DIR=""
+INSTALLED_PORT=""
+INSTALLED_AUTOSTART="0"
+MANAGEMENT_ACTION=""
+VERSION_LIST=()
+VERSION_METADATA=""
 
 msg() {
   local key="$1"
@@ -235,6 +244,42 @@ msg() {
     en:info_using_host_installer) printf 'Using the unified installer for setup, startup, and autostart...';;
     zh:info_done) printf '安装流程已完成。';;
     en:info_done) printf 'The installation flow is complete.';;
+    zh:info_existing_install) printf '检测到已安装的 CodingNS：%s（数据目录：%s）';;
+    en:info_existing_install) printf 'Existing CodingNS installation detected: %s (data directory: %s)';;
+    zh:prompt_existing_action) printf '请选择操作：';;
+    en:prompt_existing_action) printf 'Choose an action:';;
+    zh:existing_action_upgrade) printf '1) 升级';;
+    en:existing_action_upgrade) printf '1) Upgrade';;
+    zh:existing_action_downgrade) printf '2) 降级';;
+    en:existing_action_downgrade) printf '2) Downgrade';;
+    zh:existing_action_uninstall) printf '3) 卸载';;
+    en:existing_action_uninstall) printf '3) Uninstall';;
+    zh:existing_action_cancel) printf '4) 取消';;
+    en:existing_action_cancel) printf '4) Cancel';;
+    zh:prompt_version) printf '请输入版本编号';;
+    en:prompt_version) printf 'Enter the version number';;
+    zh:info_no_versions) printf '没有找到符合条件的版本。';;
+    en:info_no_versions) printf 'No matching versions were found.';;
+    zh:info_version_source_failed) printf '无法读取 npm 版本列表，请检查网络或稍后重试。';;
+    en:info_version_source_failed) printf 'Unable to read the npm version list. Check the network and try again later.';;
+    zh:info_version_upgrade_title) printf '可升级到以下版本（当前：%s）：';;
+    en:info_version_upgrade_title) printf 'Available upgrade versions (current: %s):';;
+    zh:info_version_downgrade_title) printf '可降级到以下版本（当前：%s）：';;
+    en:info_version_downgrade_title) printf 'Available downgrade versions (current: %s):';;
+    zh:version_show_development) printf 'd) 显示开发版本';;
+    en:version_show_development) printf 'd) Show development versions';;
+    zh:version_cancel) printf 'q) 取消';;
+    en:version_cancel) printf 'q) Cancel';;
+    zh:info_selected_version) printf '已选择 CodingNS %s。';;
+    en:info_selected_version) printf 'Selected CodingNS %s.';;
+    zh:prompt_purge_data) printf '是否同时清理数据目录？';;
+    en:prompt_purge_data) printf 'Also remove the data directory?';;
+    zh:info_uninstalling) printf '开始卸载 CodingNS，并清理服务和开机自启配置...';;
+    en:info_uninstalling) printf 'Uninstalling CodingNS and removing service/autostart configuration...';;
+    zh:info_uninstalled) printf 'CodingNS 已卸载。';;
+    en:info_uninstalled) printf 'CodingNS has been uninstalled.';;
+    zh:info_uninstall_keep_data) printf '已保留数据目录：%s';;
+    en:info_uninstall_keep_data) printf 'Data directory kept: %s';;
     zh:info_registry) printf '当前 npm 源：%s' "$@";;
     en:info_registry) printf 'Registry used: %s' "$@";;
     zh:info_runtime_node) printf '实际运行时 Node.js：%s' "$@";;
@@ -1305,6 +1350,259 @@ ensure_npm_install_context() {
   fi
 }
 
+find_existing_install_state() {
+  local data_dir="$1"
+  local candidate=""
+
+  for candidate in \
+    "$data_dir/runtime/install-state.json" \
+    "$data_dir/runtime/service/install-state.json"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+read_existing_install_state() {
+  local data_dir="$1"
+  local state_path=""
+  local state_line=""
+
+  state_path="$(find_existing_install_state "$data_dir" || true)"
+  [[ -n "$state_path" && -n "$NODE_BIN" ]] || return 1
+
+  state_line="$($NODE_BIN - "$state_path" <<'EOF'
+const fs = require("node:fs");
+
+try {
+  const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  const version = typeof state.packageVersion === "string" ? state.packageVersion.trim() : "";
+  const resolvedDataDir = typeof state.dataDir === "string" && state.dataDir.trim()
+    ? state.dataDir.trim()
+    : "";
+  const port = Number.isInteger(state.port) ? String(state.port) : "";
+  const autostart = state.autostartEnabled === true ? "1" : "0";
+  process.stdout.write([version, resolvedDataDir, port, autostart].join("\t"));
+} catch {
+  process.exit(1);
+}
+EOF
+  )"
+
+  [[ -n "$state_line" ]] || return 1
+  IFS=$'\t' read -r INSTALLED_PACKAGE_VERSION INSTALLED_DATA_DIR INSTALLED_PORT INSTALLED_AUTOSTART <<<"$state_line"
+  [[ -n "$INSTALLED_PACKAGE_VERSION" ]] || return 1
+  return 0
+}
+
+detect_existing_installation() {
+  INSTALLED_PACKAGE_VERSION=""
+  INSTALLED_DATA_DIR=""
+  INSTALLED_PORT=""
+  INSTALLED_AUTOSTART="0"
+  PACKAGE_NAME="$(extract_package_name_from_spec "$PACKAGE_SPEC")"
+
+  local default_data_dir=""
+  default_data_dir="$(expand_path "$DEFAULT_DATA_DIR")"
+  read_existing_install_state "$default_data_dir" || true
+
+  if [[ -n "$INSTALLED_DATA_DIR" ]]; then
+    INSTALLED_DATA_DIR="$(expand_path "$INSTALLED_DATA_DIR")"
+  else
+    INSTALLED_DATA_DIR="$default_data_dir"
+  fi
+
+  if [[ -z "$INSTALLED_PACKAGE_VERSION" ]]; then
+    local package_root=""
+    if [[ -n "$NPM_GLOBAL_PREFIX" ]]; then
+      package_root="$(resolve_private_package_root_from_spec "$NPM_GLOBAL_PREFIX" "$PACKAGE_SPEC" 2>/dev/null || true)"
+    fi
+    if [[ -n "$package_root" && -f "$package_root/package.json" ]]; then
+      CODINGNS_PACKAGE_ROOT="$package_root"
+      INSTALLED_PACKAGE_VERSION="$(read_package_json_field "$package_root/package.json" "version" || true)"
+    fi
+  fi
+
+  if [[ -z "$CODINGNS_PACKAGE_ROOT" && -n "$NPM_GLOBAL_PREFIX" ]]; then
+    CODINGNS_PACKAGE_ROOT="$(resolve_private_package_root_from_spec "$NPM_GLOBAL_PREFIX" "$PACKAGE_SPEC" 2>/dev/null || true)"
+  fi
+
+  [[ -n "$INSTALLED_PACKAGE_VERSION" ]]
+}
+
+fetch_version_metadata() {
+  VERSION_METADATA=""
+  local registry_url="${ACTIVE_NPM_REGISTRY:-$OFFICIAL_NPM_REGISTRY}"
+  VERSION_METADATA="$($NPM_BIN view "$PACKAGE_NAME" versions --json --registry "$registry_url" 2>/dev/null || true)"
+  [[ -n "$VERSION_METADATA" && "$VERSION_METADATA" != "null" ]]
+}
+
+build_version_list() {
+  local direction="$1"
+  local include_development="$2"
+  VERSION_LIST=()
+
+  while IFS= read -r version; do
+    [[ -n "$version" ]] || continue
+    VERSION_LIST[${#VERSION_LIST[@]}]="$version"
+  done < <(CODINGNS_VERSION_METADATA="$VERSION_METADATA" "$NODE_BIN" - "$INSTALLED_PACKAGE_VERSION" "$direction" "$include_development" <<'EOF'
+const fs = require("node:fs");
+
+const current = process.argv[2] || "0.0.0";
+const direction = process.argv[3];
+const includeDevelopment = process.argv[4] === "1";
+const raw = process.env.CODINGNS_VERSION_METADATA ?? "";
+let versions = [];
+
+try {
+  const parsed = JSON.parse(raw);
+  versions = Array.isArray(parsed) ? parsed : [parsed];
+} catch {
+  process.exit(0);
+}
+
+function parse(value) {
+  const match = String(value).trim().replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+  if (!match) return null;
+  return { raw: match[0], major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), pre: match[4] ?? "" };
+}
+
+function compare(left, right) {
+  for (const key of ["major", "minor", "patch"]) {
+    if (left[key] !== right[key]) return left[key] - right[key];
+  }
+  if (!left.pre && !right.pre) return 0;
+  if (!left.pre) return 1;
+  if (!right.pre) return -1;
+  const a = left.pre.split(".");
+  const b = right.pre.split(".");
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if (a[index] === undefined) return -1;
+    if (b[index] === undefined) return 1;
+    if (a[index] === b[index]) continue;
+    const an = /^\d+$/.test(a[index]);
+    const bn = /^\d+$/.test(b[index]);
+    if (an && bn) return Number(a[index]) - Number(b[index]);
+    if (an !== bn) return an ? -1 : 1;
+    return a[index].localeCompare(b[index]);
+  }
+  return 0;
+}
+
+const currentParsed = parse(current);
+if (!currentParsed) process.exit(0);
+const selected = versions
+  .map(parse)
+  .filter(Boolean)
+  .filter((version) => includeDevelopment || !version.pre)
+  .filter((version) => direction === "upgrade" ? compare(version, currentParsed) > 0 : compare(version, currentParsed) < 0)
+  .sort((left, right) => compare(right, left));
+
+const limit = direction === "upgrade" ? 6 : 5;
+for (const version of selected.slice(0, limit)) process.stdout.write(`${version.raw}\n`);
+EOF
+  )
+}
+
+has_development_versions() {
+  CODINGNS_VERSION_METADATA="$VERSION_METADATA" "$NODE_BIN" <<'EOF'
+const fs = require("node:fs");
+try {
+  const parsed = JSON.parse(process.env.CODINGNS_VERSION_METADATA ?? "");
+  process.exit((Array.isArray(parsed) ? parsed : [parsed]).some((version) => /-/.test(String(version))) ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+EOF
+}
+
+select_managed_version() {
+  local action="$1"
+  local include_development="0"
+  local prompt_value=""
+  local index=""
+
+  if ! fetch_version_metadata; then
+    say_warn info_version_source_failed
+    return 1
+  fi
+
+  while true; do
+    build_version_list "$action" "$include_development"
+    if (( ${#VERSION_LIST[@]} == 0 )); then
+      say_warn info_no_versions
+      return 1
+    fi
+
+    if [[ "$action" == "upgrade" ]]; then
+      say_info info_version_upgrade_title "$INSTALLED_PACKAGE_VERSION"
+    else
+      say_info info_version_downgrade_title "$INSTALLED_PACKAGE_VERSION"
+    fi
+
+    local version_number=1
+    local version=""
+    for version in "${VERSION_LIST[@]}"; do
+      printf '%s) %s\n' "$version_number" "$version"
+      version_number=$((version_number + 1))
+    done
+
+    if [[ "$include_development" == "0" ]] && has_development_versions; then
+      printf '%s\n' "$(msg version_show_development)"
+    fi
+    printf '%s\n' "$(msg version_cancel)"
+    prompt_read_line "$(msg prompt_version) [1]: " prompt_value
+    prompt_value="$(trim "$prompt_value")"
+
+    if [[ "$prompt_value" == "d" && "$include_development" == "0" ]]; then
+      include_development="1"
+      continue
+    fi
+    if [[ "$prompt_value" == "q" || "$prompt_value" == "" && ${#VERSION_LIST[@]} -eq 0 ]]; then
+      return 1
+    fi
+    if [[ "$prompt_value" =~ ^[0-9]+$ ]]; then
+      index=$((10#$prompt_value - 1))
+      if (( index >= 0 && index < ${#VERSION_LIST[@]} )); then
+        SELECTED_PACKAGE_VERSION="${VERSION_LIST[$index]}"
+        say_info info_selected_version "$SELECTED_PACKAGE_VERSION"
+        return 0
+      fi
+    fi
+    say_warn_custom '请输入列表中的编号，或输入 d 查看开发版本。'
+  done
+}
+
+choose_existing_install_action() {
+  say_info info_existing_install "$INSTALLED_PACKAGE_VERSION" "$INSTALLED_DATA_DIR"
+  printf '%s\n' "$(msg existing_action_upgrade)"
+  printf '%s\n' "$(msg existing_action_downgrade)"
+  printf '%s\n' "$(msg existing_action_uninstall)"
+  printf '%s\n' "$(msg existing_action_cancel)"
+
+  local choice=""
+  prompt_read_line "$(msg prompt_existing_action) " choice
+  choice="$(trim "$choice")"
+
+  case "$choice" in
+    1)
+      MANAGEMENT_ACTION="upgrade"
+      ;;
+    2)
+      MANAGEMENT_ACTION="downgrade"
+      ;;
+    3)
+      MANAGEMENT_ACTION="uninstall"
+      ;;
+    *)
+      MANAGEMENT_ACTION="cancel"
+      ;;
+  esac
+}
+
 prepare_windows_install_runtime() {
   if ! is_windows_environment; then
     return
@@ -1776,18 +2074,7 @@ write_private_runtime_state() {
 const fs = require("node:fs");
 
 const outputPath = process.argv[2];
-let existing = {};
-try {
-  const parsed = JSON.parse(fs.readFileSync(outputPath, "utf8"));
-  if (parsed && typeof parsed === "object") {
-    existing = parsed;
-  }
-} catch {
-  // 统一安装器还没有写过状态时，从空状态开始补齐私有运行时信息。
-}
-
 const payload = {
-  ...existing,
   schemaVersion: 1,
   packageName: process.env.CODINGNS_STATE_PACKAGE_NAME ?? "",
   packageVersion: process.env.CODINGNS_STATE_PACKAGE_VERSION ?? "",
@@ -1806,14 +2093,6 @@ const payload = {
   port: Number(process.env.CODINGNS_STATE_PORT ?? "0"),
   installedAt: process.env.CODINGNS_STATE_INSTALLED_AT ?? ""
 };
-
-payload.installPrefix = payload.installPrefix ?? payload.npmPrefix;
-payload.nodeBinary = payload.nodeBinary ?? payload.nodeExe;
-payload.packageRoot = payload.packageRoot ?? (
-  payload.codingnsCommand
-    ? require("node:path").dirname(require("node:path").dirname(payload.codingnsCommand))
-    : undefined
-);
 
 fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
 EOF
@@ -2061,6 +2340,87 @@ run_host_installer_setup() {
   return 1
 }
 
+run_host_installer_uninstall() {
+  local installer_script=""
+  installer_script="$(resolve_host_installer_script || true)"
+  [[ -n "$installer_script" && -n "$NODE_BIN" ]] || return 1
+
+  local -a args=("uninstall" "--data-dir" "$SELECTED_DATA_DIR")
+  if [[ "${PURGE_DATA:-0}" == "1" ]]; then
+    args+=("--purge")
+  fi
+
+  say_info info_uninstalling
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say_info_custom "node $installer_script ${args[*]}"
+    return 0
+  fi
+
+  if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" || "$USE_SUDO_FOR_NPM" != "1" ]]; then
+    "$NODE_BIN" "$installer_script" "${args[@]}"
+    return
+  fi
+
+  command_exists sudo || return 1
+  sudo "$NODE_BIN" "$installer_script" "${args[@]}"
+}
+
+remove_system_global_package() {
+  [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]] && return 0
+  [[ -n "$NPM_BIN" && -n "$PACKAGE_NAME" ]] || return 0
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say_info_custom "npm uninstall -g $PACKAGE_NAME"
+    return 0
+  fi
+
+  run_with_optional_sudo "$NPM_BIN" uninstall -g "$PACKAGE_NAME" --silent >/dev/null 2>&1 || return 1
+}
+
+run_existing_installation_management() {
+  SELECTED_DATA_DIR="$INSTALLED_DATA_DIR"
+  SELECTED_PORT="${INSTALLED_PORT:-$DEFAULT_PORT}"
+  ENABLE_STARTUP="$INSTALLED_AUTOSTART"
+  INSTALL_CODINGNS="1"
+  INSTALL_OPENCODE="0"
+  INSTALL_DESKTOP_CLIENT="0"
+
+  choose_existing_install_action
+  if is_windows_environment; then
+    prepare_windows_install_runtime
+  fi
+  if [[ -z "$CODINGNS_PACKAGE_ROOT" && -n "$NPM_GLOBAL_PREFIX" ]]; then
+    CODINGNS_PACKAGE_ROOT="$(resolve_private_package_root_from_spec "$NPM_GLOBAL_PREFIX" "$PACKAGE_SPEC" 2>/dev/null || true)"
+  fi
+  case "$MANAGEMENT_ACTION" in
+    cancel)
+      say_info prompt_aborted
+      exit 0
+      ;;
+    uninstall)
+      PURGE_DATA="$(read_yes_no "$(msg prompt_purge_data)" "n")"
+      if ! run_host_installer_uninstall; then
+        die error_host_installer_failed
+      fi
+      if ! remove_system_global_package; then
+        die_custom '服务配置已经移除，但 npm 全局包删除失败，请手工执行 npm uninstall -g @jingyi0605/codingns。'
+      fi
+      say_info info_uninstalled
+      if [[ "$PURGE_DATA" != "1" ]]; then
+        say_info info_uninstall_keep_data "$SELECTED_DATA_DIR"
+      fi
+      exit 0
+      ;;
+    upgrade|downgrade)
+      ensure_registry_if_needed
+      if ! select_managed_version "$MANAGEMENT_ACTION"; then
+        exit 0
+      fi
+      PACKAGE_SPEC="${PACKAGE_NAME}@${SELECTED_PACKAGE_VERSION}"
+      ;;
+  esac
+}
+
 resolve_desktop_release_asset_url() {
   local pattern="$1"
   local api_url="https://api.github.com/repos/jingyi0605/CodingNS/releases/latest"
@@ -2226,9 +2586,18 @@ main() {
   choose_language
   ensure_prerequisites
 
-  say_info info_intro "$PACKAGE_SPEC"
-  collect_install_options
-  print_install_summary
+  SELECTED_DATA_DIR="$(expand_path "$DEFAULT_DATA_DIR")"
+  if detect_existing_installation; then
+    run_existing_installation_management
+    if [[ "$MANAGEMENT_ACTION" == "cancel" || "$MANAGEMENT_ACTION" == "uninstall" ]]; then
+      exit 0
+    fi
+    print_install_summary
+  else
+    say_info info_intro "$PACKAGE_SPEC"
+    collect_install_options
+    print_install_summary
+  fi
 
   if [[ "$(read_yes_no "$(msg prompt_confirm_plan)" "y")" != "1" ]]; then
     say_info prompt_aborted

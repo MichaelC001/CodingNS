@@ -1681,6 +1681,9 @@ export function runUninstall(options, logger, deps = {}) {
   const context = resolveAutostartContext(options);
   const dataDir = context.dataDir;
   const prefix = context.installPrefix;
+  const runtimeRoot = path.resolve(resolveRuntimeDir(dataDir));
+  const resolvedPrefix = path.resolve(prefix);
+  const privatePrefix = resolvedPrefix === runtimeRoot || resolvedPrefix.startsWith(`${runtimeRoot}${path.sep}`);
 
   emitStep("stop-service", "running", "停止服务");
   // 卸载必须先落 uninstall 标记：否则 Supervisor（或 launchd/KeepAlive）会在包被删掉后
@@ -1698,16 +1701,22 @@ export function runUninstall(options, logger, deps = {}) {
   emitStep("remove-autostart", "done");
 
   emitStep("remove-package", "running", "移除服务包");
-  try {
-    fs.rmSync(prefix, { recursive: true, force: true });
-  } catch (error) {
-    emitError(
-      "PERMISSION_DENIED",
-      "移除服务包失败",
-      error instanceof Error ? error.message : String(error),
-      logger.logPath
-    );
-    return EXIT_PERMISSION;
+  if (privatePrefix) {
+    try {
+      fs.rmSync(assertSafeToRemove(prefix), { recursive: true, force: true });
+    } catch (error) {
+      emitError(
+        "PERMISSION_DENIED",
+        "移除服务包失败",
+        error instanceof Error ? error.message : String(error),
+        logger.logPath
+      );
+      return EXIT_PERMISSION;
+    }
+  } else {
+    // 系统 npm 前缀可能同时承载其它全局包，不能把整个 /usr/local 或 /opt/homebrew 删掉。
+    // 外层脚本会在清理服务后执行 npm uninstall -g，只保留这里的服务托管收尾。
+    logger.log("检测到系统 npm 前缀，跳过前缀目录删除", { prefix });
   }
 
   emitStep("remove-package", "done");
