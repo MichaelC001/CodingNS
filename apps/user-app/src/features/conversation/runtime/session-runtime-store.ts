@@ -95,6 +95,9 @@ const SESSION_RUNTIME_SNAPSHOT_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const SESSION_MARK_SEEN_DELAY_MS = 600;
 const SESSION_MARK_SEEN_MIN_INTERVAL_MS = 5_000;
 const SESSION_RUNTIME_POLL_DELAY_MS = 10_000;
+// 权限请求通过 WebSocket 增量推送；HTTP 只用于首屏和重连后的受控对账。
+const PERMISSION_REQUESTS_REFRESH_MIN_INTERVAL_MS = 2_000;
+const PERMISSION_REQUESTS_REFRESH_STATE_MAX_AGE_MS = 5 * 60 * 1000;
 const SESSION_RUNTIME_MESSAGE_FLUSH_DELAY_MS = 16;
 const SESSION_RUNTIME_SNAPSHOT_PERSIST_DELAY_MS = 1_000;
 const TIMELINE_CODEX_EQUIVALENT_AUTHORITATIVE_WINDOW_MS = 2 * 60 * 1000;
@@ -108,6 +111,14 @@ const TIMELINE_INTERNAL_ATTACHMENT_DEBUG_BLOCK_PATTERN =
 const TIMELINE_INTERNAL_ATTACHMENT_DEBUG_TAIL_PATTERN =
   /\[\[CODINGNS_IMAGE_ATTACHMENTS\]\][\s\S]*$/g;
 let nextSessionRuntimeStoreDebugInstanceId = 1;
+
+interface SharedPermissionRequestsRefreshState {
+  inFlight: Promise<SessionPermissionRequestDto[] | null> | null;
+  lastStartedAt: number;
+  lastItems: SessionPermissionRequestDto[] | null;
+}
+
+const sharedPermissionRequestsRefreshStates = new Map<string, SharedPermissionRequestsRefreshState>();
 
 interface SessionRuntimeSnapshot {
   session: SessionSummaryDto | null;
@@ -204,6 +215,7 @@ export class SessionRuntimeStore {
   private pendingMessages: SessionMessageViewModel[] = [];
   private listeners = new Set<RuntimeListener>();
   private realtimeClient: RealtimeClient | null = null;
+  private hasSubscribedToRealtime = false;
   private historyBootstrapFallbackTimer: number | null = null;
   private historyBootstrapFallbackInFlight = false;
   private historyBootstrapEnvelopeReceived = false;
@@ -773,19 +785,24 @@ export class SessionRuntimeStore {
       ? this.state.lastCursor
       : null;
 
+    this.hasSubscribedToRealtime = false;
     this.realtimeClient = new RealtimeClient({
       targetHostId: this.options.targetHostId,
       sessionId: this.sessionId,
       cursor: realtimeCursor,
       limit: REALTIME_LIMIT,
       onSubscribed: () => {
+        const isReconnect = this.hasSubscribedToRealtime;
+        this.hasSubscribedToRealtime = true;
         logPerfDebug("session_send.realtime_subscribed", {
           sessionId: this.sessionId,
-          lastCursor: this.state.lastCursor
+          lastCursor: this.state.lastCursor,
+          isReconnect
         });
-        // Host 重启后，重新订阅实时流会触发一次权限请求读取；Host 会借此
-        // 重新挂载 DSH Remote `$events`，接收网关重放的原 eventId。
-        void this.refreshPermissionRequests();
+        // 首次订阅前已经完成首屏读取；只有重连才做一次受控对账，正常更新走 WebSocket 事件。
+        if (isReconnect) {
+          void this.refreshPermissionRequests();
+        }
         this.patch({
           connectionState: "connected",
           hasOlderMessages: resolveHasOlderMessages({
@@ -1644,18 +1661,69 @@ export class SessionRuntimeStore {
     await Promise.allSettled(tasks);
   }
 
-  async refreshPermissionRequests(): Promise<void> {
-    try {
-      const response = await getSessionPermissionRequests(this.sessionId, {
-        targetHostId: this.options.targetHostId
-      });
+  async refreshPermissionRequests(options: { force?: boolean } = {}): Promise<void> {
+    const now = Date.now();
+    const refreshKey = `${this.options.targetHostId ?? "current"}:${this.sessionId}`;
+    let sharedState = sharedPermissionRequestsRefreshStates.get(refreshKey);
 
-      this.patch({
-        permissionRequests: mergePermissionRequests(this.state.permissionRequests, response.items)
-      });
-    } catch {
+    if (
+      sharedState
+      && sharedState.inFlight === null
+      && now - sharedState.lastStartedAt > PERMISSION_REQUESTS_REFRESH_STATE_MAX_AGE_MS
+    ) {
+      sharedPermissionRequestsRefreshStates.delete(refreshKey);
+      sharedState = undefined;
+    }
+
+    if (!sharedState) {
+      sharedState = {
+        inFlight: null,
+        lastStartedAt: 0,
+        lastItems: null
+      };
+      sharedPermissionRequestsRefreshStates.set(refreshKey, sharedState);
+    }
+
+    if (sharedState.inFlight) {
+      const items = await sharedState.inFlight;
+      this.applyPermissionRequestsRefreshResult(items);
       return;
     }
+
+    if (
+      !options.force
+      && now - sharedState.lastStartedAt < PERMISSION_REQUESTS_REFRESH_MIN_INTERVAL_MS
+    ) {
+      this.applyPermissionRequestsRefreshResult(sharedState.lastItems);
+      return;
+    }
+
+    sharedState.lastStartedAt = now;
+    const refreshPromise = getSessionPermissionRequests(this.sessionId, {
+      targetHostId: this.options.targetHostId
+    })
+      .then((response) => response.items)
+      .catch(() => null)
+      .finally(() => {
+        if (sharedState?.inFlight === refreshPromise) {
+          sharedState.inFlight = null;
+        }
+      });
+
+    sharedState.inFlight = refreshPromise;
+    const items = await refreshPromise;
+    sharedState.lastItems = items;
+    this.applyPermissionRequestsRefreshResult(items);
+  }
+
+  private applyPermissionRequestsRefreshResult(items: SessionPermissionRequestDto[] | null): void {
+    if (this.destroyed || !items) {
+      return;
+    }
+
+    this.patch({
+      permissionRequests: mergePermissionRequests(this.state.permissionRequests, items)
+    });
   }
 
   private shouldRefreshSessionDetail(): boolean {

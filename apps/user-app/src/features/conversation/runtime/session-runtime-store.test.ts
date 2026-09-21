@@ -4824,6 +4824,19 @@ describe("SessionRuntimeStore", () => {
     store.destroy();
   });
 
+  it("首次订阅确认不会重复读取权限列表", async () => {
+    const store = new SessionRuntimeStore("permission-dedup-session");
+    await store.initialize();
+
+    expect(mocked.getSessionPermissionRequests).toHaveBeenCalledTimes(1);
+
+    emitRealtimeSubscribed();
+    await Promise.resolve();
+
+    expect(mocked.getSessionPermissionRequests).toHaveBeenCalledTimes(1);
+    store.destroy();
+  });
+
   it("收到 session.activity 后会按统一裁决更新活动状态", async () => {
     const store = new SessionRuntimeStore("session-1");
     await store.initialize();

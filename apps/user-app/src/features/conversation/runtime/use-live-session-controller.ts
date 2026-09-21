@@ -565,7 +565,7 @@ export function useLiveSessionController(input: UseLiveSessionControllerInput) {
       // Host 重启窗口内可能暂时还没有恢复本地回写记录；重新读取会触发
       // DSH Remote `$events` 重挂载和 pending waterfall 重放，不能直接删卡片。
       if (error instanceof ApiError && error.errorCode === "PERMISSION_REQUEST_NOT_FOUND") {
-        void store.refreshPermissionRequests();
+        void store.refreshPermissionRequests({ force: true });
       }
       showToast({
         title: t("conversation.permissionRequestReplyFailed"),
