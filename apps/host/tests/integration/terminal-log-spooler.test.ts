@@ -129,6 +129,40 @@ describe("TerminalLogSpooler", () => {
     database.close();
   });
 
+  it("提供 Host 写队列时不再启动第二个 SQLite writer", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-terminal-log-local-writer-"));
+    const databasePath = path.join(tempDir, "terminal.db");
+    tempDirs.push(tempDir);
+    const database = createDatabaseClient(databasePath);
+    seedTerminalDependencies(database.db, "terminal-local");
+
+    const spooler = new TerminalLogSpooler({
+      databasePath,
+      logRootDir: tempDir,
+      fileRepository: new TerminalLogFileRepository(database.db),
+      segmentRepository: new TerminalLogSegmentRepository(database.db),
+      sqliteWriteQueue: database.writeQueue,
+      flushIntervalMs: 60_000,
+      maxBatchBytes: 1024
+    });
+
+    expect((spooler as unknown as { writerClient: unknown }).writerClient).toBeNull();
+    spooler.appendChunks("terminal-local", [{
+      terminalId: "terminal-local",
+      cursor: "1",
+      stream: "stdout",
+      content: "single-writer\n",
+      timestamp: "2026-03-28T11:00:00.000Z"
+    }]);
+    await spooler.flushTerminal("terminal-local");
+
+    expect(readFileSync(path.join(tempDir, "terminal-local", "active.log"), "utf8"))
+      .toBe("single-writer\n");
+
+    await spooler.dispose();
+    database.close();
+  });
+
   it("文件数据库模式下遇到短暂写锁会重试并最终写入成功", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "codingns-terminal-log-worker-busy-"));
     const databasePath = path.join(tempDir, "terminal.db");

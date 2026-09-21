@@ -36,7 +36,23 @@ export interface SessionStatsSnapshotRecord {
 
 /** 会话统计、账单和模型用量的原子读写入口。 */
 export class SessionStatsSnapshotRepository {
-  constructor(private readonly db: SqliteDatabase) {}
+  private readonly hasRowsBySessionStatement: SqliteStatement<any[], any>;
+
+  constructor(private readonly db: SqliteDatabase) {
+    this.hasRowsBySessionStatement = this.db.prepare(
+      `SELECT 1 AS present
+       FROM (
+         SELECT session_id FROM session_stats_snapshots WHERE session_id = ?
+         UNION ALL
+         SELECT session_id FROM session_cost_bills WHERE session_id = ?
+         UNION ALL
+         SELECT session_id FROM session_model_usages WHERE session_id = ?
+         UNION ALL
+         SELECT session_id FROM session_usage_events WHERE session_id = ?
+       )
+       LIMIT 1`
+    );
+  }
 
   findStatsBySessionId(sessionId: string): ProviderSessionStats | null {
     const row = this.db
@@ -270,6 +286,12 @@ export class SessionStatsSnapshotRepository {
   }
 
   deleteBySessionId(sessionId: string): void {
+    const present = this.hasRowsBySessionStatement.get(sessionId, sessionId, sessionId, sessionId) as
+      | { present: number }
+      | undefined;
+    if (!present) {
+      return;
+    }
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM session_stats_snapshots WHERE session_id = ?").run(sessionId);
       this.db.prepare("DELETE FROM session_cost_bills WHERE session_id = ?").run(sessionId);

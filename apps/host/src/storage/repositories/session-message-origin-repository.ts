@@ -5,6 +5,7 @@ import type { SessionMessageOriginRecord } from "../../types/domain.js";
 export class SessionMessageOriginRepository {
   private readonly upsertStatement: SqliteStatement<any[], any>;
   private readonly resolveMessageIdStatement: SqliteStatement<any[], any>;
+  private readonly findByClientRequestStatement: SqliteStatement<any[], any>;
 
   constructor(private readonly db: SqliteDatabase) {
     this.upsertStatement = this.db.prepare(
@@ -32,6 +33,9 @@ export class SessionMessageOriginRepository {
        WHERE session_id = ?
          AND client_request_id = ?`
     );
+    this.findByClientRequestStatement = this.db.prepare(
+      "SELECT message_id FROM session_message_origins WHERE session_id = ? AND client_request_id = ? LIMIT 1"
+    );
   }
 
   upsert(record: SessionMessageOriginRecord): void {
@@ -54,6 +58,10 @@ export class SessionMessageOriginRepository {
     messageId: string,
     updatedAt: string
   ): void {
+    const row = this.findByClientRequestStatement.get(sessionId, clientRequestId) as { message_id: string | null } | undefined;
+    if (!row || row.message_id === messageId) {
+      return;
+    }
     this.resolveMessageIdStatement.run(messageId, updatedAt, sessionId, clientRequestId);
   }
 

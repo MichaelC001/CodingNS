@@ -4,6 +4,7 @@ import type { SessionStatusSnapshot } from "../../types/domain.js";
 import { runSqliteWriteSync, type SqliteSyncWriteOptions } from "../sqlite/write-serializer.js";
 import type { SqliteWriteQueue } from "../sqlite/write-queue.js";
 import type { SqliteWriterLike } from "./sqlite-writer-like.js";
+import { LatestWriteGuard, writeFingerprint } from "./latest-write-guard.js";
 
 export interface SessionStatusSnapshotRepositoryOptions {
   /** 该仓库所有写入的重试配置；默认是有限次、有总等待上限的锁竞争重试。 */
@@ -14,6 +15,7 @@ export class SessionStatusSnapshotRepository {
   private readonly findBySessionIdStatement: SqliteStatement<any[], any>;
   private readonly upsertStatement: SqliteStatement<any[], any>;
   private readonly retryOptions: Omit<SqliteSyncWriteOptions, "scope" | "inTransaction">;
+  private readonly asyncWriteGuard = new LatestWriteGuard();
 
   constructor(
     private readonly db: SqliteDatabase,
@@ -63,18 +65,54 @@ export class SessionStatusSnapshotRepository {
 
   upsert(record: SessionStatusSnapshot): void {
     if (this.writer) {
+      const key = `session-status:${record.sessionId}`;
+      const fingerprint = writeFingerprint([
+        record.syncStatus,
+        record.syncCursor,
+        record.lastSyncAt,
+        record.lastErrorCode,
+        record.lastErrorDetail,
+        record.resumedAt
+      ]);
+      if (!this.asyncWriteGuard.begin(key, fingerprint)) {
+        return;
+      }
       void this.writer.write(
         `INSERT INTO session_status_snapshots (session_id, sync_status, sync_cursor, last_sync_at, last_error_code, last_error_detail, resumed_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(session_id) DO UPDATE SET sync_status=excluded.sync_status, sync_cursor=excluded.sync_cursor,
            last_sync_at=excluded.last_sync_at, last_error_code=excluded.last_error_code, last_error_detail=excluded.last_error_detail,
-           resumed_at=excluded.resumed_at, updated_at=excluded.updated_at`,
+           resumed_at=excluded.resumed_at, updated_at=excluded.updated_at
+         WHERE session_status_snapshots.sync_status IS NOT excluded.sync_status
+            OR session_status_snapshots.sync_cursor IS NOT excluded.sync_cursor
+            OR session_status_snapshots.last_sync_at IS NOT excluded.last_sync_at
+            OR session_status_snapshots.last_error_code IS NOT excluded.last_error_code
+            OR session_status_snapshots.last_error_detail IS NOT excluded.last_error_detail
+            OR session_status_snapshots.resumed_at IS NOT excluded.resumed_at`,
         [record.sessionId, record.syncStatus, record.syncCursor, record.lastSyncAt, record.lastErrorCode, record.lastErrorDetail, record.resumedAt, record.updatedAt],
         { priority: "latest_wins" }
-      ).catch((error) => console.warn("[session-status-snapshot] writer helper write failed", error));
+      ).then(
+        () => this.asyncWriteGuard.complete(key, fingerprint),
+        (error) => {
+          this.asyncWriteGuard.fail(key, fingerprint);
+          console.warn("[session-status-snapshot] writer helper write failed", error);
+        }
+      );
       return;
     }
     if (this.writeQueue) {
+      const key = `session-status:${record.sessionId}`;
+      const fingerprint = writeFingerprint([
+        record.syncStatus,
+        record.syncCursor,
+        record.lastSyncAt,
+        record.lastErrorCode,
+        record.lastErrorDetail,
+        record.resumedAt
+      ]);
+      if (!this.asyncWriteGuard.begin(key, fingerprint)) {
+        return;
+      }
       // 状态快照是 latest_wins 数据：请求线程只入队，避免把锁等待带回 HTTP/WS 调用栈。
       void this.writeQueue.enqueue(
         "session_status_snapshot.upsert",
@@ -89,10 +127,14 @@ export class SessionStatusSnapshotRepository {
           record.updatedAt
         ),
         { policy: "latest_wins", key: `session-status:${record.sessionId}`, estimatedBytes: 512 }
-      ).catch((error) => {
-        // 快照写失败不能反向打断实时会话；队列本身已记录 failure/backpressure 指标。
-        console.warn("[session-status-snapshot] async write failed", error);
-      });
+      ).then(
+        () => this.asyncWriteGuard.complete(key, fingerprint),
+        (error) => {
+          this.asyncWriteGuard.fail(key, fingerprint);
+          // 快照写失败不能反向打断实时会话；队列本身已记录 failure/backpressure 指标。
+          console.warn("[session-status-snapshot] async write failed", error);
+        }
+      );
       return;
     }
     runSqliteWriteSync(

@@ -166,7 +166,8 @@ export class TerminalService extends EventEmitter {
             databasePath: options.databasePath,
             logRootDir: options.terminalLogRootDir,
             fileRepository: options.terminalLogFileRepository,
-            segmentRepository: options.terminalLogSegmentRepository
+            segmentRepository: options.terminalLogSegmentRepository,
+            sqliteWriteQueue: options.sqliteWriteQueue
           })
         : null;
 

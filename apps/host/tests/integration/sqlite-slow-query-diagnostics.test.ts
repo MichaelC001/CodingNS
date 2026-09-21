@@ -46,4 +46,57 @@ describe("同步 SQLite 慢查询诊断", () => {
       warn.mockRestore();
     }
   });
+
+  it("只对 changes=0 的写入按操作和表限频记录 noop", () => {
+    const db = new Database(":memory:");
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      db.exec("CREATE TABLE example (id TEXT PRIMARY KEY, value TEXT)");
+      const diagnostics = installSlowQueryDiagnostics(db, 100_000, { logNoop: true });
+      const update = db.prepare("UPDATE example SET value = ? WHERE id = ?");
+
+      update.run("first-secret", "missing");
+      update.run("second-secret", "missing");
+
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info.mock.calls[0][0]).toBe("[sqlite.noop]");
+      expect(info.mock.calls[0][1]).toMatchObject({
+        operation: "UPDATE",
+        table: "example",
+        method: "run",
+        reason: "changes=0"
+      });
+      expect(JSON.stringify(info.mock.calls)).not.toContain("secret");
+      expect(diagnostics.getNoopSnapshot()).toEqual([
+        {
+          operation: "UPDATE",
+          table: "example",
+          method: "run",
+          count: 2,
+          lastObservedAt: expect.any(String)
+        }
+      ]);
+    } finally {
+      db.close();
+      info.mockRestore();
+    }
+  });
+
+  it("生产默认只保留 noop 计数，不刷终端日志", () => {
+    const db = new Database(":memory:");
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      db.exec("CREATE TABLE example (id TEXT PRIMARY KEY, value TEXT)");
+      const diagnostics = installSlowQueryDiagnostics(db, 100_000);
+      db.prepare("UPDATE example SET value = ? WHERE id = ?").run("value", "missing");
+
+      expect(info).not.toHaveBeenCalled();
+      expect(diagnostics.getNoopSnapshot()).toMatchObject([
+        { operation: "UPDATE", table: "example", method: "run", count: 1 }
+      ]);
+    } finally {
+      db.close();
+      info.mockRestore();
+    }
+  });
 });

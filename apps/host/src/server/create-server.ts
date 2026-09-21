@@ -13,7 +13,6 @@ import { AssistantCapabilityService } from "../modules/assistant-capability/assi
 import { BootstrapController } from "../modules/bootstrap/bootstrap-controller.js";
 import { HealthController } from "../modules/health/health-controller.js";
 import { HealthService } from "../modules/health/health-service.js";
-import { SqliteWriterClient } from "../modules/health/sqlite-writer-client.js";
 import { BootstrapService } from "../modules/bootstrap/bootstrap-service.js";
 import { AssistantAutomationService } from "../modules/butler/assistant-automation-service.js";
 import { ButlerControlTimerScheduler } from "../modules/butler/butler-control-timer-scheduler.js";
@@ -328,6 +327,7 @@ import { WorkspaceRepository } from "../storage/repositories/workspace-repositor
 import { WorkspaceWorktreeRepository } from "../storage/repositories/workspace-worktree-repository.js";
 import { WorkspaceNavigationStateRepository } from "../storage/repositories/workspace-navigation-state-repository.js";
 import { createDatabaseClient } from "../storage/sqlite/client.js";
+import { LocalSqliteWriter } from "../storage/sqlite/local-writer.js";
 import { HttpRequestDiagnosticsTracker } from "../shared/http/request-diagnostics.js";
 import { TerminalWsHub } from "../ws/terminal-ws-hub.js";
 import { WorkbenchWsHub } from "../ws/workbench-ws-hub.js";
@@ -382,9 +382,11 @@ export function createServer(config: HostConfig) {
   const stopTerminalDebugEventLoopLagMonitor = startTerminalDebugEventLoopLagMonitor();
 
   const database = createDatabaseClient(config.databasePath);
+  // 同一个 host.sqlite 只保留 Host 内部这一条写连接；独立 writer helper
+  // 会和 Host/terminal writer 形成跨进程写锁，生产路径不再启动它。
   const sqliteWriterClient = isHostTestRuntime()
     ? null
-    : new SqliteWriterClient(config.databasePath);
+    : new LocalSqliteWriter(database.db, database.writeQueue);
   // 全局进程统计只做只读诊断：以当前 Host pid 为根，构建完整后代进程树，
   // 并额外列出命令行匹配 Codex / CodingNS Desktop 的树外进程。
   const hostProcessInventoryService = new HostProcessInventoryService();
@@ -1598,7 +1600,7 @@ export function createServer(config: HostConfig) {
 
 
   const bootstrapController = new BootstrapController(bootstrapService);
-  // Writer 在独立进程中打开第二条 SQLite 连接；Host 请求线程只读取它的内存 readiness 快照。
+  // readiness 只读取 Host 内部 writer 的内存快照，不在 /readyz 路径执行 SQL。
   const healthService = new HealthService(sqliteWriterClient ?? undefined);
   const healthController = new HealthController(healthService);
   const clientController = new ClientController(clientService);

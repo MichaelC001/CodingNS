@@ -104,7 +104,11 @@ export class SessionMessageAttachmentService {
       return [];
     }
 
-    this.repository.bindMessage(sessionId, clientRequestId, messageId);
+    // 消息可能已经绑定过，或该请求根本没有附件。先读未绑定记录，避免对空集合执行 UPDATE。
+    const pending = this.repository.listUnboundBySessionAndClientRequest(sessionId, clientRequestId);
+    if (pending.length > 0) {
+      this.repository.bindMessage(sessionId, clientRequestId, messageId);
+    }
     return this.repository
       .listBySessionAndClientRequest(sessionId, clientRequestId)
       .map(toMessageAttachmentDto);

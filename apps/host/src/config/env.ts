@@ -639,7 +639,8 @@ function resolveOpenCodeOrphanReclaimEnabled(configuredValue: string | undefined
     return true;
   }
 
-  // 测试进程里默认关掉，避免测试去杀开发机上的 opencode 进程。
+  // 测试进程里默认关掉，避免测试去杀开发机上的 opencode 进程；生产保持原有
+  // 孤儿回收语义，不能通过关闭 OpenCode 来掩盖发现或生命周期问题。
   return !process.env.VITEST;
 }
 

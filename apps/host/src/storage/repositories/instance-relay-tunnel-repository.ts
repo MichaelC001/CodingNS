@@ -7,6 +7,8 @@ import type {
 } from "../../types/domain.js";
 
 export class InstanceRelayTunnelRepository {
+  private lastStatusWrite: { fingerprint: string; observedAtMs: number } | null = null;
+
   constructor(private readonly db: SqliteDatabase) {}
 
   findConfig(): InstanceRelayTunnelConfig | null {
@@ -122,6 +124,28 @@ export class InstanceRelayTunnelRepository {
   }
 
   upsertStatus(status: InstanceRelayTunnelStatus): InstanceRelayTunnelStatus {
+    const fingerprint = JSON.stringify([
+      status.phase,
+      status.connected,
+      status.bindingId,
+      status.tunnelDomain,
+      status.hostFingerprint,
+      status.trafficUsedBytes,
+      status.trafficRemainingBytes,
+      status.quotaResetAt,
+      status.lastError
+    ]);
+    const observedAtMs = Date.parse(status.observedAt ?? "");
+    const previous = this.lastStatusWrite;
+    if (
+      previous
+      && previous.fingerprint === fingerprint
+      && Number.isFinite(observedAtMs)
+      && observedAtMs - previous.observedAtMs < 30_000
+    ) {
+      return status;
+    }
+
     this.db
       .prepare(
         `INSERT INTO instance_relay_tunnel_status (
@@ -173,6 +197,11 @@ export class InstanceRelayTunnelRepository {
         status.lastError,
         status.observedAt
       );
+
+    this.lastStatusWrite = {
+      fingerprint,
+      observedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : Date.now()
+    };
 
     return status;
   }

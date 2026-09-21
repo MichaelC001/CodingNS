@@ -44,6 +44,11 @@ describe("ProviderControlRepository", () => {
       enabled: true,
       updatedAt: ""
     });
+    expect(repository.get("opencode")).toEqual({
+      providerId: "opencode",
+      enabled: true,
+      updatedAt: ""
+    });
     expect(repository.list()).toEqual([]);
 
     database.close();

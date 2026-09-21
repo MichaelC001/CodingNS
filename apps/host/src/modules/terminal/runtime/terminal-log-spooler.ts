@@ -4,6 +4,7 @@ import { nowIso } from "../../../shared/utils/time.js";
 import type { TerminalOutputChunk } from "../../../types/domain.js";
 import type { TerminalLogFileRepository } from "../../../storage/repositories/terminal-log-file-repository.js";
 import type { TerminalLogSegmentRepository } from "../../../storage/repositories/terminal-log-segment-repository.js";
+import type { SqliteWriteQueue } from "../../../storage/sqlite/write-queue.js";
 import { TerminalLogFileStore } from "./terminal-log-file-store.js";
 import { TerminalLogWriterClient } from "./terminal-log-writer-client.js";
 
@@ -12,6 +13,8 @@ interface TerminalLogSpoolerOptions {
   logRootDir: string;
   fileRepository: TerminalLogFileRepository;
   segmentRepository: TerminalLogSegmentRepository;
+  /** 生产路径使用 Host 唯一写队列，不再启动第二个 SQLite writer 进程。 */
+  sqliteWriteQueue?: SqliteWriteQueue | null;
   flushIntervalMs?: number;
   maxBatchBytes?: number;
 }
@@ -37,6 +40,7 @@ export class TerminalLogSpooler {
   private readonly flushIntervalMs: number;
   private readonly maxBatchBytes: number;
   private readonly writerClient: TerminalLogWriterClient | null;
+  private readonly sqliteWriteQueue: SqliteWriteQueue | null;
   private disposed = false;
   private writerUnavailable = false;
 
@@ -44,8 +48,9 @@ export class TerminalLogSpooler {
     this.fileStore = new TerminalLogFileStore(options.logRootDir);
     this.flushIntervalMs = options.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
     this.maxBatchBytes = options.maxBatchBytes ?? DEFAULT_MAX_BATCH_BYTES;
+    this.sqliteWriteQueue = options.sqliteWriteQueue ?? null;
     this.writerClient =
-      options.databasePath && options.databasePath !== ":memory:"
+      !this.sqliteWriteQueue && options.databasePath && options.databasePath !== ":memory:"
         ? new TerminalLogWriterClient(options.databasePath, options.logRootDir)
         : null;
   }
@@ -199,6 +204,19 @@ export class TerminalLogSpooler {
       }
     }
 
+    if (this.sqliteWriteQueue) {
+      await this.sqliteWriteQueue.enqueue(
+        "terminal.log.delete",
+        () => {
+          this.options.segmentRepository.deleteByTerminalId(terminalId);
+          this.options.fileRepository.deleteByTerminalId(terminalId);
+        },
+        { policy: "critical", key: `terminal:${terminalId}` }
+      );
+      this.fileStore.deleteTerminalLogs(terminalId);
+      return;
+    }
+
     if (this.writerClient && !this.writerUnavailable) {
       try {
         await this.writerClient.deleteTerminalLogs(terminalId);
@@ -242,6 +260,11 @@ export class TerminalLogSpooler {
 
     const content = chunks.map((chunk) => chunk.content).join("");
 
+    if (this.sqliteWriteQueue) {
+      await this.persistChunksThroughHostQueue(terminalId, startSeq, endSeq, content);
+      return;
+    }
+
     if (this.writerClient) {
       await this.writerClient.persistChunkBatch({
         terminalId,
@@ -253,6 +276,73 @@ export class TerminalLogSpooler {
     }
 
     this.persistChunksInline(terminalId, startSeq, endSeq, content);
+  }
+
+  /**
+   * 生产路径的两阶段写入：数据库准备和提交都进 Host 唯一写队列，
+   * 文件追加放在两次数据库操作之间，锁重试不会重复追加文件内容。
+   */
+  private async persistChunksThroughHostQueue(
+    terminalId: string,
+    startSeq: number,
+    endSeq: number,
+    content: string
+  ): Promise<void> {
+    const timestamp = nowIso();
+    const activeFile = await this.sqliteWriteQueue!.enqueue(
+      "terminal.log.prepare",
+      () => {
+        const existing = this.options.fileRepository.findActiveByTerminalId(terminalId);
+        if (existing) {
+          return existing;
+        }
+
+        return this.options.fileRepository.create({
+          id: createId(),
+          terminalId,
+          relativePath: this.fileStore.buildActiveRelativePath(terminalId),
+          status: "active",
+          startSeq,
+          endSeq: null,
+          sizeBytes: 0,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        });
+      },
+      { policy: "critical", key: `terminal:${terminalId}` }
+    );
+
+    const appendResult = this.fileStore.append(
+      activeFile.relativePath,
+      content,
+      activeFile.sizeBytes
+    );
+    const segmentId = createId();
+
+    await this.sqliteWriteQueue!.enqueue(
+      "terminal.log.commit",
+      () => {
+        this.options.segmentRepository.create({
+          id: segmentId,
+          terminalId,
+          fileId: activeFile.id,
+          startSeq,
+          endSeq,
+          startOffset: appendResult.startOffset,
+          endOffset: appendResult.endOffset,
+          byteLength: appendResult.byteLength,
+          createdAt: timestamp
+        });
+        this.options.fileRepository.updateLifecycle({
+          id: activeFile.id,
+          status: activeFile.status,
+          endSeq,
+          sizeBytes: appendResult.endOffset,
+          updatedAt: timestamp
+        });
+      },
+      { policy: "critical", key: `terminal:${terminalId}` }
+    );
   }
 
   private persistChunksInline(

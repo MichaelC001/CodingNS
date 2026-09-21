@@ -4009,7 +4009,11 @@ export class SessionHistoryService {
     // 中间就会留下一个竞态窗口，最后直接撞 UNIQUE(provider, provider_session_id)。
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        this.db.transaction(() => {
+        // 这里先读取重复绑定，再写 session_bindings/session_indices。
+        // deferred 事务会在读取后升级写锁，WAL 下只要另一个 writer 先提交，
+        // 就会稳定得到 SQLITE_BUSY_SNAPSHOT。事务一开始就申请写锁，避免旧快照升级。
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
           const currentBinding = this.sessionBindingRepository.findBySessionId(sessionId);
           const timestamp = nowIso();
           const duplicateBinding = this.findSameWorkspaceBindingDuplicate(
@@ -4071,7 +4075,15 @@ export class SessionHistoryService {
               updatedAt: timestamp
             });
           }
-        })();
+          this.db.exec("COMMIT");
+        } catch (error) {
+          try {
+            this.db.exec("ROLLBACK");
+          } catch {
+            // 原始错误更有价值；回滚失败不覆盖它。
+          }
+          throw error;
+        }
         return;
       } catch (error) {
         if (attempt === 0 && isSessionBindingProviderUniqueConflict(error)) {

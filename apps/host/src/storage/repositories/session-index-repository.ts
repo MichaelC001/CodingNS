@@ -2,6 +2,7 @@ import type { SqliteDatabase, SqliteStatement } from "@codingns/host-sqlite-runt
 
 import type { SessionIndexRecord, SessionListItem } from "../../types/domain.js";
 import type { SqliteWriterLike } from "./sqlite-writer-like.js";
+import { LatestWriteGuard, writeFingerprint } from "./latest-write-guard.js";
 
 export class SessionIndexRepository {
   private readonly upsertStatement: SqliteStatement<any[], any>;
@@ -9,6 +10,7 @@ export class SessionIndexRepository {
   private readonly findBySessionIdStatement: SqliteStatement<any[], any>;
   private readonly findIndexRecordBySessionIdStatement: SqliteStatement<any[], any>;
   private readonly renameTitleStatement: SqliteStatement<any[], any>;
+  private readonly asyncWriteGuard = new LatestWriteGuard();
 
   constructor(private readonly db: SqliteDatabase, private readonly writer: SqliteWriterLike | null = null) {
     this.upsertStatement = this.db.prepare(
@@ -177,6 +179,25 @@ export class SessionIndexRepository {
 
   upsert(record: SessionIndexRecord): void {
     if (this.writer) {
+      const key = `session-index:${record.sessionId}`;
+      const fingerprint = writeFingerprint([
+        record.workspaceId,
+        record.provider,
+        record.sessionVisibility ?? "workspace",
+        record.parentSessionId ?? null,
+        record.sessionKind ?? "default",
+        record.annotationSourceMessageId ?? null,
+        record.annotationSourceText ?? null,
+        record.isSubagent ? 1 : 0,
+        record.subagentLabel ?? null,
+        record.title,
+        record.messageCount,
+        record.isArchived ? 1 : 0,
+        record.lastMessageAt
+      ]);
+      if (!this.asyncWriteGuard.begin(key, fingerprint)) {
+        return;
+      }
       void this.writer.write(
         `INSERT INTO session_indices (session_id, workspace_id, provider, session_visibility, parent_session_id, session_kind, annotation_source_message_id, annotation_source_text, is_subagent, subagent_label, title, message_count, is_archived, last_message_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -185,10 +206,29 @@ export class SessionIndexRepository {
            session_kind=excluded.session_kind, annotation_source_message_id=excluded.annotation_source_message_id,
            annotation_source_text=excluded.annotation_source_text, is_subagent=excluded.is_subagent,
            subagent_label=excluded.subagent_label, title=excluded.title, message_count=excluded.message_count,
-           is_archived=excluded.is_archived, last_message_at=excluded.last_message_at, updated_at=excluded.updated_at`,
+           is_archived=excluded.is_archived, last_message_at=excluded.last_message_at, updated_at=excluded.updated_at
+         WHERE session_indices.workspace_id IS NOT excluded.workspace_id
+            OR session_indices.provider IS NOT excluded.provider
+            OR session_indices.session_visibility IS NOT excluded.session_visibility
+            OR session_indices.parent_session_id IS NOT excluded.parent_session_id
+            OR session_indices.session_kind IS NOT excluded.session_kind
+            OR session_indices.annotation_source_message_id IS NOT excluded.annotation_source_message_id
+            OR session_indices.annotation_source_text IS NOT excluded.annotation_source_text
+            OR session_indices.is_subagent IS NOT excluded.is_subagent
+            OR session_indices.subagent_label IS NOT excluded.subagent_label
+            OR session_indices.title IS NOT excluded.title
+            OR session_indices.message_count IS NOT excluded.message_count
+            OR session_indices.is_archived IS NOT excluded.is_archived
+            OR session_indices.last_message_at IS NOT excluded.last_message_at`,
         [record.sessionId, record.workspaceId, record.provider, record.sessionVisibility ?? "workspace", record.parentSessionId ?? null, record.sessionKind ?? "default", record.annotationSourceMessageId ?? null, record.annotationSourceText ?? null, record.isSubagent ? 1 : 0, record.subagentLabel ?? null, record.title, record.messageCount, record.isArchived ? 1 : 0, record.lastMessageAt, record.createdAt, record.updatedAt],
         { priority: "latest_wins" }
-      ).catch((error) => console.warn("[session-index] writer helper write failed", error));
+      ).then(
+        () => this.asyncWriteGuard.complete(key, fingerprint),
+        (error) => {
+          this.asyncWriteGuard.fail(key, fingerprint);
+          console.warn("[session-index] writer helper write failed", error);
+        }
+      );
       return;
     }
     this.upsertStatement

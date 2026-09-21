@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   normalizeProviderMessageContent,
@@ -46,5 +46,21 @@ describe("SessionMessageAttachmentService 内容清洗", () => {
 
     expect(prompt).toContain("/tmp/session-attachments/screenshot.png");
     expect(normalizeProviderMessageContent("command-code", prompt!)).toBe("请分析这张图");
+  });
+
+  it("没有待绑定附件时不执行无效 UPDATE", () => {
+    const repository = {
+      listUnboundBySessionAndClientRequest: vi.fn().mockReturnValue([]),
+      bindMessage: vi.fn(),
+      listBySessionAndClientRequest: vi.fn().mockReturnValue([])
+    };
+    const service = new SessionMessageAttachmentService(
+      repository as never,
+      { databasePath: "/tmp/codingns-test.sqlite" } as never
+    );
+
+    expect(service.bindClientRequestToMessage("session-1", "request-1", "message-1")).toEqual([]);
+    expect(repository.bindMessage).not.toHaveBeenCalled();
+    expect(repository.listUnboundBySessionAndClientRequest).toHaveBeenCalledWith("session-1", "request-1");
   });
 });
