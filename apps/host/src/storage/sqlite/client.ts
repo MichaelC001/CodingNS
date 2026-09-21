@@ -2152,6 +2152,10 @@ function ensureInstanceRelayTunnelConfigSchema(db: SqliteDatabase): void {
     db.exec("ALTER TABLE instance_relay_tunnel_config ADD COLUMN control_access_token_ciphertext TEXT");
   }
 
+  if (!columns.some((column) => column.name === "control_refresh_token_ciphertext")) {
+    db.exec("ALTER TABLE instance_relay_tunnel_config ADD COLUMN control_refresh_token_ciphertext TEXT");
+  }
+
   if (!columns.some((column) => column.name === "control_account_email")) {
     db.exec("ALTER TABLE instance_relay_tunnel_config ADD COLUMN control_account_email TEXT");
   }

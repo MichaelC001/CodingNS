@@ -38,6 +38,7 @@ const CONFIG: InstanceRelayTunnelConfig = {
   relayBaseUrl: "https://channel.example.com/relay",
   controlBaseUrl: "https://channel.example.com",
   controlAccessTokenCiphertext: encryptSecret(CONTROL_SESSION_SECRET, ACCESS_TOKEN),
+  controlRefreshTokenCiphertext: encryptSecret(CONTROL_SESSION_SECRET, "control-refresh-token"),
   controlAccountEmail: "demo@example.com",
   controlSessionExpiresAt: null,
   accountId: "acct_1",
@@ -96,6 +97,7 @@ function createAdapter(options: { responses: Array<(call: FetchCall) => Response
 
   const relayTunnelRepository = {
     findConfig: () => CONFIG,
+    upsertConfig: (config: InstanceRelayTunnelConfig) => config,
     findStatus: () => statuses[statuses.length - 1] ?? STATUS,
     upsertStatus: (status: InstanceRelayTunnelStatus) => {
       statuses.push(status);
@@ -367,6 +369,38 @@ describe("换票", () => {
       .catch((caught: unknown) => caught as Error);
 
     expect((error as Error).message).toContain("重新登录");
+  });
+
+  it("票据接口返回 401 时会自动刷新登录态并重试一次", async () => {
+    const { calls, getSupervisorOptions } = createAdapter({
+      responses: [
+        () => jsonResponse(401, { errorCode: "AUTH_INVALID", detail: "token 过期" }),
+        () => jsonResponse(200, {
+          account: { accountId: "acct_1", email: "demo@example.com" },
+          accessToken: "control-access-token-refreshed",
+          expiresAt: "2026-09-17T00:00:00.000Z",
+          refreshToken: "control-refresh-token-refreshed",
+          refreshTokenExpiresAt: "2026-10-16T00:00:00.000Z"
+        }),
+        () => jsonResponse(201, TICKET_RESPONSE)
+      ]
+    });
+
+    const ticket = await getSupervisorOptions().ticketProvider({
+      bindingId: "binding_demo",
+      hostDtlsFingerprint: DTLS_FINGERPRINT
+    });
+
+    expect(ticket.ticket).toBe(TICKET_RESPONSE.ticket);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://channel.example.com/api/v1/relay/signaling/ticket",
+      "https://channel.example.com/api/public/auth/refresh",
+      "https://channel.example.com/api/v1/relay/signaling/ticket"
+    ]);
+    expect(calls[2].body).toEqual({
+      bindingId: "binding_demo",
+      hostDtlsFingerprint: DTLS_FINGERPRINT
+    });
   });
 });
 

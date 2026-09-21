@@ -2072,6 +2072,7 @@ export interface InstanceRelayTunnelConfig {
   relayBaseUrl: string | null;
   controlBaseUrl: string | null;
   controlAccessTokenCiphertext: string | null;
+  controlRefreshTokenCiphertext: string | null;
   controlAccountEmail: string | null;
   controlSessionExpiresAt: string | null;
   accountId: string | null;

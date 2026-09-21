@@ -12,6 +12,7 @@ import {
   readRelayTunnelDtlsIdentity
 } from "./webrtc/webrtc-dtls-certificate.js";
 import { RelayTunnelRuntimeHttpError } from "./relay-tunnel-runtime-error.js";
+import { refreshRelayTunnelControlSession } from "./relay-tunnel-control-session.js";
 import type { BootstrapStateRepository } from "../../storage/repositories/bootstrap-state-repository.js";
 import type { InstanceRelayTunnelIdentityRepository } from "../../storage/repositories/instance-relay-tunnel-identity-repository.js";
 import type { InstanceRelayTunnelRepository } from "../../storage/repositories/instance-relay-tunnel-repository.js";
@@ -119,6 +120,8 @@ interface RelayControlLoginResponse {
   };
   accessToken: string;
   expiresAt: string;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
 }
 
 interface RelayControlBindResponse {
@@ -151,6 +154,7 @@ export class RelayTunnelService {
   private readonly taskManager: TaskManager;
   private readonly runtimeAdapter: RelayTunnelRuntimeAdapter;
   private readonly identityService: RelayTunnelIdentityService;
+  private controlSessionRefreshPromise: Promise<string> | null = null;
 
   constructor(
     private readonly db: SqliteDatabase,
@@ -324,6 +328,9 @@ export class RelayTunnelService {
       ...snapshot.config,
       accountId: response.account.accountId,
       controlAccessTokenCiphertext: encryptSecret(this.controlSessionSecret, response.accessToken),
+      controlRefreshTokenCiphertext: response.refreshToken
+        ? encryptSecret(this.controlSessionSecret, response.refreshToken)
+        : null,
       controlAccountEmail: response.account.email.trim(),
       controlSessionExpiresAt: normalizeOptionalText(response.expiresAt),
       updatedAt: timestamp
@@ -627,6 +634,7 @@ export class RelayTunnelService {
           relayBaseUrl: null,
           controlBaseUrl: DEFAULT_RELAY_TUNNEL_CONTROL_BASE_URL,
           controlAccessTokenCiphertext: null,
+          controlRefreshTokenCiphertext: null,
           controlAccountEmail: null,
           controlSessionExpiresAt: null,
           accountId: null,
@@ -981,28 +989,50 @@ export class RelayTunnelService {
     body?: string;
     failurePrefix: string;
   }): Promise<T> {
-    let response: Response;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.controlRequestTimeoutMs);
+    let response!: Response;
+    let headers = input.headers;
 
-    try {
-      const requestUrl = new URL(
-        input.path,
-        ensureTrailingSlash(input.controlBaseUrl)
-      ).toString();
-      response = await this.fetchFn(
-        requestUrl,
-        {
-          method: input.method,
-          headers: input.headers,
-          body: input.body,
-          signal: controller.signal
-        }
-      );
-    } catch (error) {
-      throw buildControlFetchError(error, input.controlBaseUrl, input.failurePrefix);
-    } finally {
-      clearTimeout(timeoutId);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.controlRequestTimeoutMs);
+
+      try {
+        const requestUrl = new URL(
+          input.path,
+          ensureTrailingSlash(input.controlBaseUrl)
+        ).toString();
+        response = await this.fetchFn(
+          requestUrl,
+          {
+            method: input.method,
+            headers,
+            body: input.body,
+            signal: controller.signal
+          }
+        );
+      } catch (error) {
+        throw buildControlFetchError(error, input.controlBaseUrl, input.failurePrefix);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (response.status !== 401 || !headers?.Authorization || attempt > 0) {
+        break;
+      }
+
+      try {
+        const accessToken = await this.refreshControlSession();
+        headers = {
+          ...headers,
+          Authorization: `Bearer ${accessToken}`
+        };
+      } catch {
+        throw new AppError({
+          statusCode: 409,
+          errorCode: "RELAY_TUNNEL_CONTROL_SESSION_REQUIRED",
+          detail: "控制站登录态已失效，请重新登录"
+        });
+      }
     }
 
     if (!response.ok) {
@@ -1010,6 +1040,29 @@ export class RelayTunnelService {
     }
 
     return await response.json() as T;
+  }
+
+  private async refreshControlSession(): Promise<string> {
+    if (this.controlSessionRefreshPromise) {
+      return await this.controlSessionRefreshPromise;
+    }
+
+    const config = this.repository.findConfig();
+    if (!config) {
+      throw new Error("RELAY_TUNNEL_CONFIG_REQUIRED");
+    }
+
+    this.controlSessionRefreshPromise = refreshRelayTunnelControlSession({
+      config,
+      repository: this.repository,
+      controlSessionSecret: this.controlSessionSecret,
+      fetchFn: this.fetchFn,
+      controlRequestTimeoutMs: this.controlRequestTimeoutMs
+    }).then((result) => result.accessToken).finally(() => {
+      this.controlSessionRefreshPromise = null;
+    });
+
+    return await this.controlSessionRefreshPromise;
   }
 }
 
@@ -1227,6 +1280,7 @@ function clearRelayTunnelControlSession(
   return {
     ...config,
     controlAccessTokenCiphertext: null,
+    controlRefreshTokenCiphertext: null,
     controlAccountEmail: null,
     controlSessionExpiresAt: null,
     accountId: options.clearAccountId ? null : config.accountId,

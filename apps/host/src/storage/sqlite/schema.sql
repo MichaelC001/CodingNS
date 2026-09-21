@@ -2086,6 +2086,7 @@ CREATE TABLE IF NOT EXISTS instance_relay_tunnel_config (
   relay_base_url TEXT,
   control_base_url TEXT,
   control_access_token_ciphertext TEXT,
+  control_refresh_token_ciphertext TEXT,
   control_account_email TEXT,
   control_session_expires_at TEXT,
   account_id TEXT,

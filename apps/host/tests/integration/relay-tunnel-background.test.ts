@@ -316,6 +316,7 @@ describe("RelayTunnelService 后台任务", () => {
     seedBoundConfig(context.repository, {
       enabled: true,
       controlAccessTokenCiphertext: encryptSecret("relay-control-secret", "relay_access_token"),
+      controlRefreshTokenCiphertext: encryptSecret("relay-control-secret", "relay_refresh_token"),
       controlAccountEmail: "demo@example.com",
       controlSessionExpiresAt: "2026-04-21T00:00:00.000Z",
       bindingId: "binding_stale",
@@ -361,6 +362,7 @@ describe("RelayTunnelService 后台任务", () => {
     seedBoundConfig(context.repository, {
       enabled: true,
       controlAccessTokenCiphertext: encryptSecret("relay-control-secret", "relay_access_token"),
+      controlRefreshTokenCiphertext: encryptSecret("relay-control-secret", "relay_refresh_token"),
       controlAccountEmail: "demo@example.com",
       controlSessionExpiresAt: "2026-04-21T00:00:00.000Z"
     });
@@ -671,6 +673,7 @@ function seedBoundConfig(
     relayBaseUrl: "wss://control.codingns.example/relay",
     controlBaseUrl: "https://control.codingns.example",
     controlAccessTokenCiphertext: null,
+    controlRefreshTokenCiphertext: null,
     controlAccountEmail: null,
     controlSessionExpiresAt: null,
     accountId: "acct_demo",

@@ -36,6 +36,7 @@ import { HOST_TASK_TYPES } from "../../tasks/task-types.js";
 import type { RelayTunnelRuntimeAdapter } from "../relay-tunnel-service.js";
 import { buildHostCandidateEndpoints } from "../relay-tunnel-candidate-endpoints.js";
 import { ensureRelayTunnelDtlsIdentity } from "./webrtc-dtls-certificate.js";
+import { refreshRelayTunnelControlSession } from "../relay-tunnel-control-session.js";
 import {
   WebrtcPeerFatalConfigError,
   WebrtcPeerSupervisor,
@@ -83,6 +84,7 @@ export class RelayTunnelWebrtcRuntimeAdapter implements RelayTunnelRuntimeAdapte
   private readonly controlRequestTimeoutMs: number;
   private lastHeartbeatAtMs: number | null = null;
   private lastKnownFingerprint: string | null = null;
+  private controlSessionRefreshPromise: Promise<string> | null = null;
   /** 只有真的有客户端 DataChannel 打通时才是 true。 */
   private connected = false;
 
@@ -327,6 +329,30 @@ export class RelayTunnelWebrtcRuntimeAdapter implements RelayTunnelRuntimeAdapte
       return mapTicketResponse(first.payload as RelaySignalingTicketApiResponse, hostDtlsFingerprint);
     }
 
+    if (first.status === 401) {
+      try {
+        const refreshed = await this.refreshControlSession();
+        const retry = await this.postJson(`${controlBaseUrl}${SIGNALING_TICKET_PATH.replace(/^\/+/, "")}`, {
+          accessToken: refreshed,
+          body: {
+            bindingId,
+            ...(hostDtlsFingerprint ? { hostDtlsFingerprint } : {})
+          }
+        });
+
+        if (retry.ok) {
+          return mapTicketResponse(retry.payload as RelaySignalingTicketApiResponse, hostDtlsFingerprint);
+        }
+
+        throw buildControlError(retry, bindingId, hostDtlsFingerprint);
+      } catch (error) {
+        if (error instanceof WebrtcPeerFatalConfigError) {
+          throw error;
+        }
+        throw buildControlError(first, bindingId, hostDtlsFingerprint);
+      }
+    }
+
     if (isDtlsFingerprintMismatch(first)) {
       await this.registerDtlsFingerprint(controlBaseUrl, accessToken, bindingId, hostDtlsFingerprint);
 
@@ -528,6 +554,36 @@ export class RelayTunnelWebrtcRuntimeAdapter implements RelayTunnelRuntimeAdapte
         return;
       }
 
+      if (response.status === 401) {
+        try {
+          const refreshedAccessToken = await this.refreshControlSession();
+          const retry = await this.fetchWithTimeout(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${refreshedAccessToken}`
+            },
+            body: JSON.stringify({
+              tunnelDomain: config.tunnelDomain,
+              hostFingerprint: this.lastKnownFingerprint,
+              localTargetBaseUrl: config.localTargetBaseUrl,
+              candidateEndpoints: buildHostCandidateEndpoints(config)
+            })
+          });
+
+          if (retry.ok) {
+            return;
+          }
+
+          this.log("heartbeat.rejected", { status: retry.status });
+        } catch (error) {
+          this.log("heartbeat.failed", {
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+        return;
+      }
+
       // 存量绑定里是老的 x25519 指纹时会 409；和换票一样，自动重新登记一次再重试。
       if (response.status === 409) {
         await this.registerDtlsFingerprint(
@@ -562,6 +618,29 @@ export class RelayTunnelWebrtcRuntimeAdapter implements RelayTunnelRuntimeAdapte
         error: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  private async refreshControlSession(): Promise<string> {
+    if (this.controlSessionRefreshPromise) {
+      return await this.controlSessionRefreshPromise;
+    }
+
+    const config = this.relayTunnelRepository.findConfig();
+    if (!config) {
+      throw new Error("RELAY_TUNNEL_CONFIG_REQUIRED");
+    }
+
+    this.controlSessionRefreshPromise = refreshRelayTunnelControlSession({
+      config,
+      repository: this.relayTunnelRepository,
+      controlSessionSecret: this.options.controlSessionSecret,
+      fetchFn: this.fetchFn,
+      controlRequestTimeoutMs: this.controlRequestTimeoutMs
+    }).then((result) => result.accessToken).finally(() => {
+      this.controlSessionRefreshPromise = null;
+    });
+
+    return await this.controlSessionRefreshPromise;
   }
 
   private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
