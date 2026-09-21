@@ -343,6 +343,22 @@ import { ProviderPriceBookScheduler } from "../modules/provider/provider-price-b
 import { SqliteMaintenanceScheduler } from "../modules/system/sqlite-maintenance-scheduler.js";
 import { SqliteMaintenanceService } from "../modules/system/sqlite-maintenance-service.js";
 
+/** Relay/WebRTC 事件包含心跳、票据和状态变化，正常运行时不应逐条刷屏。 */
+const RELAY_TUNNEL_DEBUG_ENABLED = /^(1|true|yes|on)$/i.test(
+  process.env.CODINGNS_RELAY_TUNNEL_DEBUG?.trim() ?? ""
+);
+
+function isImportantRelayTunnelEvent(event: string): boolean {
+  return event === "state.error"
+    || event.includes("reconnect")
+    || event.includes("reported_error")
+    || event.includes("unexpected")
+    || event.endsWith(".error")
+    || event.endsWith(".failed")
+    || event.endsWith(".rejected")
+    || event.endsWith("_failed");
+}
+
 export function createServer(config: HostConfig) {
   const affairsLibraryDebugLogPath = getAffairsLibraryDebugLogPath();
   if (affairsLibraryDebugLogPath) {
@@ -689,7 +705,16 @@ export function createServer(config: HostConfig) {
       {
         controlSessionSecret: config.gitCredentialSecret,
         logger: (event, detail) => {
-          console.log(`[relay-tunnel-webrtc] ${event}${detail ? ` ${JSON.stringify(detail)}` : ""}`);
+          if (!RELAY_TUNNEL_DEBUG_ENABLED && !isImportantRelayTunnelEvent(event)) {
+            return;
+          }
+
+          const message = `[relay-tunnel-webrtc] ${event}${detail ? ` ${JSON.stringify(detail)}` : ""}`;
+          if (isImportantRelayTunnelEvent(event)) {
+            console.warn(message);
+          } else {
+            console.info(message);
+          }
         }
       }
     )
