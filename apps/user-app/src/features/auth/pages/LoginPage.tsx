@@ -2,12 +2,17 @@ import { Suspense, lazy, useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { useClientConfigSelector, clientConfigStore } from "../../../config/client-config-store";
+import { resetClientRuntimeConfig } from "../../../config/client-config-service";
 import { getActiveHost, getEffectiveActiveHostId } from "../../../config/client-config-types";
 import { hostSwitchCoordinator } from "../../../config/host-switch-coordinator";
 import { getVisibleDiscoveredHosts, localHostDiscoveryStore } from "../../../config/local-host-discovery-store";
 import { buildRelayAccessBaseUrl, buildRelayEntryConfigPatch } from "../../../config/relay-entry";
 import { getFixedRelayControlBaseUrl } from "../../../config/relay-control-site-config";
-import { serverConfigStore, useServerConfigSelector } from "../../../config/server-config";
+import {
+  clearServerConfigHistory,
+  serverConfigStore,
+  useServerConfigSelector
+} from "../../../config/server-config";
 import { authGateway } from "../../../auth/auth-gateway";
 import { consumeAuthExpiredFlag } from "../../../network/auth-expired-flag";
 import { usePlatform } from "../../../platform/platform-provider";
@@ -348,6 +353,13 @@ export function LoginPage() {
     setStatusText(null);
   }
 
+  async function handleClientReset(): Promise<void> {
+    const resetConfig = await resetClientRuntimeConfig();
+    clearServerConfigHistory();
+    clientConfigStore.hydrate(resetConfig);
+    navigate("/setup", { replace: true });
+  }
+
   function handleInstallLocalHost(): void {
     navigate("/setup?role=server");
   }
@@ -650,6 +662,9 @@ export function LoginPage() {
             isOpen={showServerModal}
             onClose={() => setShowServerModal(false)}
             onSave={handleServerSettingsSave}
+            onReset={platform.platform === "desktop" && (platform.ui.osFamily === "macos" || platform.ui.osFamily === "windows")
+              ? handleClientReset
+              : undefined}
           />
         </Suspense>
       ) : null}

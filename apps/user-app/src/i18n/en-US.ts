@@ -66,6 +66,11 @@ export const enUS = {
     serverSettings: "Server Settings",
     serverSettingsTitle: "Server Configuration",
     saveServerSettings: "Save Settings",
+    clientResetTitle: "Reset This Client",
+    clientResetDescription: "Clear the server address and first-run state saved on this computer, then open the setup wizard again. Host data is not deleted.",
+    clientResetAction: "Reset and start over",
+    clientResetting: "Resetting...",
+    clientResetFailed: "Could not reset the client. Try again later.",
     relayEntryTitle: "Connecting To Remote Host",
     relayEntryDescription:
       "Switching to this Host's trusted remote entry. You will be returned to the login page automatically.",

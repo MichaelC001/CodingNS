@@ -13,16 +13,18 @@ import {
   type ServerPresetOption
 } from "../../../config/server-config";
 import { WorkbenchModal } from "../../conversation/components/WorkbenchModal";
+import { ModalActions, ModalSection } from "../../../components/ModalAtoms";
 import { t } from "../../../shared/i18n";
 
 interface ServerSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave?: (baseUrl: string) => void;
+  onReset?: () => Promise<void>;
   theme?: "light" | "dark";
 }
 
-export function ServerSettingsModal({ isOpen, onClose, onSave, theme = "dark" }: ServerSettingsModalProps) {
+export function ServerSettingsModal({ isOpen, onClose, onSave, onReset, theme = "dark" }: ServerSettingsModalProps) {
   void theme;
   const persistedServerBaseUrl = useServerConfigSelector((state) => state.baseUrl);
   const serverOptions = useServerConfigSelector((state) => state.options);
@@ -32,6 +34,7 @@ export function ServerSettingsModal({ isOpen, onClose, onSave, theme = "dark" }:
   const [serverBaseUrlInput, setServerBaseUrlInput] = useState(persistedServerBaseUrl);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const normalizedServerBaseUrl = useMemo(() => {
     try {
@@ -55,6 +58,7 @@ export function ServerSettingsModal({ isOpen, onClose, onSave, theme = "dark" }:
       setServerBaseUrlInput(persistedServerBaseUrl);
       setStatusText(null);
       setSaving(false);
+      setResetting(false);
     }
   }, [isOpen, persistedServerBaseUrl]);
 
@@ -95,6 +99,24 @@ export function ServerSettingsModal({ isOpen, onClose, onSave, theme = "dark" }:
       return;
     }
     setServerBaseUrlInput(normalizedServerBaseUrl);
+  }
+
+  async function handleReset(): Promise<void> {
+    if (!onReset) {
+      return;
+    }
+
+    setResetting(true);
+    setStatusText(null);
+
+    try {
+      await onReset();
+    } catch (error) {
+      setStatusText(error instanceof Error && error.message.trim()
+        ? error.message
+        : t("auth.clientResetFailed"));
+      setResetting(false);
+    }
   }
 
   return (
@@ -153,7 +175,7 @@ export function ServerSettingsModal({ isOpen, onClose, onSave, theme = "dark" }:
             aria-label={t("auth.serverAddress")}
             value={serverBaseUrlInput}
             placeholder={t("auth.serverPlaceholder")}
-            disabled={saving}
+            disabled={saving || resetting}
             onBlur={handleServerBlur}
             onChange={(event) => {
               setServerBaseUrlInput(event.target.value);
@@ -170,11 +192,32 @@ export function ServerSettingsModal({ isOpen, onClose, onSave, theme = "dark" }:
           <p className="server-settings-modal-hint">{t("auth.serverHint")}</p>
         )}
 
+        {onReset ? (
+          <ModalSection
+            tone="danger"
+            heading={t("auth.clientResetTitle")}
+            description={t("auth.clientResetDescription")}
+          >
+            <ModalActions align="start">
+              <button
+                type="button"
+                className="settings-button settings-button-danger"
+                disabled={saving || resetting}
+                onClick={() => {
+                  void handleReset();
+                }}
+              >
+                {resetting ? t("auth.clientResetting") : t("auth.clientResetAction")}
+              </button>
+            </ModalActions>
+          </ModalSection>
+        ) : null}
+
         <div className="workbench-modal-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>
+          <button type="button" className="secondary-button" disabled={resetting} onClick={onClose}>
             {t("common.cancel")}
           </button>
-          <button type="submit" className="primary-button" disabled={saving}>
+          <button type="submit" className="primary-button" disabled={saving || resetting}>
             {saving ? t("common.loading") : t("auth.saveServerSettings")}
           </button>
         </div>
