@@ -127,6 +127,7 @@ function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string)
   let totalTokens = 0;
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
+  let cacheHitRateDenominator = 0;
   let costUsd = 0;
   let pricedSessions = 0;
   const models = new Set<string>();
@@ -139,6 +140,33 @@ function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string)
     totalTokens += item?.totalTokens ?? (provider === "all" ? user.tokenTotals.totalTokens : 0);
     cacheReadTokens += item?.cacheReadTokens ?? (provider === "all" ? user.tokenTotals.cacheReadTokens ?? 0 : 0);
     cacheWriteTokens += item?.cacheWriteTokens ?? (provider === "all" ? user.tokenTotals.cacheWriteTokens ?? 0 : 0);
+    if (item) {
+      cacheHitRateDenominator += getCacheHitRateDenominator(
+        provider,
+        item.inputTokens,
+        item.cacheReadTokens ?? 0,
+        item.cacheWriteTokens ?? 0
+      );
+    } else if (provider === "all" && user.cliProviderUsage.length > 0) {
+      // 全部提供商汇总时，按每个 CLI 自己的输入口径累加分母。
+      for (const usage of user.cliProviderUsage) {
+        cacheHitRateDenominator += getCacheHitRateDenominator(
+          usage.label,
+          usage.inputTokens,
+          usage.cacheReadTokens ?? 0,
+          usage.cacheWriteTokens ?? 0
+        );
+      }
+    } else if (provider === "all") {
+      // 兼容没有提供商明细的旧快照。无法确认 input 是否包含缓存时，使用完整输入桶，
+      // 避免把缓存读取错误地算成超过 100%。
+      cacheHitRateDenominator += getCacheHitRateDenominator(
+        null,
+        user.tokenTotals.inputTokens,
+        user.tokenTotals.cacheReadTokens ?? 0,
+        user.tokenTotals.cacheWriteTokens ?? 0
+      );
+    }
     costUsd += item?.costUsd ?? (provider === "all" && user.costUsageAvailable ? user.costUsd : 0);
     pricedSessions += provider === "all" ? (user.costUsageAvailable ? user.sessionCount : 0) : (item?.costUsd != null ? item.count : 0);
 
@@ -176,9 +204,23 @@ function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string)
     pricedSessions,
     models: models.size,
     averageTokensPerSession: totalTokens / Math.max(1, sessions),
-    cacheHitRate: cacheReadTokens / Math.max(1, inputTokens),
+    cacheHitRate: cacheReadTokens / Math.max(1, cacheHitRateDenominator),
     points: [...points.values()].sort((left, right) => left.label.localeCompare(right.label))
   };
+}
+
+// 这些 CLI 的 inputTokens 已包含缓存读取/写入；其余 CLI 将输入桶拆开记录。
+const INPUT_INCLUDES_CACHE_READ = new Set(["codex", "command-code", "gemini"]);
+
+function getCacheHitRateDenominator(
+  provider: string | null,
+  inputTokens: number,
+  cacheReadTokens: number,
+  cacheWriteTokens: number
+): number {
+  return provider && INPUT_INCLUDES_CACHE_READ.has(provider)
+    ? inputTokens
+    : inputTokens + cacheReadTokens + cacheWriteTokens;
 }
 function mergeModelUsage(items: UserUsageItemDto[], incoming: UserUsageItemDto) {
   const current = items.find((item) => item.label === incoming.label);

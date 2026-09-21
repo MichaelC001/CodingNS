@@ -86,6 +86,19 @@ describe("PerformanceOverviewPanel", () => {
     expect(screen.getByRole("row", { name: /gpt-5\.6-astra/ })).toBeInTheDocument();
     expect(screen.getByText("50%")).toBeInTheDocument();
   });
+
+  it("全部提供商汇总时按各 CLI 的输入口径计算缓存命中率", async () => {
+    fetchUserUsageMock.mockResolvedValue(createMixedProviderUsageSnapshot());
+
+    render(
+      <I18nProvider language="zh-CN">
+        <PerformanceOverviewPanel />
+      </I18nProvider>
+    );
+
+    await waitFor(() => expect(screen.getByText("96.7%")).toBeInTheDocument());
+    expect(screen.queryByText("112.6%")).not.toBeInTheDocument();
+  });
 });
 
 function createUsageSnapshot(): UserUsageSnapshotDto {
@@ -167,6 +180,75 @@ function createEmptyUsageSnapshot(): UserUsageSnapshotDto {
       timeline: [],
       cliProviderUsage: [],
       modelUsage: [],
+      modelProviderUsage: []
+    }]
+  };
+}
+
+function createMixedProviderUsageSnapshot(): UserUsageSnapshotDto {
+  return {
+    period: "week",
+    tokenUsageAvailable: true,
+    costUsd: 0,
+    costUsageAvailable: false,
+    users: [{
+      user: { userId: "user-1", username: "tester", status: "active" },
+      sessionCount: 2,
+      tokenTotals: {
+        inputTokens: 56680075,
+        outputTokens: 427424,
+        totalTokens: 57107499,
+        cacheReadTokens: 63885312,
+        cacheWriteTokens: 0
+      },
+      tokenUsageAvailable: true,
+      costUsd: 0,
+      costUsageAvailable: false,
+      timeline: [],
+      cliProviderTimeline: {},
+      modelUsage: [],
+      cliProviderUsage: [
+        {
+          label: "codex",
+          count: 1,
+          inputTokens: 56317471,
+          outputTokens: 335452,
+          totalTokens: 56652923,
+          cacheReadTokens: 54361088,
+          cacheWriteTokens: 0,
+          costUsd: null
+        },
+        {
+          label: "pi",
+          count: 1,
+          inputTokens: 33175,
+          outputTokens: 158579,
+          totalTokens: 191754,
+          cacheReadTokens: 9327104,
+          cacheWriteTokens: 0,
+          costUsd: null
+        },
+        {
+          label: "command-code",
+          count: 1,
+          inputTokens: 248594,
+          outputTokens: 37687,
+          totalTokens: 286281,
+          cacheReadTokens: 122880,
+          cacheWriteTokens: 0,
+          costUsd: null
+        },
+        {
+          label: "deepseek-harness",
+          count: 1,
+          inputTokens: 80835,
+          outputTokens: 11989,
+          totalTokens: 92824,
+          cacheReadTokens: 74240,
+          cacheWriteTokens: 0,
+          costUsd: null
+        }
+      ],
       modelProviderUsage: []
     }]
   };
