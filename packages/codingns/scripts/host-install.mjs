@@ -704,6 +704,23 @@ function assertSafeToRemove(targetPath) {
   return resolved;
 }
 
+function assertSafePackagePath(targetPath, prefix) {
+  const resolvedTarget = path.resolve(targetPath);
+  const resolvedPrefix = path.resolve(prefix);
+  const packageMarker = `${path.sep}node_modules${path.sep}`;
+
+  if (
+    resolvedTarget === resolvedPrefix
+    || !resolvedTarget.startsWith(`${resolvedPrefix}${path.sep}`)
+    || !resolvedTarget.includes(packageMarker)
+    || path.basename(resolvedTarget) !== "codingns"
+  ) {
+    throw new Error(`拒绝删除非 CodingNS 包路径：${resolvedTarget}`);
+  }
+
+  return resolvedTarget;
+}
+
 /** 返回旧版服务包可用的直接 Host 启动参数。 */
 function buildDirectHostLaunchArguments(context) {
   return [normalizeNodePath(context.cliEntryPath), ...buildHostStartArguments(context)];
@@ -1714,9 +1731,23 @@ export function runUninstall(options, logger, deps = {}) {
       return EXIT_PERMISSION;
     }
   } else {
-    // 系统 npm 前缀可能同时承载其它全局包，不能把整个 /usr/local 或 /opt/homebrew 删掉。
-    // 外层脚本会在清理服务后执行 npm uninstall -g，只保留这里的服务托管收尾。
-    logger.log("检测到系统 npm 前缀，跳过前缀目录删除", { prefix });
+    // 系统 npm 前缀可能同时承载其它全局包，只删除 CodingNS 包目录和它的命令入口。
+    try {
+      fs.rmSync(assertSafePackagePath(context.packageRoot, prefix), { recursive: true, force: true });
+      const binDirectory = path.join(prefix, "bin");
+      for (const commandName of ["codingns", "codingns.cmd", "codingns.ps1", "codingns-workspace-office-mcp", "codingns-workspace-office-mcp.cmd", "codingns-workspace-office-mcp.ps1"]) {
+        fs.rmSync(path.join(binDirectory, commandName), { force: true });
+      }
+      logger.log("已移除系统 npm 前缀下的 CodingNS 包和命令入口", { prefix, packageRoot: context.packageRoot });
+    } catch (error) {
+      emitError(
+        "PERMISSION_DENIED",
+        "移除服务包失败",
+        error instanceof Error ? error.message : String(error),
+        logger.logPath
+      );
+      return EXIT_PERMISSION;
+    }
   }
 
   emitStep("remove-package", "done");

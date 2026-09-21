@@ -17,6 +17,7 @@ import { WebRtcTunnelError, describeUnknownError } from "./errors";
 import { resolveRuntimePlatform } from "../../platform/platform-adapter";
 
 export const CONTROL_LOGIN_PATH = "/api/public/auth/login";
+export const CONTROL_REFRESH_PATH = "/api/public/auth/refresh";
 export const CONTROL_SIGNALING_TICKET_PATH = "/api/v1/relay/signaling/ticket";
 /**
  * 账号名下已有的绑定列表。
@@ -67,6 +68,8 @@ export interface ControlHostBinding {
 /** 一份可用的控制站登录态。 */
 export interface ControlSessionSnapshot {
   accessToken: string;
+  refreshToken?: string | null;
+  refreshTokenExpiresAt?: string | null;
   expiresAt: string | null;
   account: ControlAccountSnapshot | null;
   savedAt: string;
@@ -110,6 +113,9 @@ export function readStoredControlSession(): ControlSessionSnapshot | null {
 
     return {
       accessToken: parsed.accessToken,
+      refreshToken: typeof parsed.refreshToken === "string" ? parsed.refreshToken : null,
+      refreshTokenExpiresAt:
+        typeof parsed.refreshTokenExpiresAt === "string" ? parsed.refreshTokenExpiresAt : null,
       expiresAt: typeof parsed.expiresAt === "string" ? parsed.expiresAt : null,
       account: normalizeAccountSnapshot(parsed.account),
       savedAt: typeof parsed.savedAt === "string" ? parsed.savedAt : new Date().toISOString()
@@ -199,6 +205,8 @@ export async function loginToControlSite(
 
   const payload = await readJsonSafely<{
     accessToken?: unknown;
+    refreshToken?: unknown;
+    refreshTokenExpiresAt?: unknown;
     expiresAt?: unknown;
     account?: unknown;
   }>(response);
@@ -214,6 +222,13 @@ export async function loginToControlSite(
     savedAt: new Date(environment.now()).toISOString()
   };
 
+  if (typeof payload.refreshToken === "string") {
+    session.refreshToken = payload.refreshToken;
+  }
+  if (typeof payload.refreshTokenExpiresAt === "string") {
+    session.refreshTokenExpiresAt = payload.refreshTokenExpiresAt;
+  }
+
   environment.setStoredSession(session);
   return session;
 }
@@ -228,14 +243,14 @@ export async function listControlHostBindings(
   environment: ControlClientEnvironment,
   options?: { session?: ControlSessionSnapshot | null }
 ): Promise<ControlHostBinding[]> {
-  const session = options?.session ?? environment.getStoredSession();
+  let session = options?.session ?? environment.getStoredSession();
 
   if (!session) {
     throw new WebRtcTunnelError("需要先登录 CodingNS Connect 账号", "CONTROL_LOGIN_REQUIRED");
   }
 
   if (isControlSessionExpired(session, environment.now())) {
-    throw new WebRtcTunnelError("登录状态已经过期，请重新登录", "CONTROL_LOGIN_REQUIRED");
+    session = await refreshControlSession(environment, session);
   }
 
   let response: Response;
@@ -253,6 +268,18 @@ export async function listControlHostBindings(
       "UNKNOWN",
       describeUnknownError(error)
     );
+  }
+
+  if (response.status === 401 && session.refreshToken) {
+    try {
+      session = await refreshControlSession(environment, session);
+      response = await sendControlRequest(environment, CONTROL_HOSTS_PATH, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${session.accessToken}` }
+      });
+    } catch {
+      // 下面统一转换为需要重新登录，避免把刷新接口细节暴露给 UI。
+    }
   }
 
   if (response.status === 401 || response.status === 403) {
@@ -300,14 +327,14 @@ export async function requestSignalingTicket(
   environment: ControlClientEnvironment,
   options?: { session?: ControlSessionSnapshot | null }
 ): Promise<RelaySignalingTicketResponse> {
-  const session = options?.session ?? environment.getStoredSession();
+  let session = options?.session ?? environment.getStoredSession();
 
   if (!session) {
     throw new WebRtcTunnelError("需要先登录 CodingNS Connect 账号", "CONTROL_LOGIN_REQUIRED");
   }
 
   if (isControlSessionExpired(session, environment.now())) {
-    throw new WebRtcTunnelError("登录状态已经过期，请重新登录", "CONTROL_LOGIN_REQUIRED");
+    session = await refreshControlSession(environment, session);
   }
 
   const tunnelDomain = environment.getTunnelDomain().trim();
@@ -336,6 +363,22 @@ export async function requestSignalingTicket(
       "UNKNOWN",
       describeUnknownError(error)
     );
+  }
+
+  if (response.status === 401 && session.refreshToken) {
+    try {
+      session = await refreshControlSession(environment, session);
+      response = await sendControlRequest(environment, CONTROL_SIGNALING_TICKET_PATH, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.accessToken}`
+        },
+        body: JSON.stringify({ tunnelDomain })
+      });
+    } catch {
+      // 下面统一转换为需要重新登录。
+    }
   }
 
   if (response.status === 401) {
@@ -413,6 +456,63 @@ export async function requestSignalingTicket(
     trafficRemainingBytes:
       typeof payload.trafficRemainingBytes === "string" ? payload.trafficRemainingBytes : ""
   };
+}
+
+/** 用 refresh token 轮换控制站会话，并更新当前客户端存储。 */
+export async function refreshControlSession(
+  environment: ControlClientEnvironment,
+  session: ControlSessionSnapshot
+): Promise<ControlSessionSnapshot> {
+  if (!session.refreshToken) {
+    throw new WebRtcTunnelError("登录状态已经过期，请重新登录", "CONTROL_LOGIN_REQUIRED");
+  }
+
+  let response: Response;
+  try {
+    response = await sendControlRequest(environment, CONTROL_REFRESH_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: session.refreshToken })
+    });
+  } catch (error) {
+    throw new WebRtcTunnelError(
+      "连不上 CodingNS 服务，请检查网络后重试",
+      "UNKNOWN",
+      describeUnknownError(error)
+    );
+  }
+
+  if (!response.ok) {
+    throw new WebRtcTunnelError(
+      "登录状态已经失效，请重新登录",
+      "CONTROL_LOGIN_REQUIRED",
+      (await readErrorDetail(response)).detail || undefined
+    );
+  }
+
+  const payload = await readJsonSafely<{
+    accessToken?: unknown;
+    refreshToken?: unknown;
+    expiresAt?: unknown;
+    refreshTokenExpiresAt?: unknown;
+    account?: unknown;
+  }>(response);
+
+  if (typeof payload?.accessToken !== "string" || typeof payload.refreshToken !== "string") {
+    throw new WebRtcTunnelError("刷新登录状态返回内容不完整", "UNKNOWN");
+  }
+
+  const nextSession: ControlSessionSnapshot = {
+    accessToken: payload.accessToken,
+    refreshToken: payload.refreshToken,
+    refreshTokenExpiresAt:
+      typeof payload.refreshTokenExpiresAt === "string" ? payload.refreshTokenExpiresAt : null,
+    expiresAt: typeof payload.expiresAt === "string" ? payload.expiresAt : null,
+    account: normalizeAccountSnapshot(payload.account) ?? session.account,
+    savedAt: new Date(environment.now()).toISOString()
+  };
+  environment.setStoredSession(nextSession);
+  return nextSession;
 }
 
 /** 拼控制站的接口地址，顺便把末尾斜杠处理掉。 */

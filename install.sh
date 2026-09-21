@@ -244,8 +244,8 @@ msg() {
     en:info_using_host_installer) printf 'Using the unified installer for setup, startup, and autostart...';;
     zh:info_done) printf '安装流程已完成。';;
     en:info_done) printf 'The installation flow is complete.';;
-    zh:info_existing_install) printf '检测到已安装的 CodingNS：%s（数据目录：%s）';;
-    en:info_existing_install) printf 'Existing CodingNS installation detected: %s (data directory: %s)';;
+    zh:info_existing_install) printf '检测到已安装的 CodingNS：%s（数据目录：%s）' "$@";;
+    en:info_existing_install) printf 'Existing CodingNS installation detected: %s (data directory: %s)' "$@";;
     zh:prompt_existing_action) printf '请选择操作：';;
     en:prompt_existing_action) printf 'Choose an action:';;
     zh:existing_action_upgrade) printf '1) 升级';;
@@ -262,24 +262,24 @@ msg() {
     en:info_no_versions) printf 'No matching versions were found.';;
     zh:info_version_source_failed) printf '无法读取 npm 版本列表，请检查网络或稍后重试。';;
     en:info_version_source_failed) printf 'Unable to read the npm version list. Check the network and try again later.';;
-    zh:info_version_upgrade_title) printf '可升级到以下版本（当前：%s）：';;
-    en:info_version_upgrade_title) printf 'Available upgrade versions (current: %s):';;
-    zh:info_version_downgrade_title) printf '可降级到以下版本（当前：%s）：';;
-    en:info_version_downgrade_title) printf 'Available downgrade versions (current: %s):';;
+    zh:info_version_upgrade_title) printf '可升级到以下版本（当前：%s）：' "$@";;
+    en:info_version_upgrade_title) printf 'Available upgrade versions (current: %s):' "$@";;
+    zh:info_version_downgrade_title) printf '可降级到以下版本（当前：%s）：' "$@";;
+    en:info_version_downgrade_title) printf 'Available downgrade versions (current: %s):' "$@";;
     zh:version_show_development) printf 'd) 显示开发版本';;
     en:version_show_development) printf 'd) Show development versions';;
     zh:version_cancel) printf 'q) 取消';;
     en:version_cancel) printf 'q) Cancel';;
-    zh:info_selected_version) printf '已选择 CodingNS %s。';;
-    en:info_selected_version) printf 'Selected CodingNS %s.';;
+    zh:info_selected_version) printf '已选择 CodingNS %s。' "$@";;
+    en:info_selected_version) printf 'Selected CodingNS %s.' "$@";;
     zh:prompt_purge_data) printf '是否同时清理数据目录？';;
     en:prompt_purge_data) printf 'Also remove the data directory?';;
     zh:info_uninstalling) printf '开始卸载 CodingNS，并清理服务和开机自启配置...';;
     en:info_uninstalling) printf 'Uninstalling CodingNS and removing service/autostart configuration...';;
     zh:info_uninstalled) printf 'CodingNS 已卸载。';;
     en:info_uninstalled) printf 'CodingNS has been uninstalled.';;
-    zh:info_uninstall_keep_data) printf '已保留数据目录：%s';;
-    en:info_uninstall_keep_data) printf 'Data directory kept: %s';;
+    zh:info_uninstall_keep_data) printf '已保留数据目录：%s' "$@";;
+    en:info_uninstall_keep_data) printf 'Data directory kept: %s' "$@";;
     zh:info_registry) printf '当前 npm 源：%s' "$@";;
     en:info_registry) printf 'Registry used: %s' "$@";;
     zh:info_runtime_node) printf '实际运行时 Node.js：%s' "$@";;
@@ -2356,25 +2356,10 @@ run_host_installer_uninstall() {
     return 0
   fi
 
-  if [[ "$PRIVATE_INSTALL_CONTEXT" == "1" || "$USE_SUDO_FOR_NPM" != "1" ]]; then
-    "$NODE_BIN" "$installer_script" "${args[@]}"
-    return
-  fi
-
-  command_exists sudo || return 1
-  sudo "$NODE_BIN" "$installer_script" "${args[@]}"
-}
-
-remove_system_global_package() {
-  [[ "$PRIVATE_INSTALL_CONTEXT" == "1" ]] && return 0
-  [[ -n "$NPM_BIN" && -n "$PACKAGE_NAME" ]] || return 0
-
-  if [[ "$DRY_RUN" == "1" ]]; then
-    say_info_custom "npm uninstall -g $PACKAGE_NAME"
-    return 0
-  fi
-
-  run_with_optional_sudo "$NPM_BIN" uninstall -g "$PACKAGE_NAME" --silent >/dev/null 2>&1 || return 1
+  # 统一安装器必须以当前用户运行，否则 sudo 会把 HOME 切到 root，导致
+  # launchd/systemd/计划任务清理落到错误的用户目录。系统前缀下的包目录
+  # 由统一安装器按安全路径规则单独删除。
+  "$NODE_BIN" "$installer_script" "${args[@]}"
 }
 
 run_existing_installation_management() {
@@ -2384,6 +2369,7 @@ run_existing_installation_management() {
   INSTALL_CODINGNS="1"
   INSTALL_OPENCODE="0"
   INSTALL_DESKTOP_CLIENT="0"
+  INSTALLED_CLI_COUNT="1"
 
   choose_existing_install_action
   if is_windows_environment; then
@@ -2401,9 +2387,6 @@ run_existing_installation_management() {
       PURGE_DATA="$(read_yes_no "$(msg prompt_purge_data)" "n")"
       if ! run_host_installer_uninstall; then
         die error_host_installer_failed
-      fi
-      if ! remove_system_global_package; then
-        die_custom '服务配置已经移除，但 npm 全局包删除失败，请手工执行 npm uninstall -g @jingyi0605/codingns。'
       fi
       say_info info_uninstalled
       if [[ "$PURGE_DATA" != "1" ]]; then

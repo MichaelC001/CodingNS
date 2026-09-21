@@ -268,6 +268,42 @@ describe("control-site-client", () => {
     });
   });
 
+  it("换票 401 时会自动刷新控制站登录态并重试", async () => {
+    const { environment, requests, storedSessions } = createEnvironment({
+      storedSession: {
+        accessToken: "token-expired",
+        refreshToken: "refresh-1",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        account: null,
+        savedAt: "2026-09-16T00:00:00.000Z"
+      },
+      responses: [
+        { status: 401, body: { errorCode: "AUTH_INVALID", detail: "token 过期" } },
+        {
+          status: 200,
+          body: {
+            accessToken: "token-2",
+            refreshToken: "refresh-2",
+            expiresAt: "2099-01-02T00:00:00.000Z",
+            refreshTokenExpiresAt: "2099-02-01T00:00:00.000Z",
+            account: { accountId: "acct_1", email: "user@example.com" }
+          }
+        },
+        { status: 201, body: TICKET_BODY }
+      ]
+    });
+
+    await requestSignalingTicket(environment);
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://channel.codingns.com/api/v1/relay/signaling/ticket",
+      "https://channel.codingns.com/api/public/auth/refresh",
+      "https://channel.codingns.com/api/v1/relay/signaling/ticket"
+    ]);
+    expect(requests[2].authorization).toBe("Bearer token-2");
+    expect(storedSessions.at(-1)?.refreshToken).toBe("refresh-2");
+  });
+
   it("本地登录态已经过期时直接报 CONTROL_LOGIN_REQUIRED，不浪费一次请求", async () => {
     const { environment, requests } = createEnvironment({
       storedSession: {
