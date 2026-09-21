@@ -43,6 +43,7 @@ export type RelaySignalingClientMessage =
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string; sessionId: string }
   | { type: "candidate"; candidate: string; mid: string | null; sessionId?: string }
+  | { type: "telemetry"; sessionId: string; dataChannelOpen: boolean; accessMode?: "direct" | "relay" | "unknown"; upstreamBytes?: string; downstreamBytes?: string; upstreamRateBytesPerSecond?: string; downstreamRateBytesPerSecond?: string }
   | { type: "ping"; at: string };
 
 /** 信令服务器 → 客户端。 */

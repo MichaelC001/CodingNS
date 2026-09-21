@@ -383,6 +383,12 @@ class PeerSession {
 
     channel.onopen = () => {
       this.updateTransportKind();
+      this.options.sendSignal({
+        type: "telemetry",
+        sessionId: this.sessionId,
+        dataChannelOpen: true,
+        accessMode: this.transportKind === "relay" ? "relay" : this.transportKind === "p2p" ? "direct" : "unknown"
+      });
       this.options.ipc.log("data_channel.open", {
         sessionId: this.sessionId,
         label: channel.label,
@@ -400,6 +406,12 @@ class PeerSession {
     };
 
     channel.onclose = () => {
+      this.options.sendSignal({
+        type: "telemetry",
+        sessionId: this.sessionId,
+        dataChannelOpen: false,
+        accessMode: "unknown"
+      });
       this.close("data_channel_closed");
     };
 

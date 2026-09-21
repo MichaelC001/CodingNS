@@ -30,6 +30,7 @@ export interface SignalSocket {
   sendAnswer(sdp: string, sessionId: string): void;
   sendCandidate(candidate: string, mid: string | null, sessionId?: string): void;
   sendPing(at: string): void;
+  sendTelemetry?(input: { dataChannelOpen: boolean; accessMode?: "direct" | "relay" | "unknown"; upstreamBytes?: string; downstreamBytes?: string; upstreamRateBytesPerSecond?: string; downstreamRateBytesPerSecond?: string }): void;
   subscribe(listener: (message: RelaySignalingServerMessage) => void): () => void;
   /** 连接被关闭时回调，带上人能看懂的原因。 */
   subscribeClose(listener: (error: WebRtcTunnelError) => void): () => void;
@@ -265,6 +266,10 @@ export async function connectSignalSocket(
         },
         sendPing(at: string) {
           sendMessage({ type: "ping", at });
+        },
+        sendTelemetry(input) {
+          if (!sessionId) return;
+          sendMessage({ type: "telemetry", sessionId, ...input });
         },
         subscribe(listener) {
           messageListeners.add(listener);

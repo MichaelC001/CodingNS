@@ -392,6 +392,7 @@ export async function openTunnelPeerSession(
       channelOpened = true;
       clearTimeout(timeoutTimer);
       transport?.markChannelOpen();
+      signalSocket.sendTelemetry?.({ dataChannelOpen: true, accessMode: linkInfo?.transportKind === "relay" ? "relay" : linkInfo?.transportKind === "p2p" ? "direct" : "unknown" });
       openedDeferred.resolve();
     }
 
@@ -399,6 +400,8 @@ export async function openTunnelPeerSession(
       if (closed) {
         return;
       }
+
+      signalSocket.sendTelemetry?.({ dataChannelOpen: false, accessMode: "unknown" });
 
       failAndClose(
         settleError
@@ -453,6 +456,9 @@ export async function openTunnelPeerSession(
         }
 
         linkInfo = nextLinkInfo;
+        if (channelOpened) {
+          signalSocket.sendTelemetry?.({ dataChannelOpen: true, accessMode: nextLinkInfo.transportKind === "relay" ? "relay" : "direct" });
+        }
         emitLinkInfo();
       } catch (error) {
         debugIgnore(error);
