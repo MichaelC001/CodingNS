@@ -2010,6 +2010,7 @@ export function createServer(config: HostConfig) {
     shuttingDown = true;
     stopTerminalDebugEventLoopLagMonitor();
     eventLoopMonitor.dispose();
+    sessionHistoryService.dispose();
     butlerFollowUpTerminalSubscription.close();
     // 这些调度器和运行时彼此独立，关闭时并行等待，避免每个内部宽限期
     // 串行叠加后超过 tsx 的退出窗口；运行时完成后再回收它们依赖的 helper。

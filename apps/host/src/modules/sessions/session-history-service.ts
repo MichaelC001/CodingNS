@@ -122,6 +122,7 @@ import {
   discoverWorkspaceSessionsInRuntime,
   readSessionHistoryInRuntime,
   readSessionStatsInRuntime,
+  observeSessionStatsRuntimeCache,
   type SessionHistoryReadInRuntimeResult
 } from "../provider/provider-discovery-runtime.js";
 import {
@@ -333,6 +334,12 @@ interface SessionStatsSnapshotReadTaskInput {
   providerSessionId: string;
   rawStoreRef: string;
   options?: ProviderSessionStatsReadOptions;
+}
+
+interface SessionStatsSnapshotRefreshTaskInput {
+  sessionId: string;
+  /** 任务最早允许开始的时间；用于把冷却期内的 dirty 刷新留在 TaskManager 中。 */
+  notBefore?: number;
 }
 
 interface SessionBillingRecomputeTaskInput {
@@ -548,6 +555,15 @@ const WORKSPACE_STATE_REFRESH_COOLDOWN_MS = 1_500;
 const SQLITE_BUSY_RETRY_DELAYS_MS = [100, 200, 400] as const;
 const SQLITE_BUSY_RETRY_MAX_TOTAL_WAIT_MS = 1_000;
 const SESSION_DISCOVERY_DIAGNOSTICS_MAX_ROWS_PER_WORKSPACE = 500;
+const SESSION_STATS_REFRESH_COOLDOWN_MS = 1_500;
+const SESSION_STATS_PRICE_BOOK_VERSION_LIMIT = 8;
+const SESSION_STATS_REFRESH_STATE_LIMIT = 1_024;
+
+interface SessionStatsRefreshState {
+  active: TaskHandle<void> | null;
+  lastFinishedAt: number;
+  dirty: boolean;
+}
 
 export class SessionHistoryService {
   private readonly providerRegistry: ProviderRegistry;
@@ -592,6 +608,8 @@ export class SessionHistoryService {
   private readonly workspaceDiscoveryStatuses = new Map<string, WorkspaceDiscoveryStatus>();
   private readonly sessionSourceIndexRepairScopes = new Map<string, SessionSourceIndexRepairScope>();
   private readonly workspaceStateRefreshStatuses = new Map<string, WorkspaceStateRefreshStatus>();
+  /** 统计刷新在终态事件密集到达时只保留一个活动任务和一个脏标记。 */
+  private readonly sessionStatsRefreshStates = new Map<string, SessionStatsRefreshState>();
   /**
    * 诊断只在当前 Host 进程内保留，避免每次扫描都争抢会话库的写锁。
    * 重启后快照自然清空；历史 SQLite 数据仍由维护任务负责清理。
@@ -600,6 +618,8 @@ export class SessionHistoryService {
   private readonly providerCapabilityCache = new Map<string, ProviderCapabilityCacheEntry>();
   private readonly streamingDeltaSuppressionDebugState = new Map<string, string>();
   private readonly helperHistorySourceStates = new Map<string, HelperHistorySourceState>();
+  /** 当前 helper 已收到的价格表版本；helper 重启后由 cache miss 触发一次完整重传。 */
+  private readonly statsPriceBookVersionsSent = new Set<string>();
   private readonly codexSubagentSpawnEventsSeen = new Set<string>();
   private readonly historySubscriptionMetrics: HistorySubscriptionMetrics = {
     activeSubscriptions: 0,
@@ -771,6 +791,16 @@ export class SessionHistoryService {
       commandPath: config.opencodeCliPath
     });
     this.registerBackgroundTasks();
+  }
+
+  /** 服务收尾时取消统计刷新，避免任务回调在数据库关闭后继续写入。 */
+  dispose(): void {
+    this.taskManager.cancelMatching(
+      { taskTypes: [HOST_TASK_TYPES.sessionStatsSnapshotRefresh] },
+      "session history service disposed"
+    );
+    this.sessionStatsRefreshStates.clear();
+    this.statsPriceBookVersionsSent.clear();
   }
 
   observeBackgroundTaskMetrics(): TaskMetricsSnapshot {
@@ -1198,12 +1228,13 @@ export class SessionHistoryService {
     }
 
     if (!this.taskManager.has(HOST_TASK_TYPES.sessionStatsSnapshotRefresh)) {
-      this.taskManager.register<{ sessionId: string }, void>({
+      this.taskManager.register<SessionStatsSnapshotRefreshTaskInput, void>({
         taskType: HOST_TASK_TYPES.sessionStatsSnapshotRefresh,
         executionLane: "host_background",
         concurrency: 2,
         timeoutMs: 45_000,
-        run: async ({ sessionId }, context) => {
+        run: async ({ sessionId, notBefore }, context) => {
+          await this.waitForSessionStatsRefreshNotBefore(notBefore, context.signal);
           await this.refreshSessionStatsSnapshot(sessionId, context.signal);
         }
       });
@@ -1306,7 +1337,8 @@ export class SessionHistoryService {
 
   requestSessionStatsRefresh(
     sessionId: string,
-    source = "session_history.stats_snapshot_refresh"
+    source = "session_history.stats_snapshot_refresh",
+    options: { force?: boolean } = { force: true }
   ): TaskHandle<void> | null {
     const normalizedSessionId = sessionId.trim();
     if (!normalizedSessionId) {
@@ -1319,14 +1351,54 @@ export class SessionHistoryService {
       return null;
     }
 
-    const handle = this.taskManager.enqueue<{ sessionId: string }, void>(
+    const now = Date.now();
+    let state = this.sessionStatsRefreshStates.get(normalizedSessionId);
+    if (!state) {
+      this.trimSessionStatsRefreshStates();
+      state = {
+        active: null,
+        lastFinishedAt: 0,
+        dirty: false
+      } satisfies SessionStatsRefreshState;
+      this.sessionStatsRefreshStates.set(normalizedSessionId, state);
+    }
+
+    const hasActiveTask = Boolean(state.active);
+    if (hasActiveTask) {
+      state.dirty = true;
+      const duplicate = this.taskManager.enqueue<SessionStatsSnapshotRefreshTaskInput, void>(
+        HOST_TASK_TYPES.sessionStatsSnapshotRefresh,
+        {
+          key: normalizedSessionId,
+          source,
+          input: { sessionId: normalizedSessionId }
+        }
+      );
+      // Promise 已结算但旧句柄的 finally 尚未运行时，TaskManager 会返回新句柄。
+      // 这时必须接管新句柄，否则 dirty follow-up 会丢失或状态会被旧回调覆盖。
+      if (!duplicate.deduped) {
+        this.trackSessionStatsRefreshHandle(normalizedSessionId, state, duplicate, source);
+      }
+      return duplicate;
+    }
+
+    const notBefore = !options.force
+      && now - state.lastFinishedAt < SESSION_STATS_REFRESH_COOLDOWN_MS
+      ? state.lastFinishedAt + SESSION_STATS_REFRESH_COOLDOWN_MS
+      : undefined;
+    const handle = this.taskManager.enqueue<SessionStatsSnapshotRefreshTaskInput, void>(
       HOST_TASK_TYPES.sessionStatsSnapshotRefresh,
       {
         key: normalizedSessionId,
         source,
-        input: { sessionId: normalizedSessionId }
+        input: {
+          sessionId: normalizedSessionId,
+          ...(notBefore !== undefined ? { notBefore } : {})
+        }
       }
     );
+
+    this.trackSessionStatsRefreshHandle(normalizedSessionId, state, handle, source);
 
     if (!handle.deduped) {
       void handle.promise.catch((error) => {
@@ -1365,6 +1437,79 @@ export class SessionHistoryService {
     return this.taskManager.peek(HOST_TASK_TYPES.sessionBillingRecompute, "global");
   }
 
+  private trackSessionStatsRefreshHandle(
+    sessionId: string,
+    state: SessionStatsRefreshState,
+    handle: TaskHandle<void>,
+    source: string
+  ): void {
+    state.active = handle;
+    state.dirty = false;
+    void handle.promise.finally(() => {
+      if (this.sessionStatsRefreshStates.get(sessionId) !== state || state.active !== handle) {
+        return;
+      }
+
+      state.active = null;
+      state.lastFinishedAt = Date.now();
+
+      if (state.dirty) {
+        state.dirty = false;
+        const followUp = this.taskManager.enqueue<SessionStatsSnapshotRefreshTaskInput, void>(
+          HOST_TASK_TYPES.sessionStatsSnapshotRefresh,
+          {
+            key: sessionId,
+            source: `${source}.dirty_follow_up`,
+            input: {
+              sessionId,
+              notBefore: state.lastFinishedAt + SESSION_STATS_REFRESH_COOLDOWN_MS
+            }
+          }
+        );
+        this.trackSessionStatsRefreshHandle(sessionId, state, followUp, `${source}.dirty_follow_up`);
+      }
+    }).catch(() => undefined);
+  }
+
+  private async waitForSessionStatsRefreshNotBefore(
+    notBefore: number | undefined,
+    signal: AbortSignal
+  ): Promise<void> {
+    if (notBefore === undefined) {
+      return;
+    }
+
+    const remainingMs = notBefore - Date.now();
+    if (remainingMs <= 0) {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => finish(resolve), remainingMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        finish(() => reject(signal.reason ?? new Error("session stats refresh aborted")));
+      };
+      const finish = (complete: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        complete();
+      };
+
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+
+      signal.addEventListener("abort", onAbort, { once: true });
+      timer.unref?.();
+    });
+  }
+
   private async refreshSessionStatsSnapshot(sessionId: string, signal: AbortSignal): Promise<void> {
     const binding = this.sessionBindingRepository.findBySessionId(sessionId);
     if (!binding || signal.aborted || !this.isProviderEnabled(binding.provider)) {
@@ -1383,21 +1528,11 @@ export class SessionHistoryService {
         options
       );
     } else {
-      const readTask = this.taskManager.enqueue<SessionStatsSnapshotReadTaskInput, ProviderSessionStats | null>(
-        HOST_TASK_TYPES.sessionStatsSnapshotRead,
-        {
-          key: sessionId,
-          source: "session_history.stats_snapshot_read",
-          input: {
-            config: this.providerSessionDiscoveryConfig,
-            provider: binding.provider,
-            providerSessionId: binding.providerSessionId,
-            rawStoreRef: binding.rawStoreRef,
-            options
-          }
-        }
+      stats = await this.readStatsFromHelper(
+        sessionId,
+        binding,
+        options
       );
-      stats = await readTask.promise;
     }
 
     if (signal.aborted) {
@@ -1426,6 +1561,69 @@ export class SessionHistoryService {
     }
 
     this.sessionStatsSnapshotRepository.replaceSnapshot(sessionId, stats, updatedAt);
+  }
+
+  private async readStatsFromHelper(
+    sessionId: string,
+    binding: SessionBinding,
+    options: ProviderSessionStatsReadOptions | undefined
+  ): Promise<ProviderSessionStats | null> {
+    const priceBookVersion = options?.billing?.priceBookVersion;
+    const fullOptions = options;
+    const firstOptions = priceBookVersion && this.statsPriceBookVersionsSent.has(priceBookVersion)
+      ? this.stripStatsPriceBook(options)
+      : options;
+
+    if (priceBookVersion && firstOptions !== options) {
+      // 已发送过的版本只传版本号，helper 内部复用价格表，避免每次 IPC 携带完整目录。
+    } else if (priceBookVersion && options?.billing?.priceBook) {
+      this.rememberStatsPriceBookVersion(priceBookVersion);
+    }
+
+    const enqueue = (readOptions: ProviderSessionStatsReadOptions | undefined) =>
+      this.taskManager.enqueue<SessionStatsSnapshotReadTaskInput, ProviderSessionStats | null>(
+        HOST_TASK_TYPES.sessionStatsSnapshotRead,
+        {
+          key: sessionId,
+          source: "session_history.stats_snapshot_read",
+          input: {
+            config: this.providerSessionDiscoveryConfig,
+            provider: binding.provider,
+            providerSessionId: binding.providerSessionId,
+            rawStoreRef: binding.rawStoreRef,
+            options: readOptions
+          }
+        }
+      );
+
+    try {
+      return await enqueue(firstOptions).promise;
+    } catch (error) {
+      const isPriceBookMiss = error instanceof Error && error.message.startsWith("PRICE_BOOK_CACHE_MISS:");
+      if (!isPriceBookMiss || !priceBookVersion || !fullOptions?.billing?.priceBook) {
+        throw error;
+      }
+      this.statsPriceBookVersionsSent.delete(priceBookVersion);
+      return await enqueue(fullOptions).promise;
+    }
+  }
+
+  private rememberStatsPriceBookVersion(version: string): void {
+    this.statsPriceBookVersionsSent.delete(version);
+    this.statsPriceBookVersionsSent.add(version);
+    while (this.statsPriceBookVersionsSent.size > SESSION_STATS_PRICE_BOOK_VERSION_LIMIT) {
+      this.statsPriceBookVersionsSent.delete(this.statsPriceBookVersionsSent.values().next().value!);
+    }
+  }
+
+  private stripStatsPriceBook(
+    options: ProviderSessionStatsReadOptions | undefined
+  ): ProviderSessionStatsReadOptions | undefined {
+    if (!options?.billing) {
+      return options;
+    }
+    const { priceBook: _priceBook, ...billing } = options.billing;
+    return { billing };
   }
 
   private resolveSessionStatsReadOptions(
@@ -4949,6 +5147,24 @@ export class SessionHistoryService {
         };
       }
     }
+    const runtimeStats = observeSessionStatsRuntimeCache();
+    total.hits += runtimeStats.hits;
+    total.misses += runtimeStats.misses;
+    total.evictions += runtimeStats.evictions;
+    total.rejections += runtimeStats.rejections;
+    total.bytes += runtimeStats.bytes;
+    total.entries += runtimeStats.entries;
+    for (const [provider, stats] of Object.entries(runtimeStats.byProvider ?? {})) {
+      const current = total.byProvider[provider] ?? empty();
+      total.byProvider[provider] = {
+        hits: current.hits + stats.hits,
+        misses: current.misses + stats.misses,
+        evictions: current.evictions + stats.evictions,
+        rejections: current.rejections + stats.rejections,
+        bytes: current.bytes + stats.bytes,
+        entries: current.entries + stats.entries
+      };
+    }
     return total;
   }
 
@@ -7175,6 +7391,7 @@ export class SessionHistoryService {
   }
 
   private deleteSessionById(sessionId: string): void {
+    this.clearSessionStatsRefreshState(sessionId);
     this.sessionMessageAttachmentService.deleteSessionAttachments(sessionId);
     this.sessionChangedFileService.deleteBySessionId(sessionId);
     this.db
@@ -7213,6 +7430,27 @@ export class SessionHistoryService {
     this.db
       .prepare("DELETE FROM session_bindings WHERE session_id = ?")
       .run(sessionId);
+  }
+
+  private clearSessionStatsRefreshState(sessionId: string): void {
+    const state = this.sessionStatsRefreshStates.get(sessionId);
+    if (!state) {
+      return;
+    }
+
+    state.active?.cancel("session deleted");
+    this.sessionStatsRefreshStates.delete(sessionId);
+  }
+
+  private trimSessionStatsRefreshStates(): void {
+    while (this.sessionStatsRefreshStates.size > SESSION_STATS_REFRESH_STATE_LIMIT) {
+      const oldest = [...this.sessionStatsRefreshStates.entries()]
+        .find(([, state]) => state.active === null);
+      if (!oldest) {
+        return;
+      }
+      this.sessionStatsRefreshStates.delete(oldest[0]);
+    }
   }
 
   private countOtherWorkspaceSessions(workspaceId: string, sessionId: string): number {

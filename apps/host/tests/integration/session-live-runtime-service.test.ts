@@ -45,6 +45,7 @@ function createService(
     findLatestUserMessage: vi.fn(),
     readAllTextHistoryMessages: vi.fn(),
     persistSessionBinding: vi.fn(),
+    requestSessionStatsRefresh: vi.fn(),
     requestWorkspaceDiscovery: vi.fn(),
     syncSessionTitle: vi.fn(async () => undefined),
     requestCodexTitleGenerationForNewSession: vi.fn(),
@@ -4051,6 +4052,7 @@ describe("SessionLiveRuntimeService", () => {
         trigger: "subagent_spawn"
       }
     );
+    expect(sessionHistoryService.requestSessionStatsRefresh).not.toHaveBeenCalled();
     expect(sessionChangedFileService.recordMessages).toHaveBeenCalled();
   });
 

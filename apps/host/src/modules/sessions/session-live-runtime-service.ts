@@ -2054,10 +2054,13 @@ export class SessionLiveRuntimeService {
       void this.dispatchNextQueuedMessage(input.sessionId);
     }
 
-    this.sessionHistoryService.requestSessionStatsRefresh?.(
-      input.sessionId,
-      "session_live_runtime.external_runtime"
-    );
+    if (isTerminalSessionRunningState(input.runningState)) {
+      this.sessionHistoryService.requestSessionStatsRefresh?.(
+        input.sessionId,
+        "session_live_runtime.external_runtime",
+        { force: false }
+      );
+    }
   }
 
   private persistExternalRuntimeUpdateState(input: {
@@ -3223,11 +3226,20 @@ export class SessionLiveRuntimeService {
     try {
       await this.persistRuntimeEventData(sessionId, workspaceId, userId, event);
     } finally {
-      // 统计刷新只入队，不把 Provider 读取绑定到 runtime 事件响应。
-      this.sessionHistoryService.requestSessionStatsRefresh?.(
-        sessionId,
-        `session_live_runtime.${event.type}`
-      );
+      // 普通消息和运行中状态不会改变累计用量，不能每条事件都重扫统计文件。
+      // 只有终态才触发一次统计刷新；TaskManager 负责同一会话任务去重。
+      if (
+        event.type === "complete"
+        || event.type === "error"
+        || event.type === "interrupted"
+        || (event.type === "status" && isTerminalRuntimeEventStatus(event.status))
+      ) {
+        this.sessionHistoryService.requestSessionStatsRefresh?.(
+          sessionId,
+          `session_live_runtime.${event.type}`,
+          { force: false }
+        );
+      }
     }
   }
 

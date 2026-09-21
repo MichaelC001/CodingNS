@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const DISCOVERY_RESULT = {
   sessions: [],
@@ -106,6 +109,112 @@ describe("provider-discovery-runtime", () => {
     await runtime.readSessionTitleInRuntime(config, "codex", "provider-session-1", "/tmp/raw");
 
     expect(readSessionTitle).toHaveBeenCalledTimes(1);
+  });
+
+  it("统计文件指纹未变化时复用折叠结果，变化后才重新读取", async () => {
+    const readSessionStats = vi.fn(async () => ({
+      provider: "codex",
+      capturedAt: "2026-09-20T00:00:00.000Z",
+      metrics: {}
+    }));
+
+    vi.doMock("@codingns/session-sync-core", () => ({
+      ClaudeCodeAdapter: class {},
+      LegnaCodeAdapter: class {},
+      CodexAdapter: class {},
+      GeminiAdapter: class {},
+      KimiAdapter: class {},
+      OpenCodeAdapter: class {},
+      ProviderRegistry: class {},
+      SessionSyncService: class {
+        discoverWorkspaceSessions = vi.fn(async () => DISCOVERY_RESULT);
+        readSessionTitle = vi.fn(async () => "title");
+        readSessionStats = readSessionStats;
+      }
+    }));
+
+    const runtime = await import("../../src/modules/provider/provider-discovery-runtime.js");
+    const root = await mkdtemp(join(tmpdir(), "codingns-stats-cache-"));
+    const filePath = join(root, "session.jsonl");
+    await writeFile(filePath, "{}\n", "utf8");
+    const input = {
+      config: createConfig(),
+      provider: "codex",
+      providerSessionId: "session-1",
+      rawStoreRef: filePath,
+      options: undefined
+    } as const;
+
+    await runtime.readSessionStatsInRuntime(input);
+    await runtime.readSessionStatsInRuntime(input);
+    expect(readSessionStats).toHaveBeenCalledTimes(1);
+
+    await writeFile(filePath, "{\"changed\":true}\n", "utf8");
+    await runtime.readSessionStatsInRuntime(input);
+    expect(readSessionStats).toHaveBeenCalledTimes(2);
+  });
+
+  it("计费起点变化时即使文件指纹不变也不会复用旧统计", async () => {
+    const readSessionStats = vi.fn(async () => ({
+      provider: "codex",
+      capturedAt: "2026-09-20T00:00:00.000Z",
+      metrics: {}
+    }));
+
+    vi.doMock("@codingns/session-sync-core", () => ({
+      ClaudeCodeAdapter: class {},
+      LegnaCodeAdapter: class {},
+      CodexAdapter: class {},
+      GeminiAdapter: class {},
+      KimiAdapter: class {},
+      OpenCodeAdapter: class {},
+      ProviderRegistry: class {},
+      SessionSyncService: class {
+        discoverWorkspaceSessions = vi.fn(async () => DISCOVERY_RESULT);
+        readSessionTitle = vi.fn(async () => "title");
+        readSessionStats = readSessionStats;
+      }
+    }));
+
+    const runtime = await import("../../src/modules/provider/provider-discovery-runtime.js");
+    const root = await mkdtemp(join(tmpdir(), "codingns-stats-billing-cache-"));
+    const filePath = join(root, "session.jsonl");
+    await writeFile(filePath, "{}\n", "utf8");
+    const priceBook = {
+      version: "price-book-v1",
+      source: "builtin" as const,
+      fetchedAt: "2026-09-20T00:00:00.000Z",
+      entries: []
+    };
+    const input = {
+      config: createConfig(),
+      provider: "codex",
+      providerSessionId: "session-billing-cache",
+      rawStoreRef: filePath,
+      options: {
+        billing: {
+          billingStartedAt: "2026-09-20T00:00:00.000Z",
+          pricingProfileId: "direct-api",
+          priceBookVersion: priceBook.version,
+          priceBook
+        }
+      }
+    } as const;
+
+    await runtime.readSessionStatsInRuntime(input);
+    await runtime.readSessionStatsInRuntime(input);
+    expect(readSessionStats).toHaveBeenCalledTimes(1);
+
+    await runtime.readSessionStatsInRuntime({
+      ...input,
+      options: {
+        billing: {
+          ...input.options.billing,
+          billingStartedAt: "2026-09-20T00:01:00.000Z"
+        }
+      }
+    });
+    expect(readSessionStats).toHaveBeenCalledTimes(2);
   });
 
   it("创建 Claude adapter 时会带上额外 projects 根", async () => {

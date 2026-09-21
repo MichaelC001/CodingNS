@@ -17,8 +17,11 @@ import {
   type ProviderSessionDiscovery,
   type ProviderSessionStats,
   type ProviderSessionStatsReadOptions,
-  type ProviderSessionSummary
+  type ProviderSessionPriceBook,
+  type ProviderSessionSummary,
+  type ProviderCacheStats
 } from "@codingns/session-sync-core";
+import { stat } from "node:fs/promises";
 
 import { CodexAppServerHelperClient } from "../sessions/codex-app-server-helper-client.js";
 import type { ProviderSessionDiscoveryHelperConfig } from "./provider-discovery-helper-client.js";
@@ -27,6 +30,10 @@ const WORKSPACE_DISCOVERY_CACHE_MAX_AGE_MS = 5_000;
 const SESSION_TITLE_CACHE_MAX_AGE_MS = 15_000;
 const WORKSPACE_DISCOVERY_CACHE_LIMIT = 8;
 const SESSION_TITLE_CACHE_LIMIT = 256;
+const SESSION_STATS_CACHE_LIMIT = 128;
+const SESSION_STATS_CACHE_MAX_AGE_MS = 15_000;
+const SESSION_STATS_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const SESSION_PRICE_BOOK_CACHE_LIMIT = 8;
 
 /**
  * 传给 helper 的已知会话上限。
@@ -94,6 +101,69 @@ const sessionTitleCache = new Map<string, {
   title: string;
 }>();
 const sessionTitleInflight = new Map<string, Promise<string>>();
+const sessionStatsCache = new Map<string, {
+  signature: string;
+  cachedAt: number;
+  value: ProviderSessionStats | null;
+}>();
+const sessionStatsInflight = new Map<string, Promise<ProviderSessionStats | null>>();
+const sessionPriceBooks = new Map<string, ProviderSessionPriceBook>();
+const sessionStatsCacheMetrics = new Map<string, {
+  hits: number;
+  misses: number;
+  evictions: number;
+  bytes: number;
+  entries: number;
+}>();
+
+function getSessionStatsCacheMetric(provider: string) {
+  const current = sessionStatsCacheMetrics.get(provider) ?? {
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+    bytes: 0,
+    entries: 0
+  };
+  sessionStatsCacheMetrics.set(provider, current);
+  return current;
+}
+
+/** 供 Host 统一运行时快照读取的统计缓存观测，不触发任何文件读取。 */
+export function observeSessionStatsRuntimeCache(): ProviderCacheStats {
+  const byProvider: Record<string, ProviderCacheStats> = {};
+  const total: ProviderCacheStats = {
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+    rejections: 0,
+    bytes: 0,
+    entries: 0,
+    byProvider: {},
+    byWorkspace: {},
+    bySession: {}
+  };
+  for (const [provider, metric] of sessionStatsCacheMetrics) {
+    const value: ProviderCacheStats = {
+      hits: metric.hits,
+      misses: metric.misses,
+      evictions: metric.evictions,
+      rejections: 0,
+      bytes: metric.bytes,
+      entries: metric.entries,
+      byProvider: {},
+      byWorkspace: {},
+      bySession: {}
+    };
+    byProvider[provider] = value;
+    total.hits += value.hits;
+    total.misses += value.misses;
+    total.evictions += value.evictions;
+    total.bytes += value.bytes;
+    total.entries += value.entries;
+  }
+  total.byProvider = byProvider;
+  return total;
+}
 
 export type SessionHistoryReadInRuntimeResult =
   | {
@@ -374,13 +444,105 @@ export async function readSessionStatsInRuntime(input: {
     throw signal.reason ?? new Error("session stats helper aborted");
   }
 
+  const billing = input.options?.billing;
+  if (billing?.priceBookVersion && billing.priceBook) {
+    sessionPriceBooks.set(billing.priceBookVersion, billing.priceBook);
+    while (sessionPriceBooks.size > SESSION_PRICE_BOOK_CACHE_LIMIT) {
+      sessionPriceBooks.delete(sessionPriceBooks.keys().next().value!);
+    }
+  }
+  const effectiveOptions = billing?.priceBookVersion
+    ? {
+        ...input.options,
+        billing: {
+          ...billing,
+          priceBook: billing.priceBook ?? sessionPriceBooks.get(billing.priceBookVersion)
+        }
+      }
+    : input.options;
+  if (billing?.priceBookVersion && !effectiveOptions?.billing?.priceBook) {
+    throw new Error(`PRICE_BOOK_CACHE_MISS:${billing.priceBookVersion}`);
+  }
+
+  let fileSignature: string | null = null;
+  try {
+    const file = await stat(input.rawStoreRef);
+    fileSignature = `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}`;
+  } catch {
+    // 非文件型 Provider 没有稳定指纹，不缓存结果。
+  }
+
+  const billingContextKey = billing
+    ? JSON.stringify([
+        billing.billingStartedAt,
+        billing.pricingProfileId,
+        billing.priceBookVersion
+      ])
+    : "";
+  const cacheKey = `${input.provider}:${input.providerSessionId}:${input.rawStoreRef}:${billingContextKey}`;
+  if (fileSignature) {
+    const cached = sessionStatsCache.get(cacheKey);
+    if (cached && cached.signature === fileSignature && Date.now() - cached.cachedAt <= SESSION_STATS_CACHE_MAX_AGE_MS) {
+      getSessionStatsCacheMetric(input.provider).hits += 1;
+      sessionStatsCache.delete(cacheKey);
+      sessionStatsCache.set(cacheKey, cached);
+      return cached.value;
+    }
+    getSessionStatsCacheMetric(input.provider).misses += 1;
+    const inflight = sessionStatsInflight.get(`${cacheKey}:${fileSignature}`);
+    if (inflight) {
+      return await raceWithAbortSignal(inflight, signal);
+    }
+  }
+
   const service = getWorkspaceDiscoveryService(input.config, [input.provider]);
-  return await service.readSessionStats(
+  const read = service.readSessionStats(
     input.provider,
     input.providerSessionId,
     input.rawStoreRef,
-    input.options
-  );
+    effectiveOptions
+  ).then((value) => {
+    if (fileSignature) {
+      const metric = getSessionStatsCacheMetric(input.provider);
+      const previous = sessionStatsCache.get(cacheKey);
+      if (!previous) {
+        metric.entries += 1;
+      }
+      metric.bytes += Buffer.byteLength(JSON.stringify(value) ?? "null", "utf8") - (previous ? Buffer.byteLength(JSON.stringify(previous.value) ?? "null", "utf8") : 0);
+      sessionStatsCache.delete(cacheKey);
+      sessionStatsCache.set(cacheKey, { signature: fileSignature!, cachedAt: Date.now(), value });
+      let cacheBytes = [...sessionStatsCacheMetrics.values()]
+        .reduce((sum, item) => sum + item.bytes, 0);
+      while (sessionStatsCache.size > SESSION_STATS_CACHE_LIMIT || cacheBytes > SESSION_STATS_CACHE_MAX_BYTES) {
+        const oldestKey = sessionStatsCache.keys().next().value!;
+        const oldest = sessionStatsCache.get(oldestKey);
+        const oldestProvider = oldestKey.split(":", 1)[0] ?? input.provider;
+        const oldestMetric = getSessionStatsCacheMetric(oldestProvider);
+        sessionStatsCache.delete(oldestKey);
+        oldestMetric.evictions += 1;
+        oldestMetric.entries = Math.max(0, oldestMetric.entries - 1);
+        oldestMetric.bytes = Math.max(
+          0,
+          oldestMetric.bytes - Buffer.byteLength(JSON.stringify(oldest?.value) ?? "null", "utf8")
+        );
+        cacheBytes = Math.max(
+          0,
+          cacheBytes - Buffer.byteLength(JSON.stringify(oldest?.value) ?? "null", "utf8")
+        );
+      }
+    }
+    return value;
+  });
+  if (fileSignature) {
+    const inflightKey = `${cacheKey}:${fileSignature}`;
+    sessionStatsInflight.set(inflightKey, read);
+    void read.finally(() => {
+      if (sessionStatsInflight.get(inflightKey) === read) {
+        sessionStatsInflight.delete(inflightKey);
+      }
+    }).catch(() => undefined);
+  }
+  return await raceWithAbortSignal(read, signal);
 }
 
 function getWorkspaceDiscoveryService(

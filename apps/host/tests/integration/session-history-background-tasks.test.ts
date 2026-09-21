@@ -605,10 +605,8 @@ describe("SessionHistoryService background tasks", () => {
     });
 
     const first = service.instance.requestSessionStatsRefresh("session-stats-1", "test.stats");
-    const duplicate = service.instance.requestSessionStatsRefresh("session-stats-1", "test.stats");
 
     expect(first?.deduped).toBe(false);
-    expect(duplicate?.deduped).toBe(true);
     await first?.promise;
 
     expect(statsRead).toHaveBeenCalledTimes(1);
@@ -624,8 +622,8 @@ describe("SessionHistoryService background tasks", () => {
       service.instance.observeBackgroundTaskMetrics()
         .taskTypes[HOST_TASK_TYPES.sessionStatsSnapshotRefresh]?.counters
     ).toMatchObject({
-      enqueue: 2,
-      dedupe: 1,
+      enqueue: 1,
+      dedupe: 0,
       finished: 1
     });
 
@@ -655,6 +653,117 @@ describe("SessionHistoryService background tasks", () => {
       usage_count: 0
     });
 
+    service.dispose();
+  });
+
+  it("会话统计任务运行期间再次触发会消费 dirty 并在冷却后补刷", async () => {
+    let readCount = 0;
+    const firstRead = createDeferred<ProviderSessionStats | null>();
+    const statsRead = vi.fn(async (_input: unknown, _signal: AbortSignal) => {
+      readCount += 1;
+      if (readCount === 1) {
+        return await firstRead.promise;
+      }
+      return {
+        provider: "codex",
+        capturedAt: `2026-08-16T00:00:${readCount}.000Z`,
+        metrics: {}
+      } satisfies ProviderSessionStats;
+    });
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.sessionStatsSnapshotRead) {
+            return await statsRead(input, context.signal);
+          }
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "session-stats-dirty-active",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "provider-stats-dirty-active",
+      rawStoreRef: "/tmp/codex/provider-stats-dirty-active.jsonl",
+      title: "统计脏标记活动任务",
+      messageCount: 1,
+      lastMessageAt: "2026-08-16T00:00:30.000Z",
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T00:00:00.000Z"
+    });
+
+    const first = service.instance.requestSessionStatsRefresh("session-stats-dirty-active", "test.stats.first");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(statsRead).toHaveBeenCalledTimes(1);
+
+    const duplicate = service.instance.requestSessionStatsRefresh("session-stats-dirty-active", "test.stats.dirty");
+    expect(duplicate?.deduped).toBe(true);
+
+    firstRead.resolve({
+      provider: "codex",
+      capturedAt: "2026-08-16T00:00:01.000Z",
+      metrics: {}
+    });
+    await first?.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(statsRead).toHaveBeenCalledTimes(1);
+
+    await waitForDuration(1_600);
+    await duplicate?.promise;
+    expect(statsRead).toHaveBeenCalledTimes(2);
+
+    service.dispose();
+  });
+
+  it("统计刷新冷却期间再次触发不会永久丢失", async () => {
+    const statsRead = vi.fn(async () => ({
+      provider: "codex",
+      capturedAt: "2026-08-16T00:00:01.000Z",
+      metrics: {}
+    } satisfies ProviderSessionStats));
+    const taskManager = createTaskManager(null, {
+      helper_process: {
+        execute: async (definition, input, context) => {
+          if (definition.taskType === HOST_TASK_TYPES.sessionStatsSnapshotRead) {
+            return await statsRead(input, context.signal);
+          }
+          return await definition.run(input, context);
+        }
+      }
+    });
+    const service = createSessionHistoryService(taskManager);
+    seedWorkspace(service.workspaceRepository, service.database.db, service.workspacePath);
+    seedSession(service.database.db, {
+      sessionId: "session-stats-dirty-cooldown",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      providerSessionId: "provider-stats-dirty-cooldown",
+      rawStoreRef: "/tmp/codex/provider-stats-dirty-cooldown.jsonl",
+      title: "统计脏标记冷却",
+      messageCount: 1,
+      lastMessageAt: "2026-08-16T00:00:30.000Z",
+      createdAt: "2026-08-16T00:00:00.000Z",
+      updatedAt: "2026-08-16T00:00:00.000Z"
+    });
+
+    await service.instance.requestSessionStatsRefresh("session-stats-dirty-cooldown", "test.stats.first")?.promise;
+    expect(statsRead).toHaveBeenCalledTimes(1);
+
+    const duringCooldown = service.instance.requestSessionStatsRefresh(
+      "session-stats-dirty-cooldown",
+      "test.stats.cooldown",
+      { force: false }
+    );
+    expect(duringCooldown?.deduped).toBe(false);
+    await waitForDuration(1_600);
+    await duringCooldown?.promise;
+
+    expect(statsRead).toHaveBeenCalledTimes(2);
     service.dispose();
   });
 
@@ -2230,6 +2339,7 @@ describe("SessionHistoryService background tasks", () => {
       codexHomeDir,
       geminiHomeDir,
       dispose() {
+        instance.dispose();
         database.close();
       }
     };
