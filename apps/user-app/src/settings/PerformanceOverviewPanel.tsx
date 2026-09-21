@@ -116,7 +116,7 @@ function smoothPath(points: ChartCoordinate[]): string {
 function PointDetails({ point, onClose }: { point: TrendPoint; onClose: () => void }) { return <div className="settings-performance-point-details"><div><strong>{point.label}</strong><span>{t("settings.performancePointDetails")}</span></div><div className="settings-performance-point-values"><span>{t("settings.performanceTotalTokens")}: <b>{number(point.totalTokens)}</b></span><span>{t("settings.performanceCost")}: <b>{usd(point.costUsd)}</b></span><span>{t("settings.performanceCacheReadTokens")}: <b>{number(point.cacheReadTokens)}</b></span><span>{t("settings.performanceCacheWriteTokens")}: <b>{number(point.cacheWriteTokens)}</b></span><span>{t("settings.performanceSessions")}: <b>{number(point.sessions)}</b></span></div><ModelUsageTable items={point.modelUsage} /><button type="button" onClick={onClose} aria-label={t("settings.performanceCloseDetails")} title={t("settings.performanceCloseDetails")}><FiX aria-hidden="true" /></button></div>; }
 
 function ModelUsageTable({ items }: { items: UserUsageItemDto[] }) {
-  return <div className="settings-performance-model-table-wrap"><table className="settings-performance-model-table"><caption>{t("settings.performanceModelDetails")}</caption><thead><tr><th scope="col">{t("settings.performanceModel")}</th><th scope="col">{t("settings.performanceInputTokens")}</th><th scope="col">{t("settings.performanceOutputTokens")}</th><th scope="col">{t("settings.performanceCacheReadTokens")}</th><th scope="col">{t("settings.performanceCacheWriteTokens")}</th><th scope="col">{t("settings.performanceCacheHitRate")}</th><th scope="col">{t("settings.performanceCost")}</th></tr></thead><tbody>{items.length ? items.map((item) => <tr key={item.label}><th scope="row">{item.label}</th><td>{number(item.inputTokens)}</td><td>{number(item.outputTokens)}</td><td>{number(item.cacheReadTokens ?? 0)}</td><td>{number(item.cacheWriteTokens ?? 0)}</td><td>{item.inputTokens > 0 ? percent((item.cacheReadTokens ?? 0) / item.inputTokens) : "--"}</td><td>{item.costUsd == null ? "--" : usd(item.costUsd)}</td></tr>) : <tr><td colSpan={7} className="settings-performance-model-empty">{t("settings.performanceModelDetailsEmpty")}</td></tr>}</tbody></table></div>;
+  return <div className="settings-performance-model-table-wrap"><table className="settings-performance-model-table"><caption>{t("settings.performanceModelDetails")}</caption><thead><tr><th scope="col">{t("settings.performanceModel")}</th><th scope="col">{t("settings.performanceInputTokens")}</th><th scope="col">{t("settings.performanceOutputTokens")}</th><th scope="col">{t("settings.performanceCacheReadTokens")}</th><th scope="col">{t("settings.performanceCacheWriteTokens")}</th><th scope="col">{t("settings.performanceCacheHitRate")}</th><th scope="col">{t("settings.performanceCost")}</th></tr></thead><tbody>{items.length ? items.map((item) => { const cacheReadTokens = item.cacheReadTokens ?? 0; const denominator = item.cacheHitRateDenominator ?? item.inputTokens; return <tr key={item.label}><th scope="row">{item.label}</th><td>{number(item.inputTokens)}</td><td>{number(item.outputTokens)}</td><td>{number(cacheReadTokens)}</td><td>{number(item.cacheWriteTokens ?? 0)}</td><td>{denominator > 0 ? percent(cacheReadTokens / denominator) : "--"}</td><td>{item.costUsd == null ? "--" : usd(item.costUsd)}</td></tr>; }) : <tr><td colSpan={7} className="settings-performance-model-empty">{t("settings.performanceModelDetailsEmpty")}</td></tr>}</tbody></table></div>;
 }
 
 function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string) {
@@ -141,21 +141,13 @@ function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string)
     cacheReadTokens += item?.cacheReadTokens ?? (provider === "all" ? user.tokenTotals.cacheReadTokens ?? 0 : 0);
     cacheWriteTokens += item?.cacheWriteTokens ?? (provider === "all" ? user.tokenTotals.cacheWriteTokens ?? 0 : 0);
     if (item) {
-      cacheHitRateDenominator += getCacheHitRateDenominator(
-        provider,
-        item.inputTokens,
-        item.cacheReadTokens ?? 0,
-        item.cacheWriteTokens ?? 0
-      );
+      cacheHitRateDenominator += item.cacheHitRateDenominator
+        ?? getCacheHitRateDenominator(provider, item.inputTokens, item.cacheReadTokens ?? 0, item.cacheWriteTokens ?? 0);
     } else if (provider === "all" && user.cliProviderUsage.length > 0) {
       // 全部提供商汇总时，按每个 CLI 自己的输入口径累加分母。
       for (const usage of user.cliProviderUsage) {
-        cacheHitRateDenominator += getCacheHitRateDenominator(
-          usage.label,
-          usage.inputTokens,
-          usage.cacheReadTokens ?? 0,
-          usage.cacheWriteTokens ?? 0
-        );
+        cacheHitRateDenominator += usage.cacheHitRateDenominator
+          ?? getCacheHitRateDenominator(usage.label, usage.inputTokens, usage.cacheReadTokens ?? 0, usage.cacheWriteTokens ?? 0);
       }
     } else if (provider === "all") {
       // 兼容没有提供商明细的旧快照。无法确认 input 是否包含缓存时，使用完整输入桶，

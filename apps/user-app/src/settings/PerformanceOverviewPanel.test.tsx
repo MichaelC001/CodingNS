@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -85,6 +85,35 @@ describe("PerformanceOverviewPanel", () => {
     expect(screen.getByRole("row", { name: /gpt-5\.6-sol/ })).toBeInTheDocument();
     expect(screen.getByRole("row", { name: /gpt-5\.6-astra/ })).toBeInTheDocument();
     expect(screen.getByText("50%")).toBeInTheDocument();
+  });
+
+  it("模型明细优先使用后端提供的归一化缓存命中率分母", async () => {
+    const snapshot = createUsageSnapshot();
+    snapshot.users[0].timeline[0].modelUsage = [{
+      label: "deepseek-v4.1-flash",
+      count: 1,
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+      cacheReadTokens: 400,
+      cacheWriteTokens: 0,
+      cacheHitRateDenominator: 500,
+      costUsd: 0.1
+    }];
+    fetchUserUsageMock.mockResolvedValue(snapshot);
+
+    render(
+      <I18nProvider language="zh-CN">
+        <PerformanceOverviewPanel />
+      </I18nProvider>
+    );
+
+    const chart = await screen.findByRole("img", { name: t("settings.performanceTrendAriaLabel") });
+    fireEvent.mouseMove(chart, { clientX: 0 });
+    await userEvent.click(screen.getByRole("button", { name: /2026-09-20/ }));
+    await waitFor(() => expect(screen.getByRole("row", { name: /deepseek-v4\\.1-flash/ })).toBeInTheDocument());
+    expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.queryByText("400%")).not.toBeInTheDocument();
   });
 
   it("全部提供商汇总时按各 CLI 的输入口径计算缓存命中率", async () => {

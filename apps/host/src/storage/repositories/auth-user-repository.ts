@@ -240,6 +240,7 @@ export class AuthUserRepository {
               SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
               SUM(sue.cache_read_tokens) AS cache_read_tokens,
               SUM(sue.cache_write_tokens) AS cache_write_tokens,
+              SUM(${getCacheHitRateDenominatorSql("sb.provider")}) AS cache_hit_rate_denominator,
               SUM(sue.cost_usd) AS cost_usd
        FROM session_usage_events_with_legacy sue
        INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
@@ -265,6 +266,7 @@ export class AuthUserRepository {
               SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
               SUM(sue.cache_read_tokens) AS cache_read_tokens,
               SUM(sue.cache_write_tokens) AS cache_write_tokens,
+              SUM(${getCacheHitRateDenominatorSql("sb.provider")}) AS cache_hit_rate_denominator,
               SUM(sue.cost_usd) AS cost_usd
        FROM session_usage_events_with_legacy sue
        INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
@@ -282,6 +284,7 @@ export class AuthUserRepository {
               SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
               SUM(sue.cache_read_tokens) AS cache_read_tokens,
               SUM(sue.cache_write_tokens) AS cache_write_tokens,
+              SUM(${getCacheHitRateDenominatorSql("sb.provider")}) AS cache_hit_rate_denominator,
               SUM(sue.cost_usd) AS cost_usd
        FROM session_usage_events_with_legacy sue
        INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
@@ -356,7 +359,8 @@ export class AuthUserRepository {
                 SUM(sue.output_tokens) AS output_tokens,
                 SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
                 SUM(sue.cache_read_tokens) AS cache_read_tokens,
-                SUM(sue.cache_write_tokens) AS cache_write_tokens
+                SUM(sue.cache_write_tokens) AS cache_write_tokens,
+                SUM(${getCacheHitRateDenominatorSql("sb.provider")}) AS cache_hit_rate_denominator
          FROM session_usage_events_with_legacy sue
          INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
          WHERE sb.user_id IS NOT NULL AND ${usageWindowSql}
@@ -399,6 +403,7 @@ export class AuthUserRepository {
               SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
               SUM(sue.cache_read_tokens) AS cache_read_tokens,
               SUM(sue.cache_write_tokens) AS cache_write_tokens,
+              SUM(${getCacheHitRateDenominatorSql("sb.provider")}) AS cache_hit_rate_denominator,
               SUM(sue.cost_usd) AS cost_usd
        FROM session_usage_events_with_legacy sue
        INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
@@ -419,6 +424,7 @@ export class AuthUserRepository {
               SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
               SUM(sue.cache_read_tokens) AS cache_read_tokens,
               SUM(sue.cache_write_tokens) AS cache_write_tokens,
+              SUM(${getCacheHitRateDenominatorSql("sb.provider")}) AS cache_hit_rate_denominator,
               SUM(sue.cost_usd) AS cost_usd
        FROM session_usage_events_with_legacy sue
        INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
@@ -458,7 +464,8 @@ export class AuthUserRepository {
                 SUM(sue.output_tokens) AS output_tokens,
                 SUM(sue.input_tokens + sue.output_tokens) AS total_tokens,
                 SUM(sue.cache_read_tokens) AS cache_read_tokens,
-                SUM(sue.cache_write_tokens) AS cache_write_tokens
+                SUM(sue.cache_write_tokens) AS cache_write_tokens,
+                SUM(${getCacheHitRateDenominatorSql("sb.provider")}) AS cache_hit_rate_denominator
          FROM session_usage_events_with_legacy sue
          INNER JOIN session_bindings sb ON sb.session_id = sue.session_id
          WHERE sb.user_id IS NOT NULL AND ${usageWindowSql} GROUP BY sb.user_id, bucket`
@@ -518,7 +525,8 @@ export class AuthUserRepository {
     return (this.db.prepare(sql).all() as Array<{
       user_id: string; label: string | null; count: number;
       input_tokens: number | null; output_tokens: number | null;
-      total_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null; cost_usd: number | null;
+      total_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null;
+      cache_hit_rate_denominator: number | null; cost_usd: number | null;
       bucket?: string | null; provider?: string | null;
     }>).map((row) => ({
       userId: row.user_id,
@@ -529,6 +537,7 @@ export class AuthUserRepository {
       totalTokens: row.total_tokens ?? 0,
       cacheReadTokens: row.cache_read_tokens ?? 0,
       cacheWriteTokens: row.cache_write_tokens ?? 0,
+      cacheHitRateDenominator: row.cache_hit_rate_denominator ?? 0,
       costUsd: row.cost_usd,
       bucket: row.bucket ?? undefined,
       provider: row.provider?.trim() || undefined
@@ -588,6 +597,8 @@ export interface AuthUserUsageItem {
   totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** 按 Provider 输入桶语义归一化后的缓存命中率分母。 */
+  cacheHitRateDenominator: number;
   costUsd: number | null;
 }
 
@@ -603,6 +614,7 @@ interface DetailedUsageRow extends GroupedUsageRow {
   totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  cacheHitRateDenominator: number;
   costUsd: number | null;
   bucket?: string;
   provider?: string;
@@ -628,6 +640,17 @@ function getUsageWindowSql(period: AuthUserUsagePeriod, column: string): string 
   return `${localTime} >= datetime('now', 'localtime', 'start of day') AND ${localTime} < datetime('now', 'localtime', 'start of day', '+1 day')`;
 }
 
+/**
+ * 生成缓存命中率分母：部分 CLI 的 input 已包含缓存桶，其他 CLI 需要把缓存读写桶加回去。
+ */
+function getCacheHitRateDenominatorSql(providerColumn: string): string {
+  return `CASE WHEN ${providerColumn} IN ('command-code', 'gemini')
+    THEN sue.input_tokens
+    WHEN ${providerColumn} = 'codex' AND sue.cache_write_tokens = 0
+    THEN sue.input_tokens
+    ELSE sue.input_tokens + sue.cache_read_tokens + sue.cache_write_tokens END`;
+}
+
 function toAuthUserUsageUser(user: AuthUser): AuthUserUsageUserSnapshot["user"] {
   return {
     userId: user.id,
@@ -645,6 +668,7 @@ function toUsageItem(row: GroupedUsageRow): AuthUserUsageItem {
     totalTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    cacheHitRateDenominator: 0,
     costUsd: null
   };
 }
@@ -659,10 +683,11 @@ function mergeUsageItem(target: AuthUserUsageItem[] | undefined, row: DetailedUs
     existing.totalTokens += row.totalTokens;
     existing.cacheReadTokens += row.cacheReadTokens;
     existing.cacheWriteTokens += row.cacheWriteTokens;
+    existing.cacheHitRateDenominator += row.cacheHitRateDenominator;
     if (row.costUsd !== null) existing.costUsd = (existing.costUsd ?? 0) + row.costUsd;
     return;
   }
-  target.push({ label: row.label, count: row.count, inputTokens: row.inputTokens, outputTokens: row.outputTokens, totalTokens: row.totalTokens, cacheReadTokens: row.cacheReadTokens, cacheWriteTokens: row.cacheWriteTokens, costUsd: row.costUsd });
+  target.push({ label: row.label, count: row.count, inputTokens: row.inputTokens, outputTokens: row.outputTokens, totalTokens: row.totalTokens, cacheReadTokens: row.cacheReadTokens, cacheWriteTokens: row.cacheWriteTokens, cacheHitRateDenominator: row.cacheHitRateDenominator, costUsd: row.costUsd });
 }
 
 function mergeCountUsageItem(target: AuthUserUsageItem[] | undefined, row: GroupedUsageRow): void {

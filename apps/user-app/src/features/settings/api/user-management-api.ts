@@ -83,6 +83,7 @@ export interface UserUsageItemDto {
   totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  cacheHitRateDenominator?: number;
   costUsd: number | null;
 }
 
