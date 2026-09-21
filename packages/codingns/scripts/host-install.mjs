@@ -669,7 +669,7 @@ export function spawnHostProcess(plan, context, logger) {
 
 /** Windows 上优先走包装；包装写不出来就直接拉 node。 */
 export function spawnDetachedHost(context, logger, platform = process.platform) {
-  if (platform !== "win32") {
+  if (platform !== "win32" || context.supervisorEntryAvailable === false) {
     return spawnHostProcess(resolveDirectHostLaunchPlan(context), context, logger);
   }
 
@@ -704,13 +704,22 @@ function assertSafeToRemove(targetPath) {
   return resolved;
 }
 
+/** 返回旧版服务包可用的直接 Host 启动参数。 */
+function buildDirectHostLaunchArguments(context) {
+  return [normalizeNodePath(context.cliEntryPath), ...buildHostStartArguments(context)];
+}
+
 /**
  * 自启/托管的入口参数。
  *
- * 入口是独立的 Supervisor，不是 Host 本身：Host 事件循环假死时只有独立进程才能救它。
- * Supervisor 再按 `--cli-entry` 去拉 `codingns start`。
+ * 新版服务包由独立 Supervisor 持有 Host；旧版服务包没有 Supervisor 文件时，
+ * 退回直接启动 Host，保证安装和首次使用仍然可用。
  */
 function buildAutostartArguments(context) {
+  if (context.supervisorEntryAvailable === false) {
+    return buildDirectHostLaunchArguments(context);
+  }
+
   return [
     normalizeNodePath(context.supervisorEntryPath),
     "--data-dir",
@@ -960,13 +969,16 @@ export function ensureWindowsHostLauncher(context, logger) {
   return launcherPath;
 }
 
-/**
- * 直接拉 node 跑 Supervisor：其它平台的正常路径，也是 Windows 上包装起不来时的兜底。
- *
- * 注意这里拉的是 Supervisor 而不是 Host：Host 由 Supervisor 持有，
- * 这样安装器退出后仍然有人负责健康检查和重启。
- */
+/** 直接拉 node 跑 Supervisor；旧版服务包缺少 Supervisor 时退回直接启动 Host。 */
 export function resolveDirectHostLaunchPlan(context) {
+  if (context.supervisorEntryAvailable === false) {
+    return {
+      kind: "direct-host",
+      file: normalizeNodePath(context.nodeBinary),
+      args: buildDirectHostLaunchArguments(context)
+    };
+  }
+
   return {
     kind: "direct",
     file: normalizeNodePath(context.nodeBinary),
@@ -978,7 +990,7 @@ export function resolveDirectHostLaunchPlan(context) {
  * 服务进程怎么起。Windows 走 VBS 包装（隐藏控制台，子进程不弹窗），其它平台直连 node。
  */
 export function resolveHostLaunchPlan(platform, context) {
-  if (platform === "win32") {
+  if (platform === "win32" && context.supervisorEntryAvailable !== false) {
     return {
       kind: "launcher",
       file: "wscript.exe",
@@ -1011,13 +1023,15 @@ export function resolveAutostartContext(options = {}) {
   const prefix = state?.installPrefix ?? path.join(resolveRuntimeDir(dataDir), "npm");
   const packageRoot = state?.packageRoot ?? resolvePackageRootPath(prefix);
   const runtimeDir = resolveRuntimeDir(dataDir);
+  const supervisorEntryPath = path.join(packageRoot, "scripts", SUPERVISOR_SCRIPT_NAME);
 
   return {
     dataDir,
     installPrefix: prefix,
     packageRoot,
     cliEntryPath: path.join(packageRoot, "bin", "codingns.mjs"),
-    supervisorEntryPath: path.join(packageRoot, "scripts", SUPERVISOR_SCRIPT_NAME),
+    supervisorEntryPath,
+    supervisorEntryAvailable: fs.existsSync(supervisorEntryPath),
     nodeBinary: state?.nodeBinary ?? process.execPath,
     port: state?.port ?? parsePort(options.port),
     listenHost: state?.listenHost ?? (typeof options.host === "string" && options.host.trim() ? options.host.trim() : DEFAULT_LISTEN_HOST),
@@ -2305,17 +2319,23 @@ export async function runInstall(options, logger, deps = {}) {
     homeDir: deps.homeDir,
     runShellCommand: deps.runShellCommand
   };
+  const supervisorEntryPath = path.join(packageRoot, "scripts", SUPERVISOR_SCRIPT_NAME);
   const installContext = {
     dataDir,
     packageRoot,
     cliEntryPath: verification.cliEntryPath,
-    supervisorEntryPath: path.join(packageRoot, "scripts", SUPERVISOR_SCRIPT_NAME),
+    supervisorEntryPath,
+    supervisorEntryAvailable: fs.existsSync(supervisorEntryPath),
     nodeBinary: process.execPath,
     port,
     listenHost,
     logFilePath: path.join(resolveLogDirPath(dataDir), "host-service.log"),
     launcherDirectory: path.join(resolveRuntimeDir(dataDir), "autostart")
   };
+  if (!installContext.supervisorEntryAvailable) {
+    emitLog("当前服务包没有 Supervisor，兼容模式下直接启动 Host。");
+    logger.log("服务包缺少 Supervisor，退回直接启动 Host", { supervisorEntryPath });
+  }
   const shouldConfigureAutostart = options.autostart === true;
   let autostart = { enabled: false, kind: null, path: null };
 

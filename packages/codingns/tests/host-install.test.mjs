@@ -606,6 +606,32 @@ test("Windows 上服务走包装启动，其它平台直接拉 node 跑 Supervis
   ]);
 });
 
+test("旧版服务包缺少 Supervisor 时直接启动 Host CLI", () => {
+  const context = createAutostartContext({ supervisorEntryAvailable: false });
+  const darwinPlan = resolveHostLaunchPlan("darwin", context);
+  const windowsPlan = resolveHostLaunchPlan("win32", context);
+
+  for (const plan of [darwinPlan, windowsPlan]) {
+    assert.equal(plan.kind, "direct-host");
+    assert.equal(plan.file, context.nodeBinary);
+    assert.deepEqual(plan.args, [
+      context.cliEntryPath,
+      "start",
+      "--data-dir",
+      context.dataDir,
+      "--port",
+      String(context.port),
+      "--host",
+      context.listenHost
+    ]);
+  }
+
+  const plist = buildLaunchAgentPlist(context);
+  assert.match(plist, /<string>start<\/string>/);
+  assert.match(plist, /<string>.*codingns\.mjs<\/string>/);
+  assert.doesNotMatch(plist, /host-supervisor\.mjs/);
+});
+
 test("交给 node 的路径会去掉 Windows 的 \\\\?\\ 前缀", async () => {
   assert.equal(
     normalizeNodePath("\\\\?\\C:\\Users\\demo\\AppData\\Local\\CodingNS\\resources\\host-install.mjs"),
@@ -985,6 +1011,19 @@ test("安装过程中的临时停止带过期时间，升级崩了也不会永�
 test("Windows 计划任务指向 Supervisor 而不是 Host", async () => {
   const dataDir = createTempDataDir();
   const calls = [];
+  const supervisorEntryPath = path.join(
+    dataDir,
+    "runtime",
+    "npm",
+    "lib",
+    "node_modules",
+    "@jingyi0605",
+    "codingns",
+    "scripts",
+    "host-supervisor.mjs"
+  );
+  fs.mkdirSync(path.dirname(supervisorEntryPath), { recursive: true });
+  fs.writeFileSync(supervisorEntryPath, "// 测试用 Supervisor 入口\n", "utf8");
 
   const { value: exitCode } = await captureOutput(() =>
     runAutostart({ dataDir, enable: true, port: "3002" }, createLoggerStub(), {
