@@ -297,6 +297,41 @@ export class SessionController {
     private readonly butlerControlSessionRepository: Pick<ButlerControlSessionRepository, "listSessionIds">
   ) {}
 
+  /** 仅管理员可触发历史计费重算；任务本身按全局 key 去重。 */
+  readonly recomputeBilling = async (
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> => {
+    if (request.auth?.user.role !== "admin") {
+      throw new AppError({
+        statusCode: 403,
+        errorCode: "FORBIDDEN",
+        detail: "只有管理员可以重算历史费用"
+      });
+    }
+
+    const handle = this.sessionHistoryService.requestBillingRecompute("session_controller.billing_recompute");
+    reply.status(202).send({
+      taskId: handle.taskId,
+      deduped: handle.deduped,
+      task: this.sessionHistoryService.getBillingRecomputeTask()
+    });
+  };
+
+  readonly getBillingRecompute = async (
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> => {
+    if (request.auth?.user.role !== "admin") {
+      throw new AppError({
+        statusCode: 403,
+        errorCode: "FORBIDDEN",
+        detail: "只有管理员可以查看历史费用重算状态"
+      });
+    }
+    reply.send(this.sessionHistoryService.getBillingRecomputeTask());
+  };
+
   readonly list = async (
     request: FastifyRequest<{ Querystring: SessionListQuery }>,
     reply: FastifyReply

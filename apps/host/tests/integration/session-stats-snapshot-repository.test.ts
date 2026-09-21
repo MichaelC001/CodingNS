@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { ProviderSessionStats } from "@codingns/session-sync-core";
 
-import { SessionStatsSnapshotRepository } from "../../src/storage/repositories/session-stats-snapshot-repository.js";
+import {
+  SESSION_BILLING_CALCULATOR_VERSION,
+  SessionStatsSnapshotRepository
+} from "../../src/storage/repositories/session-stats-snapshot-repository.js";
 import Database from "../../src/shared/runtime/sqlite-runtime.js";
 import { createDatabaseClient } from "../../src/storage/sqlite/client.js";
 
@@ -31,6 +34,10 @@ describe("会话统计快照仓储", () => {
     const repository = createRepository();
 
     repository.replaceSnapshot("session-1", createPricedStats(), "2026-08-16T00:01:00.000Z");
+
+    expect(repository.listSessionIdsNeedingBillingRecompute()).toEqual([]);
+    expect(repository.needsSessionBillingRecompute("session-1")).toBe(false);
+    expect(repository.needsSessionBillingRecompute("session-1", "future-version")).toBe(true);
 
     expect(repository.findStatsBySessionId("session-1")).toMatchObject({
       provider: "codex",
@@ -95,6 +102,8 @@ describe("会话统计快照仓储", () => {
       inputTokens: 200
     });
     expect(unpricedUsage[0]).not.toHaveProperty("costUsd");
+    expect(repository.listSessionIdsNeedingBillingRecompute("future-version")).toEqual(["session-1"]);
+    expect(repository.listSessionIdsNeedingBillingRecompute(SESSION_BILLING_CALCULATOR_VERSION)).toEqual([]);
   });
 
   it("Pi 的 provider-native 费用会落成完整账单并保留按模型归因", () => {

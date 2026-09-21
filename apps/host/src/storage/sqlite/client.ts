@@ -2404,6 +2404,13 @@ function ensureSessionStatsSnapshotSchema(db: SqliteDatabase): void {
         AND sue.model = smu.model
     );
   `);
+
+  const snapshotColumns = db
+    .prepare("PRAGMA table_info(session_stats_snapshots)")
+    .all() as Array<{ name: string }>;
+  if (!snapshotColumns.some((column) => column.name === "billing_calculator_version")) {
+    db.exec("ALTER TABLE session_stats_snapshots ADD COLUMN billing_calculator_version TEXT");
+  }
 }
 
 function ensureSessionBindingUserSchema(db: SqliteDatabase): void {

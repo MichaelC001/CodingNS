@@ -13,6 +13,7 @@ export const HOST_TASK_TYPES = {
   providerCapabilityRefresh: "provider.capability_refresh",
   providerPriceBookRefresh: "provider.price_book_refresh",
   sessionStatsSnapshotRefresh: "session.stats_snapshot_refresh",
+  sessionBillingRecompute: "session.billing_recompute",
   sessionStatsSnapshotRead: "session.stats_snapshot_read",
   providerClaudeModelDiscovery: "provider.claude_model_discovery",
   harnessSidecarHealth: "harness.sidecar.health",

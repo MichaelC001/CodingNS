@@ -15,6 +15,8 @@ export async function registerSessionRoutes(
     "/api/sessions/discovery/diagnostics/maintenance",
     sessionController.maintainSessionDiscoveryDiagnostics
   );
+  app.post("/api/admin/sessions/billing/recompute", sessionController.recomputeBilling);
+  app.get("/api/admin/sessions/billing/recompute", sessionController.getBillingRecompute);
   app.get("/api/sessions/:sessionId", sessionController.getDetail);
   app.get("/api/sessions/:sessionId/changed-files", sessionController.getChangedFiles);
   app.get("/api/sessions/:sessionId/messages", sessionController.readMessages);

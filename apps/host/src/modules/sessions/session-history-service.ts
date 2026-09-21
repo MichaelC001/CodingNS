@@ -70,7 +70,10 @@ import type { SessionIndexRepository } from "../../storage/repositories/session-
 import { SessionSourceIndexRepository } from "../../storage/repositories/session-source-index-repository.js";
 import type { SessionStateRepository } from "../../storage/repositories/session-state-repository.js";
 import type { SessionStatusSnapshotRepository } from "../../storage/repositories/session-status-snapshot-repository.js";
-import { SessionStatsSnapshotRepository } from "../../storage/repositories/session-stats-snapshot-repository.js";
+import {
+  SESSION_BILLING_CALCULATOR_VERSION,
+  SessionStatsSnapshotRepository
+} from "../../storage/repositories/session-stats-snapshot-repository.js";
 import type { SqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
 import { isInsideSqliteWriteQueue } from "../../storage/sqlite/write-queue.js";
 import { isSqliteBusyError as sharedIsSqliteBusyError } from "../../storage/sqlite/write-queue-errors.js";
@@ -330,6 +333,18 @@ interface SessionStatsSnapshotReadTaskInput {
   providerSessionId: string;
   rawStoreRef: string;
   options?: ProviderSessionStatsReadOptions;
+}
+
+interface SessionBillingRecomputeTaskInput {
+  calculatorVersion: string;
+}
+
+export interface SessionBillingRecomputeResult {
+  calculatorVersion: string;
+  candidates: number;
+  refreshed: number;
+  skipped: number;
+  failed: number;
 }
 
 interface PendingSessionBilling {
@@ -1194,6 +1209,71 @@ export class SessionHistoryService {
       });
     }
 
+    if (!this.taskManager.has(HOST_TASK_TYPES.sessionBillingRecompute)) {
+      this.taskManager.register<SessionBillingRecomputeTaskInput, SessionBillingRecomputeResult>({
+        taskType: HOST_TASK_TYPES.sessionBillingRecompute,
+        executionLane: "host_background",
+        concurrency: 1,
+        timeoutMs: 15 * 60_000,
+        run: async ({ calculatorVersion }, context) => {
+          const sessionIds = this.sessionStatsSnapshotRepository
+            .listSessionIdsNeedingBillingRecompute(calculatorVersion);
+          let refreshed = 0;
+          let skipped = 0;
+          let failed = 0;
+
+          for (let index = 0; index < sessionIds.length; index += 1) {
+            if (context.signal.aborted) break;
+            const sessionId = sessionIds[index];
+            context.reportProgress({
+              phase: "refresh",
+              label: "正在重算历史会话费用",
+              detail: sessionId,
+              current: index,
+              total: sessionIds.length,
+              percent: sessionIds.length === 0 ? 100 : index / sessionIds.length * 100
+            });
+
+            if (!this.sessionStatsSnapshotRepository.needsSessionBillingRecompute(sessionId, calculatorVersion)) {
+              skipped += 1;
+              continue;
+            }
+
+            const handle = this.requestSessionStatsRefresh(
+              sessionId,
+              "session_history.billing_recompute.session"
+            );
+            if (!handle) {
+              skipped += 1;
+              continue;
+            }
+
+            const cancelOwnedRefresh = () => {
+              if (!handle.deduped) handle.cancel("billing recompute aborted");
+            };
+            context.signal.addEventListener("abort", cancelOwnedRefresh, { once: true });
+            try {
+              await handle.promise;
+              refreshed += 1;
+            } catch {
+              failed += 1;
+            } finally {
+              context.signal.removeEventListener("abort", cancelOwnedRefresh);
+            }
+          }
+
+          context.reportProgress({
+            phase: "finished",
+            label: "历史会话费用重算完成",
+            current: sessionIds.length,
+            total: sessionIds.length,
+            percent: 100
+          });
+          return { calculatorVersion, candidates: sessionIds.length, refreshed, skipped, failed };
+        }
+      });
+    }
+
     if (!this.taskManager.has(HOST_TASK_TYPES.providerCapabilityRefresh)) {
       this.taskManager.register<{
         capabilities: ProviderCapabilities;
@@ -1266,6 +1346,23 @@ export class SessionHistoryService {
     }
 
     return handle;
+  }
+
+  requestBillingRecompute(
+    source = "session_history.billing_recompute"
+  ): TaskHandle<SessionBillingRecomputeResult> {
+    return this.taskManager.enqueue<SessionBillingRecomputeTaskInput, SessionBillingRecomputeResult>(
+      HOST_TASK_TYPES.sessionBillingRecompute,
+      {
+        key: "global",
+        source,
+        input: { calculatorVersion: SESSION_BILLING_CALCULATOR_VERSION }
+      }
+    );
+  }
+
+  getBillingRecomputeTask(): ReturnType<TaskManager["peek"]> {
+    return this.taskManager.peek(HOST_TASK_TYPES.sessionBillingRecompute, "global");
   }
 
   private async refreshSessionStatsSnapshot(sessionId: string, signal: AbortSignal): Promise<void> {

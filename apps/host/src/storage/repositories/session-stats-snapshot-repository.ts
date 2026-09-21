@@ -16,6 +16,9 @@ export interface SessionCostBillRecord {
   updatedAt: string;
 }
 
+/** 当前计费归因算法版本；变更归因规则时递增，供历史重算任务筛选旧快照。 */
+export const SESSION_BILLING_CALCULATOR_VERSION = "2026-09-20-model-attribution-v2";
+
 export interface SessionModelUsageRecord extends ProviderSessionModelUsage {
   sessionId: string;
   updatedAt: string;
@@ -28,6 +31,7 @@ export interface SessionStatsSnapshotRecord {
   sourceSignature: string;
   capturedAt: string;
   updatedAt: string;
+  billingCalculatorVersion: string | null;
 }
 
 /** 会话统计、账单和模型用量的原子读写入口。 */
@@ -53,7 +57,8 @@ export class SessionStatsSnapshotRepository {
   findSnapshotBySessionId(sessionId: string): SessionStatsSnapshotRecord | null {
     const row = this.db
       .prepare(
-        `SELECT session_id, provider, stats_json, source_signature, captured_at, updated_at
+        `SELECT session_id, provider, stats_json, source_signature, captured_at, updated_at,
+                billing_calculator_version
          FROM session_stats_snapshots
          WHERE session_id = ?`
       )
@@ -70,11 +75,35 @@ export class SessionStatsSnapshotRepository {
         stats: JSON.parse(row.stats_json) as ProviderSessionStats,
         sourceSignature: row.source_signature,
         capturedAt: row.captured_at,
-        updatedAt: row.updated_at
+        updatedAt: row.updated_at,
+        billingCalculatorVersion: row.billing_calculator_version
       };
     } catch {
       return null;
     }
+  }
+
+  listSessionIdsNeedingBillingRecompute(calculatorVersion = SESSION_BILLING_CALCULATOR_VERSION): string[] {
+    return (this.db.prepare(
+      `SELECT session_id
+       FROM session_stats_snapshots
+       WHERE billing_calculator_version IS NULL OR billing_calculator_version <> ?
+       ORDER BY updated_at ASC, session_id ASC`
+    ).all(calculatorVersion) as Array<{ session_id: string }>).map((row) => row.session_id);
+  }
+
+  needsSessionBillingRecompute(
+    sessionId: string,
+    calculatorVersion = SESSION_BILLING_CALCULATOR_VERSION
+  ): boolean {
+    const row = this.db.prepare(
+      `SELECT 1 AS pending
+       FROM session_stats_snapshots
+       WHERE session_id = ?
+         AND (billing_calculator_version IS NULL OR billing_calculator_version <> ?)
+       LIMIT 1`
+    ).get(sessionId, calculatorVersion) as { pending: number } | undefined;
+    return row?.pending === 1;
   }
 
   findBillBySessionId(sessionId: string): SessionCostBillRecord | null {
@@ -145,15 +174,17 @@ export class SessionStatsSnapshotRepository {
 
       this.db.prepare(
         `INSERT INTO session_stats_snapshots (
-           session_id, provider, stats_json, source_signature, captured_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?)`
+           session_id, provider, stats_json, source_signature, captured_at, updated_at,
+           billing_calculator_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`
       ).run(
         sessionId,
         stats.provider,
         statsJson,
         sourceSignature,
         stats.capturedAt,
-        updatedAt
+        updatedAt,
+        SESSION_BILLING_CALCULATOR_VERSION
       );
 
       const costMetric = stats.metrics.costUsd;
@@ -272,6 +303,7 @@ interface SessionStatsSnapshotRow {
   source_signature: string;
   captured_at: string;
   updated_at: string;
+  billing_calculator_version: string | null;
 }
 
 interface SessionCostBillRow {
