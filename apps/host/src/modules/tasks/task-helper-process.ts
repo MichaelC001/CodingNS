@@ -12,6 +12,7 @@ import {
   captureHelperMemory,
   hashTaskHelperRootDir,
   measureUtf8Bytes,
+  shouldWriteTaskHelperMetrics,
   TASK_HELPER_MAX_PROTOCOL_LINE_BYTES,
   writeTaskHelperMetricsLog,
   writeTaskHelperStreamLine,
@@ -257,24 +258,33 @@ async function runTask(task: QueuedHelperTask): Promise<void> {
     );
   } finally {
     const memoryAfter = captureHelperMemory();
+    const memoryDelta = {
+      rss: memoryAfter.rss - memoryBefore.rss,
+      heapUsed: memoryAfter.heapUsed - memoryBefore.heapUsed,
+      external: memoryAfter.external - memoryBefore.external,
+      arrayBuffers: memoryAfter.arrayBuffers - memoryBefore.arrayBuffers
+    };
 
     // 指标只在真正执行完后写一次；不含输入/结果正文，也不含完整 rootDir。
-    await writeMetrics(
-      buildTaskHelperMetricsEntry({
-        requestId: payload.id,
-        handler: payload.handler,
-        rootDirHash,
-        pid: process.pid,
-        ok,
-        inputBytes: task.inputBytes,
-        resultBytes,
-        durationMs: Date.now() - startedAt,
-        memoryBefore,
-        memoryAfter,
-        errorName,
-        errorMessage
-      })
-    );
+    const durationMs = Date.now() - startedAt;
+    if (shouldWriteTaskHelperMetrics({ ok, errorName, durationMs, resultBytes, memoryDelta })) {
+      await writeMetrics(
+        buildTaskHelperMetricsEntry({
+          requestId: payload.id,
+          handler: payload.handler,
+          rootDirHash,
+          pid: process.pid,
+          ok,
+          inputBytes: task.inputBytes,
+          resultBytes,
+          durationMs,
+          memoryBefore,
+          memoryAfter,
+          errorName,
+          errorMessage
+        })
+      );
+    }
 
     activeRequests.delete(payload.id);
     runningCountByBucket.set(

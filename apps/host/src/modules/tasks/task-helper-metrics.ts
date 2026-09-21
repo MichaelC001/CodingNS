@@ -13,6 +13,10 @@ import { createHash } from "node:crypto";
 
 /** 指标日志走 stderr，避免污染 stdout 上的 JSON 协议。 */
 export const TASK_HELPER_METRICS_LOG_PREFIX = "[task-helper.metrics]";
+const TASK_HELPER_METRICS_DEFAULT_SAMPLE_RATE = 0.1;
+const TASK_HELPER_METRICS_SLOW_REQUEST_MS = 2_000;
+const TASK_HELPER_METRICS_LARGE_RESULT_BYTES = 256 * 1024;
+const TASK_HELPER_METRICS_LARGE_MEMORY_DELTA_BYTES = 32 * 1024 * 1024;
 
 /** rootDir 只以定长哈希出现；长度固定，不能反推路径。 */
 export const TASK_HELPER_ROOT_DIR_HASH_LENGTH = 16;
@@ -194,6 +198,37 @@ export function buildTaskHelperMetricsEntry(
       ? truncateForLog(input.errorMessage, TASK_HELPER_MAX_LOGGED_ERROR_CHARS)
       : null
   };
+}
+
+/**
+ * 成功请求默认采样，避免每个统计读取都打一条日志；错误和异常增长始终保留。
+ * 测试环境默认全量记录，生产可用环境变量精确调整成功采样率。
+ */
+export function shouldWriteTaskHelperMetrics(input: {
+  ok: boolean;
+  errorName: string | null;
+  durationMs: number;
+  resultBytes: number;
+  memoryDelta: TaskHelperMemorySnapshot;
+  random?: number;
+}): boolean {
+  if (!input.ok || input.errorName) {
+    return true;
+  }
+  if (
+    input.durationMs >= TASK_HELPER_METRICS_SLOW_REQUEST_MS
+    || input.resultBytes >= TASK_HELPER_METRICS_LARGE_RESULT_BYTES
+    || input.memoryDelta.rss >= TASK_HELPER_METRICS_LARGE_MEMORY_DELTA_BYTES
+    || input.memoryDelta.heapUsed >= TASK_HELPER_METRICS_LARGE_MEMORY_DELTA_BYTES
+  ) {
+    return true;
+  }
+
+  const configured = Number.parseFloat(process.env.CODINGNS_TASK_HELPER_METRICS_SAMPLE_RATE ?? "");
+  const sampleRate = Number.isFinite(configured)
+    ? Math.min(1, Math.max(0, configured))
+    : (process.env.NODE_ENV === "test" ? 1 : TASK_HELPER_METRICS_DEFAULT_SAMPLE_RATE);
+  return (input.random ?? Math.random()) < sampleRate;
 }
 
 /** 只统计字节数，不保留原文。 */

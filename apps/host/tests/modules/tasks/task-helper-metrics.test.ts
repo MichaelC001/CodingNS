@@ -8,6 +8,7 @@ import {
   diffHelperMemory,
   hashTaskHelperRootDir,
   measureUtf8Bytes,
+  shouldWriteTaskHelperMetrics,
   TASK_HELPER_MAX_RESULT_BYTES,
   TASK_HELPER_ROOT_DIR_HASH_LENGTH,
   truncateForLog,
@@ -182,6 +183,28 @@ describe("task-helper 观测口径", () => {
       { rss: 10, heapUsed: 4, external: 2, arrayBuffers: 1 },
       { rss: 25, heapUsed: 1, external: 6, arrayBuffers: 3 }
     )).toEqual({ rss: 15, heapUsed: -3, external: 4, arrayBuffers: 2 });
+  });
+
+  it("成功指标按采样率限频，但错误、慢请求和大内存增长始终保留", () => {
+    vi.stubEnv("CODINGNS_TASK_HELPER_METRICS_SAMPLE_RATE", "0.1");
+    const clean = {
+      ok: true,
+      errorName: null,
+      durationMs: 10,
+      resultBytes: 10,
+      memoryDelta: { rss: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }
+    };
+
+    expect(shouldWriteTaskHelperMetrics({ ...clean, random: 0.5 })).toBe(false);
+    expect(shouldWriteTaskHelperMetrics({ ...clean, random: 0.01 })).toBe(true);
+    expect(shouldWriteTaskHelperMetrics({ ...clean, ok: false, random: 0.99 })).toBe(true);
+    expect(shouldWriteTaskHelperMetrics({ ...clean, durationMs: 2_000, random: 0.99 })).toBe(true);
+    expect(shouldWriteTaskHelperMetrics({
+      ...clean,
+      memoryDelta: { rss: 33 * 1024 * 1024, heapUsed: 0, external: 0, arrayBuffers: 0 },
+      random: 0.99
+    })).toBe(true);
+    vi.unstubAllEnvs();
   });
 
   it("管道写入返回 Promise，且写出内容完整", async () => {
