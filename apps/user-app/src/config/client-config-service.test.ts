@@ -6,7 +6,8 @@ import {
   LOCAL_HOST_PROFILE_ID,
   loadClientRuntimeConfig,
   normalizeClientRuntimeConfigSnapshot,
-  persistClientRuntimeConfig
+  persistClientRuntimeConfig,
+  resetClientRuntimeConfig
 } from "./client-config-service";
 import { createPlatformAdapter } from "../platform/platform-adapter";
 
@@ -29,6 +30,7 @@ function createMockAdapter(overrides: {
         value: overrides.desktopConfig
       })),
       writeDesktopConfig: vi.fn(async () => ({ ok: true })),
+      resetDesktopConfig: vi.fn(async () => ({ ok: true })),
       scanLocalHosts: vi.fn(async () => ({ ok: false }))
     }
   } as never;
@@ -329,6 +331,30 @@ describe("client-config-service", () => {
 
     expect(config.onboardingCompletedAt).toBeNull();
     expect(config.onboardingRole).toBeNull();
+  });
+
+  it("重置桌面客户端会清空本地状态并返回默认配置", async () => {
+    const adapter = createMockAdapter({ platform: "desktop", isDesktop: true });
+    vi.mocked(createPlatformAdapter).mockReturnValue(adapter);
+    window.localStorage.setItem(
+      "codingns.client.runtime-config",
+      JSON.stringify({ onboardingCompletedAt: "2026-09-20T00:00:00.000Z" })
+    );
+    window.localStorage.setItem(
+      "codingns.auth.remembered-login",
+      JSON.stringify({ host: { username: "admin", password: "secret" } })
+    );
+
+    const config = await resetClientRuntimeConfig();
+
+    expect(config.onboardingCompletedAt).toBeNull();
+    expect(config.onboardingRole).toBeNull();
+    expect(config.hosts).toHaveLength(1);
+    expect(window.localStorage.getItem("codingns.auth.remembered-login")).toBeNull();
+    expect(
+      (adapter as unknown as { bridge: { resetDesktopConfig: ReturnType<typeof vi.fn> } }).bridge
+        .resetDesktopConfig
+    ).toHaveBeenCalledTimes(1);
   });
 
   it("会按归一化后的 URL 去重 relay 候选入口", async () => {

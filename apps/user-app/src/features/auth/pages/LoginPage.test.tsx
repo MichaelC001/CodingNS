@@ -115,6 +115,7 @@ describe("LoginPage", () => {
     expect(passwordInput.value).toBe("");
     expect(screen.queryByRole("checkbox", { name: t("auth.rememberPassword") })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: new RegExp(t("auth.serverSettings")) })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("auth.clientResetAction") })).not.toBeInTheDocument();
     expect(screen.getByText(`v${__APP_VERSION__}`)).toBeInTheDocument();
     expect(viewportMeta?.getAttribute("content")).toBe(
       "width=device-width, initial-scale=1.0, viewport-fit=cover"
@@ -522,6 +523,61 @@ describe("LoginPage", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText(t("auth.loginDirectBlockedTitle"))).not.toBeInTheDocument();
   });
+
+  it("Windows 客户端可以从登录页服务器设置重置并回到首次运行向导", async () => {
+    mockNavigator({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+      platform: "Win32"
+    });
+    const invoke = vi.fn(async () => undefined);
+    window.__TAURI_INTERNALS__ = { invoke };
+    clientConfigStore.hydrate({
+      platform: "desktop",
+      hostBaseUrl: "http://10.10.1.8:4100",
+      onboardingCompletedAt: "2026-09-20T00:00:00.000Z",
+      onboardingRole: "client",
+      releaseChannel: "stable",
+      autoReconnect: true,
+      autoCheckUpdate: true,
+      language: "zh-CN",
+      defaultPermissionMode: "default"
+    });
+
+    renderLoginPage();
+
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(t("auth.serverSettings")) }));
+    await screen.findByText(t("auth.clientResetTitle"));
+    await userEvent.click(screen.getByRole("button", { name: t("auth.clientResetAction") }));
+
+    await screen.findByText("SETUP_PAGE");
+    expect(invoke).toHaveBeenCalledWith("reset_desktop_config", undefined);
+    expect(clientConfigStore.getState().onboardingCompletedAt).toBeNull();
+    expect(clientConfigStore.getState().onboardingRole).toBeNull();
+  });
+
+  it("macOS 客户端会在登录页服务器设置中显示重置入口", async () => {
+    mockNavigator({
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15",
+      platform: "MacIntel"
+    });
+    window.__TAURI_INTERNALS__ = { invoke: vi.fn(async () => undefined) };
+    clientConfigStore.hydrate({
+      platform: "desktop",
+      hostBaseUrl: "http://127.0.0.1:3002",
+      releaseChannel: "stable",
+      autoReconnect: true,
+      autoCheckUpdate: true,
+      language: "zh-CN",
+      defaultPermissionMode: "default"
+    });
+
+    renderLoginPage();
+
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(t("auth.serverSettings")) }));
+    expect(await screen.findByRole("button", { name: t("auth.clientResetAction") })).toBeInTheDocument();
+  });
 });
 
 function renderLoginPage() {
@@ -534,6 +590,7 @@ function renderLoginPage() {
               <Routes>
                 <Route path="/" element={<div>HOME</div>} />
                 <Route path="/login" element={<LoginPage />} />
+                <Route path="/setup" element={<div>SETUP_PAGE</div>} />
               </Routes>
             </MemoryRouter>
           </ThemeProvider>
