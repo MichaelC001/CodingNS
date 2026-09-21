@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -201,6 +202,23 @@ fn build_installer_args(options: &HostInstallerOptions, data_dir: &Path) -> Vec<
     }
 
     args
+}
+
+/// 把 Node 可执行文件所在目录放到子进程 PATH 首位。
+///
+/// npm 在 macOS/Linux 上通常是 `#!/usr/bin/env node`，即使当前进程是用
+/// 绝对路径启动的 Node，npm 继续拉起脚本时仍然会重新从 PATH 查找 node。
+fn build_node_path(node_binary: &Path, existing_path: Option<OsString>) -> Option<OsString> {
+    let node_dir = node_binary
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())?;
+    let mut paths = vec![node_dir.to_path_buf()];
+
+    if let Some(existing_path) = existing_path {
+        paths.extend(std::env::split_paths(&existing_path));
+    }
+
+    std::env::join_paths(paths).ok()
 }
 
 fn emit_progress(app: &AppHandle, task_id: &str, mut event: serde_json::Value) {
@@ -495,6 +513,10 @@ pub async fn run_host_installer(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    if let Some(path) = build_node_path(&node_binary, std::env::var_os("PATH")) {
+        command.env("PATH", path);
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -687,6 +709,32 @@ mod tests {
     fn rejects_relative_data_dir() {
         assert!(resolve_data_dir(Some("relative/path")).is_err());
         assert!(resolve_data_dir(None).is_ok());
+    }
+
+    #[test]
+    fn prepends_node_directory_to_existing_path() {
+        let node_binary = PathBuf::from("private").join("bin").join("node");
+        let original_entries = [
+            PathBuf::from("system").join("bin"),
+            PathBuf::from("tools"),
+        ];
+        let original_path = std::env::join_paths(&original_entries).expect("测试 PATH 应该有效");
+
+        let path = build_node_path(&node_binary, Some(original_path)).expect("应该能生成 PATH");
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+
+        assert_eq!(entries[0], PathBuf::from("private").join("bin"));
+        assert_eq!(&entries[1..], original_entries.as_slice());
+    }
+
+    #[test]
+    fn builds_node_path_without_existing_path() {
+        let node_binary = PathBuf::from("private").join("node");
+
+        let path = build_node_path(&node_binary, None).expect("应该能生成 PATH");
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+
+        assert_eq!(entries, vec![PathBuf::from("private")]);
     }
 
     #[test]
