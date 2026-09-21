@@ -105,7 +105,9 @@ export function useConnectLoginFlow(options: UseConnectLoginFlowOptions): Connec
 
   useEffect(() => {
     const session = controlSessionStore.hydrate();
-    const hasValidSession = Boolean(session && !isControlSessionExpired(session, Date.now()));
+    const hasValidSession = Boolean(
+      session && (!isControlSessionExpired(session, Date.now()) || session.refreshToken)
+    );
 
     if (target && targetKey) {
       if (hasValidSession) {

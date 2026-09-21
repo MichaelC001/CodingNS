@@ -714,7 +714,7 @@ class ControlSessionStore {
       return false;
     }
 
-    return !isControlSessionExpired(this.session, now);
+    return !isControlSessionExpired(this.session, now) || Boolean(this.session.refreshToken);
   }
 
   private emit(): void {

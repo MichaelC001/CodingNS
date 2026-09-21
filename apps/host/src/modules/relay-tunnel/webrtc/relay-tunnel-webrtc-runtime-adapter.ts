@@ -13,7 +13,7 @@
  *
  * 三件事在这里落实：
  *
- * 1. **票据只在主进程换。** 账号 accessToken 从 `config.controlAccessTokenCiphertext`
+ * 1. **票据只在主进程换。** 账号 accessToken / refreshToken 从配置里的加密字段
  *    解出来，子进程永远看不到它，只拿到签好的票据。
  * 2. **状态和用量走 TaskManager。** 刷新状态是 `relay_tunnel.state_refresh`，
  *    用量是 `relay_tunnel.usage_report`，拉起是 `webrtc.peer_supervise`。
