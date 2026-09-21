@@ -7,6 +7,58 @@ describe("TaskHelperProcessClient", () => {
     vi.resetModules();
   });
 
+  it("不会把 helper 的结构化指标当成 warning 输出", async () => {
+    let stderrHandler: ((chunk: unknown) => void) | null = null;
+    const child = {
+      stdout: {},
+      stderr: {
+        on: vi.fn((event: string, handler: (chunk: unknown) => void) => {
+          if (event === "data") {
+            stderrHandler = handler;
+          }
+        })
+      },
+      stdin: {
+        destroyed: false,
+        on: vi.fn(),
+        write: vi.fn()
+      },
+      killed: false,
+      kill: vi.fn(),
+      on: vi.fn()
+    };
+    const stdoutReader = {
+      on: vi.fn(),
+      close: vi.fn()
+    };
+
+    vi.doMock("node:child_process", () => ({
+      spawn: vi.fn(() => child)
+    }));
+    vi.doMock("node:readline", () => ({
+      default: {
+        createInterface: vi.fn(() => stdoutReader)
+      }
+    }));
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { TaskHelperProcessClient } = await import("../../src/modules/tasks/task-helper-client.js");
+      const client = new TaskHelperProcessClient();
+      (client as unknown as { ensureChild: () => unknown }).ensureChild();
+
+      stderrHandler?.("[task-helper.metrics] {\"event\":\"handler.finished\",\"ok\":true}");
+      expect(warn).not.toHaveBeenCalled();
+
+      stderrHandler?.("helper transport warning");
+      expect(warn).toHaveBeenCalledWith("[task-helper] helper transport warning");
+      await client.dispose();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("AbortSignal 触发后会向 helper 发送 cancel 消息", async () => {
     const writes: string[] = [];
     const stdin = {

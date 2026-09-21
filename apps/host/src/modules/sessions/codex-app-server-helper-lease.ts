@@ -20,6 +20,19 @@ export interface CodexAppServerHelperLeaseMetrics {
   handlerTotal: number;
 }
 
+/** 正常请求级 lease 日志默认关闭，排查 helper 生命周期时再显式打开。 */
+const CODEX_APP_SERVER_HELPER_LEASE_DEBUG = /^(1|true|yes|on)$/i.test(
+  process.env.CODINGNS_CODEX_APP_SERVER_HELPER_LEASE_DEBUG?.trim() ?? ""
+);
+const CODEX_APP_SERVER_HELPER_VERBOSE_LEASE_EVENTS = new Set([
+  "child.spawned",
+  "lease.armed",
+  "lease.expired",
+  "child.retiring",
+  "request.retired",
+  "request.start"
+]);
+
 interface LeaseLogInput {
   event: string;
   state: CodexAppServerHelperLeaseState;
@@ -76,8 +89,17 @@ export function buildCodexAppServerHelperLeaseLogEntry(input: LeaseLogInput): Re
 }
 
 export function writeCodexAppServerHelperLeaseLog(entry: Record<string, unknown>): void {
+  const event = typeof entry.event === "string" ? entry.event : "";
+
+  // 正常 lease 生命周期和 request.start 默认静默；失败事件仍必须保留，
+  // 否则 helper 真正断管时终端里会没有任何线索。
+  if (!CODEX_APP_SERVER_HELPER_LEASE_DEBUG && CODEX_APP_SERVER_HELPER_VERBOSE_LEASE_EVENTS.has(event)) {
+    return;
+  }
+
   try {
-    console.info("[codex-app-server-helper.lease]", entry);
+    const write = event.includes("failed") ? console.error : console.info;
+    write("[codex-app-server-helper.lease]", entry);
   } catch {
     // 诊断失败不能影响 helper 生命周期。
   }

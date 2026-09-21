@@ -16,6 +16,7 @@ import {
 } from "../../shared/utils/child-process-lifecycle.js";
 import {
   measureUtf8Bytes,
+  TASK_HELPER_METRICS_LOG_PREFIX,
   TASK_HELPER_MAX_PROTOCOL_LINE_BYTES
 } from "./task-helper-metrics.js";
 
@@ -472,9 +473,17 @@ export class TaskHelperProcessClient {
     child.stderr.on("data", (chunk) => {
       const content = String(chunk).trim();
 
-      if (content) {
-        console.warn(`[task-helper] ${content}`);
+      if (!content) {
+        return;
       }
+
+      // 指标是 helper 的结构化观测输出，不是传输故障。父进程不应把它们
+      // 重新升级成 warning，否则每次采样都会污染 Host 终端。
+      if (content.startsWith(TASK_HELPER_METRICS_LOG_PREFIX)) {
+        return;
+      }
+
+      console.warn(`[task-helper] ${content}`);
     });
     child.stdin.on("error", (error) => {
       this.handleChildTermination(
