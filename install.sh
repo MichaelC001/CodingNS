@@ -509,9 +509,16 @@ resolve_private_package_root_from_spec() {
       ;;
   esac
 
-  package_root="$npm_prefix/node_modules/$package_name"
-  [[ -f "$package_root/package.json" ]] || return 1
-  printf '%s\n' "$package_root"
+  local package_roots=(
+    "$npm_prefix/node_modules/$package_name"
+    "$npm_prefix/lib/node_modules/$package_name"
+  )
+  for package_root in "${package_roots[@]}"; do
+    [[ -f "$package_root/package.json" ]] || continue
+    printf '%s\n' "$package_root"
+    return 0
+  done
+  return 1
 }
 
 resolve_local_package_spec_dir() {
@@ -537,14 +544,17 @@ resolve_private_package_root_from_command_name() {
   [[ -n "$NODE_BIN" ]] || return 1
   [[ -n "$npm_prefix" ]] || return 1
   [[ -n "$command_name" ]] || return 1
-  [[ -d "$npm_prefix/node_modules" ]] || return 1
+  [[ -d "$npm_prefix/node_modules" || -d "$npm_prefix/lib/node_modules" ]] || return 1
 
   "$NODE_BIN" - "$npm_prefix" "$command_name" <<'EOF'
 const fs = require("node:fs");
 const path = require("node:path");
 
 const [npmPrefix, commandName] = process.argv.slice(2);
-const nodeModulesRoot = path.join(npmPrefix, "node_modules");
+const nodeModulesRoots = [
+  path.join(npmPrefix, "node_modules"),
+  path.join(npmPrefix, "lib", "node_modules")
+].filter((candidate) => fs.existsSync(candidate));
 
 function normalizeBinName(binPath) {
   return path.basename(binPath).replace(/\.(?:mjs|cjs|js)$/iu, "");
@@ -586,6 +596,7 @@ function printIfFound(packageRoot) {
   }
 }
 
+for (const nodeModulesRoot of nodeModulesRoots) {
 for (const entry of fs.readdirSync(nodeModulesRoot, { withFileTypes: true })) {
   if (!entry.isDirectory()) {
     continue;
@@ -603,6 +614,7 @@ for (const entry of fs.readdirSync(nodeModulesRoot, { withFileTypes: true })) {
   }
 
   printIfFound(path.join(nodeModulesRoot, entry.name));
+}
 }
 
 process.exit(1);
