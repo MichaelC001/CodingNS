@@ -68,6 +68,17 @@ pub fn write_desktop_config(app: &AppHandle, patch: DesktopRuntimeConfig) -> Res
     Ok(())
 }
 
+/// 清空桌面端配置文件，让客户端回到首次运行状态。
+pub fn reset_desktop_config(app: &AppHandle) -> Result<(), String> {
+    let path = config_file_path(app)?;
+
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("清空桌面配置失败: {error}")),
+    }
+}
+
 /// 逐字段合并配置补丁：补丁里没带的字段保持原值，不整体覆盖。
 fn apply_desktop_config_patch(current: &mut DesktopRuntimeConfig, patch: DesktopRuntimeConfig) {
     if patch.platform.is_some() {

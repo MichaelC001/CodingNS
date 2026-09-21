@@ -15,6 +15,15 @@ const HISTORY_STORAGE_KEY = "codingns.server.base-url.history";
 const MAX_HISTORY_SIZE = 6;
 const CUSTOM_SERVER_OPTION = "__custom__";
 
+/** 首次运行重置时清掉登录页保存的服务器历史，避免旧地址继续出现在设置里。 */
+export function clearServerConfigHistory(): void {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  window.localStorage.removeItem(HISTORY_STORAGE_KEY);
+}
+
 export interface ServerConfigState {
   baseUrl: string;
   options: string[];

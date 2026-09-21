@@ -14,7 +14,10 @@ import {
   type OnboardingRole,
   type RuntimePlatform
 } from "./client-config-types";
-import { syncRememberedLoginServerBaseUrl } from "../features/auth/store/remembered-login";
+import {
+  clearAllRememberedLoginCredentials,
+  syncRememberedLoginServerBaseUrl
+} from "../features/auth/store/remembered-login";
 import { createPlatformAdapter } from "../platform/platform-adapter";
 import { normalizeServerBaseUrl } from "./server-config-shared";
 
@@ -765,4 +768,29 @@ export async function persistClientRuntimeConfig(
   }
 
   return normalizedConfig;
+}
+
+/**
+ * 清空桌面端配置并返回全新的默认配置。
+ * 登录页调用此方法时本来就没有登录态，因此不在这里处理服务端账号。
+ */
+export async function resetClientRuntimeConfig(): Promise<ClientRuntimeConfig> {
+  const adapter = createPlatformAdapter();
+
+  if (adapter.isDesktop) {
+    const result = await adapter.bridge.resetDesktopConfig();
+
+    if (!result.ok) {
+      throw new Error(result.detail ?? "清空桌面配置失败。");
+    }
+  }
+
+  if (canUseLocalStorage()) {
+    window.localStorage.removeItem(STORAGE_KEY);
+  }
+  clearAllRememberedLoginCredentials();
+
+  const resetConfig = normalizeClientRuntimeConfigSnapshot(null, adapter.platform);
+  persistLocalConfig(resetConfig);
+  return resetConfig;
 }

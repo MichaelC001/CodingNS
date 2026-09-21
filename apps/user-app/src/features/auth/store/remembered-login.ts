@@ -191,6 +191,15 @@ export function clearRememberedLoginCredentials(hostId: string | null): void {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextRememberedLoginMap));
 }
 
+/** 清空客户端重置时保存的登录凭据，避免初始化后又自动带回旧账号。 */
+export function clearAllRememberedLoginCredentials(): void {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  window.localStorage.removeItem(STORAGE_KEY);
+}
+
 function readRememberedLoginMap(): RememberedLoginMap {
   if (!canUseLocalStorage()) {
     return {};

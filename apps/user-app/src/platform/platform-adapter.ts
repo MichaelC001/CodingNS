@@ -80,6 +80,7 @@ export interface DesktopShellBridge {
   setWindowState(state: DesktopWindowState): Promise<DesktopBridgeResult>;
   readDesktopConfig(): Promise<DesktopBridgeResult<Partial<ClientRuntimeConfig>>>;
   writeDesktopConfig(config: ClientRuntimeConfigPatch): Promise<DesktopBridgeResult>;
+  resetDesktopConfig(): Promise<DesktopBridgeResult>;
   scanLocalHosts(): Promise<DesktopBridgeResult<DesktopLocalHostProcessHit[]>>;
   probeHostEndpoint(
     input: HostEndpointProbeInput
@@ -406,6 +407,10 @@ class WebDesktopShellBridge implements DesktopShellBridge {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
 
+  resetDesktopConfig(): Promise<DesktopBridgeResult> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
   scanLocalHosts(): Promise<DesktopBridgeResult<DesktopLocalHostProcessHit[]>> {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
@@ -572,6 +577,10 @@ class TauriDesktopShellBridge implements DesktopShellBridge {
 
   writeDesktopConfig(config: ClientRuntimeConfigPatch): Promise<DesktopBridgeResult> {
     return invokeDesktopCommand("write_desktop_config", { patch: config });
+  }
+
+  resetDesktopConfig(): Promise<DesktopBridgeResult> {
+    return invokeDesktopCommand("reset_desktop_config");
   }
 
   scanLocalHosts(): Promise<DesktopBridgeResult<DesktopLocalHostProcessHit[]>> {
@@ -784,6 +793,10 @@ class TauriMobileShellBridge implements DesktopShellBridge {
   }
 
   writeDesktopConfig(): Promise<DesktopBridgeResult> {
+    return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
+  }
+
+  resetDesktopConfig(): Promise<DesktopBridgeResult> {
     return Promise.resolve(unsupportedResult("当前不是桌面端运行环境。"));
   }
 

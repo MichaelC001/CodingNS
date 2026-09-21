@@ -198,6 +198,11 @@ fn write_desktop_config(app: AppHandle, patch: DesktopRuntimeConfig) -> Result<(
 }
 
 #[tauri::command]
+fn reset_desktop_config(app: AppHandle) -> Result<(), String> {
+    config::reset_desktop_config(&app)
+}
+
+#[tauri::command]
 fn scan_local_hosts() -> Result<Vec<DesktopLocalHostProcessHit>, String> {
     host_discovery::scan_local_hosts()
 }
@@ -1243,6 +1248,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_desktop_config,
             write_desktop_config,
+            reset_desktop_config,
             scan_local_hosts,
             host_setup::probe_host_endpoint,
             host_setup::probe_host_setup_environment,
