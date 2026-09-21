@@ -455,8 +455,8 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
       providerSessionId,
       Boolean(options?.billing)
     );
-    const sessionStats = asRecord(values.sessionStats);
-    const tokenUsage = asRecord(values.tokenUsage);
+    const sessionStats = readHarnessProjectionRecord(values.sessionStats);
+    const tokenUsage = readHarnessProjectionRecord(values.tokenUsage);
     const capturedAt = nextTimestamp();
     const asOfSequence = readNonNegativeNumber(projections.asOfSeq);
     const watermark = asOfSequence === null
@@ -524,7 +524,7 @@ export class DeepSeekHarnessAdapter implements ProviderAdapter {
     _rawStoreRef: string
   ): Promise<ContextUsageSnapshot | null> {
     const { values } = await this.readHistoryProjections(providerSessionId);
-    const contextPressure = asRecord(values.contextPressure);
+    const contextPressure = readHarnessContextPressure(values.contextPressure);
     // `projectedTokens` 是 Harness 为下一次请求推进后的上下文压力。它包含 provider
     // usage 锚点后的表层增量，正是原生 ContextMeter 用于显示占用率的值。
     const promptTokens = readNonNegativeNumber(contextPressure.projectedTokens);
@@ -1491,7 +1491,8 @@ function normalizeSummary(input: unknown, workspacePath: string, version = DEEPS
   const record = asRecord(input);
   const providerSessionId = ensureText(record.sessionId ?? record.id).trim();
   if (!providerSessionId) return null;
-  return { provider: "deepseek-harness", providerSessionId, title: ensureText(record.title).trim() || `DeepSeek Harness ${providerSessionId.slice(0, 8)}`, workspacePath: ensureText(record.cwd).trim() || workspacePath, rawStoreRef: buildRawStoreRef(version, providerSessionId), isArchived: record.isArchived === true || record.archived === true, lastMessageAt: normalizeTimestamp(record.updatedAt ?? record.createdAt), messageCount: typeof record.messageCount === "number" ? record.messageCount : 0 };
+  const title = readHarnessSessionTitle(record);
+  return { provider: "deepseek-harness", providerSessionId, title: title || `DeepSeek Harness ${providerSessionId.slice(0, 8)}`, workspacePath: ensureText(record.cwd).trim() || workspacePath, rawStoreRef: buildRawStoreRef(version, providerSessionId), isArchived: record.isArchived === true || record.archived === true, lastMessageAt: normalizeTimestamp(record.updatedAt ?? record.createdAt), messageCount: typeof record.messageCount === "number" ? record.messageCount : 0 };
 }
 
 function isHarnessMissingSessionError(error: unknown): boolean {
@@ -1664,6 +1665,52 @@ function resolveHarnessModelDisplayName(modelId: string, catalogName: string): s
 
 function createAcceptedMessage(providerSessionId: string, content: string, timestamp: string): NormalizedMessage { const messageId = randomUUID(); return { messageId, provider: "deepseek-harness", providerSessionId, role: "user", kind: "text", content, toolCall: null, timestamp, sequence: Number.MAX_SAFE_INTEGER, rawRef: `synthetic://deepseek-harness/${providerSessionId}/${messageId}` }; }
 function asRecord(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+
+/** 兼容新版 Harness 的 projection 状态和旧版直接值两种返回形状。 */
+function readHarnessProjectionRecord(value: unknown): Record<string, unknown> {
+  const record = asRecord(value);
+  const totals = asRecord(record.totals);
+  return Object.keys(totals).length > 0 ? totals : record;
+}
+
+/**
+ * 读取上下文压力的可展示值。
+ *
+ * 0.1.5 的持久化状态保留 `surfaceTokens` 和 `sampledSurfaceTokens`，而旧协议
+ * 直接返回已经计算好的 `projectedTokens`。两者表达的是同一个“下一次请求压力”。
+ */
+function readHarnessContextPressure(value: unknown): Record<string, unknown> {
+  const record = asRecord(value);
+  if (readNonNegativeNumber(record.projectedTokens) !== null) return record;
+
+  const pressureTokens = readNonNegativeNumber(record.pressureTokens);
+  const surfaceTokens = readNonNegativeNumber(record.surfaceTokens);
+  const sampledSurfaceTokens = readNonNegativeNumber(record.sampledSurfaceTokens);
+
+  if (pressureTokens === null || surfaceTokens === null || sampledSurfaceTokens === null) {
+    return record;
+  }
+
+  return {
+    ...record,
+    projectedTokens: Math.max(0, pressureTokens + surfaceTokens - sampledSurfaceTokens)
+  };
+}
+
+/** 标题在旧版是 session.list 顶层字段，新版来自 title projection。 */
+function readHarnessSessionTitle(record: Record<string, unknown>): string {
+  const projections = asRecord(record.projections);
+  const values = asRecord(projections.values);
+  const rows = asRecord(values.rows);
+  const titleRow = asRecord(rows.title);
+  return ensureText(
+    record.title
+    ?? record.displayTitle
+    ?? values.title
+    ?? titleRow.val
+  ).trim();
+}
+
 function readNonNegativeNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
     return value;

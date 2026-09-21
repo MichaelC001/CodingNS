@@ -134,6 +134,29 @@ describe("DeepSeekHarnessAdapter", () => {
     await expect(adapter.readSessionTitle("h1")).resolves.toBe("测试");
   });
 
+  it("从新版 session.list 的 title projection 读取自动生成标题", async () => {
+    const adapter = new DeepSeekHarnessAdapter({
+      transport: {
+        call: async (method) => {
+          if (method !== "session.list") throw new Error(`unexpected method: ${method}`);
+          return {
+            items: [{
+              sessionId: "h-title",
+              cwd: "C:/work",
+              projections: { asOfSeq: 12, values: { title: "修复 Harness 标题" } }
+            }]
+          };
+        },
+        subscribe: () => ({ close() {} })
+      }
+    });
+
+    await expect(adapter.readSessionTitle("h-title")).resolves.toBe("修复 Harness 标题");
+    await expect(adapter.detectSessions("C:/work")).resolves.toMatchObject([
+      { providerSessionId: "h-title", title: "修复 Harness 标题" }
+    ]);
+  });
+
   it("创建会话前先登记 DSH workspace，并用 workspaceId 归属会话", async () => {
     const t = transport();
     const adapter = new DeepSeekHarnessAdapter({ transport: t, harnessVersion: "0.1.0-rc.5" });
@@ -867,6 +890,55 @@ describe("DeepSeekHarnessAdapter", () => {
     });
     expect(contextUsage).not.toHaveProperty("uncachedInputTokens");
     expect(contextUsage).not.toHaveProperty("cachedInputTokens");
+  });
+
+  it("兼容新版 Harness 返回的 projection 状态包裹结构", async () => {
+    const adapter = new DeepSeekHarnessAdapter({
+      transport: {
+        call: async (method) => {
+          if (method !== "session.history") throw new Error(`unexpected method: ${method}`);
+          return {
+            events: [],
+            projections: {
+              asOfSeq: 91,
+              values: {
+                tokenUsage: {
+                  totals: {
+                    uncachedInputTokens: 1100,
+                    outputTokens: 90,
+                    cacheReadTokens: 300,
+                    cacheWriteTokens: 10
+                  },
+                  last: { turn: 2, step: 1, buckets: {} }
+                },
+                contextPressure: {
+                  pressureTokens: 9000,
+                  surfaceTokens: 1200,
+                  sampledSurfaceTokens: 200,
+                  contextWindow: 1_000_000
+                }
+              }
+            }
+          };
+        },
+        subscribe: () => ({ close() {} })
+      }
+    });
+
+    await expect(adapter.readSessionStats("h1", "harness://v/h1")).resolves.toMatchObject({
+      metrics: {
+        inputTokens: { value: 1410 },
+        uncachedInputTokens: { value: 1100 },
+        outputTokens: { value: 90 },
+        cacheReadTokens: { value: 300 },
+        cacheWriteTokens: { value: 10 }
+      }
+    });
+    await expect(adapter.readContextUsage("h1", "harness://v/h1")).resolves.toMatchObject({
+      promptTokens: 10000,
+      contextWindow: 1_000_000,
+      usageRatio: 0.01
+    });
   });
 
   it.each([
