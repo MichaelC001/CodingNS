@@ -406,6 +406,8 @@ type TimelineRenderItem =
       notice: Extract<ConversationTimelineSourceItem, { type: "runtime_notice" }>["notice"];
     };
 
+type UserScrollIntent = "away_from_tail" | "toward_tail" | null;
+
 function useStableMessageActionStates(
   actionStateByMessageId: Map<string, MessageActionState>
 ): Map<string, MessageActionState> {
@@ -6590,6 +6592,9 @@ export function MessageTimeline({
   const previousLastMessageSignatureRef = useRef<string | null>(null);
   const previousLastUserMessageIdRef = useRef<string | null>(null);
   const stickToBottomRef = useRef(true);
+  // 距离底部的容差用于吸收行高测量误差，但不能覆盖用户刚开始向上滚动的意图。
+  // 否则流式消息每次变长都会把滚动位置重新拉回尾部，表现为底部抖动。
+  const userScrollIntentRef = useRef<UserScrollIntent>(null);
   // 首次加载和切换会话时，DOM 容器可能暂时沿用上一个会话的 scrollTop。
   // 用一次性标记确保新会话先落到尾部，不保存或恢复跨会话的历史位置。
   const followInitialTailRef = useRef(true);
@@ -6989,7 +6994,14 @@ export function MessageTimeline({
 
   function syncScrollAffordance(list: HTMLDivElement) {
     const distanceToBottom = list.scrollHeight - list.clientHeight - list.scrollTop;
-    const nextStickToBottom = distanceToBottom <= STICK_TO_BOTTOM_DISTANCE_PX;
+    const userScrollIntent = userScrollIntentRef.current;
+    const nextStickToBottom = userScrollIntent === "away_from_tail"
+      ? distanceToBottom <= 1
+      : distanceToBottom <= STICK_TO_BOTTOM_DISTANCE_PX;
+
+    if (nextStickToBottom && userScrollIntent !== null) {
+      userScrollIntentRef.current = null;
+    }
 
     stickToBottomRef.current = nextStickToBottom;
     if (nextStickToBottom) {
@@ -7084,6 +7096,7 @@ export function MessageTimeline({
       followInitialTailRef.current = true;
       seenTailSignatureRef.current = null;
       stickToBottomRef.current = true;
+      userScrollIntentRef.current = null;
       pendingOlderLoadOffsetRef.current = null;
       pendingOlderLoadHeadSignatureRef.current = null;
       hasNewMessagesBelowRef.current = false;
@@ -7314,8 +7327,21 @@ export function MessageTimeline({
     }
   }
 
+  function markUserScrollIntent(intent: Exclude<UserScrollIntent, null>) {
+    userScrollIntentRef.current = intent;
+    if (intent === "away_from_tail") {
+      // 先更新同步引用，确保同一轮流式更新的布局 effect 也不会贴底。
+      stickToBottomRef.current = false;
+    }
+  }
+
   function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
-    if (event.deltaY >= 0) {
+    if (event.deltaY < 0) {
+      markUserScrollIntent("away_from_tail");
+    } else if (event.deltaY > 0) {
+      markUserScrollIntent("toward_tail");
+      return;
+    } else {
       return;
     }
 
@@ -7339,6 +7365,9 @@ export function MessageTimeline({
     if (startY === null || currentY === null) {
       return;
     }
+
+    // 手指向下拖动代表内容向上滚，正在离开尾部；反向则是回到底部。
+    markUserScrollIntent(currentY > startY ? "away_from_tail" : "toward_tail");
 
     if (currentY - startY < OLDER_HISTORY_TOUCH_DRAG_THRESHOLD_PX) {
       return;
@@ -7532,6 +7561,7 @@ export function MessageTimeline({
               return;
             }
 
+            userScrollIntentRef.current = null;
             jumpToBottom(list, "scroll_button_click");
             hasNewMessagesBelowRef.current = false;
             seenTailSignatureRef.current = buildTailMessageSignature();

@@ -3499,6 +3499,67 @@ ARGUMENTS: capabilities list`)
     expect(messageList!.scrollTop).toBe(1200);
   });
 
+  it("用户刚向上滚动时，流式尾部更新不会把位置拉回底部", () => {
+    const { rerender } = render(
+      <MessageTimeline
+        sessionId="session-near-tail-scroll"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={[
+          {
+            ...createAssistantTextMessage("第一段", "assistant-near-tail-scroll"),
+            sessionId: "session-near-tail-scroll"
+          }
+        ]}
+      />
+    );
+
+    const messageList = document.querySelector(".message-list") as HTMLDivElement | null;
+
+    expect(messageList).not.toBeNull();
+
+    let scrollTop = 1_400;
+    let scrollHeight = 2_000;
+    Object.defineProperty(messageList, "scrollHeight", {
+      get: () => scrollHeight,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "clientHeight", {
+      value: 600,
+      configurable: true
+    });
+    Object.defineProperty(messageList, "scrollTop", {
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+      configurable: true
+    });
+
+    fireEvent.wheel(messageList!, { deltaY: -40 });
+    scrollTop = 1_340;
+    fireEvent.scroll(messageList!, { target: { scrollTop } });
+
+    scrollHeight = 2_040;
+    rerender(
+      <MessageTimeline
+        sessionId="session-near-tail-scroll"
+        historyState="ready"
+        provider="codex"
+        onRetryMessage={vi.fn()}
+        messages={[
+          {
+            ...createAssistantTextMessage("第一段\n第二段", "assistant-near-tail-scroll"),
+            sessionId: "session-near-tail-scroll"
+          }
+        ]}
+      />
+    );
+
+    expect(scrollTop).toBe(1_340);
+  });
+
   it("在底部无操作时，消息高度增加会继续自动滚动到底部", () => {
     const initialMessages = [
       {
