@@ -9,6 +9,7 @@ import { clearViewSnapshot, readViewSnapshot, writeViewSnapshot } from "../../..
 import { t } from "../../../shared/i18n";
 import { ToastProvider } from "../../../shared/toast";
 import {
+  MobileNavDrawer,
   flattenVisibleSessionTree,
   getTreeNodeChildren,
   getVisibleSessionTreeNodes,
@@ -57,6 +58,22 @@ import {
 
 describe("WorkbenchLayout", () => {
   registerWorkbenchLayoutTestHooks();
+
+  it("移动导航抽屉关闭时仍保留项目管理子树的挂载", () => {
+    const view = render(
+      <MobileNavDrawer
+        isOpen={false}
+        side="left"
+        keepMounted
+        onClose={() => undefined}
+      >
+        <div data-testid="persistent-mobile-navigation-child">项目管理入口</div>
+      </MobileNavDrawer>
+    );
+
+    expect(view.getByTestId("persistent-mobile-navigation-child")).toBeInTheDocument();
+    expect(view.container.querySelector(".mobile-nav-drawer.left.open")).not.toBeInTheDocument();
+  });
 
   it("在桌面端工具栏里把 HOST 切换器放在收起按钮和通知按钮之间", async () => {
     renderWorkbenchRoute();
@@ -6299,6 +6316,38 @@ describe("WorkbenchLayout", () => {
     });
 
     expect(screen.getAllByText("项目二").length).toBeGreaterThan(0);
+  });
+
+  it("移动端项目管理使用独立的全屏 MobileSheet", async () => {
+    const snapshot = createWorkbenchSnapshot([
+      {
+        workspace: createWorkspace("workspace-1", "项目一"),
+        sessions: []
+      }
+    ]);
+    MockWebSocket.workbenchSnapshot = snapshot;
+    global.fetch = vi.fn(async (rawInput: RequestInfo | URL) => {
+      const url = String(rawInput);
+
+      if (url.endsWith("/api/workbench")) {
+        return createJsonResponse(snapshot);
+      }
+
+      throw new Error(`未处理的请求: ${url}`);
+    }) as typeof fetch;
+
+    renderWorkbenchRoute("/workspaces/workspace-1/sessions/session-1", { shellMode: "mobile" });
+
+    await userEvent.click(await screen.findByRole("button", { name: t("shell.manageWorkspaceAction") }));
+
+    const managerDialog = await screen.findByRole("dialog", {
+      name: t("shell.manageWorkspaceTitle")
+    });
+
+    expect(managerDialog).toHaveClass("mobile-workspace-manager-sheet");
+    expect(managerDialog).not.toHaveClass("workbench-manage-workspaces-modal");
+    expect(within(managerDialog).getByText(t("shell.manageWorkspaceDescription"))).toBeInTheDocument();
+    expect(within(managerDialog).getByRole("button", { name: t("shell.manageWorkspaceImportAction") })).toBeInTheDocument();
   });
 
   it("收到空 git 快照并写入缓存后，重新挂载工作台也不会崩溃", async () => {

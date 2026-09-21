@@ -28,8 +28,10 @@ import {
   ModalField,
   ModalActions,
   ModalList,
-  ModalListItem
+  ModalListItem,
+  ModalSection
 } from "../../../components/ModalAtoms";
+import { MobileSheet } from "../../../components/MobileSheet";
 import {
   MobileWorkbenchShell,
   type MobileWorkbenchEntry
@@ -2004,6 +2006,8 @@ interface WorkbenchShellContextValue {
   archiveNotification: (notificationId: string) => void;
   unarchiveNotification: (notificationId: string) => void;
   setAuxiliaryPanel: (panel: ReactNode | null) => void;
+  /** 请求打开现有的项目管理弹层，具体状态仍由侧栏组件持有。 */
+  openWorkspaceManager?: () => void;
   subscribeFileTree: (
     workspaceId: string,
     paths: string[],
@@ -6100,6 +6104,7 @@ function SidebarContent({
   onUnarchiveLightweightChat,
   onRenameLightweightChat,
   onDeleteLightweightChat,
+  workspaceManagerOpenRequest,
   workspaceManagementStateById,
   setWorkspaceManagementStateById,
   unreadNotificationCount,
@@ -6107,7 +6112,8 @@ function SidebarContent({
   onToggleNotificationPanel,
   onClose,
   onToggleCollapse,
-  codeShortcutRailSlot
+  codeShortcutRailSlot,
+  isMobileLayout = false
 }: {
   navigationGroups: WorkspaceSessionGroup[];
   workspaceGroups: WorkspaceSidebarGroup[];
@@ -6164,6 +6170,7 @@ function SidebarContent({
   onUnarchiveLightweightChat: (workspace: WorkspaceDto, sessionId: string) => Promise<void>;
   onRenameLightweightChat: (workspace: WorkspaceDto, sessionId: string, title: string) => Promise<SessionSummaryDto>;
   onDeleteLightweightChat: (workspace: WorkspaceDto, session: SessionSummaryDto) => Promise<void>;
+  workspaceManagerOpenRequest?: number;
   workspaceManagementStateById: Record<string, WorkspaceManagementViewState>;
   setWorkspaceManagementStateById: Dispatch<SetStateAction<Record<string, WorkspaceManagementViewState>>>;
   unreadNotificationCount: number;
@@ -6172,6 +6179,7 @@ function SidebarContent({
   onClose?: () => void;
   onToggleCollapse?: () => void;
   codeShortcutRailSlot?: ReactNode;
+  isMobileLayout?: boolean;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -6773,6 +6781,12 @@ function SidebarContent({
   const selectedSessionIdSet = useMemo(() => new Set(selectedSessionIds), [selectedSessionIds]);
   const allBatchSessionsSelected =
     batchSelectableSessionIds.length > 0 && selectedSessionIds.length === batchSelectableSessionIds.length;
+
+  useEffect(() => {
+    if (workspaceManagerOpenRequest) {
+      setWorkspaceManagerOpen(true);
+    }
+  }, [workspaceManagerOpenRequest]);
 
   useEffect(() => {
     setWorkspaceManagementStateById((current) => {
@@ -10039,6 +10053,237 @@ function SidebarContent({
     );
   }
 
+  function renderMobileManagedWorkspaceItem(
+    workspace: WorkspaceDto,
+    ownSessionCount: number,
+    childNodes: readonly WorkspaceSidebarWorktreeNode[],
+    isWorktree: boolean,
+    ancestorDisplayNames: readonly string[] = []
+  ): JSX.Element {
+    const isExpanded = expandedManagedWorkspaceIds.includes(workspace.id);
+    const managementState = workspaceManagementStateById[workspace.id] ?? {
+      detail: null,
+      loading: false,
+      error: null
+    };
+    const isSavingColor = workspaceNavigationSavingById[workspace.id] === true;
+    const remoteSummary = managementState.detail?.git.remotes.length
+      ? managementState.detail.git.remotes.map((remote) => `${remote.name}: ${remote.url}`).join(" · ")
+      : t("shell.manageWorkspaceNoRemote");
+    const compositionChartItems = managementState.detail
+      ? buildWorkspaceCompositionChartItems(
+          managementState.detail.codeComposition.items,
+          t("shell.manageWorkspaceCodeCompositionOther")
+        )
+      : [];
+    const compositionChartStyle = compositionChartItems.length > 0
+      ? createWorkspaceCompositionChartStyle(compositionChartItems)
+      : undefined;
+    const workspaceContext = getWorkspaceContext(workspace);
+    const treePathLabel = buildManagedWorkspaceTreePath(workspaceContext, ancestorDisplayNames);
+    const nextAncestorDisplayNames = [...ancestorDisplayNames, workspaceContext.displayName];
+
+    return (
+      <div
+        key={workspace.id}
+        className="mobile-workspace-manager-item"
+        data-workspace-tone={workspaceContext.tone}
+        data-worktree-node={isWorktree ? "true" : undefined}
+        style={createWorkspaceToneStyle(workspaceContext)}
+      >
+        <ModalListItem
+          as="button"
+          className="mobile-workspace-manager-row"
+          aria-expanded={isExpanded}
+          label={
+            <span className="mobile-workspace-manager-row-title">
+              <ChevronIcon expanded={isExpanded} />
+              <span className="mobile-workspace-manager-row-name">{workspaceContext.displayName}</span>
+              {renderWorkspaceHostBadge(workspace, "workspace-host-badge--manage")}
+            </span>
+          }
+          description={treePathLabel}
+          trailing={<span className="mobile-workspace-manager-row-count">{ownSessionCount}</span>}
+          onClick={() => handleToggleManagedWorkspace(workspace.id)}
+        />
+
+        {isExpanded ? (
+          <div className="mobile-workspace-manager-detail">
+            <ModalSection heading={t("shell.manageWorkspacePathLabel")} className="mobile-workspace-manager-section">
+              <p className="mobile-workspace-manager-path">{workspace.path}</p>
+            </ModalSection>
+
+            <ModalSection
+              heading={t("shell.manageWorkspaceHostLabel")}
+              className="mobile-workspace-manager-section"
+            >
+              <select
+                className="mobile-workspace-manager-select"
+                aria-label={t("shell.manageWorkspaceHostSelectLabel")}
+                value={resolveWorkspaceHostId(workspace)}
+                onChange={(event) => {
+                  void handleChangeWorkspaceHost(workspace, event.currentTarget.value);
+                }}
+              >
+                {selectableWorkspaceHosts.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.id === "current"
+                      ? t("shell.manageWorkspaceHostCurrentOption", { alias: getHostAlias(item.host) })
+                      : t("shell.manageWorkspaceHostPeerOption", { alias: getHostAlias(item.host) })}
+                  </option>
+                ))}
+              </select>
+              <p className="mobile-workspace-manager-hint">
+                {t("shell.manageWorkspaceHostHint", {
+                  hostName: resolveWorkspaceHost(workspace)?.name ?? getHostAlias(resolveWorkspaceHost(workspace))
+                })}
+              </p>
+            </ModalSection>
+
+            {isWorktree ? (
+              <ModalSection
+                heading={t("shell.manageWorkspaceColorLabel")}
+                className="mobile-workspace-manager-section"
+              >
+                <div className="mobile-workspace-manager-color-actions">
+                  <div className="mobile-workspace-manager-color-palette" aria-label={t("shell.manageWorkspaceColorLabel")}>
+                    {WORKSPACE_COLOR_PRESETS.map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        className="workbench-manage-color-swatch"
+                        aria-label={t("shell.manageWorkspaceColorSelectSwatch", { color })}
+                        aria-pressed={workspace.backgroundColor === color}
+                        disabled={isSavingColor}
+                        data-selected={workspace.backgroundColor === color}
+                        style={{ backgroundColor: color }}
+                        onClick={() => {
+                          void handleUpdateWorkspaceBackgroundColor(workspace.id, color);
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="ghost-button mobile-workspace-manager-clear-color"
+                    disabled={isSavingColor || !workspace.backgroundColor}
+                    onClick={() => {
+                      void handleUpdateWorkspaceBackgroundColor(workspace.id, null);
+                    }}
+                  >
+                    {t("shell.manageWorkspaceColorClearAction")}
+                  </button>
+                </div>
+                <p className="mobile-workspace-manager-hint">
+                  {workspace.backgroundColor ?? t("shell.manageWorkspaceColorUnset")}
+                </p>
+              </ModalSection>
+            ) : null}
+
+            {managementState.loading && managementState.detail === null ? (
+              <p className="mobile-workspace-manager-status status-text">{t("shell.manageWorkspaceLoading")}</p>
+            ) : null}
+            {managementState.error ? (
+              <p className="mobile-workspace-manager-status status-text" data-tone="error">
+                {managementState.error}
+              </p>
+            ) : null}
+
+            {managementState.detail ? (
+              <>
+                <ModalSection
+                  heading={t("shell.manageWorkspaceGitCommitCount")}
+                  className="mobile-workspace-manager-section mobile-workspace-manager-stat-section"
+                >
+                  <strong className="mobile-workspace-manager-stat-value">
+                    {managementState.detail.git.commitCount ?? "--"}
+                  </strong>
+                </ModalSection>
+                <ModalSection
+                  heading={t("shell.manageWorkspaceGitInfoLabel")}
+                  className="mobile-workspace-manager-section"
+                >
+                  {managementState.detail.git.isRepository ? (
+                    <div className="mobile-workspace-manager-kv-list">
+                      <div><span>{t("shell.manageWorkspaceRepoRoot")}</span><strong>{managementState.detail.git.repoRoot ?? "--"}</strong></div>
+                      <div><span>{t("shell.manageWorkspaceCurrentBranch")}</span><strong>{managementState.detail.git.currentBranch ?? "--"}</strong></div>
+                      <div><span>{t("shell.manageWorkspaceRemoteLabel")}</span><strong>{remoteSummary}</strong></div>
+                    </div>
+                  ) : (
+                    <p className="mobile-workspace-manager-empty">{managementState.detail.git.error ?? t("shell.manageWorkspaceNotGit")}</p>
+                  )}
+                </ModalSection>
+                <ModalSection
+                  heading={t("shell.manageWorkspaceCodeCompositionLabel")}
+                  className="mobile-workspace-manager-section"
+                >
+                  {compositionChartItems.length > 0 ? (
+                    <div className="mobile-workspace-manager-composition">
+                      <div
+                        className="mobile-workspace-manager-chart-ring"
+                        style={compositionChartStyle}
+                        aria-hidden="true"
+                      >
+                        <strong>{managementState.detail.codeComposition.scannedFileCount}</strong>
+                        <span>{t("shell.manageWorkspaceCodeCompositionFiles")}</span>
+                      </div>
+                      <div className="mobile-workspace-manager-type-list">
+                        {compositionChartItems.map((item) => (
+                          <div key={item.key}>
+                            <span><i style={{ backgroundColor: item.color }} aria-hidden="true" />{item.type}</span>
+                            <strong>{item.count} · {formatWorkspaceCompositionRatio(item)}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mobile-workspace-manager-empty">
+                      {managementState.detail.codeComposition.error ?? t("shell.manageWorkspaceNoCodeComposition")}
+                    </p>
+                  )}
+                  {managementState.detail.codeComposition.truncated ? (
+                    <p className="mobile-workspace-manager-hint">
+                      {t("shell.manageWorkspaceCodeTruncated", {
+                        count: managementState.detail.codeComposition.scannedFileCount
+                      })}
+                    </p>
+                  ) : null}
+                </ModalSection>
+              </>
+            ) : null}
+
+            <ModalActions align="start" className="mobile-workspace-manager-danger-actions">
+              <button
+                type="button"
+                className="secondary-button workbench-danger-button"
+                disabled={Boolean(removingWorkspaceId)}
+                onClick={() => setWorkspaceRemovalTarget(workspace)}
+              >
+                {removingWorkspaceId === workspace.id
+                  ? t("shell.manageWorkspaceRemoving")
+                  : t("shell.manageWorkspaceRemoveAction")}
+              </button>
+            </ModalActions>
+          </div>
+        ) : null}
+
+        {childNodes.length > 0 ? (
+          <div className="mobile-workspace-manager-children">
+            {childNodes.map((childNode) =>
+              renderMobileManagedWorkspaceItem(
+                childNode.workspace,
+                childNode.visibleSessions.length + childNode.archivedSessions.length,
+                childNode.children,
+                true,
+                nextAncestorDisplayNames
+              )
+            )}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <>
       <div
@@ -10461,7 +10706,105 @@ function SidebarContent({
         </div>
       </div>
 
-      <SidebarModal
+      {isMobileLayout ? (
+        <MobileSheet
+          open={workspaceManagerOpen}
+          title={t("shell.manageWorkspaceTitle")}
+          description={t("shell.manageWorkspaceDescription")}
+          height="full"
+          kind="form"
+          showHandle
+          showCancelButton={false}
+          className="mobile-workspace-manager-sheet"
+          cardClassName="mobile-workspace-manager-sheet-card"
+          bodyClassName="mobile-workspace-manager-sheet-body"
+          onClose={() => {
+            if (removingWorkspaceId) {
+              return;
+            }
+
+            setWorkspaceManagerOpen(false);
+          }}
+          footer={
+            <ModalActions align="between" className="mobile-workspace-manager-footer-actions">
+              <button type="button" className="secondary-button" onClick={handleOpenDirectoryBrowser}>
+                {t("shell.manageWorkspaceImportAction")}
+              </button>
+              <button type="button" className="secondary-button" onClick={handleOpenCloneWorkspace}>
+                {t("shell.manageWorkspaceCloneAction")}
+              </button>
+              <button
+                type="button"
+                className="ghost-button mobile-workspace-manager-close"
+                onClick={() => {
+                  if (!removingWorkspaceId) {
+                    setWorkspaceManagerOpen(false);
+                  }
+                }}
+              >
+                {t("common.close")}
+              </button>
+            </ModalActions>
+          }
+        >
+          {workspaceGroups.length > 0 ? (
+            <ModalList className="mobile-workspace-manager-list">
+              {workspaceGroups.map((group) =>
+                renderMobileManagedWorkspaceItem(
+                  group.workspace,
+                  group.visibleSessions.length + group.archivedSessions.length,
+                  group.childWorktrees,
+                  false
+                )
+              )}
+            </ModalList>
+          ) : (
+            <p className="mobile-workspace-manager-empty">{t("shell.manageWorkspaceEmpty")}</p>
+          )}
+          {managedWorkspaceCatalog.filter((workspace) => workspace.hidden).length > 0 ? (
+            <ModalSection
+              heading={t("shell.manageWorkspaceHiddenSectionTitle")}
+              className="mobile-workspace-manager-hidden-section"
+            >
+              <ModalList className="mobile-workspace-manager-hidden-list">
+                {managedWorkspaceCatalog
+                  .filter((workspace) => workspace.hidden)
+                  .map((workspace) => {
+                    const workspaceContext = createFallbackWorkspaceVisualContext(workspace);
+                    const saving = workspaceNavigationSavingById[workspace.id] === true;
+
+                    return (
+                      <ModalListItem
+                        key={`hidden:${workspace.id}`}
+                        className="mobile-workspace-manager-hidden-row"
+                        label={
+                          <span className="mobile-workspace-manager-row-title">
+                            <span className="mobile-workspace-manager-row-name">{workspaceContext.displayName}</span>
+                            {renderWorkspaceHostBadge(workspace, "workspace-host-badge--inline")}
+                          </span>
+                        }
+                        description={workspace.path}
+                        trailing={
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            disabled={saving}
+                            onClick={() => {
+                              void handleUpdateWorkspaceHiddenState(workspace, false);
+                            }}
+                          >
+                            {t("shell.workspaceUnhideAction")}
+                          </button>
+                        }
+                      />
+                    );
+                  })}
+              </ModalList>
+            </ModalSection>
+          ) : null}
+        </MobileSheet>
+      ) : (
+        <SidebarModal
         open={workspaceManagerOpen}
         title={t("shell.manageWorkspaceTitle")}
         className="workbench-manage-workspaces-modal"
@@ -10553,7 +10896,8 @@ function SidebarContent({
               })}
           </div>
         ) : null}
-      </SidebarModal>
+        </SidebarModal>
+      )}
 
       <SidebarModal
         open={sessionDeletionTarget !== null}
@@ -10635,48 +10979,96 @@ function SidebarContent({
         </div>
       </SidebarModal>
 
-      <SidebarModal
-        open={workspaceRemovalTarget !== null}
-        title={t("shell.manageWorkspaceRemoveConfirmTitle")}
-        description={t("shell.manageWorkspaceRemoveConfirmDescription")}
-        onClose={() => {
-          if (removingWorkspaceId) {
-            return;
+      {isMobileLayout ? (
+        <MobileSheet
+          open={workspaceRemovalTarget !== null}
+          title={t("shell.manageWorkspaceRemoveConfirmTitle")}
+          description={t("shell.manageWorkspaceRemoveConfirmDescription")}
+          height="auto"
+          kind="action"
+          showHandle
+          showCancelButton={false}
+          className="mobile-workspace-manager-confirm-sheet"
+          onClose={() => {
+            if (!removingWorkspaceId) {
+              setWorkspaceRemovalTarget(null);
+            }
+          }}
+          footer={
+            <ModalActions align="between" className="mobile-workspace-manager-confirm-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={Boolean(removingWorkspaceId)}
+                onClick={() => setWorkspaceRemovalTarget(null)}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="secondary-button workbench-danger-button"
+                disabled={Boolean(removingWorkspaceId)}
+                onClick={() => {
+                  void handleConfirmWorkspaceRemoval();
+                }}
+              >
+                {removingWorkspaceId
+                  ? t("shell.manageWorkspaceRemoving")
+                  : t("shell.manageWorkspaceRemoveConfirmAction")}
+              </button>
+            </ModalActions>
           }
+        >
+          <p className="mobile-workspace-manager-confirm-target">
+            {workspaceRemovalTarget
+              ? t("shell.manageWorkspaceRemoveConfirmTarget", { name: workspaceRemovalTarget.name })
+              : ""}
+          </p>
+        </MobileSheet>
+      ) : (
+        <SidebarModal
+          open={workspaceRemovalTarget !== null}
+          title={t("shell.manageWorkspaceRemoveConfirmTitle")}
+          description={t("shell.manageWorkspaceRemoveConfirmDescription")}
+          onClose={() => {
+            if (removingWorkspaceId) {
+              return;
+            }
 
-          setWorkspaceRemovalTarget(null);
-        }}
-      >
-        <p className="workbench-section-empty">
-          {workspaceRemovalTarget
-            ? t("shell.manageWorkspaceRemoveConfirmTarget", {
-                name: workspaceRemovalTarget.name
-              })
-            : ""}
-        </p>
-        <div className="workbench-modal-actions">
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={Boolean(removingWorkspaceId)}
-            onClick={() => setWorkspaceRemovalTarget(null)}
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            type="button"
-            className="secondary-button workbench-danger-button"
-            disabled={Boolean(removingWorkspaceId)}
-            onClick={() => {
-              void handleConfirmWorkspaceRemoval();
-            }}
-          >
-            {removingWorkspaceId
-              ? t("shell.manageWorkspaceRemoving")
-              : t("shell.manageWorkspaceRemoveConfirmAction")}
-          </button>
-        </div>
-      </SidebarModal>
+            setWorkspaceRemovalTarget(null);
+          }}
+        >
+          <p className="workbench-section-empty">
+            {workspaceRemovalTarget
+              ? t("shell.manageWorkspaceRemoveConfirmTarget", {
+                  name: workspaceRemovalTarget.name
+                })
+              : ""}
+          </p>
+          <div className="workbench-modal-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={Boolean(removingWorkspaceId)}
+              onClick={() => setWorkspaceRemovalTarget(null)}
+            >
+              {t("common.cancel")}
+            </button>
+            <button
+              type="button"
+              className="secondary-button workbench-danger-button"
+              disabled={Boolean(removingWorkspaceId)}
+              onClick={() => {
+                void handleConfirmWorkspaceRemoval();
+              }}
+            >
+              {removingWorkspaceId
+                ? t("shell.manageWorkspaceRemoving")
+                : t("shell.manageWorkspaceRemoveConfirmAction")}
+            </button>
+          </div>
+        </SidebarModal>
+      )}
 
       <WorkspaceCloneModal
         open={cloneBrowserOpen}
@@ -12779,6 +13171,10 @@ export function WorkbenchLayout({
   const [globalNotifications, setGlobalNotifications] = useState<WorkbenchGlobalNotification[]>([]);
   const [archivedNotificationIds, setArchivedNotificationIds] = useState<Set<string>>(() => new Set());
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
+  const [workspaceManagerOpenRequest, setWorkspaceManagerOpenRequest] = useState(0);
+  const openWorkspaceManager = useCallback(() => {
+    setWorkspaceManagerOpenRequest((current) => current + 1);
+  }, []);
   const [showArchivedNotifications, setShowArchivedNotifications] = useState(false);
   const [windowResizeSettleVersion, setWindowResizeSettleVersion] = useState(0);
   const [notificationSeenAt, setNotificationSeenAt] = useState<string | null>(() =>
@@ -17353,6 +17749,7 @@ export function WorkbenchLayout({
         void toggleNotificationArchive(notificationId, false);
       },
       setAuxiliaryPanel: setCustomAuxiliaryPanel,
+      openWorkspaceManager,
       subscribeFileTree,
       requestFileTreeRefresh,
       addFileTreeSnapshotListener,
@@ -17428,6 +17825,7 @@ export function WorkbenchLayout({
       lightweightArchivedChatSessionsByWorkspaceId,
       openLightweightChat,
       createLightweightChat,
+      openWorkspaceManager,
       toggleLightweightChatFavorite,
       archiveLightweightChat,
       unarchiveLightweightChat,
@@ -17889,6 +18287,7 @@ export function WorkbenchLayout({
   ]);
   const mobileNavigationPanel = isMobileShell ? (
     <SidebarContent
+      isMobileLayout
       navigationGroups={navigationGroups}
       workspaceGroups={workspaceSidebarGroups}
       workspaceVisualContextMap={workspaceVisualContextMap}
@@ -17955,6 +18354,7 @@ export function WorkbenchLayout({
       onUnarchiveLightweightChat={unarchiveLightweightChat}
       onRenameLightweightChat={renameLightweightChat}
       onDeleteLightweightChat={deleteLightweightChat}
+      workspaceManagerOpenRequest={workspaceManagerOpenRequest}
       workspaceManagementStateById={workspaceManagementStateById}
       setWorkspaceManagementStateById={setWorkspaceManagementStateById}
       unreadNotificationCount={unreadNotificationCount}
@@ -18077,6 +18477,7 @@ export function WorkbenchLayout({
             <>
                 <aside className="workbench-nav surface-card" data-collapsed={effectiveLeftCollapsed}>
                   <SidebarContent
+                    isMobileLayout={false}
                     navigationGroups={navigationGroups}
                     workspaceGroups={workspaceSidebarGroups}
                     workspaceVisualContextMap={workspaceVisualContextMap}
@@ -18136,6 +18537,7 @@ export function WorkbenchLayout({
                     onUnarchiveLightweightChat={unarchiveLightweightChat}
                     onRenameLightweightChat={renameLightweightChat}
                     onDeleteLightweightChat={deleteLightweightChat}
+                    workspaceManagerOpenRequest={workspaceManagerOpenRequest}
                     workspaceManagementStateById={workspaceManagementStateById}
                     setWorkspaceManagementStateById={setWorkspaceManagementStateById}
                     unreadNotificationCount={unreadNotificationCount}
@@ -18558,7 +18960,12 @@ export function WorkbenchLayout({
       {isMobileShell ? (
         <>
           {!mobileNavigationDocked ? (
-            <MobileNavDrawer isOpen={mobileNavOpen} side="left" onClose={() => setMobileNavOpen(false)}>
+            <MobileNavDrawer
+              isOpen={mobileNavOpen}
+              side="left"
+              keepMounted
+              onClose={() => setMobileNavOpen(false)}
+            >
               {mobileNavigationPanel}
             </MobileNavDrawer>
           ) : null}
@@ -18579,6 +18986,7 @@ export function MobileNavDrawer({
   side,
   onClose,
   children,
+  keepMounted = false,
   className,
   overlayClassName
 }: {
@@ -18586,14 +18994,28 @@ export function MobileNavDrawer({
   side: "left" | "right";
   onClose: () => void;
   children: ReactNode;
+  keepMounted?: boolean;
   className?: string;
   overlayClassName?: string;
 }) {
   // 抽屉打开时先关抽屉，不让系统返回直接退页面。
   useMobileBackOverlay(isOpen, onClose);
 
-  if (!isOpen) {
+  if (!isOpen && !keepMounted) {
     return null;
+  }
+
+  if (!isOpen) {
+    // 侧栏关闭时仍保留子组件挂载，保证挂在侧栏里的管理弹层可以从移动端直接打开。
+    return (
+      <div
+        className={["mobile-nav-drawer", side, className].filter(Boolean).join(" ")}
+        hidden
+        aria-hidden="true"
+      >
+        {children}
+      </div>
+    );
   }
 
   const content = (

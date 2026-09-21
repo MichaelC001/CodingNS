@@ -31078,6 +31078,305 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   background: transparent;
 }
 
+/* 移动端项目管理使用平铺列表和纵向详情，不复用桌面端的卡片表单。 */
+.mobile-workspace-manager-sheet {
+  width: min(100%, 36rem);
+}
+
+.mobile-workspace-manager-sheet-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mobile-workspace-manager-sheet-body {
+  overflow: auto;
+  padding: 0 1rem 1rem;
+}
+
+.mobile-workspace-manager-list,
+.mobile-workspace-manager-hidden-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -1rem;
+}
+
+.mobile-workspace-manager-item {
+  border-bottom: 1px solid var(--modal-list-item-border);
+}
+
+.mobile-workspace-manager-row {
+  min-height: 4rem;
+  padding: 0.72rem 1rem;
+  border-radius: 0;
+  text-align: left;
+}
+
+.mobile-workspace-manager-row-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 0.4rem;
+}
+
+.mobile-workspace-manager-row-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-workspace-manager-row .modal-list-item-description {
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.mobile-workspace-manager-row-count {
+  min-width: 1.8rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.mobile-workspace-manager-children {
+  margin-left: 1rem;
+  border-left: 1px solid color-mix(in srgb, var(--border-primary) 78%, transparent);
+}
+
+.mobile-workspace-manager-detail {
+  padding: 0 1rem 0.8rem;
+  background: color-mix(in srgb, var(--bg-surface-secondary) 36%, transparent);
+}
+
+.mobile-workspace-manager-section {
+  padding: 0.8rem 0;
+  border-top: 1px solid color-mix(in srgb, var(--border-primary) 75%, transparent);
+}
+
+.mobile-workspace-manager-section .modal-section-header {
+  margin-bottom: 0.45rem;
+}
+
+.mobile-workspace-manager-section .modal-section-heading {
+  font-size: 0.78rem;
+}
+
+.mobile-workspace-manager-path,
+.mobile-workspace-manager-hint,
+.mobile-workspace-manager-empty,
+.mobile-workspace-manager-status,
+.mobile-workspace-manager-confirm-target {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.mobile-workspace-manager-path {
+  color: var(--text-primary);
+}
+
+.mobile-workspace-manager-select {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border-primary);
+  border-radius: 0.65rem;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.mobile-workspace-manager-hint {
+  margin-top: 0.4rem;
+  color: var(--text-tertiary);
+}
+
+.mobile-workspace-manager-color-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.mobile-workspace-manager-color-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.mobile-workspace-manager-clear-color {
+  padding: 0;
+}
+
+.mobile-workspace-manager-stat-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.mobile-workspace-manager-stat-section .modal-section-header {
+  margin: 0;
+}
+
+.mobile-workspace-manager-stat-value {
+  color: var(--accent);
+  font-size: 1.1rem;
+}
+
+.mobile-workspace-manager-kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.mobile-workspace-manager-kv-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.mobile-workspace-manager-kv-list strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-weight: 500;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.mobile-workspace-manager-composition {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.mobile-workspace-manager-chart-ring {
+  display: flex;
+  flex: 0 0 5rem;
+  width: 5rem;
+  height: 5rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--workbench-manage-chart-background, conic-gradient(var(--accent) 100%, var(--bg-hover) 0));
+  box-shadow: inset 0 0 0 0.75rem var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.mobile-workspace-manager-chart-ring strong {
+  font-size: 1rem;
+}
+
+.mobile-workspace-manager-chart-ring span {
+  color: var(--text-tertiary);
+  font-size: 0.62rem;
+}
+
+.mobile-workspace-manager-type-list {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.mobile-workspace-manager-type-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.mobile-workspace-manager-type-list > div > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-workspace-manager-type-list i {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.mobile-workspace-manager-type-list strong {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.mobile-workspace-manager-danger-actions {
+  padding-top: 0.25rem;
+}
+
+.mobile-workspace-manager-danger-actions .secondary-button {
+  width: 100%;
+}
+
+.mobile-workspace-manager-hidden-section {
+  margin: 1rem -1rem 0;
+  padding: 0.8rem 1rem 0;
+  border-top: 6px solid var(--bg-surface-secondary);
+}
+
+.mobile-workspace-manager-hidden-row {
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--modal-list-item-border);
+}
+
+.mobile-workspace-manager-hidden-row .ghost-button {
+  padding: 0.25rem 0;
+  white-space: nowrap;
+}
+
+.mobile-workspace-manager-footer-actions {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.mobile-workspace-manager-footer-actions .secondary-button,
+.mobile-workspace-manager-footer-actions .mobile-workspace-manager-close {
+  flex: 1 1 8rem;
+  min-height: 2.6rem;
+}
+
+.mobile-workspace-manager-footer-actions .mobile-workspace-manager-close {
+  flex-basis: 100%;
+}
+
+.mobile-workspace-manager-confirm-sheet {
+  width: min(100%, 32rem);
+}
+
+.mobile-workspace-manager-confirm-target {
+  padding: 0.25rem 0 0.6rem;
+  color: var(--text-primary);
+}
+
+.mobile-workspace-manager-confirm-actions {
+  gap: 0.5rem;
+}
+
+.mobile-workspace-manager-confirm-actions > button {
+  flex: 1 1 0;
+  min-height: 2.7rem;
+}
+
 .mobile-workspace-card-main,
 .mobile-session-card-main {
   display: flex;
