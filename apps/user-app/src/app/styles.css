@@ -25286,19 +25286,21 @@ body[data-runtime-platform="desktop"][data-os-family="macos"][data-overlay-title
   stroke-dasharray: 5 5;
 }
 
+.settings-performance-chart-hit-area {
+  fill: transparent;
+  cursor: crosshair;
+}
+
 .settings-performance-token-dot {
-  fill: var(--bg-surface);
-  stroke: var(--accent);
-  stroke-width: 2;
+  fill: var(--accent);
+  stroke: none;
   cursor: pointer;
   outline: none;
   vector-effect: non-scaling-stroke;
 }
 
-.settings-performance-token-dot:hover,
 .settings-performance-token-dot[data-selected="true"] {
-  fill: var(--accent);
-  stroke-width: 3;
+  r: 4;
 }
 
 .settings-performance-point-details {

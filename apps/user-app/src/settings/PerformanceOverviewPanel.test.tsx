@@ -79,7 +79,8 @@ describe("PerformanceOverviewPanel", () => {
       </I18nProvider>
     );
 
-    await waitFor(() => expect(screen.getByRole("img", { name: t("settings.performanceTrendAriaLabel") })).toBeInTheDocument());
+    const chart = await screen.findByRole("img", { name: t("settings.performanceTrendAriaLabel") });
+    fireEvent.mouseMove(chart.querySelector(".settings-performance-chart-hit-area"), { clientX: 0 });
     await userEvent.click(screen.getByRole("button", { name: /2026-09-20/ }));
     await waitFor(() => expect(screen.getByRole("table")).toBeInTheDocument());
     expect(screen.getByRole("row", { name: /gpt-5\.6-sol/ })).toBeInTheDocument();
@@ -111,9 +112,58 @@ describe("PerformanceOverviewPanel", () => {
     const chart = await screen.findByRole("img", { name: t("settings.performanceTrendAriaLabel") });
     fireEvent.mouseMove(chart, { clientX: 0 });
     await userEvent.click(screen.getByRole("button", { name: /2026-09-20/ }));
-    await waitFor(() => expect(screen.getByRole("row", { name: /deepseek-v4\\.1-flash/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("row", { name: /deepseek-v4\.1-flash/ })).toBeInTheDocument());
     expect(screen.getByText("80%")).toBeInTheDocument();
     expect(screen.queryByText("400%")).not.toBeInTheDocument();
+  });
+
+  it("不为没有 Token、费用或缓存用量的时间桶绘制数据点", async () => {
+    fetchUserUsageMock.mockResolvedValue(createUsageSnapshotWithEmptyTimelineBucket());
+
+    render(
+      <I18nProvider language="zh-CN">
+        <PerformanceOverviewPanel />
+      </I18nProvider>
+    );
+
+    const chart = await screen.findByRole("img", { name: t("settings.performanceTrendAriaLabel") });
+
+    expect(document.querySelectorAll(".settings-performance-token-dot")).toHaveLength(0);
+    fireEvent.mouseMove(chart.querySelector(".settings-performance-chart-hit-area"), { clientX: 0 });
+    expect(document.querySelectorAll(".settings-performance-token-dot")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /2026-09-20 10:00/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /2026-09-20 10:01/ })).not.toBeInTheDocument();
+  });
+
+  it("费用单独存在时不在 Token 基线位置绘制圆点", async () => {
+    const snapshot = createUsageSnapshot();
+    snapshot.users[0].timeline = [
+      {
+        ...snapshot.users[0].timeline[0],
+        bucket: "2026-09-20 10:00",
+        totalTokens: 0,
+        costUsd: 0.03,
+        modelUsage: []
+      },
+      {
+        ...snapshot.users[0].timeline[0],
+        bucket: "2026-09-20 10:01"
+      }
+    ];
+    fetchUserUsageMock.mockResolvedValue(snapshot);
+
+    render(
+      <I18nProvider language="zh-CN">
+        <PerformanceOverviewPanel />
+      </I18nProvider>
+    );
+
+    const chart = await screen.findByRole("img", { name: t("settings.performanceTrendAriaLabel") });
+
+    expect(document.querySelectorAll(".settings-performance-token-dot")).toHaveLength(0);
+    fireEvent.mouseMove(chart.querySelector(".settings-performance-chart-hit-area"), { clientX: 0 });
+    expect(document.querySelectorAll(".settings-performance-token-dot")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /2026-09-20 10:00/ })).toBeInTheDocument();
   });
 
   it("全部提供商汇总时按各 CLI 的输入口径计算缓存命中率", async () => {
@@ -281,4 +331,24 @@ function createMixedProviderUsageSnapshot(): UserUsageSnapshotDto {
       modelProviderUsage: []
     }]
   };
+}
+
+function createUsageSnapshotWithEmptyTimelineBucket(): UserUsageSnapshotDto {
+  const snapshot = createUsageSnapshot();
+  snapshot.users[0].timeline = [
+    { ...snapshot.users[0].timeline[0], bucket: "2026-09-20 10:00" },
+    {
+      bucket: "2026-09-20 10:01",
+      sessionCount: 1,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: 0,
+      modelUsage: []
+    },
+    { ...snapshot.users[0].timeline[0], bucket: "2026-09-20 10:02" }
+  ];
+  return snapshot;
 }

@@ -54,6 +54,7 @@ function ProviderFilter({ options, selected, onSelect }: { options: ProviderOpti
 function Metric({ icon, label, value, tone }: { icon?: ReactNode; label: string; value: string; tone?: "cost" | "cache" }) { return <div className={`settings-performance-metric${tone ? ` settings-performance-metric-${tone}` : ""}`}>{icon ? <span className="settings-performance-metric-icon">{icon}</span> : null}<span>{label}</span><strong>{value}</strong></div>; }
 
 function TrendChart({ points, selectedLabel, onSelect }: { points: TrendPoint[]; selectedLabel: string | null; onSelect: (point: TrendPoint) => void }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   if (!points.length) return <div className="settings-performance-empty">{t("settings.performanceEmpty")}</div>;
 
   const width = 1000;
@@ -75,16 +76,36 @@ function TrendChart({ points, selectedLabel, onSelect }: { points: TrendPoint[];
   const costPath = smoothPath(costCoordinates);
   const baseline = top + chartHeight;
   const tokenAreaPath = `${tokenPath} L ${tokenCoordinates.at(-1)?.x ?? left} ${baseline} L ${tokenCoordinates[0]?.x ?? left} ${baseline} Z`;
+  const selectedIndex = selectedLabel === null ? -1 : points.findIndex((point) => point.label === selectedLabel);
+  const activeIndex = hoveredIndex ?? (selectedIndex >= 0 ? selectedIndex : null);
+  const activePoint = activeIndex === null ? null : points[activeIndex] ?? null;
 
-  return <div className="settings-performance-chart-wrap"><svg className="settings-performance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t("settings.performanceTrendAriaLabel")}>
+  const nearestIndex = (clientX: number, rect: DOMRect, includesViewBoxMargins = false): number => {
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+    const targetX = includesViewBoxMargins
+      ? Math.max(left, Math.min(left + chartWidth, ratio * width))
+      : left + ratio * chartWidth;
+    return tokenCoordinates.reduce((nearest, coordinate, index) =>
+      Math.abs(coordinate.x - targetX) < Math.abs(tokenCoordinates[nearest].x - targetX) ? index : nearest, 0);
+  };
+
+  return <div className="settings-performance-chart-wrap"><svg className="settings-performance-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t("settings.performanceTrendAriaLabel")} onMouseMove={(event) => setHoveredIndex(nearestIndex(event.clientX, event.currentTarget.getBoundingClientRect(), true))} onMouseLeave={() => setHoveredIndex(null)}>
     {[0, 1, 2, 3].map((line) => { const y = top + chartHeight / 3 * line; return <line key={line} x1={left} x2={left + chartWidth} y1={y} y2={y} className="settings-performance-grid-line" />; })}
     <path d={tokenAreaPath} className="settings-performance-token-area" />
     <path d={tokenPath} className="settings-performance-token-line" />
     <path d={costPath} className="settings-performance-cost-line" />
-    {points.map((point, index) => <g key={`${point.label}-${index}`}>
-      <title>{t("settings.performancePointTooltip", { label: point.label, tokens: number(point.totalTokens), cost: usd(point.costUsd) })}</title>
-      <circle cx={x(index)} cy={ty(point.totalTokens)} r={selectedLabel === point.label ? "6" : "4"} className="settings-performance-token-dot" data-selected={selectedLabel === point.label ? "true" : undefined} role="button" tabIndex={0} aria-label={t("settings.performancePointTooltip", { label: point.label, tokens: number(point.totalTokens), cost: usd(point.costUsd) })} onClick={() => onSelect(point)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(point); } }} />
-    </g>)}
+    <rect
+      className="settings-performance-chart-hit-area"
+      x={left}
+      y={top}
+      width={chartWidth}
+      height={chartHeight}
+      onClick={(event) => onSelect(points[nearestIndex(event.clientX, event.currentTarget.getBoundingClientRect())])}
+    />
+    {activePoint && activeIndex !== null ? <g key={`${activePoint.label}-${activeIndex}`}>
+      <title>{t("settings.performancePointTooltip", { label: activePoint.label, tokens: number(activePoint.totalTokens), cost: usd(activePoint.costUsd) })}</title>
+      <circle cx={x(activeIndex)} cy={ty(activePoint.totalTokens)} r="3" className="settings-performance-token-dot" data-selected={selectedLabel === activePoint.label ? "true" : undefined} role="button" tabIndex={0} aria-label={t("settings.performancePointTooltip", { label: activePoint.label, tokens: number(activePoint.totalTokens), cost: usd(activePoint.costUsd) })} onClick={() => onSelect(activePoint)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(activePoint); } }} />
+    </g> : null}
     {labelIndexes(points.length).map((index) => <text key={index} x={x(index)} y={height - 8} textAnchor="middle" className="settings-performance-axis-label">{points[index]?.label}</text>)}
   </svg><div className="settings-performance-legend"><span><i className="settings-performance-legend-token" />{t("settings.performanceTokenLegend")}</span><span><i className="settings-performance-legend-cost" />{t("settings.performanceCostLegend")}</span></div></div>;
 }
@@ -197,11 +218,22 @@ function aggregateUsage(snapshot: UserUsageSnapshotDto | null, provider: string)
     models: models.size,
     averageTokensPerSession: totalTokens / Math.max(1, sessions),
     cacheHitRate: cacheReadTokens / Math.max(1, cacheHitRateDenominator),
-    points: [...points.values()].sort((left, right) => left.label.localeCompare(right.label))
+    // 会话活动不等于图表有用量。只保留 Token、费用或缓存确实发生变化的时间桶，
+    // 避免后端返回的空活动桶在基线位置堆出一串误导性的圆点。
+    points: [...points.values()]
+      .filter(hasTrendData)
+      .sort((left, right) => left.label.localeCompare(right.label))
   };
 }
 
-// 这些 CLI 的 inputTokens 已包含缓存读取/写入；其余 CLI 将输入桶拆开记录。
+function hasTrendData(point: TrendPoint): boolean {
+  return point.totalTokens > 0
+    || point.costUsd > 0
+    || point.cacheReadTokens > 0
+    || point.cacheWriteTokens > 0;
+}
+
+// 这些 CLI 的 inputTokens 已包含缓存读取/写入；Codex 出现缓存写入时回退到完整输入桶。
 const INPUT_INCLUDES_CACHE_READ = new Set(["codex", "command-code", "gemini"]);
 
 function getCacheHitRateDenominator(
@@ -210,7 +242,7 @@ function getCacheHitRateDenominator(
   cacheReadTokens: number,
   cacheWriteTokens: number
 ): number {
-  return provider && INPUT_INCLUDES_CACHE_READ.has(provider)
+  return provider && INPUT_INCLUDES_CACHE_READ.has(provider) && !(provider === "codex" && cacheWriteTokens > 0)
     ? inputTokens
     : inputTokens + cacheReadTokens + cacheWriteTokens;
 }
