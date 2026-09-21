@@ -630,7 +630,9 @@ function getUsageBucketSql(period: AuthUserUsagePeriod, column = "created_at"): 
     return `strftime('%Y-%m', ${localTime})`;
   }
 
-  return `strftime('%Y-%m-%d %H:%M:%S', ${localTime})`;
+  // 天视图按 15 分钟聚合，避免每条事件都变成一个几乎不可读的秒级数据点。
+  const minute = `CAST(strftime('%M', ${localTime}) AS INTEGER)`;
+  return `strftime('%Y-%m-%d %H:', ${localTime}) || printf('%02d', (${minute} / 15) * 15)`;
 }
 
 function getUsageWindowSql(period: AuthUserUsagePeriod, column: string): string {

@@ -146,7 +146,8 @@ describe("auth user management", () => {
     const timestamp = new Date().toISOString();
     const sessionCreatedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const localTimestamp = new Date(timestamp);
-    const dayBucket = `${localTimestamp.getFullYear()}-${String(localTimestamp.getMonth() + 1).padStart(2, "0")}-${String(localTimestamp.getDate()).padStart(2, "0")} ${String(localTimestamp.getHours()).padStart(2, "0")}:${String(localTimestamp.getMinutes()).padStart(2, "0")}:${String(localTimestamp.getSeconds()).padStart(2, "0")}`;
+    const bucketMinute = Math.floor(localTimestamp.getMinutes() / 15) * 15;
+    const dayBucket = `${localTimestamp.getFullYear()}-${String(localTimestamp.getMonth() + 1).padStart(2, "0")}-${String(localTimestamp.getDate()).padStart(2, "0")} ${String(localTimestamp.getHours()).padStart(2, "0")}:${String(bucketMinute).padStart(2, "0")}`;
     hosted.services.repositories.workspaceRepository.create({
       id: "workspace-alice",
       ownerUserId: aliceId,
